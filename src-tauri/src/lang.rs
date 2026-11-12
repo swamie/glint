@@ -27,10 +27,34 @@ const KO: &[(&str, &str)] = &[
     ("Quit Glint", "Glint 종료"),
 ];
 
-/// `text` in language `lang` ("en", "ko"), or `text` itself if there is no translation.
+/// Greek.
+const EL: &[(&str, &str)] = &[
+    // Clip overlay
+    ("Clip saved", "Το κλιπ αποθηκεύτηκε"),
+    ("Clip failed", "Το κλιπ απέτυχε"),
+    ("Nothing to clip yet", "Δεν υπάρχει ακόμα κάτι για κλιπ"),
+    ("Clipping is paused", "Η καταγραφή κλιπ είναι σε παύση"),
+    ("Resume clipping to save clips", "Συνεχίστε την καταγραφή για να αποθηκεύσετε κλιπ"),
+    ("Clipping resumed", "Η καταγραφή κλιπ συνεχίζεται"),
+    ("Clipping paused", "Η καταγραφή κλιπ σε παύση"),
+    ("Replay buffer is filling", "Το buffer γεμίζει"),
+    ("Replay buffer cleared", "Το buffer άδειασε"),
+    ("Captured last {len} of {game}", "{game} · Τελευταία {len}"),
+    ("Captured last {len}", "Τελευταία {len}"),
+    ("Captured {game}", "{game}"),
+    ("the desktop", "Επιφάνεια εργασίας"),
+    // Tray menu
+    ("Open Glint", "Άνοιγμα Glint"),
+    ("Save clip now", "Αποθήκευση κλιπ τώρα"),
+    ("Pause / resume clipping", "Παύση / συνέχιση καταγραφής"),
+    ("Quit Glint", "Έξοδος από το Glint"),
+];
+
+/// `text` in language `lang` ("en", "ko", "el"), or `text` itself if there is no translation.
 pub fn tr<'a>(lang: &str, text: &'a str) -> &'a str {
     let table: &'static [(&'static str, &'static str)] = match lang {
         "ko" => KO,
+        "el" => EL,
         _ => return text,
     };
     table.iter().find(|(en, to)| *en == text && !to.is_empty()).map(|(_, to)| *to).unwrap_or(text)

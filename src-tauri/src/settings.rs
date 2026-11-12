@@ -180,6 +180,12 @@ pub struct Settings {
     pub encoder: String,
     /// "auto" | "wgc" | "dda"
     pub method: String,
+    /// Where the replay buffer lives: "mixed" (the newest `buffer_ram_secs`
+    /// seconds in RAM, everything older in files), "ram" or "disk".
+    pub buffer: String,
+    pub buffer_ram_secs: u32,
+    /// Folder for the buffer files. "" = `%LOCALAPPDATA%\Glint\buffer`.
+    pub buffer_dir: String,
     pub cursor: bool,
     pub desktop_audio: bool,
     pub mic: bool,
@@ -213,7 +219,7 @@ pub struct Settings {
     pub discord_app_id: String,
     /// Ask GitHub once a day whether a newer Glint has been released.
     pub update_check: bool,
-    /// Interface language: "en" or "ko".
+    /// Interface language: "en", "ko" or "el".
     pub language: String,
     /// How many Blur renders may run at the same time; more wait in a queue.
     pub blur_parallel: u32,
@@ -243,6 +249,9 @@ impl Default for Settings {
             bitrate: 0,
             encoder: "auto".into(),
             method: "auto".into(),
+            buffer: "mixed".into(),
+            buffer_ram_secs: 30,
+            buffer_dir: String::new(),
             cursor: true,
             desktop_audio: true,
             mic: true,

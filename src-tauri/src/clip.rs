@@ -99,7 +99,8 @@ pub fn write(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, Str
     };
     if let Some(mut stdin) = child.stdin.take() {
         // A broken pipe here means ffmpeg already failed; its stderr explains why.
-        let _ = stdin.write_all(&cap.snap.header).and_then(|_| cap.snap.gops.iter().try_for_each(|g| stdin.write_all(&g.data)));
+        // GOPs that have gone to disk are read back from the buffer files here.
+        let _ = stdin.write_all(&cap.snap.header).and_then(|_| cap.snap.gops.iter().try_for_each(|g| g.write_to(&mut stdin)));
     }
     let result = child.wait_with_output();
     cleanup(&inputs);

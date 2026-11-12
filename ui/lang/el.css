@@ -1,0 +1,5 @@
+/* Layout adjustments that only apply in Greek. Every rule starts with html[lang="el"]. Loaded last. */
+
+/* Page title and its buttons: Greek labels run longer than English, so the buttons move
+   under the title when the window is narrow. */
+html[lang="el"] .page-head { flex-wrap: wrap; }

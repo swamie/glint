@@ -193,7 +193,8 @@ function renderChrome() {
         const info = `${st.width}×${st.height} @ ${st.fps} fps${enc ? " · " + enc : ""}`;
         return st.game ? t("<b>Clipping</b> {game} · {info}", { game: esc(st.game), info }) : t("<b>Clipping</b> {info}", { info });
       })();
-  $("#sb-buffer").innerHTML = on ? t("Buffer <b>{now}</b> / {max} · {size}", { now: fmtDur(st.buffer_secs || 0), max: fmtDur(st.buffer_max || 0), size: fmtSize(st.buffer_bytes || 0) }) : "";
+  const bufVars = { now: fmtDur(st.buffer_secs || 0), max: fmtDur(st.buffer_max || 0), size: fmtSize(st.buffer_bytes || 0), disk: fmtSize(st.buffer_disk_bytes || 0) };
+  $("#sb-buffer").innerHTML = !on ? "" : st.buffer_disk_bytes ? t("Buffer <b>{now}</b> / {max} · {size} RAM + {disk} disk", bufVars) : t("Buffer <b>{now}</b> / {max} · {size}", bufVars);
   $("#sb-load").innerHTML = on
     ? t("{fps} · CPU {cpu}% · RAM {ram}", { fps: (st.fps_actual || 0) < st.fps * 0.5 ? t("screen still") : (st.fps_actual || 0).toFixed(0) + " fps", cpu: (st.cpu_pct || 0).toFixed(1), ram: fmtSize((st.ram_app || 0) + (st.ram_ffmpeg || 0)) })
     : "";
@@ -764,9 +765,22 @@ function renderKeybinds() {
     <div class="note">${t("The same key can carry several bindings. <b>F8</b> and <b>Shift + F8</b> are separate: the binding with the most matching modifiers wins, and keys are never blocked from reaching your game.")}</div>
     <div class="section"><h2>${t("Bindings")}</h2>
       ${rows.join("") || `<div class="row"><div class="txt hint">${t("No keybinds yet.")}</div></div>`}
-      <div class="kb-foot"><span>${mbps ? t("Buffer length follows the longest clip: {length} · at most {size} of RAM, usually far less", { length: longest, size: fmtSize(worst) }) : t("Buffer length follows the longest clip: {length}", { length: longest })}</span>
+      <div class="kb-foot"><span>${!mbps ? t("Buffer length follows the longest clip: {length}", { length: longest }) : bufferPlan().disk ? t("Buffer length follows the longest clip: {length} · at most {size}, usually far less", { length: longest, size: fmtSize(worst) }) : t("Buffer length follows the longest clip: {length} · at most {size} of RAM, usually far less", { length: longest, size: fmtSize(worst) })}</span>
       <button class="btn sm" data-act="kb-add">${ICON.plus}${t("Add keybind")}</button></div>
     </div>`;
+}
+
+/** Where the replay buffer will live with the current settings, and roughly how big each part gets. Mirrors spill::window(). */
+function bufferPlan() {
+  const s = S.settings;
+  const total = maxSecs() + 5;
+  const window = s.buffer_ram_secs || 30;
+  const mode = s.buffer === "ram" || s.buffer === "disk" ? s.buffer : "mixed";
+  // "RAM + disk" on a buffer barely longer than its RAM part stays in RAM.
+  const allRam = mode === "ram" || (mode === "mixed" && total <= window + 15);
+  const ramSecs = allRam ? total : mode === "disk" ? 0 : window;
+  const perSec = ((s.bitrate || S.status.max_mbps || 0) * 1e6) / 8 + ((s.desktop_audio ? 1 : 0) + (s.mic ? 1 : 0)) * 192000;
+  return { mode, allRam, window, ram: perSec * Math.max(ramSecs, 1), disk: allRam ? 0 : perSec * (total - ramSecs) };
 }
 
 function renderRecording() {
@@ -787,6 +801,13 @@ function renderRecording() {
     : t("Auto keeps clips as they are, and widens them only when you play on a stretched resolution");
   const fpsList = [...new Set([15, 24, 30, 48, 60, 75, 90, 100, 120, 144, 165, 180, 200, 240, 280, 360, mon.hz])].filter((f) => f <= Math.max(60, mon.hz)).sort((a, b) => a - b);
   const st = S.status;
+  const plan = bufferPlan();
+  const sizes = { secs: fmtLen(plan.window), ram: fmtSize(plan.ram), disk: fmtSize(plan.disk) };
+  const bufferHint = plan.mode === "ram" ? t("Fastest, and nothing is written to disk. Uses up to {ram} of RAM", sizes)
+    : plan.mode === "disk" ? t("Lowest RAM use: the whole buffer is kept in files. Up to {disk} on disk", sizes)
+    : plan.allRam ? t("Your longest clip is short enough to stay in RAM, so nothing is written to disk. Up to {ram} of RAM", sizes)
+    : t("The newest {secs} stay in RAM and the rest is kept in files. Up to {ram} of RAM and {disk} on disk", sizes);
+  const bufferDir = s.buffer_dir || "%LOCALAPPDATA%\\Glint\\buffer";
   $("#view").innerHTML = pageHead(t("Capture"), t("What the replay buffer captures")) + `
     ${st.error && st.recording ? `<div class="note bad"><b>${t("Capture problem:")}</b> ${esc(st.error)}</div>` : ""}
     <div class="section"><h2>${t("Video")}</h2>
@@ -794,11 +815,16 @@ function renderRecording() {
       ${row(t("Resolution"), t("Scaled on the GPU. Lower is lighter and smaller"), select("height", resOpts, true))}
       ${row(t("Aspect ratio"), aspectHint, select("aspect", [["auto", t("Auto (fix stretched res)")], ["16:9", "16:9"], ["16:10", "16:10"], ["21:9", "21:9"], ["32:9", "32:9"], ["4:3", "4:3"], ["source", t("As captured (no fix)")]]))}
       ${row(t("Frame rate"), t("Up to your monitor's {hz} Hz. High rates suit Blur renders", { hz: mon.hz }), select("fps", fpsList.map((f) => [f, `${f} fps`]), true))}
-      ${row(t("Bitrate"), s.bitrate ? t("Fixed. Moving pictures use all of it; the {length} buffer can reach {size} of RAM", { length: fmtLen(maxSecs()), size: fmtSize((s.bitrate * 1e6 * maxSecs()) / 8) }) : t("Auto picks the bitrate from the Quality level below"), select("bitrate", [[0, t("Auto")], ...[...new Set([5, 8, 10, 15, 20, 30, 40, 50, 60, 80, 100, s.bitrate])].filter(Boolean).sort((a, b) => a - b).map((b) => [b, `${b} Mbps`])], true))}
+      ${row(t("Bitrate"), s.bitrate ? (plan.disk ? t("Fixed. Moving pictures use all of it; the {length} buffer can reach {size}", { length: fmtLen(maxSecs()), size: fmtSize((s.bitrate * 1e6 * maxSecs()) / 8) }) : t("Fixed. Moving pictures use all of it; the {length} buffer can reach {size} of RAM", { length: fmtLen(maxSecs()), size: fmtSize((s.bitrate * 1e6 * maxSecs()) / 8) })) : t("Auto picks the bitrate from the Quality level below"), select("bitrate", [[0, t("Auto")], ...[...new Set([5, 8, 10, 15, 20, 30, 40, 50, 60, 80, 100, s.bitrate])].filter(Boolean).sort((a, b) => a - b).map((b) => [b, `${b} Mbps`])], true))}
       ${s.bitrate ? "" : row(t("Quality"), st.max_mbps ? t("Current ceiling {mbps} Mbps; quiet scenes use much less", { mbps: st.max_mbps.toFixed(0) }) : t("Quality-targeted bitrate"), select("quality", [["low", t("Low")], ["medium", t("Medium")], ["high", t("High")], ["ultra", t("Ultra")]]))}
       ${row(t("Encoder"), t("Auto picks your GPU's hardware encoder"), select("encoder", [["auto", t("Auto")], ["nvenc", "NVIDIA NVENC"], ["amf", "AMD AMF"], ["qsv", "Intel Quick Sync"], ["x264", t("x264 (CPU, heavy)")]]))}
       ${row(t("Capture method"), t("Graphics Capture is smoother at high frame rates"), select("method", [["auto", t("Auto")], ["wgc", "Windows Graphics Capture"], ["dda", "Desktop Duplication"]]))}
       ${row(t("Show cursor"), "", toggle("cursor"))}
+    </div>
+    <div class="section"><h2>${t("Replay buffer")}</h2>
+      ${row(t("Keep the buffer in"), bufferHint, select("buffer", [["mixed", t("RAM + disk")], ["ram", t("RAM only")], ["disk", t("Disk only")]]))}
+      ${plan.mode === "mixed" ? row(t("Kept in RAM"), t("Clips up to this length are saved straight from RAM"), select("buffer_ram_secs", [...new Set([15, 30, 60, 120, plan.window])].sort((a, b) => a - b).map((n) => [n, t("Last {length}", { length: fmtLen(n) })]), true)) : ""}
+      ${plan.mode === "ram" ? "" : row(t("Buffer folder"), `<span class="path" title="${esc(bufferDir)}">${esc(bufferDir)}</span><br>${t("Temporary files, deleted as the buffer moves on. An SSD is best")}`, `<button class="btn sm" data-act="pick-buffer-dir">${t("Change")}</button>${s.buffer_dir ? `<button class="btn sm" data-act="reset-buffer-dir">${t("Default")}</button>` : ""}`)}
     </div>
     <div class="section"><h2>${t("Audio")}</h2>
       ${row(t("Desktop audio"), t("Everything you hear, from the default output device"), toggle("desktop_audio"))}
@@ -967,6 +993,12 @@ document.addEventListener("click", async (e) => {
         if (dir) { S.settings.clips_dir = dir; saveSettings(true); }
         return;
       }
+      case "pick-buffer-dir": {
+        const dir = await invoke("pick_folder");
+        if (dir) { S.settings.buffer_dir = dir; saveSettings(true); }
+        return;
+      }
+      case "reset-buffer-dir": S.settings.buffer_dir = ""; return saveSettings(true);
       case "kb-add":
         S.settings.keybinds.push({ id: "kb-" + Date.now().toString(36), ctrl: false, shift: false, alt: false, win: false, key: "", action: "clip", seconds: 60 });
         return saveSettings(true);
@@ -1009,7 +1041,7 @@ document.addEventListener("change", (e) => {
     setPath(S.settings, el.dataset.set, v);
     saveSettings(el.tagName === "SELECT" || el.type === "checkbox");
     if (el.dataset.set.endsWith("_path")) setTimeout(refreshState, 500);
-    if (el.dataset.set === "bitrate") render();
+    if (el.dataset.set === "bitrate" || el.dataset.set === "buffer" || el.dataset.set === "buffer_ram_secs") render();
     if (el.type === "range") render(); // refresh the number shown beside the slider
     // Let the user hear a sound choice, or see an overlay change, once the setting has been saved.
     if (el.dataset.set === "sound_name" || el.dataset.set === "sound_volume") { if (S.settings.sound_name !== "custom" || S.settings.sound_file) setTimeout(() => invoke("preview_sound"), 350); }

@@ -19,6 +19,7 @@ mod library;
 mod recorder;
 mod settings;
 mod sound;
+mod spill;
 mod update;
 mod util;
 mod win;
@@ -87,6 +88,11 @@ fn main() {
         for (id, _) in sound::SOUNDS {
             let _ = std::fs::write(std::path::Path::new(dir).join(format!("{id}.wav")), sound::wav(id, 100));
         }
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--buffer-test") {
+        // glint.exe --buffer-test <report.txt>: the RAM / disk replay buffer on made-up data.
+        recorder::self_test(args.get(i + 1).map(String::as_str).unwrap_or("buffer.txt"));
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--folders-test") {

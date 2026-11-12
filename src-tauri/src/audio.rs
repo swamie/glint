@@ -1,8 +1,10 @@
-//! Desktop (WASAPI loopback) and microphone capture into wall-clock-anchored RAM rings.
+//! Desktop (WASAPI loopback) and microphone capture into wall-clock-anchored rings.
+use crate::spill::Seg;
 use crate::util::now_secs;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -14,8 +16,63 @@ pub struct Pcm {
     pub data: Vec<i16>,
 }
 
+/// Audio leaves RAM in pieces of this many seconds, one file each.
+const CHUNK_SECS: usize = 10;
+
+/// A piece of the ring that has left RAM. Frames `first .. first + frames`.
+struct Chunk {
+    /// The file with the samples (s16le stereo). `None` = the piece was pure
+    /// silence, which needs no file: loopback is silent most of the time.
+    seg: Option<Arc<Seg>>,
+    first: u64,
+    frames: usize,
+}
+
+/// One step of reading audio out of the ring.
+enum Part {
+    Silence(usize),
+    Ram(Vec<i16>),
+    Disk { seg: Arc<Seg>, off: u64, frames: usize },
+}
+
+/// What `AudioRing::plan` found for a list of ranges. Made under the ring's
+/// lock; `read` then fetches the parts that are on disk without holding it.
+pub struct Plan {
+    rate: u32,
+    parts: Vec<Part>,
+}
+
+impl Plan {
+    pub fn read(self) -> Pcm {
+        let frames: usize = self.parts.iter().map(|p| match p {
+            Part::Silence(n) => *n,
+            Part::Ram(d) => d.len() / 2,
+            Part::Disk { frames, .. } => *frames,
+        }).sum();
+        let mut out: Vec<i16> = Vec::with_capacity(frames * 2);
+        for p in self.parts {
+            match p {
+                Part::Silence(n) => out.extend(std::iter::repeat(0i16).take(n * 2)),
+                Part::Ram(d) => out.extend_from_slice(&d),
+                Part::Disk { seg, off, frames } => {
+                    let mut bytes = vec![0u8; frames * 4];
+                    // A piece that cannot be read back is silence, not a failed clip.
+                    if seg.read_at(&mut bytes, off).is_err() {
+                        bytes.fill(0);
+                    }
+                    out.extend(bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])));
+                }
+            }
+        }
+        Pcm { rate: self.rate, data: out }
+    }
+}
+
 /// Ring of stereo s16 audio. Frame `n` was captured at `t0 + n / rate` on the
 /// app clock, so any wall-clock range can be cut out later and lined up with video.
+///
+/// The newest audio is in `buf`. With a RAM window set, older audio is moved
+/// to files in pieces (`chunks`), which sit before `buf` without a gap.
 pub struct AudioRing {
     rate: u32,
     buf: VecDeque<i16>,
@@ -23,46 +80,130 @@ pub struct AudioRing {
     t0: f64,
     written: u64,
     active: bool,
+    /// Seconds kept in RAM. None = everything stays in RAM.
+    window: Option<f64>,
+    dir: PathBuf,
+    tag: &'static str,
+    chunks: VecDeque<Chunk>,
+    /// Frames in `chunks`, and the bytes of those that have a file.
+    disk_frames: usize,
+    disk_bytes: usize,
+    /// A write failed: stay in RAM until the capture is started again.
+    broken: bool,
 }
 
 impl AudioRing {
     pub fn new() -> Self {
-        AudioRing { rate: 48_000, buf: VecDeque::new(), cap_frames: 0, t0: 0.0, written: 0, active: false }
+        AudioRing {
+            rate: 48_000,
+            buf: VecDeque::new(),
+            cap_frames: 0,
+            t0: 0.0,
+            written: 0,
+            active: false,
+            window: None,
+            dir: PathBuf::new(),
+            tag: "a",
+            chunks: VecDeque::new(),
+            disk_frames: 0,
+            disk_bytes: 0,
+            broken: false,
+        }
     }
 
     pub fn configure(&mut self, rate: u32, max_secs: f64) {
         let cap = (rate as f64 * max_secs) as usize;
         if rate != self.rate || !self.active {
-            self.buf.clear();
-            self.active = false;
-            self.written = 0;
+            self.clear();
         }
         self.rate = rate;
         self.cap_frames = cap;
         self.trim();
     }
 
+    /// Choose where older audio lives. `window`: see `spill::window`. Audio
+    /// already buffered stays readable wherever it is.
+    pub fn set_spill(&mut self, window: Option<f64>, dir: PathBuf, tag: &'static str) {
+        self.window = window;
+        self.dir = dir;
+        self.tag = tag;
+        self.broken = false;
+        if window.is_some() {
+            self.trim();
+            self.buf.shrink_to_fit();
+        }
+    }
+
     pub fn clear(&mut self) {
         self.buf.clear();
+        self.chunks.clear();
+        self.disk_frames = 0;
+        self.disk_bytes = 0;
         self.active = false;
         self.written = 0;
     }
 
-    pub fn bytes(&self) -> usize {
-        self.buf.len() * 2
+    /// Bytes held in RAM and in files.
+    pub fn bytes(&self) -> (usize, usize) {
+        (self.buf.len() * 2, self.disk_bytes)
+    }
+
+    /// Move the oldest `n` frames of `buf` out of RAM. False if the file could not be written.
+    fn spill_chunk(&mut self, n: usize) -> bool {
+        let first = self.written - (self.buf.len() / 2) as u64;
+        let seg = if self.buf.range(..n * 2).all(|s| *s == 0) {
+            None
+        } else {
+            let bytes: Vec<u8> = self.buf.range(..n * 2).flat_map(|s| s.to_le_bytes()).collect();
+            match Seg::create(&self.dir, self.tag).and_then(|seg| seg.write_at(&bytes, 0).map(|_| seg)) {
+                Ok(seg) => Some(Arc::new(seg)),
+                Err(e) => {
+                    crate::util::log(&format!("audio buffer: cannot write to {} ({e}); staying in RAM", self.dir.display()));
+                    self.broken = true;
+                    return false;
+                }
+            }
+        };
+        self.buf.drain(..n * 2);
+        if seg.is_some() {
+            self.disk_bytes += n * 4;
+        }
+        self.disk_frames += n;
+        self.chunks.push_back(Chunk { seg, first, frames: n });
+        true
     }
 
     fn trim(&mut self) {
-        let cap = self.cap_frames * 2;
-        if self.buf.len() > cap {
-            let excess = self.buf.len() - cap;
-            self.buf.drain(..excess);
+        if let Some(window) = self.window {
+            let chunk = self.rate as usize * CHUNK_SECS;
+            let keep = (window * self.rate as f64) as usize;
+            while !self.broken && self.buf.len() / 2 >= keep + chunk {
+                if !self.spill_chunk(chunk) {
+                    break;
+                }
+            }
         }
-    }
-
-    fn push_silence(&mut self, frames: usize) {
-        let frames = frames.min(self.cap_frames);
-        self.buf.extend(std::iter::repeat(0i16).take(frames * 2));
+        // Drop pieces that lie wholly outside the capacity. The ring may hold up
+        // to one piece more than its capacity, never less than it.
+        let mut total = self.disk_frames + self.buf.len() / 2;
+        while let Some(c) = self.chunks.front() {
+            if total - c.frames < self.cap_frames {
+                break;
+            }
+            total -= c.frames;
+            self.disk_frames -= c.frames;
+            if c.seg.is_some() {
+                self.disk_bytes -= c.frames * 4;
+            }
+            self.chunks.pop_front();
+        }
+        if self.chunks.is_empty() {
+            let cap = self.cap_frames * 2;
+            if self.buf.len() > cap {
+                let excess = self.buf.len() - cap;
+                self.buf.drain(..excess);
+            }
+        }
     }
 
     /// Append a packet that finished arriving at `now`. Loopback delivers nothing
@@ -83,8 +224,26 @@ impl AudioRing {
         let threshold = (self.rate / 10) as i64;
         let mut data = stereo;
         if diff > threshold {
-            self.push_silence(diff as usize);
-            self.written += diff as u64;
+            let diff = diff as usize;
+            let fill = diff.min(self.cap_frames);
+            if diff >= self.cap_frames {
+                // The gap is longer than the whole ring: nothing older is needed.
+                self.buf.clear();
+                self.chunks.clear();
+                self.disk_frames = 0;
+                self.disk_bytes = 0;
+            }
+            self.written += (diff - fill) as u64;
+            // In pieces, so a long silence never sits in RAM all at once when the ring spills to disk.
+            let piece = if self.window.is_some() { self.rate as usize * CHUNK_SECS } else { fill };
+            let mut left = fill;
+            while left > 0 {
+                let m = left.min(piece.max(1));
+                self.buf.extend(std::iter::repeat(0i16).take(m * 2));
+                self.written += m as u64;
+                left -= m;
+                self.trim();
+            }
         } else if diff < -threshold {
             // Device clock ran ahead of the wall clock: drop the surplus.
             let drop = ((-diff) as usize).min(n);
@@ -95,16 +254,16 @@ impl AudioRing {
         self.trim();
     }
 
-    /// Audio for a list of wall-clock ranges, concatenated. Missing audio is silence.
-    pub fn slices(&self, segs: &[(f64, f64)]) -> Option<Pcm> {
+    /// Where the audio for a list of wall-clock ranges is. Missing audio is silence.
+    pub fn plan(&self, segs: &[(f64, f64)]) -> Option<Plan> {
         if !self.active {
             return None;
         }
         let rate = self.rate as f64;
-        let have = (self.buf.len() / 2) as i64;
-        let first = self.written as i64 - have;
         let end = self.written as i64;
-        let mut out: Vec<i16> = Vec::new();
+        let buf_first = end - (self.buf.len() / 2) as i64;
+        let first = self.chunks.front().map(|c| c.first as i64).unwrap_or(buf_first);
+        let mut parts: Vec<Part> = Vec::new();
         for &(a, b) in segs {
             let ia = ((a - self.t0) * rate).round() as i64;
             let ib = ((b - self.t0) * rate).round() as i64;
@@ -113,15 +272,42 @@ impl AudioRing {
             }
             let lo = ia.clamp(first, end);
             let hi = ib.clamp(first, end);
-            out.extend(std::iter::repeat(0i16).take(((lo - ia) * 2) as usize));
-            if hi > lo {
-                let s = ((lo - first) * 2) as usize;
-                let e = ((hi - first) * 2) as usize;
-                out.extend(self.buf.range(s..e).copied());
+            if hi <= lo {
+                // Wholly before or after what the ring holds.
+                parts.push(Part::Silence((ib - ia) as usize));
+                continue;
             }
-            out.extend(std::iter::repeat(0i16).take(((ib - hi) * 2) as usize));
+            if lo > ia {
+                parts.push(Part::Silence((lo - ia) as usize));
+            }
+            if hi > lo {
+                for c in &self.chunks {
+                    let (c0, c1) = (c.first as i64, c.first as i64 + c.frames as i64);
+                    let (x, y) = (lo.max(c0), hi.min(c1));
+                    if y > x {
+                        parts.push(match &c.seg {
+                            Some(seg) => Part::Disk { seg: seg.clone(), off: (x - c0) as u64 * 4, frames: (y - x) as usize },
+                            None => Part::Silence((y - x) as usize),
+                        });
+                    }
+                }
+                let x = lo.max(buf_first);
+                if hi > x {
+                    let s = ((x - buf_first) * 2) as usize;
+                    let e = ((hi - buf_first) * 2) as usize;
+                    parts.push(Part::Ram(self.buf.range(s..e).copied().collect()));
+                }
+            }
+            if ib > hi {
+                parts.push(Part::Silence((ib - hi) as usize));
+            }
         }
-        Some(Pcm { rate: self.rate, data: out })
+        Some(Plan { rate: self.rate, parts })
+    }
+
+    /// Audio for a list of wall-clock ranges, concatenated.
+    pub fn slices(&self, segs: &[(f64, f64)]) -> Option<Pcm> {
+        self.plan(segs).map(Plan::read)
     }
 }
 

@@ -11,7 +11,7 @@ if (!window.__TAURI__) {
   window.__mockCalls = [];
   const state = {
     settings: {
-      clips_dir: "C:\\Users\\you\\Videos\\Glint", game_folders: false, monitor: 0, height: 0, fps: 60, quality: "high", bitrate: 0, encoder: "auto", method: "auto",
+      clips_dir: "C:\\Users\\you\\Videos\\Glint", game_folders: false, monitor: 0, height: 0, fps: 60, quality: "high", bitrate: 0, encoder: "auto", method: "auto", buffer: "mixed", buffer_ram_secs: 30, buffer_dir: "",
       cursor: true, desktop_audio: true, mic: true, mic_denoise: false, record_on_start: true, sound: true, sound_name: "chirp", sound_volume: 40, sound_file: "",
       toast: true, toast_pos: "tr", toast_opacity: 96, toast_scale: 100, toast_secs: 3.5, toast_length: true, toast_game: true, toast_mic: true,
       ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", discord_rpc: false, discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], autostart: false, close_to_tray: true,
@@ -31,7 +31,7 @@ if (!window.__TAURI__) {
       },
     },
     monitors: [{ index: 0, name: "DISPLAY1", width: 2160, height: 1440, hz: 280, primary: true, x: 0, y: 0, native_width: 2560, native_height: 1440 }],
-    status: { recording: true, encoder: "nvenc", method: "wgc", width: 2560, height: 1440, fps: 60, fps_actual: 59.9, buffer_secs: 412, buffer_max: 600, buffer_bytes: 3.1e8, cpu_pct: 0.9, ram_app: 3.4e7, ram_ffmpeg: 1.4e8, max_mbps: 15, error: "", game: "Overwatch", discord: "off" },
+    status: { recording: true, encoder: "nvenc", method: "wgc", width: 2560, height: 1440, fps: 60, fps_actual: 59.9, buffer_secs: 412, buffer_max: 600, buffer_bytes: 3.1e7, buffer_disk_bytes: 2.8e8, cpu_pct: 0.9, ram_app: 3.4e7, ram_ffmpeg: 1.4e8, max_mbps: 15, error: "", game: "Overwatch", discord: "off" },
     ffmpeg: "C:\\tools\\ffmpeg\\bin\\ffmpeg.exe", blur: "C:\\tools\\blur\\blur-cli.exe", version: "0.1.0",
     hardware: { gpus: [{ name: "NVIDIA GeForce RTX 5060 Ti", vendor: "nvidia" }], cpu: "11th Gen Intel(R) Core(TM) i5-11600", gpu: { name: "NVIDIA GeForce RTX 5060 Ti", vendor: "nvidia" }, encoder: "nvenc" },
   };

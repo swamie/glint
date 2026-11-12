@@ -118,6 +118,37 @@ pub fn game_folder(game: &str) -> String {
     if game.trim().trim_matches('.').trim().is_empty() { "Other".into() } else { sanitize_filename(game) }
 }
 
+/// The Explorer argument that opens a file's folder with the file selected.
+///
+/// Explorer does not follow the usual quoting rules: only the path may be in
+/// quotes, never the whole `/select,…` argument. Quoted as a whole (which is
+/// what happens to any argument with a space in it) Explorer cannot read it
+/// and opens Documents instead. Explorer also wants backslashes.
+pub fn select_arg(path: &Path) -> String {
+    format!("/select,\"{}\"", path.to_string_lossy().replace('/', "\\"))
+}
+
+/// Open the folder that holds `path` in Explorer, with the file selected. If
+/// the file is gone, open the nearest folder that still exists.
+pub fn reveal(path: &Path) -> Result<(), String> {
+    let mut cmd = Command::new("explorer.exe");
+    if path.exists() {
+        cmd.raw_arg(select_arg(path));
+    } else {
+        let mut dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        while !dir.as_os_str().is_empty() && !dir.is_dir() {
+            if !dir.pop() {
+                break;
+            }
+        }
+        if !dir.is_dir() {
+            return Err("The clip's folder no longer exists".into());
+        }
+        cmd.raw_arg(format!("\"{}\"", dir.to_string_lossy().replace('/', "\\")));
+    }
+    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// First free path for `base.ext` inside `dir` (adds " (2)", " (3)", ...).
 pub fn unique_path(dir: &Path, base: &str, ext: &str) -> PathBuf {
     let mut p = dir.join(format!("{base}.{ext}"));

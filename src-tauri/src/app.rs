@@ -370,7 +370,7 @@ fn delete_folder(core: St, name: String) -> Result<(), String> {
 #[tauri::command(async)]
 fn reveal_clip(core: St, id: String) -> Result<(), String> {
     let meta = core.lib.lock().unwrap().get(&id).ok_or("Clip not found")?;
-    std::process::Command::new("explorer").arg(format!("/select,{}", meta.path)).spawn().map(|_| ()).map_err(|e| e.to_string())
+    util::reveal(std::path::Path::new(&meta.path))
 }
 
 #[tauri::command(async)]

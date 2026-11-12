@@ -1,6 +1,6 @@
 # Glint
 
-Offline instant-replay clipper for Windows. Glint keeps the last few minutes of your screen in RAM and writes a clip to disk only when you press a key. No account, no upload. Your clips never leave your PC; the only thing Glint does online is ask GitHub once a day whether a newer version exists (it can be switched off).
+Offline instant-replay clipper for Windows. Glint keeps the last few minutes of your screen in a replay buffer (in RAM, in temporary files, or both) and saves a clip only when you press a key. No account, no upload. Your clips never leave your PC; the only thing Glint does online is ask GitHub once a day whether a newer version exists (it can be switched off).
 
 ## Install
 
@@ -19,7 +19,7 @@ It adds a Start menu shortcut and an entry under Installed apps (uninstalling ke
 
 - **Stack:** Rust + Tauri 2 (WebView2 UI, plain HTML/CSS/JS, no Node build step).
 - **Capture:** one `ffmpeg` process: Windows Graphics Capture → GPU scaler → hardware H.264 (NVENC / AMF / Quick Sync, x264 fallback) → MPEG-TS on a pipe.
-- **Buffer:** encoded video is held in RAM, split at keyframes. Desktop audio (WASAPI loopback) and the microphone are held as PCM in RAM.
+- **Buffer:** encoded video, split at keyframes, plus desktop audio (WASAPI loopback) and the microphone as PCM. By default the newest 30 seconds are in RAM and everything older is in temporary files; it can also be all RAM or all disk (see Replay buffer).
 - **Clip:** video is stream-copied (no re-encode); audio is encoded to AAC. Track 1 = mix, track 2 = desktop, track 3 = microphone.
 
 ## Requirements
@@ -45,7 +45,17 @@ Every key press that fires, and every clip saved or failed, is written to `%APPD
 
 **Still screens.** Windows Graphics Capture sends frames only when the picture changes. Glint never invents duplicate frames, so the file's frame rate is "up to" the setting: a busy game delivers the full rate, a quiet desktop far fewer. A clip of a still screen keeps its full length: the last picture stays up while the audio plays. The status bar shows "screen still" at those times.
 
-**Bitrate.** Under Recording, **Bitrate** is either Auto (quality-targeted, capped by the Quality level) or a fixed rate from 5 to 100 Mbps. A fixed rate is constant bitrate without filler: moving pictures use all of it, a still screen uses less because there is nothing to spend it on. The buffer lives in RAM, so a fixed rate sets its size: 50 Mbps for 10 minutes is 3.75 GB.
+**Bitrate.** Under Recording, **Bitrate** is either Auto (quality-targeted, capped by the Quality level) or a fixed rate from 5 to 100 Mbps. A fixed rate is constant bitrate without filler: moving pictures use all of it, a still screen uses less because there is nothing to spend it on. A fixed rate sets the buffer's size: 50 Mbps for 10 minutes is 3.75 GB.
+
+**Replay buffer.** Capture → Replay buffer chooses where those gigabytes live.
+
+| Setting | RAM | Disk | Notes |
+| --- | --- | --- | --- |
+| RAM + disk (default) | the newest 30 s (15 s to 2 min, your choice) | everything older | Clips up to the RAM length are saved straight from RAM |
+| RAM only | the whole buffer | nothing | Fastest; a 10-minute buffer at 50 Mbps is about 4 GB of RAM |
+| Disk only | about one second of video, ten of audio | the whole buffer | Lowest RAM use |
+
+The files are temporary: `%LOCALAPPDATA%\Glint\buffer` unless you pick another folder (an SSD is best), written in 64 MB pieces that are deleted as the buffer moves past them, and removed when clipping stops or Glint quits; leftovers from a crash are cleared at the next start. Video is written at the capture bitrate while the picture moves (about 6 MB/s at 50 Mbps) and hardly at all while it is still; silent audio is not written. If the folder cannot be written or its drive has less than 1 GB free, the buffer stays in RAM and the Capture page says so. A buffer barely longer than its RAM part (longest clip under about 40 s) stays in RAM in the default mode. Changing the setting restarts the buffer.
 
 Clips go to `Videos\Glint`. Settings, the clip index and thumbnails live in `%APPDATA%\Glint`.
 
@@ -135,7 +145,7 @@ Library → Import brings in clips recorded by NVIDIA ShadowPlay / NVIDIA app, M
 
 - Capture settings that suit this PC carry a blue outline and a "Recommended" tag; others offer "Use recommended". The graphics card is read from the registry. Choosing an encoder (or Blur GPU type) made for another brand of card, or the CPU encoder, asks for confirmation first.
 - Settings → Appearance → Interface size scales the whole window (70 % to 150 %).
-- The globe button at the top right of Settings switches language (English, Korean). Texts are looked up by their English wording in `ui/lang/ko-*.js`; a text without a translation shows in English.
+- The globe button at the top right of Settings switches language (English, Korean, Greek). Texts are looked up by their English wording in `ui/lang/<code>-*.js`; a text without a translation shows in English. `node tools/i18n-check.js ui ko` (or `el`) lists texts that still lack a translation.
 - Custom theme (CSS) is a fold-out box in Appearance. "Copy AI prompt" copies a prompt that explains Glint's theme variables to an AI, so it can write a theme from a one-line description.
 
 ## Blur
@@ -156,10 +166,11 @@ All run without any window.
 glint.exe --hotkey-test report.json
 glint.exe --bench report.json --height 1080 --fps 120 --secs 20 --clip 15
 glint.exe --folders-test report.txt
+glint.exe --buffer-test report.txt
 glint.exe --blur-test in.mp4 out.mp4 report.txt
 ```
 
-`--hotkey-test` injects `F13` combinations and checks binding resolution. `--bench` runs the real recorder, reports CPU, RAM, GPU encoder load and delivered frame rate, then saves a clip and verifies it with `ffprobe`; `--bitrate 50` sets a fixed rate. `--folders-test` moves, renames and deletes library folders on scratch files and refuses to run unless `GLINT_DATA_DIR` is set. `--blur-test` renders one file through the Blur wrapper. Set `GLINT_DATA_DIR` to keep test output out of your real library.
+`--hotkey-test` injects `F13` combinations and checks binding resolution. `--bench` runs the real recorder, reports CPU, RAM, GPU encoder load and delivered frame rate, then saves a clip and verifies it with `ffprobe`; `--bitrate 50` sets a fixed rate and `--buffer ram|mixed|disk` (with `--ram-secs N`) chooses where the buffer lives. `--buffer-test` feeds the video and audio rings made-up data on a made-up clock and checks that clips cut across RAM and disk are byte-exact, that files are deleted as the buffer moves on, and that an unwritable folder falls back to RAM. `--folders-test` moves, renames and deletes library folders on scratch files and refuses to run unless `GLINT_DATA_DIR` is set. `--blur-test` renders one file through the Blur wrapper. Set `GLINT_DATA_DIR` to keep test output out of your real library.
 
 ## Measured (RTX 5060 Ti, i5-11600, 2160×1440 @ 280 Hz)
 
@@ -189,7 +200,8 @@ Not measured: load while a GPU-bound game is running, and audio/video sync to th
 
 ```
 src-tauri/src/
-  recorder.rs   ffmpeg supervisor, MPEG-TS parser, RAM ring, snapshots
+  recorder.rs   ffmpeg supervisor, MPEG-TS parser, replay ring (RAM and disk), snapshots
+  spill.rs      the buffer's temporary files
   audio.rs      loopback + mic capture into wall-clock-anchored rings
   clip.rs       mux a snapshot to MP4; lossless trim
   hotkeys.rs    low-level keyboard hook and binding resolution
@@ -208,6 +220,7 @@ src-tauri/src/
   core.rs       shared state, settings application, status
   app.rs        Tauri window, tray, toast, UI commands
   bench.rs      headless benchmark     keys.rs  hotkey self-test
+tools/          i18n-check.js (translation coverage), serve.js (serve ui/ to a browser; mock.js stands in for the backend)
 ui/             index.html, style.css, app.js (library, settings), editor.js/.css (viewer, player, editor),
                 editmodel.js (the edit model), timeline.js/.css, jobs.js/.css (renders button), importer.js/.css,
                 blurpage.js/.css (Blur settings and live preview), themes.js, i18n.js and lang/ (translations),

@@ -19,7 +19,9 @@ pub struct Status {
     pub fps_actual: f64,
     pub buffer_secs: f64,
     pub buffer_max: f64,
+    /// The part of the buffer that is in RAM, and the part that is in files.
     pub buffer_bytes: u64,
+    pub buffer_disk_bytes: u64,
     /// Recorder CPU (Glint + ffmpeg) as a share of the whole CPU, like Task Manager.
     pub cpu_pct: f64,
     /// Glint's own memory without the replay buffer.
@@ -117,6 +119,9 @@ pub fn capture_cfg(s: &Settings) -> CaptureCfg {
         desktop_audio: s.desktop_audio,
         mic: s.mic,
         max_secs: s.max_clip_secs() as f64 + 5.0,
+        buffer: s.buffer.clone(),
+        buffer_ram_secs: s.buffer_ram_secs.clamp(5, 600) as f64,
+        buffer_dir: crate::spill::dir(&s.buffer_dir),
     }
 }
 
@@ -329,6 +334,7 @@ impl Core {
             buffer_secs: st.buffer_secs,
             buffer_max: (st.max_secs - 5.0).max(0.0),
             buffer_bytes,
+            buffer_disk_bytes: st.video_disk_bytes + st.audio_disk_bytes,
             cpu_pct: s.cpu_pct,
             ram_app: ram_self.saturating_sub(buffer_bytes),
             ram_ffmpeg: ram_ff,
@@ -719,6 +725,8 @@ pub fn fmt_secs_in(lang: &str, secs: f64) -> String {
     match lang {
         "ko" if s >= 60 => format!("{}분 {:02}초", s / 60, s % 60),
         "ko" => format!("{s}초"),
+        "el" if s >= 60 => format!("{} λεπ. {:02} δευτ.", s / 60, s % 60),
+        "el" => format!("{s} δευτ."),
         _ => fmt_secs(secs),
     }
 }

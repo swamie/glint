@@ -57,6 +57,13 @@ pub fn run(args: &[String]) {
         if let Some(m) = arg::<String>(args, "--method") {
             s.method = m;
         }
+        // --buffer ram|mixed|disk, --ram-secs N: where the replay buffer lives.
+        if let Some(b) = arg::<String>(args, "--buffer") {
+            s.buffer = b;
+        }
+        if let Some(n) = arg::<u32>(args, "--ram-secs") {
+            s.buffer_ram_secs = n;
+        }
         // One binding sized to the benchmark so the buffer is exactly as large as needed.
         s.keybinds = vec![crate::settings::Keybind { id: "bench".into(), key: "F13".into(), seconds: clip_secs.max(secs as u32), ..Default::default() }];
         crate::hotkeys::set_binds(&s.keybinds);
@@ -149,9 +156,15 @@ pub fn run(args: &[String]) {
         "ram_ffmpeg_mb": ram_ff_peak as f64 / 1e6,
         "ram_glint_mb": ram_self.saturating_sub(st.video_bytes + st.audio_bytes) as f64 / 1e6,
         "buffer_secs": st.buffer_secs,
+        "ram_glint_total_mb": ram_self as f64 / 1e6,
+        "buffer_mode": cfg.buffer,
+        "buffer_ram_secs": cfg.buffer_ram_secs,
         "buffer_video_mb": st.video_bytes as f64 / 1e6,
         "buffer_audio_mb": st.audio_bytes as f64 / 1e6,
-        "video_mbps": if st.buffer_secs > 0.0 { st.video_bytes as f64 * 8.0 / 1e6 / st.buffer_secs } else { 0.0 },
+        "buffer_video_disk_mb": st.video_disk_bytes as f64 / 1e6,
+        "buffer_audio_disk_mb": st.audio_disk_bytes as f64 / 1e6,
+        "buffer_files_left": std::fs::read_dir(&cfg.buffer_dir).map(|d| d.flatten().count()).unwrap_or(0),
+        "video_mbps": if st.buffer_secs > 0.0 { (st.video_bytes + st.video_disk_bytes) as f64 * 8.0 / 1e6 / st.buffer_secs } else { 0.0 },
         "gpu_encoder_pct": avg(|g| g.0),
         "gpu_util_pct": avg(|g| g.1),
         "clip": clip_json,

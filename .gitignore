@@ -8,3 +8,6 @@
 
 # Left behind by an update
 *.old
+
+# Private working notes
+/HANDOFF.md
