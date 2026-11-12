@@ -656,6 +656,7 @@ pub fn run(minimized: bool) {
             // Updates: clear what the last update left behind, then look for a new
             // release shortly after start and about once a day after that.
             crate::update::cleanup();
+            core.sync_autostart();
             let up_core = core.clone();
             thread::spawn(move || {
                 thread::sleep(Duration::from_secs(25));

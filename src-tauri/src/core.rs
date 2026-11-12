@@ -277,6 +277,14 @@ impl Core {
         });
     }
 
+    /// With "Start with Windows" on, make the start-up entry point at this copy of
+    /// Glint. It goes stale when the program is installed or moved somewhere else.
+    pub fn sync_autostart(&self) {
+        if self.settings.lock().unwrap().autostart {
+            set_autostart(true);
+        }
+    }
+
     pub fn settings(&self) -> Settings {
         self.settings.lock().unwrap().clone()
     }
