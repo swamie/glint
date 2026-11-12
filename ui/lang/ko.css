@@ -1,10 +1,13 @@
 /* Layout adjustments that only apply in Korean. Every rule starts with html[lang="ko"]. Loaded last. */
 
-/* Hangul is not in the serif stack, so the titles fell back to whatever the system picked.
-   Keep the serif for Latin text (Glint, game names) and use Malgun Gothic for Hangul. */
+/* Titles: the serif stack has no Hangul, so Korean titles fell back to the system font while
+   their digits and Latin words stayed serif ("클립 ₁₁개" with small old-style figures). Korean
+   titles use Malgun Gothic throughout; the logo and the letter on empty thumbnails stay serif. */
 html[lang="ko"] {
-  --serif: "Instrument Serif", "Sitka Display", "Sitka Heading", Cambria, Georgia, "Malgun Gothic", "맑은 고딕", sans-serif;
+  --serif: "Malgun Gothic", "맑은 고딕", "Segoe UI", sans-serif;
 }
+html[lang="ko"] .brand-name,
+html[lang="ko"] .thumb .ph { font-family: "Instrument Serif", "Sitka Display", "Sitka Heading", Cambria, Georgia, serif; }
 
 /* Korean breaks between words, never inside one (a too-long word may still break). */
 html[lang="ko"] body { word-break: keep-all; overflow-wrap: break-word; }
@@ -17,3 +20,9 @@ html[lang="ko"] .page-head { flex-wrap: wrap; }
    column only ever holds "최근 30초"-sized texts and the key column still fits Ctrl Shift Alt F12,
    so both give a little width to the action column. */
 html[lang="ko"] .kb-row { grid-template-columns: 185px 1fr 110px 40px; }
+
+/* Top bar renders button: "2개 렌더링 중" was cut to "2개 렌…" in narrow windows. The clip
+   button's Korean text is shorter than before ("최근 30초 저장"), which pays for this. */
+@media (max-width: 1180px) {
+  html[lang="ko"] .jobs-btn { max-width: 132px; }
+}
