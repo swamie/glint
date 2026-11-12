@@ -153,6 +153,7 @@ function renderChrome() {
   // Texts that live in index.html: data-i18n holds the English text, data-i18n-ph a placeholder.
   for (const el of $$("[data-i18n]")) el.textContent = t(el.dataset.i18n);
   for (const el of $$("[data-i18n-ph]")) el.placeholder = t(el.dataset.i18nPh);
+  if (typeof updRender === "function") updRender(); // its tooltip is text too
   const navItem = (id, label, icon, count) =>
     `<button class="nav-item${S.page === id ? " active" : ""}" data-page="${id}">${ICON[icon]}<span class="label">${label}</span>${count ? `<span class="badge">${count}</span>` : ""}</button>`;
   $("#nav-general").innerHTML =
@@ -865,6 +866,9 @@ function renderSettings() {
     <div class="section"><h2>Discord</h2>
       ${row(t("Rich Presence"), discordHint, toggle("discord_rpc"))}
       ${row(t("Application ID"), t("Discord only shows a presence from an app registered with it. Create one named Glint at discord.com/developers/applications (free, about a minute) and paste its Application ID here"), `<input class="field" type="text" inputmode="numeric" data-set="discord_app_id" value="${esc(s.discord_app_id || "")}" placeholder="${esc(t("18 or 19 digits"))}" spellcheck="false" style="width:210px">`)}
+    </div>
+    <div class="section"><h2>${t("Updates")}</h2>
+      ${row(t("Check for updates daily"), t("Asks GitHub once a day whether a newer Glint has been released. Nothing about you or this PC is sent"), toggle("update_check"))}
     </div>
     <div class="section"><h2>${t("Program")}</h2>
       ${row(t("ffmpeg.exe path"), S.ffmpeg ? t("Using {path}", { path: `<span class="path" title="${esc(S.ffmpeg)}">${esc(S.ffmpeg)}</span>` }) : t("Not found"), `<input class="field" type="text" data-set="ffmpeg_path" value="${esc(S.settings.ffmpeg_path)}" placeholder="${esc(t("Auto"))}" style="width:340px">`)}

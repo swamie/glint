@@ -702,7 +702,17 @@ pub fn captured_text(s: &Settings, secs: f64, game: &str) -> String {
         (false, true) => tr("Captured {game}"),
         (false, false) => return String::new(),
     };
-    pattern.replace("{len}", &fmt_secs(secs)).replace("{game}", &what)
+    pattern.replace("{len}", &fmt_secs_in(&s.language, secs)).replace("{game}", &what)
+}
+
+/// `fmt_secs` in the app's language: Korean writes "30초" and "10분 00초".
+pub fn fmt_secs_in(lang: &str, secs: f64) -> String {
+    let s = secs.round() as u64;
+    match lang {
+        "ko" if s >= 60 => format!("{}분 {:02}초", s / 60, s % 60),
+        "ko" => format!("{s}초"),
+        _ => fmt_secs(secs),
+    }
 }
 
 pub fn fmt_secs(secs: f64) -> String {
