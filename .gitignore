@@ -1,0 +1,10 @@
+# Build output
+/src-tauri/target/
+/src-tauri/gen/
+/dist/
+
+# Local tooling
+/.claude/
+
+# Left behind by an update
+*.old

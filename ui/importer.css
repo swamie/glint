@@ -1,0 +1,92 @@
+/* The import dialog. Loaded after style.css. */
+
+/* Above the clip viewer (.modal, 20), below Glint's yes/no prompt (.confirm, 30) and the flash message (40). */
+.imp-back { position: fixed; inset: 0; z-index: 25; display: grid; place-items: center; padding: 16px; background: color-mix(in srgb, var(--bg) 80%, transparent); backdrop-filter: blur(6px); }
+.imp-box { display: flex; flex-direction: column; width: min(780px, 100%); max-height: 100%; background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 24px 60px color-mix(in srgb, var(--bg) 70%, transparent); outline: 0; overflow: hidden; }
+
+.imp-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 16px 14px 22px; border-bottom: 1px solid var(--line); flex: none; }
+.imp-head h2 { margin: 0; font: 400 28px/1.1 var(--serif); min-width: 0; overflow-wrap: anywhere; }
+.imp-x { width: 34px; height: 34px; flex: none; display: grid; place-items: center; background: none; border: 1px solid transparent; border-radius: var(--radius); color: var(--muted); cursor: pointer; }
+.imp-x:hover { background: var(--raised-2); color: var(--text); }
+
+.imp-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 18px 22px 20px; }
+.imp-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 16px 12px 22px; border-top: 1px solid var(--line); flex: none; }
+.imp-sum { flex: 1 1 160px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+
+.imp-sec + .imp-sec { margin-top: 22px; }
+.imp-sec h3 { margin: 0 0 6px; font: 600 15px var(--sans); }
+.imp-hint { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.imp-sec > .imp-hint { margin: 0 0 12px; }
+.imp-note { margin: 0 0 10px; padding: 9px 12px; border: 1px solid var(--line-2); border-left: 3px solid var(--accent); border-radius: var(--radius); background: var(--raised); color: var(--muted); font-size: 13px; }
+.imp-bad { margin: 6px 0 0; color: var(--danger); font-weight: 600; }
+.imp-path { font: 12.5px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; unicode-bidi: plaintext; }
+
+/* Where from */
+.imp-list { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.imp-src { display: flex; align-items: center; gap: 16px; padding: 12px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.imp-src:last-child { border-bottom: 0; }
+.imp-src.off { opacity: .5; }
+.imp-src-txt { flex: 1; min-width: 0; }
+.imp-src-name { font-weight: 600; overflow-wrap: anywhere; }
+.imp-src .btn, .imp-from .btn { flex: none; }
+.imp-from { display: flex; align-items: center; gap: 16px; padding: 10px 14px; margin-bottom: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); }
+
+/* Scanning */
+.imp-wait { display: flex; align-items: center; gap: 16px; padding: 40px 8px; }
+.imp-wait > div { min-width: 0; flex: 1; }
+.imp-wait-h { font-weight: 600; margin-bottom: 4px; }
+.imp-spin { width: 28px; height: 28px; flex: none; border-radius: 50%; border: 3px solid var(--line-2); border-top-color: var(--accent); animation: imp-spin .8s linear infinite; }
+@keyframes imp-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .imp-spin { animation-duration: 2.4s; } }
+
+/* What was found */
+.imp-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 10px; }
+.imp-bar h3 { margin: 0; flex: 1 1 auto; }
+.imp-bar-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.imp-groups { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.imp-group { border-bottom: 1px solid var(--line); }
+.imp-group:last-child { border-bottom: 0; }
+.imp-grow { display: flex; align-items: center; gap: 4px; padding-left: 14px; }
+.imp-group.open .imp-grow { background: var(--raised); }
+.imp-cb { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.imp-cb:disabled { cursor: default; }
+.imp-gbtn { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 9px 12px 9px 8px; background: none; border: 0; color: var(--text); text-align: left; cursor: pointer; }
+.imp-gbtn:hover .imp-gname { color: var(--accent-2); }
+.imp-gi { flex: none; width: 26px; height: 26px; display: grid; place-items: center; }
+.imp-gi img, .imp-gi .gi { width: 26px; height: 26px; border-radius: 6px; object-fit: cover; }
+.imp-gi .gi { display: grid; place-items: center; font: 700 12px var(--sans); color: var(--text); }
+.imp-gi .gi svg { width: 15px; height: 15px; }
+.imp-gname { flex: 1 1 auto; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.imp-gmeta, .imp-cmeta { flex: 0 1 auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 12px; color: var(--muted); font-size: 13px; text-align: right; }
+.imp-gmeta span, .imp-cmeta span { white-space: nowrap; }
+.imp-known { color: var(--ok); font-weight: 600; }
+.imp-chev { flex: none; display: grid; place-items: center; color: var(--muted); transition: transform .12s; }
+.imp-chev svg { width: 16px; height: 16px; }
+.imp-group.open .imp-chev { transform: rotate(90deg); }
+
+.imp-clips { padding: 2px 0 6px; background: var(--panel); }
+.imp-clip { display: flex; align-items: center; gap: 12px; padding: 7px 16px 7px 44px; cursor: pointer; }
+.imp-clip:hover { background: var(--raised); }
+.imp-clip.known { cursor: default; color: var(--muted); }
+.imp-ctitle { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13.5px; }
+
+/* How */
+.imp-how { display: grid; gap: 8px; }
+.imp-opt { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--panel); cursor: pointer; }
+.imp-opt:hover { border-color: color-mix(in srgb, var(--line-2) 72%, var(--text)); }
+.imp-opt.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+.imp-opt input { flex: none; margin: 3px 0 0; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+.imp-opt-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.imp-opt-txt b { font-weight: 600; overflow-wrap: anywhere; }
+
+/* Nothing found */
+.imp-empty { padding: 36px 12px; text-align: center; color: var(--muted); }
+.imp-empty h3 { margin: 0 0 6px; font: 400 26px var(--serif); color: var(--text); }
+.imp-empty p { margin: 0 auto; max-width: 460px; }
+
+/* Running and done */
+.imp-run { padding: 26px 4px 8px; }
+.imp-run h3 { margin: 0 0 14px; font: 400 26px/1.2 var(--serif); overflow-wrap: anywhere; }
+.imp-prog { height: 8px; border-radius: 4px; }
+.imp-run-line { margin: 10px 0 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.imp-run .imp-hint { margin: 0; }

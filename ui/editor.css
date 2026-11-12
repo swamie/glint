@@ -1,0 +1,95 @@
+/* Clip viewer, player and editor. Loaded after style.css. */
+
+/* ---------- viewer layout: never taller than the window, side column scrolls ---------- */
+.viewer { position: relative; max-height: calc(100vh - 80px); }
+.v-side { max-height: calc(100vh - 82px); min-height: 0; }
+.v-pane { display: flex; flex-direction: column; gap: 10px; flex: 1 0 auto; min-width: 0; }
+.viewer.editing .v-info, .viewer:not(.editing) .v-edit { display: none; }
+/* Side column buttons may hold long (translated) labels: let them wrap instead of overflowing. */
+.v-side .btn.wide { height: auto; min-height: 36px; padding-top: 6px; padding-bottom: 6px; white-space: normal; text-align: center; overflow-wrap: anywhere; }
+.v-side .small { overflow-wrap: anywhere; }
+.e-bad { color: var(--danger); }
+
+/* The side column can be taller than the video: let the player take the spare
+   height so the video sits centred instead of leaving a black block below. */
+.v-main .player { flex: 1 1 auto; }
+
+/* ---------- edit mode: video on top (shrinks), timeline under it, side column scrolls ---------- */
+.viewer.editing { height: calc(100vh - 80px); grid-template-rows: minmax(0, 1fr); }
+.viewer.editing .v-main { min-height: 0; overflow: hidden; }
+.viewer.editing .player { flex: 1 1 0; min-height: 120px; }
+.viewer.editing .player video { position: absolute; inset: 0; width: 100%; height: 100%; max-height: none; object-fit: contain; }
+.viewer.editing .player:fullscreen video { height: 100%; }
+.e-tl { display: none; position: relative; flex: none; height: clamp(180px, 30vh, 260px); min-height: 0; overflow: auto; background: var(--panel); border-top: 1px solid var(--line); color: var(--text); }
+.viewer.editing .e-tl { display: block; }
+.e-tl-fail { padding: 16px; color: var(--muted); font-size: 13px; }
+
+/* ---------- player: theme-safe tints and hidden helpers ---------- */
+.p-knob { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
+.e-defs, .p-audio { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: hidden; pointer-events: none; }
+.p-row button.p-text.open { background: rgba(255, 255, 255, .12); }
+
+/* ---------- dropping audio files on the viewer ---------- */
+.e-drop { position: absolute; inset: 0; z-index: 25; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, var(--bg) 72%, transparent); border: 2px dashed var(--accent); border-radius: 12px; pointer-events: none; }
+.e-drop[hidden] { display: none; }
+.e-drop-box { max-width: 100%; padding: 14px 20px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line-2); color: var(--text); font-size: 15px; font-weight: 600; text-align: center; overflow-wrap: anywhere; }
+
+/* ---------- speed pop-up ---------- */
+.e-pop { position: absolute; z-index: 30; display: flex; flex-direction: column; min-width: 92px; overflow-y: auto; padding: 5px; background: var(--raised); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: 0 14px 40px rgba(0, 0, 0, .6); }
+.e-pop button { display: flex; align-items: center; gap: 10px; flex: none; height: 30px; padding: 0 10px; background: none; border: 0; border-radius: 6px; color: var(--text); font: 600 13px var(--sans); text-align: left; cursor: pointer; }
+.e-pop button:hover { background: var(--raised-2); }
+.e-pop button.on { color: var(--accent); }
+.e-pop button.on::after { content: ""; width: 6px; height: 6px; margin-left: auto; border-radius: 50%; background: var(--accent); }
+
+/* ---------- shortcuts pop-up ---------- */
+.e-keys { position: absolute; inset: 0; z-index: 26; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, var(--bg) 60%, transparent); }
+.e-keys-box { display: flex; flex-direction: column; gap: 10px; width: min(600px, 100%); max-height: 100%; overflow-y: auto; padding: 16px 18px; background: var(--raised); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 14px 40px rgba(0, 0, 0, .6); }
+.e-keys-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.e-keys-head .e-title { flex: 1 1 auto; font-size: 16px; }
+.e-keys-list { display: flex; flex-direction: column; gap: 6px; }
+.e-kgroup { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 600; }
+.e-kgroup:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.e-krow { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); align-items: center; gap: 12px; font-size: 13px; }
+.e-kcap { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.e-kplus { color: var(--dim); font-size: 11px; }
+.e-kor { width: 6px; }
+.e-kwhat { min-width: 0; overflow-wrap: anywhere; }
+
+/* ---------- edit column ---------- */
+.e-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.e-h { flex: 1 1 auto; min-width: 0; font: 400 26px/1.15 var(--serif); overflow-wrap: anywhere; }
+.e-sec { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.e-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13.5px; font-weight: 600; }
+.e-tag { margin-left: auto; color: var(--muted); font-size: 12px; font-weight: 500; }
+.e-tag[hidden] { display: none; }
+.e-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.e-speed { min-width: 78px; justify-content: space-between; gap: 6px; }
+.e-speed.open { border-color: var(--accent); }
+.e-chev { width: 14px; height: 14px; color: var(--muted); }
+.e-note { color: var(--warn, var(--muted)); }
+
+.e-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.e-chip { display: inline-flex; align-items: center; max-width: 100%; min-height: 26px; padding: 0 10px; border-radius: 13px; background: var(--raised); border: 1px solid var(--line-2); color: var(--text); font-size: 12.5px; font-weight: 600; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.e-chip:hover { background: var(--raised-2); }
+.e-chip:disabled { opacity: .45; cursor: default; }
+.e-chip.on { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: var(--accent); }
+.e-user { gap: 0; padding: 0 3px 0 0; cursor: default; }
+.e-user > button { height: 100%; min-width: 0; padding: 0 4px 0 10px; background: none; border: 0; font: inherit; color: inherit; cursor: pointer; overflow: hidden; text-overflow: ellipsis; }
+.e-user > .e-x { flex: none; width: 20px; height: 20px; padding: 0; display: grid; place-items: center; border-radius: 50%; color: var(--muted); }
+.e-user > .e-x:hover { background: var(--raised-2); color: var(--danger); }
+.e-x svg { width: 11px; height: 11px; stroke-width: 2.2; }
+.e-save { align-self: flex-start; max-width: 100%; }
+
+/* Label column sized by the longest label (any language), slider takes the rest. */
+.e-sliders { display: grid; grid-template-columns: minmax(0, auto) minmax(72px, 1fr) auto; align-items: center; gap: 6px 8px; font-size: 12.5px; color: var(--muted); }
+.e-slider { display: contents; }
+.e-slider > span { min-width: 0; overflow-wrap: anywhere; }
+.e-slider output { min-width: 40px; text-align: right; font: 600 12px var(--mono); color: var(--text); }
+
+.v-edit input[type="range"] { width: 100%; height: 4px; margin: 0; appearance: none; border-radius: 2px; background: var(--raised-2); outline: 0; cursor: pointer; }
+.v-edit input[type="range"]:disabled { opacity: .45; cursor: default; }
+.v-edit input[type="range"]::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--text); border: 2px solid var(--accent); }
+.v-edit input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
+
+.e-export .btn + .btn { margin-top: -2px; }
+.e-prog { display: flex; flex-direction: column; gap: 6px; }

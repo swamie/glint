@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glint</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="editor.css">
+<link rel="stylesheet" href="timeline.css">
+<link rel="stylesheet" href="blurpage.css">
+<link rel="stylesheet" href="jobs.css">
+<link rel="stylesheet" href="importer.css">
+<link rel="stylesheet" href="updater.css">
+<link rel="stylesheet" href="lang/ko.css">
+<style id="custom-css"></style>
+</head>
+<body>
+<div id="app">
+  <header class="topbar" data-tauri-drag-region>
+    <label class="search">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" type="text" placeholder="Search clips and games" data-i18n-ph="Search clips and games" spellcheck="false" autocomplete="off">
+      <kbd>Ctrl K</kbd>
+    </label>
+    <div class="top-actions">
+      <div id="update-slot"></div>
+      <div id="jobs-slot"></div>
+      <button id="btn-toggle" class="btn">Pause</button>
+      <button id="btn-clip" class="btn primary">
+        <svg viewBox="0 0 24 24"><path d="M6 4v16l14-8z" fill="currentColor" stroke="none"/></svg>
+        <span>Clip last 30s</span>
+      </button>
+      <div class="winctl">
+        <button data-win="min" aria-label="Minimize"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+        <button data-win="max" aria-label="Maximize"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
+        <button data-win="close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      </div>
+    </div>
+  </header>
+
+  <aside class="side">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 48 48"><path d="M21 4l4.2 13.8L39 22l-13.8 4.2L21 40l-4.2-13.8L3 22l13.8-4.2z"/><path class="spark" d="M38 3l1.8 5.2L45 10l-5.2 1.8L38 17l-1.8-5.2L31 10l5.2-1.8z"/></svg>
+      <div><div class="brand-name">Glint</div><div class="brand-ver" id="ver">v0.1.0</div></div>
+    </div>
+    <div class="nav-label" data-i18n="General">General</div>
+    <nav id="nav-general"></nav>
+    <div class="nav-label" data-i18n="Folders">Folders</div>
+    <nav id="nav-folders"></nav>
+    <div class="nav-label" data-i18n="Tools">Tools</div>
+    <nav id="nav-tools"></nav>
+    <div class="side-foot">
+      <div class="rec-card">
+        <span class="rec-ic" id="rec-dot"><svg viewBox="0 0 24 24"><path d="M4.500 12a7.500 7.500 0 1 0 2.400-5.500"/><path d="M4.500 4.500v4.800h4.800"/></svg></span>
+        <div><div id="rec-title">Starting</div><div class="rec-sub" id="rec-sub">&nbsp;</div></div>
+      </div>
+    </div>
+  </aside>
+
+  <main id="view"></main>
+
+  <footer class="statusbar">
+    <span data-i18n="Status:">Status:</span>
+    <span id="sb-state">—</span>
+    <span class="sb-sep"></span>
+    <span id="sb-buffer"></span>
+    <span class="sb-right" id="sb-load"></span>
+  </footer>
+</div>
+
+<div id="selbar" class="selbar" hidden></div>
+<div id="menu" class="menu" hidden></div>
+<div id="modal" class="modal" hidden></div>
+<div id="confirm" class="confirm" hidden></div>
+<div id="flash" class="flash" hidden></div>
+
+<script src="i18n.js"></script>
+<script src="lang/ko-app.js"></script>
+<script src="lang/ko-editor.js"></script>
+<script src="lang/ko-update.js"></script>
+<script src="mock.js"></script>
+<script src="themes.js"></script>
+<script src="editmodel.js"></script>
+<script src="timeline.js"></script>
+<script src="editor.js"></script>
+<script src="jobs.js"></script>
+<script src="importer.js"></script>
+<script src="blurpage.js"></script>
+<script src="app.js"></script>
+<script src="updater.js"></script>
+</body>
+</html>

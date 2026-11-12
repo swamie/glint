@@ -1,0 +1,13 @@
+/* The update button in the top bar: a small up arrow. Loaded after style.css. */
+.upd-btn { position: relative; width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: var(--radius); background: none; color: var(--dim); cursor: pointer; }
+.upd-btn svg { width: 17px; height: 17px; stroke-width: 2.2; }
+.upd-btn:hover { background: var(--raised-2); color: var(--text); }
+.upd-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.upd-dot { display: none; position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+/* A newer version exists: the arrow takes the accent colour and gets a dot. */
+.upd-btn.upd-new { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.upd-btn.upd-new .upd-dot { display: block; }
+/* Checking or downloading: the arrow drifts upwards; a download also fills the button from the bottom. */
+.upd-btn.upd-busy { color: var(--accent); cursor: default; background: linear-gradient(to top, color-mix(in srgb, var(--accent) 28%, transparent) var(--upd-pct, 0%), transparent var(--upd-pct, 0%)); }
+.upd-btn.upd-busy svg { animation: upd-rise .9s ease-in-out infinite; }
+@keyframes upd-rise { 0% { transform: translateY(3px); opacity: .3; } 50% { opacity: 1; } 100% { transform: translateY(-3px); opacity: .3; } }

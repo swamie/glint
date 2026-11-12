@@ -1,0 +1,19 @@
+/* Layout adjustments that only apply in Korean. Every rule starts with html[lang="ko"]. Loaded last. */
+
+/* Hangul is not in the serif stack, so the titles fell back to whatever the system picked.
+   Keep the serif for Latin text (Glint, game names) and use Malgun Gothic for Hangul. */
+html[lang="ko"] {
+  --serif: "Instrument Serif", "Sitka Display", "Sitka Heading", Cambria, Georgia, "Malgun Gothic", "맑은 고딕", sans-serif;
+}
+
+/* Korean breaks between words, never inside one (a too-long word may still break). */
+html[lang="ko"] body { word-break: keep-all; overflow-wrap: break-word; }
+
+/* Page title and its buttons: a Korean title cannot be squeezed letter by letter, so the
+   buttons move under it when the window is narrow. */
+html[lang="ko"] .page-head { flex-wrap: wrap; }
+
+/* Keybinds: in the smallest window "클리핑 일시 정지/재개" was cut off in its select. The length
+   column only ever holds "최근 30초"-sized texts and the key column still fits Ctrl Shift Alt F12,
+   so both give a little width to the action column. */
+html[lang="ko"] .kb-row { grid-template-columns: 185px 1fr 110px 40px; }

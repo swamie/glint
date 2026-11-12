@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Glint</title>
+<style>
+  /* Same variable names as the main window, so a theme and the user's CSS apply here too. */
+  :root { --bg: #070a10; --panel: #0a0e16; --line-2: #263043; --text: #e8edf6; --muted: #8591a5; --accent: #62b6f7; --accent-2: #8ccbff; }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; font: 14px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; color: var(--text); }
+  /* The window is sized for the zoomed box; --dx is the side it slides in from (+1 right, -1 left). */
+  .toast { --dx: 1; --stay: 3s; position: absolute; left: 8px; top: 8px; width: 314px; height: 68px; box-sizing: border-box; display: flex; align-items: center; gap: 13px; padding: 0 14px 0 16px; border-radius: 10px; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 9%, var(--panel)), var(--bg)); border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line-2)); box-shadow: inset 3px 0 0 var(--accent); animation: in .22s ease-out, out .3s ease-in var(--stay) forwards; }
+  .left .toast { --dx: -1; }
+  .glint { width: 30px; height: 30px; fill: var(--accent); flex: none; animation: pulse .7s ease-out; }
+  .glint .spark { fill: var(--accent-2); }
+  .txt { flex: 1; min-width: 0; }
+  .t { font-weight: 650; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .s { color: var(--muted); font-size: 13px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .s:empty { display: none; }
+  .mic { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 50%; background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  .mic svg { width: 16px; height: 16px; fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .mic[hidden] { display: none; }
+  @keyframes in { from { opacity: 0; transform: translateX(calc(var(--dx) * 24px)); } }
+  @keyframes out { to { opacity: 0; transform: translateX(calc(var(--dx) * 24px)); } }
+  @keyframes pulse { 0% { transform: scale(.6) rotate(-30deg); } 60% { transform: scale(1.15); } 100% { transform: none; } }
+</style>
+<style id="custom-css"></style>
+</head>
+<body>
+<div class="toast">
+  <svg class="glint" viewBox="0 0 48 48"><path d="M21 4l4.2 13.8L39 22l-13.8 4.2L21 40l-4.2-13.8L3 22l13.8-4.2z"/><path class="spark" d="M38 3l1.8 5.2L45 10l-5.2 1.8L38 17l-1.8-5.2L31 10l5.2-1.8z"/></svg>
+  <div class="txt"><div class="t" id="t">Clip saved</div><div class="s" id="s"></div></div>
+  <div class="mic" id="mic" title="Microphone recorded" hidden><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.500 11a6.500 6.500 0 0 0 13 0M12 17.500V21"/></svg></div>
+</div>
+<script src="themes.js"></script>
+<script>
+  const d = window.__TOAST__ || {};
+  // The overlay follows the theme it was sent, not the one remembered by the main window.
+  window.applyGlintTheme(d.theme || "glint", d.css || "");
+  document.getElementById("t").textContent = d.title || "Clip saved";
+  document.getElementById("s").textContent = d.sub || "";
+  document.getElementById("mic").hidden = !d.mic;
+  if ((d.pos || "tr").endsWith("l")) document.body.classList.add("left");
+  const box = document.querySelector(".toast");
+  box.style.zoom = d.zoom || 1;
+  // Opacity goes on the page so the slide animation (which also fades) still works on the box.
+  document.body.style.opacity = (d.opacity || 96) / 100;
+  // Leave 0.5 s at the end for the slide-out before the window is closed.
+  box.style.setProperty("--stay", `${Math.max(0.5, (d.secs || 3.5) - 0.5)}s`);
+</script>
+</body>
+</html>

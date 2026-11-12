@@ -1,0 +1,76 @@
+/* The editor's timeline. Loaded after style.css. */
+/* Row heights live in timeline.js (tlRulerH 26, tlVideoH 56, tlAudioH 50) and are set inline. */
+
+.tl { --tl-head: 184px; display: flex; flex-direction: column; min-width: 0; background: var(--panel); border-top: 1px solid var(--line); color: var(--text); font-size: 12.5px; }
+
+/* ---------- toolbar ---------- */
+.tl-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; min-width: 0; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.tl-btn { flex: none; width: 30px; height: 30px; padding: 0; display: grid; place-items: center; background: none; border: 1px solid transparent; border-radius: 6px; color: var(--text); cursor: pointer; }
+.tl-btn:hover:not(:disabled) { background: var(--raised-2); }
+.tl-btn:disabled { opacity: .35; cursor: default; }
+.tl-btn.on { color: var(--accent); }
+.tl-btn svg { width: 17px; height: 17px; }
+.tl-sep { flex: none; width: 1px; height: 18px; margin: 0 6px; background: var(--line-2); }
+.tl-sp { flex: 1 1 0; min-width: 8px; }
+.tl-level { display: inline-flex; align-items: center; gap: 6px; height: 30px; min-width: 0; padding: 0 4px 0 8px; color: var(--muted); }
+.tl-level svg { width: 15px; height: 15px; }
+.tl-level.off { opacity: .4; }
+.tl-level .tl-range { flex: 0 1 96px; width: 96px; }
+.tl-add { flex: 0 1 auto; min-width: 0; max-width: 45%; }
+.tl-add span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+.tl-range { min-width: 36px; height: 4px; margin: 0; appearance: none; border-radius: 2px; background: var(--raised-2); outline: 0; cursor: pointer; }
+.tl-range::-webkit-slider-thumb { appearance: none; width: 12px; height: 12px; border-radius: 50%; background: var(--text); border: 2px solid var(--accent); }
+.tl-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
+.tl-range:disabled { cursor: default; }
+.tl-pct { flex: none; min-width: 4.6ch; text-align: right; white-space: nowrap; font: 600 11.5px var(--mono); color: var(--text); }
+
+/* ---------- tracks ---------- */
+.tl-body { display: grid; grid-template-columns: var(--tl-head) minmax(0, 1fr); max-height: 42vh; overflow-x: hidden; overflow-y: auto; }
+.tl-heads { min-width: 0; border-right: 1px solid var(--line); background: var(--panel); }
+.tl-corner { position: sticky; top: 0; z-index: 3; height: 26px; background: var(--panel); box-shadow: inset 0 -1px 0 var(--line); }
+.tl-head { display: flex; flex-direction: column; justify-content: center; gap: 3px; min-width: 0; padding: 0 8px 0 4px; box-shadow: inset 0 -1px 0 var(--line); }
+.tl-head-video { flex-direction: row; align-items: center; justify-content: flex-start; padding-left: 12px; color: var(--muted); }
+.tl-head-video svg { width: 20px; height: 20px; }
+.tl-hline { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.tl-hname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.tl-head .tl-btn { width: 24px; height: 24px; }
+.tl-head .tl-btn svg { width: 15px; height: 15px; }
+.tl-head .tl-range { flex: 1 1 auto; width: auto; margin-left: 6px; }
+.tl-head.off .tl-hname, .tl-head.off .tl-pct { color: var(--dim); }
+.tl-head.off .tl-hmute { color: var(--muted); }
+.tl-head.off .tl-range { opacity: .45; }
+.tl-hx:hover:not(:disabled) { color: var(--danger); }
+
+/* overflow: clip (not hidden) so the sticky ruler still sticks to .tl-body */
+.tl-lanes { position: relative; min-width: 0; overflow: clip; }
+.tl-ruler { position: sticky; top: 0; z-index: 3; height: 26px; background: var(--panel); cursor: pointer; }
+.tl-ruler canvas, .tl-lane canvas { display: block; width: 100%; height: 100%; }
+.tl-lane { box-shadow: inset 0 -1px 0 var(--line); }
+.tl-lanes[data-tl-cur="grab"] { cursor: grab; }
+.tl-lanes[data-tl-cur="resize"] { cursor: col-resize; }
+
+.tl-marks { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.tl-cut { position: absolute; left: 0; bottom: 0; width: 12px; margin-left: -6px; pointer-events: auto; cursor: col-resize; }
+.tl-cut::before { content: ""; position: absolute; left: 5px; top: 0; bottom: 0; width: 2px; border-radius: 1px; background: var(--text); opacity: .7; }
+.tl-cut b { position: absolute; left: 1px; top: 2px; width: 10px; height: 18px; border-radius: 4px; background: var(--text); box-shadow: 0 1px 4px rgba(0, 0, 0, .5); }
+.tl-cut b::after { content: ""; position: absolute; left: 3px; top: 5px; width: 4px; height: 8px; border-left: 1px solid var(--bg); border-right: 1px solid var(--bg); }
+.tl-cut:hover::before, .tl-cut.drag::before { background: var(--accent-2); opacity: 1; }
+.tl-cut:hover b, .tl-cut.drag b { background: var(--accent-2); }
+.tl-ph { position: absolute; left: 0; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg) 45%, transparent); }
+.tl-ph-k { position: absolute; left: 0; top: 3px; width: 13px; height: 20px; margin-left: -6.5px; background: var(--accent); clip-path: polygon(0 0, 100% 0, 100% 62%, 50% 100%, 0 62%); cursor: ew-resize; }
+.tl-tip { position: absolute; left: 0; top: 2px; z-index: 5; padding: 1px 7px; border-radius: 5px; background: var(--raised-2); border: 1px solid var(--line-2); font: 600 11.5px var(--mono); white-space: nowrap; pointer-events: none; }
+.tl-tip[hidden] { display: none; }
+
+.tl.tl-dragging, .tl.tl-dragging * { cursor: grabbing !important; }
+.tl.tl-dragging[data-tl-drag="cut"], .tl.tl-dragging[data-tl-drag="cut"] *,
+.tl.tl-dragging[data-tl-drag="left"], .tl.tl-dragging[data-tl-drag="left"] *,
+.tl.tl-dragging[data-tl-drag="right"], .tl.tl-dragging[data-tl-drag="right"] * { cursor: col-resize !important; }
+.tl.tl-dragging[data-tl-drag="seek"], .tl.tl-dragging[data-tl-drag="seek"] * { cursor: ew-resize !important; }
+.tl.tl-dragging[data-tl-drag="click"], .tl.tl-dragging[data-tl-drag="click"] * { cursor: default !important; }
+
+/* ---------- horizontal scrollbar under the lanes ---------- */
+.tl-sbar { display: grid; grid-template-columns: var(--tl-head) minmax(0, 1fr); border-top: 1px solid var(--line); }
+.tl-scroll { height: 12px; overflow-x: auto; overflow-y: hidden; }
+.tl-scroll::-webkit-scrollbar { height: 10px; }
+.tl-spacer { height: 1px; }
