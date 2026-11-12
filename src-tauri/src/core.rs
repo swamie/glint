@@ -368,11 +368,15 @@ impl Core {
     pub fn show_toast(&self, title: &str, sub: &str) {
         let Some(app) = self.app.get() else { return };
         let s = self.settings();
+        // Compact is for the plain "Clip saved" only: a failure, a pause or an
+        // empty buffer still gets the full box, because two stars cannot say that.
+        let compact = s.toast_compact && title == crate::lang::tr(&s.language, "Clip saved");
         crate::app::show_toast(
             app,
             crate::app::Toast {
                 title: title.into(),
                 sub: sub.into(),
+                compact,
                 mic: s.toast_mic && s.mic && self.rec.is_running(),
                 pos: s.toast_pos,
                 monitor: s.monitor,

@@ -358,5 +358,7 @@ body.moving-clips .nav-item.drop, body.moving-clips .nav-item.ghost.drop { backg
 .css-help code, .row .hint code { padding: 1px 5px; border-radius: 4px; background: var(--raised-2); color: var(--text); font: 12.5px var(--mono); user-select: text; }
 .css-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 
-.lang-btn { width: 34px; height: 34px; }
-.lang-btn:hover { color: var(--text); }
+/* Settings page: its search box, and the rows and sections a search hides. */
+.set-search { width: 280px; max-width: 100%; }
+.set-search svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+#view .section[hidden], #view .section > [hidden], #set-none[hidden] { display: none; }

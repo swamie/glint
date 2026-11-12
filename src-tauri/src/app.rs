@@ -45,6 +45,8 @@ pub fn show_main(app: &AppHandle) {
 pub struct Toast {
     pub title: String,
     pub sub: String,
+    /// Only the Glint mark in a small square: no text, no microphone icon.
+    pub compact: bool,
     /// Draw the microphone icon: the microphone is being recorded.
     pub mic: bool,
     /// Corner: "tl" | "tr" | "bl" | "br".
@@ -68,12 +70,13 @@ pub fn show_toast(app: &AppHandle, t: Toast) {
     const MARGIN: f64 = 22.0;
     let zoom = t.scale as f64 / 100.0;
     #[allow(non_snake_case)]
-    let (W, H) = (330.0 * zoom, 84.0 * zoom);
+    // The box plus 8 px around it: 314 x 68 normally, 52 x 52 when compact (see toast.html).
+    let (W, H) = if t.compact { (68.0 * zoom, 68.0 * zoom) } else { (330.0 * zoom, 84.0 * zoom) };
     let app = app.clone();
     let pos = if ["tl", "tr", "bl", "br"].contains(&t.pos.as_str()) { t.pos.clone() } else { "tr".to_string() };
     let script = format!(
         "window.__TOAST__ = {};",
-        serde_json::json!({ "title": t.title, "sub": t.sub, "mic": t.mic, "pos": pos, "opacity": t.opacity, "zoom": zoom, "secs": t.secs, "theme": t.theme, "css": t.css })
+        serde_json::json!({ "title": t.title, "sub": t.sub, "compact": t.compact, "mic": t.mic, "pos": pos, "opacity": t.opacity, "zoom": zoom, "secs": t.secs, "theme": t.theme, "css": t.css })
     );
     let stay = Duration::from_millis((t.secs * 1000.0) as u64);
     thread::spawn(move || {

@@ -477,7 +477,6 @@ async function menuAction(m, arg) {
       try { await invoke("delete_clips", { ids }); flash(t("{clips} moved to the Recycle Bin", { clips: plural(ids.length) })); } finally { await refreshClips(); }
       return;
     }
-    case "lang-set": S.settings.language = glintSetLanguage(arg); return saveSettings(true);
     case "game-filter": S.tab = arg; S.sel.clear(); return render();
     case "game-icon": {
       const g = await invoke("pick_game_icon", { game: arg });
@@ -845,8 +844,9 @@ function renderSettings() {
     ? t("Shows “Clipping Overwatch” on your Discord profile while the buffer is on")
     : dc === "connected" ? `<span style="color:var(--ok)">${t("Connected.")}</span> ${t("Your profile shows what you are clipping")}`
     : `<span style="color:var(--warn)">${esc(dc === "off" ? t("Connecting…") : dc)}</span>`;
-  const langBtn = `<button class="icon-btn lang-btn" data-act="lang" title="${esc(t("Language"))}" aria-label="${esc(t("Language"))}">${ICON.globe}</button>`;
-  $("#view").innerHTML = pageHead(t("Settings"), t("Look, storage, startup and notifications")).replace(/<\/div>$/, `<div class="head-actions">${langBtn}</div></div>`) + `
+  const searchBox = `<label class="search set-search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.500-3.500"/></svg><input id="set-q" type="text" value="${esc(S.setQ || "")}" placeholder="${esc(t("Search settings"))}" aria-label="${esc(t("Search settings"))}" spellcheck="false" autocomplete="off"></label>`;
+  const langSelect = `<select class="field" data-lang aria-label="${esc(t("Language"))}">${Object.entries(window.GLINT_LANGS).map(([code, lang]) => `<option value="${code}"${(s.language || "en") === code ? " selected" : ""}>${esc(lang.name)}</option>`).join("")}</select>`;
+  $("#view").innerHTML = pageHead(t("Settings"), t("Look, storage, startup and notifications")).replace(/<\/div>$/, () => `<div class="head-actions">${searchBox}</div></div>`) + `
     ${S.ffmpeg ? "" : `<div class="note bad">${t("<b>ffmpeg.exe was not found.</b> Glint needs ffmpeg 8 or newer. Install it or set its path below.")}</div>`}
     <div class="section"><h2>${t("Appearance")}</h2>
       <div class="themes">${window.GLINT_THEMES.map((th) => `<button class="theme${(s.theme || "glint") === th.id ? " active" : ""}" data-theme="${th.id}" style="background:${th.vars.panel || "#0a0e16"};color:${th.vars.text || "#e8edf6"}"><i style="background:${th.vars.accent || "#62b6f7"}"></i>${esc(th.name)}</button>`).join("")}</div>
@@ -863,6 +863,9 @@ function renderSettings() {
         </div>
         <textarea class="code" data-set="custom_css" spellcheck="false" placeholder=":root { --accent: #ff4fd8; }&#10;.card h3 { font-style: italic; }">${esc(s.custom_css || "")}</textarea>
       </details>
+    </div>
+    <div class="section"><h2>${t("Language")}</h2>
+      ${row(t("Language"), t("Used in Glint's window, the clip overlay and the tray menu. The tray menu changes the next time Glint starts"), langSelect)}
     </div>
     <div class="section"><h2>${t("Storage")}</h2>
       ${row(t("Clips folder"), `<span class="path" title="${esc(S.settings.clips_dir)}">${esc(S.settings.clips_dir)}</span>`, `<button class="btn sm" data-act="pick-dir">${t("Change")}</button><button class="btn sm" data-act="open-dir">${t("Open")}</button>`)}
@@ -881,6 +884,7 @@ function renderSettings() {
     </div>
     <div class="section"><h2>${t("Clip overlay")}</h2>
       ${row(t("Clip overlay"), t("A small box on the captured monitor when a clip is saved. It never takes focus or clicks"), toggle("toast"))}
+      ${row(t("Compact"), t("Shows only the two stars in a small square, with no text. Problems, such as a clip that failed, still show the full box"), toggle("toast_compact"))}
       ${row(t("Position"), t("The corner it appears in"), `<div class="corner-pick" role="group" aria-label="${esc(t("Overlay position"))}">${[["tl", t("Top left")], ["tr", t("Top right")], ["bl", t("Bottom left")], ["br", t("Bottom right")]].map(([v, l]) => `<button class="${S.settings.toast_pos === v ? "active" : ""}" data-corner="${v}" title="${esc(l)}" aria-label="${esc(l)}"><i></i></button>`).join("")}</div><button class="btn sm" data-act="toast-show">${t("Show it")}</button>`)}
       ${row(t("Opacity"), t("Lower lets the game show through"), slider("toast_opacity", 20, 100, 5, "%"))}
       ${row(t("Size"), "", slider("toast_scale", 70, 160, 5, "%"))}
@@ -899,6 +903,43 @@ function renderSettings() {
     <div class="section"><h2>${t("Program")}</h2>
       ${row(t("ffmpeg.exe path"), S.ffmpeg ? t("Using {path}", { path: `<span class="path" title="${esc(S.ffmpeg)}">${esc(S.ffmpeg)}</span>` }) : t("Not found"), `<input class="field" type="text" data-set="ffmpeg_path" value="${esc(S.settings.ffmpeg_path)}" placeholder="${esc(t("Auto"))}" style="width:340px">`)}
     </div>`;
+  // The Capture page's settings can be found from here too: its sections are
+  // added to this page, hidden until a search asks for them.
+  const own = $("#view").innerHTML;
+  renderRecording();
+  const capture = $$("#view .section").map((sec) => {
+    sec.dataset.searchOnly = "1";
+    const h = sec.querySelector("h2");
+    if (h) h.textContent = `${t("Capture")} · ${h.textContent}`;
+    return sec.outerHTML;
+  }).join("");
+  $("#view").innerHTML = own + capture + `<div class="note" id="set-none" hidden></div>`;
+  markRecommended(["encoder", "method", "aspect", "bitrate", "height"]);
+  applySettingsFilter();
+}
+
+/** Show only the settings that match the search box on the Settings page. */
+function applySettingsFilter() {
+  const q = (S.setQ || "").trim().toLowerCase();
+  let shown = 0;
+  for (const sec of $$("#view .section")) {
+    // A match in the section's title shows all of it; otherwise only the matching settings.
+    const whole = q && (sec.querySelector("h2")?.textContent || "").toLowerCase().includes(q);
+    let any = false;
+    for (const el of sec.children) {
+      if (el.tagName === "H2") continue;
+      const hit = !q || whole || el.textContent.toLowerCase().includes(q);
+      el.hidden = !hit;
+      any = any || hit;
+    }
+    sec.hidden = !any || (!q && "searchOnly" in sec.dataset);
+    if (!sec.hidden) shown++;
+  }
+  const none = $("#set-none");
+  if (none) {
+    none.hidden = shown > 0;
+    none.textContent = t("No setting matches “{text}”", { text: (S.setQ || "").trim() });
+  }
 }
 
 function render() {
@@ -952,14 +993,6 @@ document.addEventListener("click", async (e) => {
         if (!loose) return flash(t("No loose clips to sort"));
         if (!(await ask(t("Move {clips} from the clips folder into game folders?", { clips: plural(loose) }), t("Sort by game")))) return;
         try { const n = await invoke("sort_by_game"); flash(t("Moved {clips} into game folders", { clips: plural(n ?? loose) })); } finally { await refreshClips(); }
-        return;
-      }
-      case "lang": {
-        // A tiny menu under the globe button: one entry per language.
-        menuIds = [];
-        $("#menu").innerHTML = Object.entries(window.GLINT_LANGS).map(([code, lang]) => mItem("lang-set", lang.name, "", code, (S.settings.language || "en") === code ? "on" : "")).join("");
-        const r = el.getBoundingClientRect();
-        placeMenu(r.right - 200, r.bottom + 6);
         return;
       }
       case "games-more": S.gamesOpen = !S.gamesOpen; return render();
@@ -1018,9 +1051,17 @@ document.addEventListener("click", async (e) => {
 // Remember whether the custom theme box is unfolded: the page is re-rendered often. ("toggle" does not bubble, hence capture.)
 document.addEventListener("toggle", (e) => { if (e.target.classList?.contains("css-box")) S.cssOpen = e.target.open; }, true);
 
+// The Settings page's own search box. Filtering hides rows in place, so the box keeps its focus.
+document.addEventListener("input", (e) => {
+  if (e.target.id !== "set-q") return;
+  S.setQ = e.target.value;
+  applySettingsFilter();
+});
+
 document.addEventListener("change", (e) => {
   const el = e.target;
   if (el.id === "sort") { S.sort = el.value; return render(); }
+  if ("lang" in el.dataset) { S.settings.language = glintSetLanguage(el.value); return saveSettings(true); }
   if (el.dataset.kbf) {
     const k = S.settings.keybinds[+el.dataset.kb];
     k[el.dataset.kbf] = el.dataset.kbf === "seconds" ? +el.value : el.value;
@@ -1045,7 +1086,7 @@ document.addEventListener("change", (e) => {
     if (el.type === "range") render(); // refresh the number shown beside the slider
     // Let the user hear a sound choice, or see an overlay change, once the setting has been saved.
     if (el.dataset.set === "sound_name" || el.dataset.set === "sound_volume") { if (S.settings.sound_name !== "custom" || S.settings.sound_file) setTimeout(() => invoke("preview_sound"), 350); }
-    if (/^toast_(opacity|scale|secs|length|game|mic)$/.test(el.dataset.set)) setTimeout(() => invoke("preview_toast"), 350);
+    if (/^toast_(opacity|scale|secs|compact|length|game|mic)$/.test(el.dataset.set)) setTimeout(() => invoke("preview_toast"), 350);
     if (el.dataset.set === "custom_css") window.applyGlintTheme(S.settings.theme, S.settings.custom_css);
   }
 });

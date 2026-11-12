@@ -84,7 +84,7 @@ Clips open in Glint's own player. `Space` play/pause, `←` `→` 5 s (`Shift` 1
 
 **Microphone noise suppression.** RNNoise (the `nnnoiseless` crate, model built in), under Recording. It runs when a clip is saved, on that clip's microphone audio, so buffering costs nothing extra; the mix track and the microphone track both get the cleaned voice. The microphone becomes mono. Measured on synthetic speech with pink noise and hum added: noise-only passages fell from -39 dB to -81 dB, speech level changed by 0.3 dB, no added delay, and 10 minutes of audio took 1.3 s.
 
-The overlay's opacity, size and time on screen are adjustable, and its text ("Captured last 30s of Overwatch") can show the length, the game, both or neither. It follows the colour theme.
+The overlay's opacity, size and time on screen are adjustable, and its text ("Captured last 30s of Overwatch") can show the length, the game, both or neither. It follows the colour theme. With **Compact** on, a saved clip shows only the two stars in a small square, with no text; a problem (a failed clip, a paused or empty buffer) still shows the full box.
 
 **From the command line.** With Glint running, `Glint.exe --clip` saves a clip of the shortest clip keybind's length, and `Glint.exe --show-overlay` shows the overlay. Useful for macro keys and scripts.
 
@@ -145,7 +145,8 @@ Library → Import brings in clips recorded by NVIDIA ShadowPlay / NVIDIA app, M
 
 - Capture settings that suit this PC carry a blue outline and a "Recommended" tag; others offer "Use recommended". The graphics card is read from the registry. Choosing an encoder (or Blur GPU type) made for another brand of card, or the CPU encoder, asks for confirmation first.
 - Settings → Appearance → Interface size scales the whole window (70 % to 150 %).
-- The globe button at the top right of Settings switches language (English, Korean, Greek). Texts are looked up by their English wording in `ui/lang/<code>-*.js`; a text without a translation shows in English. `node tools/i18n-check.js ui ko` (or `el`) lists texts that still lack a translation.
+- The search box at the top right of Settings filters the page as you type. It also finds the Capture page's settings (bitrate, encoder, replay buffer and so on), which can be changed right there.
+- Settings → Language switches language (English, Korean, Greek). Texts are looked up by their English wording in `ui/lang/<code>-*.js`; a text without a translation shows in English. `node tools/i18n-check.js ui ko` (or `el`) lists texts that still lack a translation.
 - Custom theme (CSS) is a fold-out box in Appearance. "Copy AI prompt" copies a prompt that explains Glint's theme variables to an AI, so it can write a theme from a one-line description.
 
 ## Blur

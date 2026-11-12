@@ -9,6 +9,9 @@
 .v-side .btn.wide { height: auto; min-height: 36px; padding-top: 6px; padding-bottom: 6px; white-space: normal; text-align: center; overflow-wrap: anywhere; }
 .v-side .small { overflow-wrap: anywhere; }
 .e-bad { color: var(--danger); }
+/* A link inside a sentence, such as "Change under Blur". */
+.text-link { padding: 0; background: none; border: 0; font: inherit; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.text-link:hover { color: var(--accent-2); }
 
 /* The side column can be taller than the video: let the player take the spare
    height so the video sits centred instead of leaving a black block below. */

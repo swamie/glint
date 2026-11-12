@@ -271,8 +271,10 @@ function blurPanel(c) {
   const info = !S.blur ? t("blur-cli.exe not found. Set its path under Blur.")
     : b.interpolate ? t("{fps} fps out, amount {amount}, interpolate {interp}. Change under Blur.", { fps: b.output_fps, amount: b.amount, interp: b.interpolated_fps })
     : t("{fps} fps out, amount {amount}. Change under Blur.", { fps: b.output_fps, amount: b.amount });
+  // The page's name in that sentence (its last "Blur", in every language) is a link to the Blur page.
+  const linked = esc(info).replace(/Blur(?![\s\S]*Blur)/, () => `<button class="text-link" data-v="blur-page">Blur</button>`);
   return `${note}<button class="btn wide" data-v="blur" ${S.blur ? "" : "disabled"}>${ICON.blur}<span>${esc(t("Render with Blur"))}</span></button>
-    <div class="small">${esc(info)}</div>`;
+    <div class="small">${linked}</div>`;
 }
 
 function edTracksText(n) {
@@ -1301,6 +1303,7 @@ async function viewerAction(act) {
   if (!c) return closeClip();
   try {
     if (act === "close" || act === "blur-done") closeClip();
+    else if (act === "blur-page") { S.page = "blur"; closeClip(); } // closeClip() draws the page
     else if (act === "copy") { await invoke("copy_clip", { id }); flash(t("Clip copied. Paste it anywhere.")); }
     else if (act === "reveal") await invoke("reveal_clip", { id });
     else if (act === "fav") { const meta = await invoke("set_favorite", { id, favorite: !c.favorite }); replaceClip(meta); $('[data-v="fav"] span', m).textContent = meta.favorite ? t("Remove favorite") : t("Add to favorites"); }

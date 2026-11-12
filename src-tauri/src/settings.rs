@@ -207,6 +207,8 @@ pub struct Settings {
     pub toast_scale: u32,
     /// Seconds the overlay stays up.
     pub toast_secs: f32,
+    /// Show a saved clip as just the Glint mark in a small square, with no text.
+    pub toast_compact: bool,
     /// Parts of the overlay text "Captured last 30s of Overwatch", and the microphone icon.
     pub toast_length: bool,
     pub toast_game: bool,
@@ -266,6 +268,7 @@ impl Default for Settings {
             toast_opacity: 96,
             toast_scale: 100,
             toast_secs: 3.5,
+            toast_compact: false,
             toast_length: true,
             toast_game: true,
             toast_mic: true,

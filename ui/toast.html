@@ -19,6 +19,9 @@
   .mic { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 50%; background: color-mix(in srgb, var(--accent) 16%, transparent); }
   .mic svg { width: 16px; height: 16px; fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .mic[hidden] { display: none; }
+  /* Compact: only the mark, in a small square. The window is 68 x 68 for it. */
+  .compact .toast { width: 52px; height: 52px; padding: 0; gap: 0; justify-content: center; box-shadow: none; }
+  .compact .txt, .compact .mic { display: none; }
   @keyframes in { from { opacity: 0; transform: translateX(calc(var(--dx) * 24px)); } }
   @keyframes out { to { opacity: 0; transform: translateX(calc(var(--dx) * 24px)); } }
   @keyframes pulse { 0% { transform: scale(.6) rotate(-30deg); } 60% { transform: scale(1.15); } 100% { transform: none; } }
@@ -40,6 +43,7 @@
   document.getElementById("s").textContent = d.sub || "";
   document.getElementById("mic").hidden = !d.mic;
   if ((d.pos || "tr").endsWith("l")) document.body.classList.add("left");
+  if (d.compact) document.body.classList.add("compact");
   const box = document.querySelector(".toast");
   box.style.zoom = d.zoom || 1;
   // Opacity goes on the page so the slide animation (which also fades) still works on the box.

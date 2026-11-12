@@ -18,4 +18,11 @@ glintAddLanguage("el", "Ελληνικά", {
   "Buffer <b>{now}</b> / {max} · {size} RAM + {disk} disk": "Buffer <b>{now}</b> / {max} · {size} RAM + {disk} δίσκος",
   "Fixed. Moving pictures use all of it; the {length} buffer can reach {size}": "Σταθερός. Οι κινούμενες εικόνες τον χρησιμοποιούν όλο· το buffer των {length} μπορεί να φτάσει τα {size}",
   "Buffer length follows the longest clip: {length} · at most {size}, usually far less": "Η διάρκεια του buffer ακολουθεί το μεγαλύτερο κλιπ: {length} · το πολύ {size}, συνήθως πολύ λιγότερο",
+
+  // Settings page: search box, language section, compact overlay
+  "Search settings": "Αναζήτηση ρυθμίσεων",
+  "No setting matches “{text}”": "Καμία ρύθμιση δεν ταιριάζει με “{text}”",
+  "Used in Glint's window, the clip overlay and the tray menu. The tray menu changes the next time Glint starts": "Χρησιμοποιείται στο παράθυρο του Glint, στην επικάλυψη κλιπ και στο μενού της περιοχής ειδοποιήσεων. Το μενού αλλάζει στην επόμενη εκκίνηση του Glint",
+  "Compact": "Συμπαγής",
+  "Shows only the two stars in a small square, with no text. Problems, such as a clip that failed, still show the full box": "Δείχνει μόνο τα δύο αστέρια σε ένα μικρό τετράγωνο, χωρίς κείμενο. Τα προβλήματα, όπως ένα κλιπ που απέτυχε, εμφανίζονται στο πλήρες πλαίσιο",
 });
