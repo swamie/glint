@@ -10,7 +10,13 @@
 //   .tl-sbar    the horizontal scrollbar, under the lanes
 // The canvases are only as wide as the visible lane: everything is drawn for the
 // current scroll position, so a 10 minute clip at 400 px/s costs the same as a short one.
-// Times are source seconds. Lane x of a time: tlPad + sec * pps - scrollX.
+// Times are source seconds. Lane x of a time: tlPad + view(sec) * pps - scrollX, where
+// view() is the identity, or with "Hide cut parts" on, the position in the finished clip
+// (removed segments take no room). The ruler is drawn in view time.
+//
+// Selection: a list of pieces { row, seg } (row = "video" or an audio row id) with one
+// primary. Toolbar actions, the right-click menu (a .menu element of our own, appended
+// to <body>) and handle.run() act on all of them.
 //
 // NOTE: never name a variable `t` here: it would hide the translation function t().
 
@@ -45,6 +51,16 @@ const tlPaths = {
   note: "M9 18V6l10-2v12M9 18a2.5 2.5 0 1 1-5 0a2.5 2.5 0 1 1 5 0zM19 16a2.5 2.5 0 1 1-5 0a2.5 2.5 0 1 1 5 0z",
   level: "M5 19v-4M10 19v-8M15 19V8M20 19V4",
   muted: "M4 9.5v5h3.5l4.5 4v-13l-4.5 4zM16 9.5l5 5M21 9.5l-5 5",
+  vol: "M4 9.5v5h3.5l4.5 4v-13l-4.5 4zM16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11",
+  trash: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13",
+  eye: "M2.5 12C3.5 10.5 7 6 12 6s8.5 4.5 9.5 6c-1 1.5-4.5 6-9.5 6s-8.5-4.5-9.5-6zM12 9a3 3 0 1 1 0 6a3 3 0 1 1 0-6z",
+  eyeOff: "M3 3l18 18M10.6 6.1A9.5 9.5 0 0 1 12 6c5 0 8.5 4.5 9.5 6a17 17 0 0 1-2.8 3.4M6.6 7.6C4.5 9 3.1 11 2.5 12c1 1.5 4.5 6 9.5 6a9 9 0 0 0 4.4-1.1M9.9 9.9a3 3 0 0 0 4.2 4.2",
+  solo: "M4 16v-4a8 8 0 0 1 16 0v4M4 15h3v5H4zM17 15h3v5h-3z",
+  join: "M12 4v5M12 15v5M4 12h16M7 9l-3 3 3 3M17 9l3 3-3 3",
+  hideCuts: "M3 12h5M16 12h5M5 9l3 3-3 3M19 9l-3 3 3 3M12 5v14",
+  selAll: "M4 4h16v16H4zM8 12l3 3 5-6",
+  keys: "M3 6h18v12H3zM7 10h1M11 10h1M15 10h1M7 14h10",
+  full: "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5",
 };
 const tlSvg = (d) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
 let tlPath2d = null; // Path2D objects, made on first draw
@@ -86,14 +102,123 @@ function tlSnap(sec, cands, tol) {
 }
 
 /** Which part of a file clip is under time `sec`: "left" | "right" | "move" | null. */
-function tlFileHit(row, sec, pps) {
-  const a = row.offset, b = row.offset + row.length;
+const tlFileHit = (row, sec, pps) => tlSpanHit(row.offset, row.offset + row.length, sec, pps);
+/** Same for any span [a, b] and position `sec` on one time axis (source or view). An empty span is never hit. */
+function tlSpanHit(a, b, sec, pps) {
+  if (!(b > a)) return null;
   const edge = Math.min(tlEdgePx, ((b - a) * pps) / 3) / pps;
   if (Math.abs(sec - a) <= edge) return "left";
   if (Math.abs(sec - b) <= edge) return "right";
   if (sec > a && sec < b) return "move";
   return null;
 }
+
+/** Like tlSnap, but distances are measured after mapping with `toV` (source -> view); returns the source candidate. */
+function tlSnapV(sec, cands, tol, toV) {
+  const v = toV(sec);
+  let best = sec, dist = tol, hit = false;
+  for (const c of cands) {
+    const d = Math.abs(toV(c) - v);
+    if (d <= dist) { dist = d; best = c; hit = true; }
+  }
+  return { at: best, hit, dist: hit ? dist : Infinity };
+}
+
+/* View mapping. Off: view time = source time. On ("Hide cut parts"): removed parts
+   take no room, view time = position in the finished clip (speed not applied).
+   `kept` is emKept(m): merged kept source ranges [{ start, end }]. */
+function tlViewMap(kept, collapse, duration) {
+  if (!collapse) return { collapse: false, total: Math.max(0, duration), ranges: [] };
+  let v = 0;
+  const ranges = (kept || []).map((r) => { const o = { s0: r.start, s1: r.end, v0: v }; v += r.end - r.start; return o; });
+  return { collapse: true, total: v, ranges, lastSrc: Math.max(0, duration) };
+}
+/** Last range starting at or before `x` on key `k` ("s0" or "v0"), by binary search; -1 if none. */
+function tlRangeIdx(ranges, k, x) {
+  let lo = 0, hi = ranges.length - 1, ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (ranges[mid][k] <= x) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return ans;
+}
+/** Source time -> view time. Inside a removed part: the joint where it was cut. Before 0 / after the end: linear (the lane's padding). */
+function tlSrcToView(map, sec) {
+  if (!map.collapse) return sec;
+  const R = map.ranges;
+  if (sec < 0 || !R.length) return Math.min(0, sec);
+  const i = tlRangeIdx(R, "s0", sec);
+  if (i < 0) return 0;
+  const r = R[i];
+  if (sec <= r.s1) return r.v0 + (sec - r.s0);
+  if (i === R.length - 1 && sec > map.lastSrc) return map.total + (sec - map.lastSrc);
+  return r.v0 + (r.s1 - r.s0);
+}
+/** View time -> source time. At a joint: the start of the kept part after it. Clamped to the kept parts. */
+function tlViewToSrc(map, v) {
+  if (!map.collapse) return v;
+  const R = map.ranges;
+  if (!R.length) return 0;
+  if (v <= 0) return R[0].s0;
+  if (v >= map.total) return R[R.length - 1].s1;
+  const r = R[Math.max(0, tlRangeIdx(R, "v0", v))];
+  return Math.min(r.s1, r.s0 + (v - r.v0));
+}
+
+/** The removed runs (neighbouring removed segments together): [{ first, last, start, end }], segment indexes inclusive. */
+function tlJoints(removed, edges) {
+  const out = [];
+  for (let i = 0; i < removed.length; i++) {
+    if (!removed[i]) continue;
+    const last = out[out.length - 1];
+    if (last && last.last === i - 1) { last.last = i; last.end = edges[i + 1]; }
+    else out.push({ first: i, last: i, start: edges[i], end: edges[i + 1] });
+  }
+  return out;
+}
+
+/* Selection lists: arrays of { row, seg }, no duplicates, in the order added. */
+const tlSelKey = (s) => `${s.row}\u0000${s.seg}`;
+const tlSelHas = (list, s) => !!s && list.some((x) => x.row === s.row && x.seg === s.seg);
+/** `list` plus every piece of `add` not in it yet. */
+function tlSelMerge(list, add) {
+  const seen = new Set(list.map(tlSelKey)), out = list.map((s) => ({ row: s.row, seg: s.seg }));
+  for (const s of add) { const k = tlSelKey(s); if (!seen.has(k)) { seen.add(k); out.push({ row: s.row, seg: s.seg }); } }
+  return out;
+}
+/** `list` with `s` added, or taken out if it was in. */
+const tlSelToggle = (list, s) => (tlSelHas(list, s) ? list.filter((x) => !(x.row === s.row && x.seg === s.seg)) : tlSelMerge(list, [s]));
+/** Every piece in the rectangle of rows (by their place in `order`) x segments spanned by `a` and `b`, that `has(row, seg)` accepts. */
+function tlSelRect(order, a, b, has) {
+  const ra = order.indexOf(a.row), rb = order.indexOf(b.row);
+  if (ra < 0 || rb < 0) return [];
+  const out = [];
+  for (let r = Math.min(ra, rb); r <= Math.max(ra, rb); r++) {
+    for (let sg = Math.min(a.seg, b.seg); sg <= Math.max(a.seg, b.seg); sg++) if (has(order[r], sg)) out.push({ row: order[r], seg: sg });
+  }
+  return out;
+}
+/**
+ * Rubber band hit test. `rows`: [{ id, y0, y1, pieces: [{ seg, x0, x1 }] }], `box`: { x0, x1, y0, y1 }
+ * (any corner order), all in one coordinate space. A piece is hit when it overlaps the box by any
+ * amount; pieces narrower than half a pixel (hidden ones) never are.
+ */
+function tlBandHits(rows, box) {
+  const x0 = Math.min(box.x0, box.x1), x1 = Math.max(box.x0, box.x1), y0 = Math.min(box.y0, box.y1), y1 = Math.max(box.y0, box.y1);
+  const out = [];
+  for (const r of rows) {
+    if (!(r.y0 < y1 && r.y1 > y0)) continue;
+    for (const p of r.pieces) if (p.x1 - p.x0 >= 0.5 && p.x0 < x1 && p.x1 > x0) out.push({ row: r.id, seg: p.seg });
+  }
+  return out;
+}
+/** Selection after its segment indexes moved: a cut was added before segment `at` + 1 (delta 1) or cut `at` was joined (delta -1). */
+function tlSelShift(list, at, delta) {
+  return tlSelMerge([], list.map((s) => (s.seg > at ? { row: s.row, seg: s.seg + delta } : s)));
+}
+
+/** "3.2 s" style length for a tooltip. */
+const tlFmtLen = (sec) => (Math.round(Math.max(0, sec) * 10) / 10).toFixed(1);
 
 /** Left-edge trim of a file clip: the new start `at`, keeping the audio where it is. Returns { offset, trimStart, length }. */
 function tlTrimLeft(row0, at, minSeg) {
@@ -149,7 +274,13 @@ function mountTimeline(host, opts) {
   const st = {
     pps: 100, scrollX: 0, laneW: 0, sbW: 0, dpr: window.devicePixelRatio || 1,
     fitted: true,          // follow the width when the lane is resized
-    sel: null,             // { row, seg }
+    sel: null,             // the primary selected piece { row, seg }; always one of sels
+    sels: [],              // every selected piece [{ row, seg }]
+    selNotify: false,      // the selection's indexes were shifted: tell the editor on the next setSels
+    hideCuts: false,       // "Hide cut parts": removed segments take no room
+    map: null,             // view mapping (tlViewMap), rebuilt on demand after markAll
+    joints: [], jointSig: "",
+    menu: null,            // the open right-click menu { el, close }
     thumbs: [],            // [{ img, ok }]
     waves: new Map(),      // row id -> { peaks, ps }
     rowsSig: null,
@@ -164,6 +295,7 @@ function mountTimeline(host, opts) {
     hatch: null, hatchKey: "",
     raf: 0, dead: false, swallowTimer: 0,
   };
+  try { st.hideCuts = localStorage.getItem("glint.tl.hideCuts") === "1"; } catch {}
 
   /* ----- DOM ----- */
   host.classList.add("tl");
@@ -181,6 +313,7 @@ function mountTimeline(host, opts) {
       ${btn("zoom-out", tlPaths.zoomOut, t("Zoom out (-)"))}
       ${btn("zoom-in", tlPaths.zoomIn, t("Zoom in (+)"))}
       ${btn("fit", tlPaths.fit, t("Fit the whole clip (Shift+F)"))}
+      ${btn("hide-cuts", tlPaths.hideCuts, t("Hide cut parts (H)"), ' aria-pressed="false"')}
       <span class="tl-sep"></span>
       <button type="button" class="btn sm tl-add" data-tl-act="add" title="${esc(t("Add an audio file as a new track"))}">${ICON.plus}<span>${esc(t("Add audio"))}</span></button>
     </div>
@@ -189,7 +322,8 @@ function mountTimeline(host, opts) {
       <div class="tl-lanes">
         <div class="tl-ruler" data-tl-ruler title="${esc(t("Click or drag to move the playhead"))}"><canvas></canvas><div class="tl-ph-k" data-tl-ph></div></div>
         <div class="tl-rows"></div>
-        <div class="tl-marks"><div class="tl-cuts"></div><div class="tl-ph"></div></div>
+        <div class="tl-marks"><div class="tl-joints"></div><div class="tl-cuts"></div><div class="tl-ph"></div></div>
+        <div class="tl-band" hidden></div>
         <div class="tl-tip" hidden></div>
       </div>
     </div>
@@ -197,7 +331,8 @@ function mountTimeline(host, opts) {
   const q = (sel) => host.querySelector(sel);
   const el = {
     bar: q(".tl-bar"), hrows: q(".tl-hrows"), lanes: q(".tl-lanes"), rows: q(".tl-rows"),
-    ruler: q(".tl-ruler canvas"), phK: q(".tl-ph-k"), ph: q(".tl-ph"), cuts: q(".tl-cuts"), tip: q(".tl-tip"),
+    ruler: q(".tl-ruler canvas"), phK: q(".tl-ph-k"), ph: q(".tl-ph"), cuts: q(".tl-cuts"), joints: q(".tl-joints"), tip: q(".tl-tip"), band: q(".tl-band"),
+    bHide: q('[data-tl-act="hide-cuts"]'),
     scroll: q(".tl-scroll"), spacer: q(".tl-spacer"),
     level: q("[data-tl-level]"), levelPct: q(".tl-level .tl-pct"), levelBox: q(".tl-level"),
     bSplit: q('[data-tl-act="split"]'), bRemove: q('[data-tl-act="remove"]'), bMute: q('[data-tl-act="mute"]'),
@@ -206,12 +341,29 @@ function mountTimeline(host, opts) {
   const rulerCtx = el.ruler.getContext("2d");
 
   /* ----- mapping ----- */
-  const X = (sec) => tlPad + sec * st.pps - st.scrollX;
-  const timeAtX = (x) => (x + st.scrollX - tlPad) / st.pps;
-  const contentW = () => dur() * st.pps + 2 * tlPad;
-  const minPps = () => (st.laneW > 2 * tlPad + 10 && dur() > 0 ? (st.laneW - 2 * tlPad) / dur() : 1);
+  // Source time <-> view time (see the file header). The map is rebuilt after every markAll, so it follows the model.
+  const mapSig = () => (st.hideCuts ? `${m.duration}|${m.cuts.join(",")}|${m.removed.join(",")}` : "");
+  const vmap = () => (st.map ||= Object.assign(tlViewMap(st.hideCuts ? emKept(m) : null, st.hideCuts, dur()), { sig: mapSig() }));
+  const toV = (sec) => tlSrcToView(vmap(), sec);
+  const toS = (v) => tlViewToSrc(vmap(), v);
+  const vdur = () => vmap().total;
+  const XV = (v) => tlPad + v * st.pps - st.scrollX;
+  const vAtX = (x) => (x + st.scrollX - tlPad) / st.pps;
+  const X = (sec) => XV(toV(sec));
+  const timeAtX = (x) => toS(vAtX(x));
+  const contentW = () => vdur() * st.pps + 2 * tlPad;
+  const minPps = () => (st.laneW > 2 * tlPad + 10 && vdur() > 0 ? (st.laneW - 2 * tlPad) / vdur() : 1);
   const maxPps = () => Math.max(tlMaxPps, minPps());
-  const markAll = () => { st.dirtyAll = true; st.dirtyRuler = true; };
+  const markAll = () => { st.dirtyAll = true; st.dirtyRuler = true; st.map = null; };
+  /** A segment is drawn (and can be picked) unless it is cut out while cut parts are hidden. */
+  const segShown = (i) => !(st.hideCuts && m.removed[i]);
+  /** Zoom and scroll after the view length may have changed (model change, hide cut parts). */
+  function relayout() {
+    if (!st.laneW) return;
+    if (st.fitted) setPps(minPps()); else setPps(st.pps);
+    syncSpacer();
+    setScroll(st.scrollX);
+  }
 
   function setScroll(x) {
     const mx = Math.max(0, contentW() - st.laneW);
@@ -234,7 +386,7 @@ function mountTimeline(host, opts) {
   }
   /** Zoom keeping the time under lane x `x` where it is. */
   function zoomAround(factor, x) {
-    const at = timeAtX(x);
+    const at = vAtX(x);
     setPps(st.pps * factor);
     syncSpacer();
     setScroll(tlPad + at * st.pps - x);
@@ -245,7 +397,7 @@ function mountTimeline(host, opts) {
     const xp = X(st.shownT);
     if (xp >= 0 && xp <= st.laneW) return zoomAround(factor, xp);
     setPps(st.pps * factor);
-    setScroll(tlPad + st.shownT * st.pps - st.laneW / 2);
+    setScroll(tlPad + toV(st.shownT) * st.pps - st.laneW / 2);
     updateBar();
   }
   function fit() {
@@ -314,6 +466,7 @@ function mountTimeline(host, opts) {
 
   /* ----- selection ----- */
   const sameSel = (a, b) => (a === b) || (!!a && !!b && a.row === b.row && a.seg === b.seg);
+  /** A piece given from outside (select()): the segment index is clamped into range. */
   function normSel(sel) {
     if (!sel) return null;
     if (sel.row !== "video" && !emRow(m, sel.row)) return null;
@@ -321,15 +474,61 @@ function mountTimeline(host, opts) {
     const seg = Math.min(n - 1, Math.max(0, Math.floor(+sel.seg || 0)));
     return { row: sel.row, seg };
   }
-  function setSel(sel) {
-    const next = normSel(sel);
-    if (sameSel(next, st.sel)) return;
-    st.sel = next;
+  /** True if piece `s` still exists: its row is there and its segment index is in range. */
+  const selValid = (s) => !!s && Number.isInteger(s.seg) && s.seg >= 0 && s.seg < m.removed.length && (s.row === "video" || !!emRow(m, s.row));
+  /** Replace the selection. `primary` must be in `list`; if it is not, the last piece becomes the primary. */
+  function setSels(list, primary) {
+    const next = tlSelMerge([], (list || []).filter(selValid));
+    const prim = primary && tlSelHas(next, primary) ? { row: primary.row, seg: primary.seg } : next.length ? { ...next[next.length - 1] } : null;
+    const same = sameSel(prim, st.sel) && next.length === st.sels.length && next.every((s, i) => sameSel(s, st.sels[i]));
+    if (same && !st.selNotify) return;
+    st.selNotify = false;
+    st.sels = next;
+    st.sel = prim;
     markAll();
     updateBar();
-    opts.onSelect?.(next ? { ...next } : null);
+    opts.onSelect?.(prim ? { ...prim } : null, next.map((s) => ({ ...s })));
   }
-  const validateSel = () => setSel(st.sel);
+  function setSel(sel) {
+    const one = normSel(sel);
+    setSels(one ? [one] : [], one);
+  }
+  /** Drop pieces that no longer exist (the model was changed). */
+  const validateSel = () => setSels(st.sels, st.sel);
+  /** Segment indexes moved: see tlSelShift. Sets the state without notifying; the caller's changed() does. */
+  function shiftSels(at, delta) {
+    const map = (s) => (s && s.seg > at ? { row: s.row, seg: s.seg + delta } : s);
+    st.sels = tlSelShift(st.sels, at, delta);
+    st.sel = map(st.sel);
+    st.selNotify = true;
+  }
+  /** Rows top to bottom, as selection order. */
+  const rowOrder = () => ["video", ...m.audio.map((r) => r.id)];
+  /** True if segment `seg` of row `rowId` is a piece that can be picked (a file row only where its clip is). */
+  function pieceExists(rowId, seg) {
+    if (!(seg >= 0 && seg < m.removed.length) || !segShown(seg)) return false;
+    if (rowId === "video") return true;
+    const row = emRow(m, rowId);
+    if (!row) return false;
+    if (row.kind !== "file") return true;
+    const s = emSegments(m)[seg];
+    return Math.min(s.end, row.offset + row.length) - Math.max(s.start, row.offset) > 1e-6;
+  }
+  const allPieces = () => rowOrder().flatMap((id) => m.removed.map((_, i) => ({ row: id, seg: i })).filter((s) => pieceExists(s.row, s.seg)));
+  /** Selected audio pieces with their rows: [{ row, seg, r }]. */
+  const selAudio = () => st.sels.filter((s) => s.row !== "video").map((s) => ({ ...s, r: emRow(m, s.row) })).filter((s) => s.r && s.seg < s.r.gains.length);
+  /** The audio piece the toolbar shows: the primary if it is audio, else the first selected audio piece. */
+  function refAudio() {
+    const list = selAudio();
+    return list.find((s) => sameSel(s, st.sel)) || list[0] || null;
+  }
+  /** Distinct segment indexes of the selection (or of `list`), primary's first. */
+  function selSegs(list = st.sels) {
+    const out = [];
+    if (st.sel && list.some((s) => sameSel(s, st.sel))) out.push(st.sel.seg);
+    for (const s of list) if (!out.includes(s.seg)) out.push(s.seg);
+    return out;
+  }
 
   /* ----- toolbar ----- */
   const canSplitAt = (sec) => {
@@ -337,7 +536,15 @@ function mountTimeline(host, opts) {
     const seg = emSegments(m)[emSegmentAt(m, sec)];
     return !!seg && sec - seg.start >= EM_MIN_SEG && seg.end - sec >= EM_MIN_SEG;
   };
-  const selRow = () => (st.sel && st.sel.row !== "video" ? emRow(m, st.sel.row) : null);
+  /** What "remove" would do to the selection: { restore, segs, ok }. Restores when the primary's segment is cut out, else cuts out; never cuts out every kept segment. */
+  function removePlan() {
+    const segs = selSegs();
+    if (!segs.length) return { restore: false, segs, ok: false };
+    const restore = !!m.removed[segs[0]];
+    const kept = m.removed.filter((r) => !r).length;
+    const losing = segs.filter((i) => !m.removed[i]).length;
+    return { restore, segs, ok: restore || (losing > 0 && kept - losing >= 1) };
+  }
   function setBtn(b, key, disabled, html, title) {
     const prev = st.bar[key];
     const sig = `${disabled}|${title}`;
@@ -350,13 +557,11 @@ function mountTimeline(host, opts) {
   }
   /** Everything that depends on the model or the selection. */
   function updateBar() {
-    const s = st.sel;
-    const removed = s ? !!m.removed[s.seg] : false;
-    const kept = m.removed.filter((r) => !r).length;
-    setBtn(el.bRemove, "remove", !s || (!removed && kept <= 1), tlSvg(removed ? tlPaths.restore : "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"),
+    const plan = removePlan(), removed = plan.restore;
+    setBtn(el.bRemove, "remove", !plan.ok, tlSvg(removed ? tlPaths.restore : tlPaths.trash),
       removed ? t("Restore segment (Del)") : t("Delete segment (Del)"));
-    const row = selRow();
-    const gain = row ? row.gains[s.seg] ?? 1 : 1;
+    const ref = refAudio(), row = ref?.r || null;
+    const gain = row ? row.gains[ref.seg] ?? 1 : 1;
     setBtn(el.bMute, "mute", !row, gain === 0 ? PICON.mute : PICON.vol, row && gain === 0 ? t("Unmute segment (M)") : t("Mute segment (M)"));
     el.bMute.classList.toggle("on", !!row && gain === 0);
     el.level.disabled = !row;
@@ -366,6 +571,8 @@ function mountTimeline(host, opts) {
     el.levelPct.textContent = row ? t("{pct}%", { pct }) : "";
     el.bOut.disabled = st.pps <= minPps() * 1.0001;
     el.bIn.disabled = st.pps >= maxPps() * 0.9999;
+    el.bHide.classList.toggle("on", st.hideCuts);
+    el.bHide.setAttribute("aria-pressed", String(st.hideCuts));
     updateBarCheap(st.shownT, true);
   }
   /** The parts that can change every frame (playhead, undo stacks): only touches the DOM on change. */
@@ -384,45 +591,133 @@ function mountTimeline(host, opts) {
     markAll();
     if (rows) syncRows();
     validateSel();
+    if (st.hideCuts) relayout(); // the view length follows what is cut out
     updateBar();
     opts.onChange?.(what);
   }
-  function doSplit() {
-    const at = st.shownT;
-    if (!canSplitAt(at)) return;
+  // Each do... below takes one undo snapshot, changes the model, then calls changed(). They return true if they did something.
+  function doSplit(at = st.shownT) {
+    if (!canSplitAt(at)) return false;
     emSnapshot(m);
     const c = emSplit(m, at);
     if (c < 0) throw new Error(`timeline: emSplit refused ${at} although canSplitAt allowed it`);
-    if (st.sel && st.sel.seg > c) st.sel = { ...st.sel, seg: st.sel.seg + 1 };
+    shiftSels(c, 1);
     changed("split");
+    return true;
   }
   function doJoin(c) {
-    if (c < 0 || c >= m.cuts.length) return;
+    if (c < 0 || c >= m.cuts.length) return false;
     emSnapshot(m);
     emJoin(m, c);
-    if (st.sel && st.sel.seg > c) st.sel = { ...st.sel, seg: st.sel.seg - 1 };
+    shiftSels(c, -1);
     changed("join");
+    return true;
   }
+  /** Cut out the selected segments, or restore them (see removePlan). */
   function doRemove() {
-    const s = st.sel;
-    if (!s) return;
-    const was = !!m.removed[s.seg];
-    if (!was && m.removed.filter((r) => !r).length <= 1) return;
+    const plan = removePlan();
+    if (!plan.ok) return false;
     emSnapshot(m);
-    if (!emSetRemoved(m, s.seg, !was)) throw new Error(`timeline: emSetRemoved(${s.seg}, ${!was}) refused`);
-    changed(was ? "restore" : "remove");
+    for (const i of plan.segs) {
+      if (!!m.removed[i] === !plan.restore) continue;
+      if (!emSetRemoved(m, i, !plan.restore)) throw new Error(`timeline: emSetRemoved(${i}, ${!plan.restore}) refused`);
+    }
+    changed(plan.restore ? "restore" : "remove");
+    return true;
   }
-  function doMuteSeg() {
-    const row = selRow();
-    if (!row) return;
-    const g = row.gains[st.sel.seg];
+  /** Put back the removed run `j` (a tlJoints entry): "Restore the part cut out here". */
+  function doRestoreRun(j) {
+    if (!j) return false;
     emSnapshot(m);
-    emSetGain(m, row.id, st.sel.seg, g > 0 ? 0 : 1);
-    changed("mute");
+    for (let i = j.first; i <= j.last; i++) emSetRemoved(m, i, false);
+    changed("restore");
+    return true;
+  }
+  /** Set the level of every selected audio piece: `gain(oldGain)` -> new gain. */
+  function setGains(what, gain) {
+    const list = selAudio().map((s) => ({ ...s, g: gain(s.r.gains[s.seg]) }));
+    if (!list.some((s) => Math.abs(s.g - s.r.gains[s.seg]) > 1e-9)) return false; // nothing would change: no empty undo step
+    emSnapshot(m);
+    for (const s of list) emSetGain(m, s.r.id, s.seg, s.g);
+    changed(what);
+    return true;
+  }
+  /** Mute the selected audio pieces, or unmute them all if the shown one (refAudio) is muted. */
+  function doMuteSeg() {
+    const ref = refAudio();
+    if (!ref) return false;
+    const on = ref.r.gains[ref.seg] > 0;
+    return setGains("mute", () => (on ? 0 : 1));
+  }
+  const doLevel = (g) => setGains("gain", () => Math.min(EM_MAX_GAIN, Math.max(0, +g || 0)));
+  const doNudge = (step) => setGains("gain", (g) => Math.min(EM_MAX_GAIN, Math.max(0, Math.round((g + step) * 100) / 100)));
+  /**
+   * Solo, per segment: only the selected rows are heard in it. A segment where one row is
+   * selected uses emSolo; several rows in one segment are handled the same way by hand.
+   * If every selected segment is soloed already, all of them are unsoloed.
+   */
+  function soloGroups() {
+    const groups = new Map();
+    for (const s of selAudio()) { if (!groups.has(s.seg)) groups.set(s.seg, []); groups.get(s.seg).push(s.r.id); }
+    // A segment where every row is selected cannot be soloed.
+    return [...groups].filter(([, ids]) => ids.length < m.audio.length);
+  }
+  const groupSolo = (seg, ids) => (ids.length === 1 ? emIsSolo(m, ids[0], seg) : m.audio.every((r) => (ids.includes(r.id) ? r.gains[seg] > 0 : r.gains[seg] === 0)));
+  const allSolo = () => { const g = soloGroups(); return g.length > 0 && g.every(([seg, ids]) => groupSolo(seg, ids)); };
+  function doSolo() {
+    const groups = soloGroups();
+    if (!groups.length || m.audio.length < 2) return false;
+    const undo = groups.every(([seg, ids]) => groupSolo(seg, ids));
+    emSnapshot(m);
+    for (const [seg, ids] of groups) {
+      if (groupSolo(seg, ids) !== undo) continue;
+      if (ids.length === 1) { emSolo(m, ids[0], seg); continue; }
+      for (const r of m.audio) {
+        if (!ids.includes(r.id)) emSetGain(m, r.id, seg, undo ? 1 : 0);
+        else if (!undo && r.gains[seg] === 0) emSetGain(m, r.id, seg, 1);
+      }
+    }
+    changed("gain");
+    return true;
+  }
+  /** Segments "Hide the video" acts on: those of the selected video pieces, or of every selected piece if no video piece is selected. */
+  function blankSegs() {
+    const vid = st.sels.filter((s) => s.row === "video");
+    return selSegs(vid.length ? vid : st.sels).filter((i) => i < m.blank.length);
+  }
+  /** Hide the picture of the selected segments, or show it again if the first one is hidden. */
+  function doBlank(force) {
+    const segs = blankSegs();
+    if (!segs.length) return false;
+    const on = force === undefined ? !m.blank[segs[0]] : !!force;
+    emSnapshot(m);
+    for (const i of segs) emSetBlank(m, i, on);
+    changed("blank");
+    return true;
   }
   function doUndo(redo) {
-    if (!(redo ? emRedo(m) : emUndo(m))) return;
+    if (!(redo ? emRedo(m) : emUndo(m))) return false;
     changed(redo ? "redo" : "undo");
+    return true;
+  }
+  function selectAll() {
+    const all = allPieces();
+    if (!all.length) return false;
+    setSels(all, st.sel && tlSelHas(all, st.sel) ? st.sel : all[0]);
+    return true;
+  }
+  function setHideCuts(on) {
+    on = !!on;
+    if (on === st.hideCuts || st.drag) return false;
+    const x = st.laneW ? X(st.shownT) : 0; // keep the playhead where it is on screen
+    st.hideCuts = on;
+    try { localStorage.setItem("glint.tl.hideCuts", on ? "1" : "0"); } catch {}
+    markAll();
+    relayout();
+    if (st.laneW && !st.fitted) setScroll(tlPad + toV(st.shownT) * st.pps - x);
+    closeMenu();
+    updateBar();
+    return true;
   }
 
   /* ----- colours ----- */
@@ -488,37 +783,51 @@ function mountTimeline(host, opts) {
     ctx.clearRect(0, 0, st.laneW, h);
   }
 
+  /** The ruler counts view time: source time, or with cut parts hidden, time in the finished clip. */
   function drawRuler(C) {
     const ctx = rulerCtx, w = st.laneW, h = tlRulerH;
     prep(ctx, h);
     ctx.fillStyle = C.panel;
     ctx.fillRect(0, 0, w, h);
-    const end = X(dur());
+    const end = XV(vdur());
     if (end < w) { ctx.fillStyle = C.bg; ctx.globalAlpha = 0.6; ctx.fillRect(Math.max(0, end), 0, w - Math.max(0, end), h); ctx.globalAlpha = 1; }
-    const x0 = X(0);
+    const x0 = XV(0);
     if (x0 > 0) { ctx.fillStyle = C.bg; ctx.globalAlpha = 0.6; ctx.fillRect(0, 0, x0, h); ctx.globalAlpha = 1; }
     const { major, minor } = tlPickStep(st.pps);
-    const t0 = Math.max(0, timeAtX(-80)), t1 = Math.min(dur(), timeAtX(w + 4));
+    const t0 = Math.max(0, vAtX(-80)), t1 = Math.min(vdur(), vAtX(w + 4));
     ctx.fillStyle = C.dim;
     if (minor < major) {
       for (let k = Math.ceil(t0 / minor - 1e-9); k * minor <= t1 + 1e-9; k++) {
         const sec = k * minor;
         if (Math.abs(Math.round(sec / major) * major - sec) < 1e-6) continue;
-        ctx.fillRect(Math.round(X(sec)) - 0.5, h - 6, 1, 6);
+        ctx.fillRect(Math.round(XV(sec)) - 0.5, h - 6, 1, 6);
       }
     }
     ctx.font = `500 11px ${C.sans}`;
     ctx.textBaseline = "middle";
     for (let k = Math.ceil(t0 / major - 1e-9); k * major <= t1 + 1e-9; k++) {
       const sec = Math.round(k * major * 1000) / 1000;
-      const x = Math.round(X(sec)) - 0.5;
+      const x = Math.round(XV(sec)) - 0.5;
       ctx.fillStyle = C.muted;
       ctx.fillRect(x, h - 11, 1, 11);
       ctx.fillText(tlFmtTick(sec, major), x + 4, 10);
     }
+    // Joints (cut parts hidden): a small notch at the bottom of the ruler.
+    ctx.fillStyle = C.warn || C.accent;
+    for (const j of st.hideCuts ? joints() : []) {
+      const x = X(j.start);
+      if (x < -6 || x > w + 6) continue;
+      ctx.beginPath();
+      ctx.moveTo(x - 4, h - 1);
+      ctx.lineTo(x + 4, h - 1);
+      ctx.lineTo(x, h - 7);
+      ctx.fill();
+    }
     ctx.fillStyle = C.line;
     ctx.fillRect(0, h - 1, w, 1);
   }
+  /** The removed runs (tlJoints) of the model as it is now. */
+  const joints = () => tlJoints(m.removed, [0, ...m.cuts, dur()]);
 
   /** Screen range of [a, b] clipped near the lane, or null when off screen. */
   function span(a, b, margin = 12) {
@@ -544,30 +853,82 @@ function mountTimeline(host, opts) {
       ctx.fillStyle = hatchFor(ctx, C);
       ctx.fillRect(sp[0], y, sp[1] - sp[0], bh);
     }
-    // Segment borders inside the bar.
+    // Segment borders inside the bar. With cut parts hidden, a cut next to a removed part is a joint instead.
     ctx.fillStyle = C.bg;
-    for (const c of m.cuts) {
-      if (c <= a || c >= b) continue;
+    m.cuts.forEach((c, i) => {
+      if (c <= a || c >= b) return;
+      if (st.hideCuts && (m.removed[i] || m.removed[i + 1])) return;
       const x = X(c);
       if (x > -2 && x < st.laneW + 2) ctx.fillRect(Math.round(x) - 1, y, 2, bh);
+    });
+    // Joints: where something was cut out, a thin line between the neighbours (the DOM .tl-joint on top carries the tooltip).
+    if (st.hideCuts) {
+      ctx.fillStyle = C.warn || C.accent;
+      for (const j of joints()) { // the caller has clipped to the bar
+        const x = X(j.start);
+        if (x > -2 && x < st.laneW + 2) ctx.fillRect(Math.round(x) - 1, y, 2, bh);
+      }
     }
     return segs;
   }
+  /** Highlight every selected piece of row `rowId` (bar [a, b] in source time). */
   function selOutline(ctx, C, a, b, y, bh, rowId) {
-    if (!st.sel || st.sel.row !== rowId) return;
-    const s = emSegments(m)[st.sel.seg];
-    if (!s) return;
-    const sp = span(Math.max(a, s.start), Math.min(b, s.end), 4);
-    if (!sp || sp[1] <= sp[0]) return;
-    ctx.globalAlpha = 0.12;
-    ctx.fillStyle = C["accent-2"];
-    rr(ctx, sp[0], y, sp[1] - sp[0], bh, 7);
-    ctx.fill();
-    ctx.globalAlpha = 1;
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = C["accent-2"];
-    rr(ctx, sp[0] + 1, y + 1, sp[1] - sp[0] - 2, bh - 2, 7);
-    ctx.stroke();
+    if (!st.sels.length) return;
+    const segs = emSegments(m);
+    for (const sel of st.sels) {
+      if (sel.row !== rowId) continue;
+      const s = segs[sel.seg];
+      if (!s) continue;
+      const sp = span(Math.max(a, s.start), Math.min(b, s.end), 4);
+      if (!sp || sp[1] - sp[0] < 1) continue;
+      ctx.globalAlpha = 0.12;
+      ctx.fillStyle = C["accent-2"];
+      rr(ctx, sp[0], y, sp[1] - sp[0], bh, 7);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = C["accent-2"];
+      rr(ctx, sp[0] + 1, y + 1, sp[1] - sp[0] - 2, bh - 2, 7);
+      ctx.stroke();
+    }
+  }
+  /** Video pieces with their picture hidden: dark, with a crossed-out eye and "Video hidden" when it fits. Graded pieces: a dot top right. */
+  function pictureMarks(ctx, C, y, bh) {
+    const segs = emSegments(m);
+    ctx.font = `600 11px ${C.sans}`;
+    ctx.textBaseline = "middle";
+    for (const s of segs) {
+      if (!segShown(s.i)) continue;
+      const sp = span(s.start, s.end, 0);
+      if (!sp || sp[1] - sp[0] < 2) continue;
+      const w = sp[1] - sp[0];
+      if (m.blank?.[s.i]) {
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = "#000";
+        ctx.fillRect(sp[0], y, w, bh);
+        ctx.globalAlpha = 1;
+        const ix = Math.max(sp[0], 0) + 8, iy = y + bh - 21;
+        if (Math.min(sp[1], st.laneW) - ix >= 18) {
+          icon(ctx, "eyeOff", ix, iy, 16, C.muted);
+          const room = Math.min(sp[1], st.laneW) - ix - 30;
+          const txt = room > 30 ? tlEllipsize(ctx, t("Video hidden"), room) : "";
+          if (txt) { ctx.fillStyle = C.muted; ctx.fillText(txt, ix + 22, iy + 8.5); }
+        }
+      }
+      const col = m.colors?.[s.i];
+      if (col && !emSameColor(col) && w >= 16) {
+        const cx = Math.min(sp[1], st.laneW) - 9, cy = y + 9;
+        if (cx - 5 < sp[0]) continue;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 5.5, 0, Math.PI * 2);
+        ctx.fillStyle = C.bg;
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = C["accent-2"] || C.accent;
+        ctx.fill();
+      }
+    }
   }
   /** Icon + name in a pill at the visible left end of a bar. */
   function label(ctx, C, iconName, text, bx0, bx1, y) {
@@ -612,7 +973,7 @@ function mountTimeline(host, opts) {
       for (let k = Math.floor((from + st.scrollX - tlPad) / tw); ; k++) {
         const sx = tlPad + k * tw - st.scrollX;
         if (sx >= to) break;
-        const mid = ((k + 0.5) * tw) / st.pps;
+        const mid = toS(((k + 0.5) * tw) / st.pps);
         const img = nearestThumb(Math.min(n - 1, Math.max(0, Math.floor((mid / dur()) * n))));
         if (!img) break;
         const iw = img.naturalWidth, ih = img.naturalHeight;
@@ -625,6 +986,7 @@ function mountTimeline(host, opts) {
         ctx.globalAlpha = 1;
       }
     }
+    pictureMarks(ctx, C, y, bh);
     overlays(ctx, C, 0, dur(), y, bh, "video");
     ctx.restore();
     ctx.lineWidth = 1;
@@ -683,7 +1045,9 @@ function mountTimeline(host, opts) {
       for (let k = Math.floor((from + st.scrollX) / tlBarStep); ; k++) {
         const x = k * tlBarStep - st.scrollX;
         if (x >= to) break;
-        const s0 = timeAtX(x), s1 = timeAtX(x + tlBarStep), sc = (s0 + s1) / 2;
+        const s0 = timeAtX(x);
+        // A bar across a joint (cut parts hidden) must not take the peaks of the part cut out in between.
+        const s1 = Math.min(timeAtX(x + tlBarStep), s0 + tlBarStep / st.pps), sc = (s0 + s1) / 2;
         if (sc < a || sc >= b) continue;
         while (si < segs.length - 1 && sc >= segs[si].end) si++;
         const g = row.muted ? 0 : (row.gains[si] ?? 1) * row.volume;
@@ -759,10 +1123,29 @@ function mountTimeline(host, opts) {
     }
     for (let i = 0; i < n; i++) {
       const c = el.cuts.children[i], x = X(m.cuts[i]);
-      const vis = x > -8 && x < st.laneW + 8;
+      // With cut parts hidden, a cut next to a removed part sits on a joint: the joint is shown instead (and cannot be dragged).
+      const vis = x > -8 && x < st.laneW + 8 && !(st.hideCuts && (m.removed[i] || m.removed[i + 1]));
       c.style.transform = `translateX(${vis ? x : -100}px)`;
       c.classList.toggle("drag", st.drag?.type === "cut" && st.drag.moved && st.drag.c === i);
     }
+    placeJoints();
+  }
+  /** One .tl-joint per removed run while cut parts are hidden: a hover target with "3.2 s cut out here", and right-click to restore. */
+  function placeJoints() {
+    const list = st.hideCuts ? joints() : [];
+    st.joints = list;
+    const sig = list.map((j) => `${j.first}-${j.last}-${tlFmtLen(j.end - j.start)}`).join("|");
+    if (sig !== st.jointSig) {
+      st.jointSig = sig;
+      el.joints.innerHTML = list.map((j, i) => {
+        const title = esc(t("{sec} s cut out here", { sec: tlFmtLen(j.end - j.start) }));
+        return `<div class="tl-joint" data-tl-joint="${i}" title="${title}" style="top:${tlRulerH}px"><b></b></div>`;
+      }).join("");
+    }
+    list.forEach((j, i) => {
+      const x = X(j.start), vis = x > -8 && x < st.laneW + 8;
+      el.joints.children[i].style.transform = `translateX(${vis ? x : -100}px)`;
+    });
   }
 
   function draw() {
@@ -796,14 +1179,17 @@ function mountTimeline(host, opts) {
     if (x >= 0 && x <= st.laneW - 4) return;
     const xp = X(prev), wasIn = xp >= 0 && xp <= st.laneW - 4;
     const jump = Math.abs(now - prev) > 0.5;
-    if (wasIn && !jump && x > st.laneW - 4) setScroll(tlPad + now * st.pps - 24); // ran off the right edge: next page
-    else if (wasIn || jump) setScroll(tlPad + now * st.pps - st.laneW / 3);
+    const vx = tlPad + toV(now) * st.pps;
+    if (wasIn && !jump && x > st.laneW - 4) setScroll(vx - 24); // ran off the right edge: next page
+    else if (wasIn || jump) setScroll(vx - st.laneW / 3);
   }
 
   function frame() {
     st.raf = requestAnimationFrame(frame);
     if (window.devicePixelRatio !== st.dpr) { st.dpr = window.devicePixelRatio || 1; st.needSize = true; }
     if (st.needSize && st.laneW) applySize();
+    // The editor changed what is cut out without calling refresh(): rebuild the view mapping.
+    if (st.hideCuts && st.map && st.map.sig !== mapSig()) { markAll(); relayout(); }
     const real = +opts.getTime() || 0;
     let now = real;
     if (st.drag?.type === "seek" && st.drag.at !== undefined) now = st.drag.at;
@@ -828,26 +1214,55 @@ function mountTimeline(host, opts) {
     return c;
   }
   const snapTol = () => tlSnapPx / st.pps;
+  /** Snap source time `sec` to a candidate within tlSnapPx on screen (distances in view time, so it also works with cut parts hidden). */
+  const snapAt = (sec, cands) => tlSnapV(sec, cands, snapTol(), toV);
   function showTip(sec, text) {
     el.tip.hidden = false;
-    el.tip.textContent = text || tlFmtPrecise(sec);
+    el.tip.textContent = text || tlFmtPrecise(toV(sec)); // in ruler time (finished-clip time while cut parts are hidden)
     el.tip.style.transform = `translateX(${Math.min(st.laneW - 30, Math.max(30, X(sec)))}px) translateX(-50%)`;
+  }
+  /** Which part of file row `row`'s clip is under lane x `x` (see tlSpanHit), measured on screen. */
+  const fileHit = (row, x) => tlSpanHit(toV(row.offset), toV(row.offset + row.length), vAtX(x), st.pps);
+  /** The lane under client y, or null. */
+  const laneAt = (clientY) => st.lanes.find((L) => { const r = L.el.getBoundingClientRect(); return clientY >= r.top && clientY < r.bottom; }) || null;
+  /** The piece under lane x `x` on lane `id`: { row, seg }, or null (outside the clip, on a file row off its clip). */
+  function pieceAtX(id, x) {
+    const v = vAtX(x);
+    if (!(v >= 0 && v <= vdur())) return null;
+    const seg = emSegmentAt(m, toS(Math.min(v, vdur() - 1e-6)));
+    if (!segShown(seg)) return null;
+    if (id !== "video") {
+      const row = emRow(m, id);
+      if (!row || (row.kind === "file" && !fileHit(row, x))) return null;
+    }
+    return { row: id, seg };
+  }
+  /** Pieces of lane `id` in content x (lane x + scrollX), for the rubber band: [{ seg, x0, x1 }]. */
+  function lanePieces(id) {
+    const row = id === "video" ? null : emRow(m, id);
+    if (id !== "video" && !row) return [];
+    const file = row?.kind === "file";
+    const a = file ? row.offset : 0, b = file ? row.offset + row.length : dur();
+    const cx = (sec) => tlPad + toV(sec) * st.pps;
+    return emSegments(m).filter((s) => segShown(s.i)).map((s) => ({ seg: s.i, x0: cx(Math.max(a, s.start)), x1: cx(Math.min(b, s.end)) })).filter((p) => p.x1 > p.x0);
   }
 
   function onDown(e) {
     if (e.button !== 0 || st.drag) return;
+    closeMenu();
     const rect = el.lanes.getBoundingClientRect();
     const x = e.clientX - rect.left, at = timeAtX(x);
-    const d = { x0: e.clientX, rect, moved: false, snapped: false, lastE: e };
+    const d = { x0: e.clientX, y0: e.clientY, sx0: st.scrollX, rect, moved: false, snapped: false, lastE: e, ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey };
     const cut = e.target.closest("[data-tl-cut]");
-    const lane = e.target.closest("[data-tl-lane]");
+    // A joint marker is only a hover / right-click target: a press on it acts on the lane under it.
+    const lane = e.target.closest("[data-tl-lane]") || (e.target.closest("[data-tl-joint]") ? laneAt(e.clientY)?.el : null);
     if (cut) Object.assign(d, { type: "cut", c: +cut.dataset.tlCut });
     else if (e.target.closest("[data-tl-ph], [data-tl-ruler]")) Object.assign(d, { type: "seek", moved: true });
     else if (lane) {
       const id = lane.dataset.tlLane, row = id === "video" ? null : emRow(m, id);
-      const hit = row?.kind === "file" ? tlFileHit(row, at, st.pps) : null;
-      const segAt = at >= 0 && at <= dur() ? emSegmentAt(m, Math.min(at, dur() - 1e-6)) : -1;
-      const sel = row?.kind === "file" ? (hit ? { row: id, seg: segAt } : null) : segAt >= 0 ? { row: id, seg: segAt } : null;
+      const hit = row?.kind === "file" ? fileHit(row, x) : null;
+      const sel = pieceAtX(id, x);
+      // On a file row, a press on the clip moves / trims it; anywhere else it is a click, or a rubber band once it moves.
       if (hit) Object.assign(d, { type: hit, rowId: id, row0: { offset: row.offset, trimStart: row.trimStart, length: row.length }, grab: at, sel });
       else Object.assign(d, { type: "click", sel });
     } else return;
@@ -864,16 +1279,19 @@ function mountTimeline(host, opts) {
     if (!d) return;
     d.lastE = e;
     if (!d.moved) {
-      if (Math.abs(e.clientX - d.x0) < tlDragPx) return;
+      // A click may turn into a rubber band in any direction; the other drags are sideways.
+      const dist = d.type === "click" ? Math.max(Math.abs(e.clientX - d.x0), Math.abs(e.clientY - d.y0)) : Math.abs(e.clientX - d.x0);
+      if (dist < tlDragPx) return;
       d.moved = true;
-      if (d.type === "click") return;
+      if (d.type === "click") startBand(d);
     }
-    if (d.type !== "click") apply(d, e);
+    apply(d, e);
   }
   /** One step of a drag at mouse event `e`. */
   function apply(d, e) {
+    if (d.type === "band") return moveBand(d, e);
     const x = e.clientX - d.rect.left, raw = timeAtX(x), free = e.altKey; // Alt: no snapping
-    const snap = (sec, skip) => (free ? sec : tlSnap(sec, snapCands(skip), snapTol()).at);
+    const snap = (sec, skip) => (free ? sec : snapAt(sec, snapCands(skip)).at);
     if (d.type === "seek") {
       const at = Math.min(dur(), Math.max(0, snap(raw, { playhead: true })));
       d.at = at;
@@ -897,8 +1315,8 @@ function mountTimeline(host, opts) {
       const len = row.length, hi = Math.max(0, dur() - len);
       let o = Math.min(hi, Math.max(0, r0.offset + raw - d.grab));
       if (!free) {
-        const c = snapCands({ row: d.rowId }), tol = snapTol();
-        const s1 = tlSnap(o, c, tol), s2 = tlSnap(o + len, c, tol);
+        const c = snapCands({ row: d.rowId });
+        const s1 = snapAt(o, c), s2 = snapAt(o + len, c);
         if (s1.hit || s2.hit) o = s1.dist <= s2.dist ? s1.at : s2.at - len;
         o = Math.min(hi, Math.max(0, o));
       }
@@ -913,6 +1331,31 @@ function mountTimeline(host, opts) {
     }
     changed("file", false);
   }
+
+  /* Rubber band: coordinates are content x (lane x + scrollX, so auto-scroll extends it) and y inside .tl-lanes. */
+  function startBand(d) {
+    d.type = "band";
+    host.dataset.tlDrag = "band";
+    d.bx0 = d.x0 - d.rect.left + d.sx0;
+    d.by0 = d.y0 - d.rect.top;
+    d.base = d.ctrl ? st.sels.map((s) => ({ ...s })) : []; // Ctrl: add to the selection
+  }
+  function moveBand(d, e) {
+    const lr = el.lanes.getBoundingClientRect();
+    const bx1 = e.clientX - lr.left + st.scrollX, by1 = e.clientY - lr.top;
+    const rowsTop = el.rows.offsetTop, rowsBot = rowsTop + el.rows.offsetHeight;
+    const left = Math.max(0, Math.min(d.bx0, bx1) - st.scrollX), right = Math.min(st.laneW, Math.max(d.bx0, bx1) - st.scrollX);
+    const top = Math.max(rowsTop, Math.min(d.by0, by1)), bot = Math.min(rowsBot, Math.max(d.by0, by1));
+    el.band.hidden = false;
+    el.band.style.transform = `translate(${left}px, ${top}px)`;
+    el.band.style.width = `${Math.max(0, right - left)}px`;
+    el.band.style.height = `${Math.max(0, bot - top)}px`;
+    const rows = st.lanes.map((L) => ({ id: L.id, y0: L.el.offsetTop, y1: L.el.offsetTop + L.h, pieces: lanePieces(L.id) }));
+    const hits = tlBandHits(rows, { x0: d.bx0, x1: bx1, y0: d.by0, y1: by1 });
+    const prim = hits.find((s) => sameSel(s, d.sel)) || hits[0] || (d.ctrl ? st.sel : null);
+    setSels(tlSelMerge(d.base, hits), prim);
+  }
+
   function edgeScroll() {
     const d = st.drag, e = d.lastE;
     const x = e.clientX - d.rect.left, zone = 28;
@@ -929,9 +1372,23 @@ function mountTimeline(host, opts) {
     endDrag();
     if (!d) return;
     if (d.type === "seek" && d.at !== undefined) st.hold = { at: d.at, until: performance.now() + 500 };
-    if (!d.moved && d.sel !== undefined) setSel(d.sel);
+    if (!d.moved && d.sel !== undefined) clickSel(d);
     // A drag that ends outside the timeline must not count as a click on the viewer's backdrop.
     if (d.moved || !host.contains(e.target)) swallowClick();
+  }
+  /** A click on a piece (or on nothing): select it; Ctrl adds / removes it; Shift selects the rectangle from the primary to it. */
+  function clickSel(d) {
+    const s = d.sel;
+    if (d.shift && s && st.sel) {
+      const rect = tlSelRect(rowOrder(), st.sel, s, pieceExists);
+      return setSels(d.ctrl ? tlSelMerge(st.sels, rect) : rect, st.sel);
+    }
+    if (d.ctrl) {
+      if (!s) return;
+      const had = tlSelHas(st.sels, s);
+      return setSels(tlSelToggle(st.sels, s), had ? (sameSel(st.sel, s) ? null : st.sel) : s);
+    }
+    setSel(s);
   }
   function endDrag() {
     window.removeEventListener("mousemove", onMove);
@@ -940,6 +1397,7 @@ function mountTimeline(host, opts) {
     host.classList.remove("tl-dragging");
     delete host.dataset.tlDrag;
     el.tip.hidden = true;
+    el.band.hidden = true;
     markAll();
   }
   function swallow(e) { e.stopPropagation(); e.preventDefault(); unswallow(); }
@@ -957,7 +1415,7 @@ function mountTimeline(host, opts) {
     if (lane && lane.dataset.tlKind === "file") {
       const row = emRow(m, lane.dataset.tlLane);
       const rect = el.lanes.getBoundingClientRect();
-      const hit = row ? tlFileHit(row, timeAtX(e.clientX - rect.left), st.pps) : null;
+      const hit = row ? fileHit(row, e.clientX - rect.left) : null;
       cur = hit === "move" ? "grab" : hit ? "resize" : "";
     }
     if (el.lanes.dataset.tlCur !== cur) el.lanes.dataset.tlCur = cur;
@@ -982,6 +1440,133 @@ function mountTimeline(host, opts) {
     if (cut) doJoin(+cut.dataset.tlCut);
   }
 
+  /* ----- right-click menu ----- */
+  // Looks like the app's menu (style.css .menu.ctx) but is our own element, appended to <body>
+  // (or to the fullscreen element if the timeline is inside it). Items: <button data-tl-m="act" data-tl-arg="…">.
+  function onCtx(e) {
+    e.preventDefault();
+    e.stopPropagation(); // no other menu (app.js listens on the document)
+    if (st.drag) return;
+    const rect = el.lanes.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const cutEl = e.target.closest("[data-tl-cut]"), jointEl = e.target.closest("[data-tl-joint]");
+    const c = { at: timeAtX(x), cut: cutEl ? +cutEl.dataset.tlCut : -1, joint: jointEl ? st.joints[+jointEl.dataset.tlJoint] || null : null };
+    const lane = !cutEl && !jointEl ? e.target.closest("[data-tl-lane]") : null;
+    if (lane) {
+      const p = pieceAtX(lane.dataset.tlLane, x);
+      if (p && !tlSelHas(st.sels, p)) setSel(p); // the piece under the pointer becomes the selection
+    }
+    openMenu(menuHtml(c), e.clientX, e.clientY, (act, arg) => menuAct(act, arg, c));
+  }
+  function menuHtml(c) {
+    const item = (act, path, label, { arg = "", on = null } = {}) =>
+      `<button type="button" role="${on === null ? "menuitem" : "menuitemcheckbox"}"${on === null ? "" : ` aria-checked="${on}"`} data-tl-m="${act}" data-tl-arg="${esc(String(arg))}" class="${on ? "on" : ""}">${tlSvg(path)}<span>${esc(label)}</span></button>`;
+    const out = [], top = [];
+    const n = st.sels.length;
+    if (n > 1) out.push(`<div class="menu-head">${esc(t("{n} selected", { n }))}</div>`);
+    if (c.cut >= 0 && c.cut < m.cuts.length) top.push(item("join", tlPaths.join, t("Remove this cut point"), { arg: c.cut }));
+    if (c.joint) top.push(item("restore-run", tlPaths.restore, t("Restore the part cut out here")));
+    if (canSplitAt(c.at)) top.push(item("split-at", tlPaths.split, t("Split here"), { arg: c.at }));
+    const plan = removePlan();
+    if (plan.ok) top.push(item("remove", plan.restore ? tlPaths.restore : tlPaths.trash, plan.restore ? t("Restore") : t("Cut out")));
+    const aud = selAudio();
+    if (aud.length) {
+      const ref = refAudio(), g = ref.r.gains[ref.seg], many = aud.length > 1;
+      const label = g === 0 ? (many ? t("Unmute these pieces") : t("Unmute this piece")) : many ? t("Mute these pieces") : t("Mute this piece");
+      top.push(item("mute", g === 0 ? tlPaths.vol : tlPaths.muted, label));
+      const chips = [0.25, 0.5, 1, 1.5, 2].map((v) => {
+        const on = Math.abs(g - v) < 0.005;
+        return `<button type="button" role="menuitemradio" aria-checked="${on}" data-tl-m="level" data-tl-arg="${v}" class="${on ? "on" : ""}">${esc(t("{pct}%", { pct: Math.round(v * 100) }))}</button>`;
+      }).join("");
+      top.push(`<div class="tl-mlevel" role="group" aria-label="${esc(t("Level"))}">${tlSvg(tlPaths.level)}<span>${esc(t("Level"))}</span><div class="tl-mchips">${chips}</div></div>`);
+      if (m.audio.length > 1 && soloGroups().length) top.push(item("solo", tlPaths.solo, allSolo() ? t("Unsolo") : many ? t("Solo these pieces") : t("Solo this piece")));
+    }
+    if (st.sels.some((s) => s.row === "video")) {
+      const segs = blankSegs(), hidden = segs.length > 0 && !!m.blank[segs[0]];
+      top.push(item("blank", hidden ? tlPaths.eye : tlPaths.eyeOff, hidden ? t("Show the video here") : t("Hide the video here")));
+    }
+    out.push(...top);
+    if (top.length) out.push("<hr>");
+    out.push(item("hide-cuts", tlPaths.hideCuts, t("Hide cut parts"), { on: st.hideCuts }));
+    out.push(item("select-all", tlPaths.selAll, t("Select all pieces")), item("fit", tlPaths.fit, t("Fit the whole clip")));
+    if (typeof opts.onCommand === "function") out.push("<hr>", item("shortcuts", tlPaths.keys, t("Shortcuts…")), item("fullscreen", tlPaths.full, t("Fullscreen")));
+    return out.join("");
+  }
+  function menuAct(act, arg, c) {
+    switch (act) {
+      case "join": return doJoin(+arg);
+      case "restore-run": return doRestoreRun(c.joint);
+      case "split-at": return doSplit(+arg);
+      case "remove": return doRemove();
+      case "mute": return doMuteSeg();
+      case "level": return doLevel(+arg);
+      case "solo": return doSolo();
+      case "blank": return doBlank();
+      case "hide-cuts": return setHideCuts(!st.hideCuts);
+      case "select-all": return selectAll();
+      case "fit": fit(); return true;
+      case "shortcuts": case "fullscreen": opts.onCommand?.(act); return true;
+    }
+    return false;
+  }
+  function openMenu(html, x, y, act) {
+    closeMenu();
+    const box = document.createElement("div");
+    box.className = "menu ctx tl-menu";
+    box.setAttribute("role", "menu");
+    box.innerHTML = html;
+    const fs = document.fullscreenElement;
+    (fs && fs.contains(host) ? fs : document.body).appendChild(box);
+    // Kept inside the window.
+    const r = box.getBoundingClientRect();
+    box.style.left = `${Math.max(8, Math.min(x, window.innerWidth - r.width - 8))}px`;
+    box.style.top = `${Math.max(8, Math.min(y, window.innerHeight - r.height - 8))}px`;
+    const items = () => [...box.querySelectorAll("button:not(:disabled)")];
+    const mn = {
+      el: box,
+      onDown: (e) => { if (!box.contains(e.target)) closeMenu(); },
+      onScroll: (e) => { if (!box.contains(e.target)) closeMenu(); },
+      // Capture: Esc closes the menu and goes no further (the editor would leave edit mode).
+      onKey: (e) => { if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); closeMenu(); } },
+    };
+    box.addEventListener("keydown", (e) => {
+      const list = items(), i = list.indexOf(document.activeElement);
+      let next = -1;
+      if (e.key === "ArrowDown" || e.key === "ArrowRight" || (e.key === "Tab" && !e.shiftKey)) next = i < 0 ? 0 : (i + 1) % list.length;
+      else if (e.key === "ArrowUp" || e.key === "ArrowLeft" || (e.key === "Tab" && e.shiftKey)) next = i < 0 ? list.length - 1 : (i - 1 + list.length) % list.length;
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = list.length - 1;
+      if (next >= 0) { e.preventDefault(); list[next]?.focus(); }
+      e.stopPropagation(); // the editor's shortcuts must not run while the menu has the keyboard (Enter / Space click the focused item)
+    });
+    box.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-tl-m]");
+      if (!b || b.disabled) return;
+      const a = b.dataset.tlM, arg = b.dataset.tlArg;
+      closeMenu();
+      act(a, arg);
+    });
+    box.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); });
+    window.addEventListener("mousedown", mn.onDown, true);
+    window.addEventListener("keydown", mn.onKey, true);
+    window.addEventListener("scroll", mn.onScroll, true);
+    window.addEventListener("blur", closeMenu);
+    window.addEventListener("resize", closeMenu);
+    st.menu = mn;
+    items()[0]?.focus({ preventScroll: true });
+  }
+  function closeMenu() {
+    const mn = st.menu;
+    if (!mn) return;
+    st.menu = null;
+    window.removeEventListener("mousedown", mn.onDown, true);
+    window.removeEventListener("keydown", mn.onKey, true);
+    window.removeEventListener("scroll", mn.onScroll, true);
+    window.removeEventListener("blur", closeMenu);
+    window.removeEventListener("resize", closeMenu);
+    mn.el.remove();
+  }
+
   /* ----- toolbar and header events ----- */
   function onClick(e) {
     const b = e.target.closest("[data-tl-act]");
@@ -996,6 +1581,7 @@ function mountTimeline(host, opts) {
       case "zoom-out": zoom(0.8); break;
       case "zoom-in": zoom(1.25); break;
       case "fit": fit(); break;
+      case "hide-cuts": setHideCuts(!st.hideCuts); break;
       case "add": opts.onAddAudio?.(); break;
       case "row-mute": {
         const row = emRow(m, id);
@@ -1008,8 +1594,7 @@ function mountTimeline(host, opts) {
       case "row-remove":
         emSnapshot(m);
         if (!emRemoveRow(m, id)) throw new Error(`timeline: emRemoveRow refused ${id}`);
-        if (st.sel?.row === id) setSel(null);
-        changed("file");
+        changed("file"); // drops the row's pieces from the selection
         break;
     }
   }
@@ -1017,13 +1602,12 @@ function mountTimeline(host, opts) {
     const r = e.target;
     const isLevel = "tlLevel" in r.dataset, volId = r.dataset.tlVol;
     if (!isLevel && volId === undefined) return;
+    if (isLevel && !selAudio().length) return;
     if (st.gest?.el !== r) { emSnapshot(m); st.gest = { el: r }; } // one snapshot per slider gesture
     const v = +r.value / 100;
     if (isLevel) {
-      const row = selRow();
-      if (!row) return;
-      emSetGain(m, row.id, st.sel.seg, v);
-      st.dirty.add(row.id);
+      // Every selected audio piece gets the level.
+      for (const s of selAudio()) { emSetGain(m, s.r.id, s.seg, v); st.dirty.add(s.r.id); }
       el.levelPct.textContent = t("{pct}%", { pct: Math.round(v * 100) });
       opts.onChange?.("gain");
       updateBar();
@@ -1071,6 +1655,7 @@ function mountTimeline(host, opts) {
   el.lanes.addEventListener("mousemove", onHover);
   el.lanes.addEventListener("wheel", onWheel, { passive: false });
   el.lanes.addEventListener("dblclick", onDbl);
+  el.lanes.addEventListener("contextmenu", onCtx);
   el.scroll.addEventListener("scroll", onScroll);
   host.addEventListener("click", onClick);
   host.addEventListener("input", onInput);
@@ -1085,10 +1670,10 @@ function mountTimeline(host, opts) {
   return {
     refresh() {
       if (st.dead) return;
+      markAll(); // first: the view mapping must follow the model before anything measures with it
       syncRows();
       validateSel();
-      setPps(st.pps);
-      setScroll(st.scrollX);
+      if (st.hideCuts) relayout(); else { setPps(st.pps); setScroll(st.scrollX); }
       markAll();
       updateBar();
     },
@@ -1116,13 +1701,37 @@ function mountTimeline(host, opts) {
       st.dirty.add(rowId);
     },
     selection: () => (st.sel ? { ...st.sel } : null),
+    selections: () => st.sels.map((s) => ({ ...s })),
     select(sel) { if (!st.dead) setSel(sel); },
     zoom(factor) { if (!st.dead) zoom(factor); },
     fit() { if (!st.dead) fit(); },
+    hideCuts: () => st.hideCuts,
+    setHideCuts(on) { if (!st.dead) setHideCuts(on); },
+    /** Run an edit command on the selection (the editor's keys). True if it did something. */
+    run(cmd, arg) {
+      if (st.dead) return false;
+      if (st.drag && cmd !== "clearSel") return false; // not in the middle of a drag: indexes would move under it
+      switch (cmd) {
+        case "split": return doSplit(+opts.getTime() || 0);
+        case "remove": return doRemove();
+        case "mute": return doMuteSeg();
+        case "louder": return doNudge(0.1);
+        case "quieter": return doNudge(-0.1);
+        case "level": return arg !== null && arg !== "" && Number.isFinite(+arg) ? doLevel(+arg) : false;
+        case "solo": return doSolo();
+        case "blank": return doBlank();
+        case "selectAll": return selectAll();
+        case "clearSel": { const had = st.sels.length > 0; setSels([], null); return had; }
+        case "hideCuts": return setHideCuts(!st.hideCuts);
+      }
+      console.warn("Glint timeline: run() does not know the command", cmd);
+      return false;
+    },
     destroy() {
       if (st.dead) return;
       st.dead = true;
       cancelAnimationFrame(st.raf);
+      closeMenu();
       endDrag();
       unswallow();
       ro.disconnect();
@@ -1131,6 +1740,7 @@ function mountTimeline(host, opts) {
       el.lanes.removeEventListener("mousemove", onHover);
       el.lanes.removeEventListener("wheel", onWheel);
       el.lanes.removeEventListener("dblclick", onDbl);
+      el.lanes.removeEventListener("contextmenu", onCtx);
       el.scroll.removeEventListener("scroll", onScroll);
       host.removeEventListener("click", onClick);
       host.removeEventListener("input", onInput);
@@ -1142,4 +1752,9 @@ function mountTimeline(host, opts) {
       host.classList.remove("tl", "tl-dragging");
     },
   };
+}
+
+// Lets the pure helpers be tested under Node; ignored in the app.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { tlPickStep, tlFmtTick, tlFmtPrecise, tlSnap, tlSnapV, tlFileHit, tlSpanHit, tlTrimLeft, tlPeakMax, tlHue, tlViewMap, tlSrcToView, tlViewToSrc, tlJoints, tlSelKey, tlSelHas, tlSelMerge, tlSelToggle, tlSelRect, tlBandHits, tlSelShift, tlFmtLen };
 }

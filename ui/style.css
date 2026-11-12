@@ -45,8 +45,19 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 }
 
 /* ---------- top bar ---------- */
-.topbar { grid-area: top; display: flex; align-items: center; justify-content: space-between; padding: 0 0 0 20px; border-bottom: 1px solid var(--line); }
+.topbar { grid-area: top; display: flex; align-items: center; justify-content: space-between; padding: 0 0 0 12px; border-bottom: 1px solid var(--line); }
+.top-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.side-toggle { width: 36px; height: 36px; flex: none; display: grid; place-items: center; background: none; border: 1px solid transparent; border-radius: var(--radius); color: var(--muted); cursor: pointer; }
+.side-toggle:hover { background: var(--raised-2); color: var(--text); }
+.top-logo { display: grid; place-items: center; flex: none; margin: 0 4px 0 2px; }
+.top-logo .logo { width: 26px; height: 26px; }
 .search { display: flex; align-items: center; gap: 10px; width: 376px; height: 36px; padding: 0 10px 0 12px; background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--radius); color: var(--muted); }
+/* In the top bar the search box is only its icon until it is clicked or holds text (.open). */
+.topbar .search { flex: none; overflow: hidden; transition: width .16s ease-out; }
+.topbar .search:not(.open) { width: 36px; padding: 0; gap: 0; justify-content: center; cursor: pointer; }
+.topbar .search:not(.open):hover { color: var(--text); border-color: color-mix(in srgb, var(--line-2) 72%, var(--text)); }
+.topbar .search:not(.open) input { flex: none; width: 0; opacity: 0; }
+.topbar .search:not(.open) kbd { display: none; }
 .search:focus-within { border-color: var(--accent); }
 .search input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; color: var(--text); }
 .search input::placeholder { color: var(--muted); }
@@ -69,12 +80,9 @@ kbd { font: 600 11px var(--sans); padding: 2px 7px; border-radius: 5px; backgrou
 .btn svg { width: 16px; height: 16px; }
 
 /* ---------- sidebar ---------- */
-.side { grid-area: side; display: flex; flex-direction: column; padding: 22px 12px 14px; border-right: 1px solid var(--line); overflow-y: auto; }
-.brand { display: flex; align-items: center; gap: 14px; padding: 0 12px 22px; }
+.side { grid-area: side; display: flex; flex-direction: column; padding: 10px 12px 14px; border-right: 1px solid var(--line); overflow-y: auto; overflow-x: hidden; }
 .logo { width: 38px; height: 38px; fill: var(--accent); stroke: none; }
 .logo .spark { fill: var(--accent-2); }
-.brand-name { font: 400 33px/1 var(--serif); letter-spacing: -.01em; }
-.brand-ver { color: var(--muted); font-size: 13px; margin-top: 3px; }
 .nav-label { color: var(--muted); font-size: 13px; padding: 10px 12px 8px; }
 nav { display: flex; flex-direction: column; gap: 3px; margin-bottom: 14px; }
 .nav-item { display: flex; align-items: center; gap: 14px; height: 44px; padding: 0 12px; border: 0; border-radius: var(--radius); background: none; font-size: 16.5px; font-weight: 500; color: var(--text); cursor: pointer; text-align: left; }
@@ -83,7 +91,21 @@ nav { display: flex; flex-direction: column; gap: 3px; margin-bottom: 14px; }
 .nav-item span.label { flex: 1; }
 .badge { min-width: 24px; padding: 1px 7px; border-radius: 5px; background: var(--raised-2); color: var(--text); font: 600 12px var(--sans); text-align: center; }
 .nav-item.active .badge { background: rgba(5, 19, 34, .2); color: var(--accent-ink); }
+/* The Folders row: an ordinary item with an arrow; the folder list unfolds under it. */
+.nav-chev { width: 16px; height: 16px; margin-left: 2px; transition: transform .15s; }
+.nav-fold[aria-expanded="false"] .nav-chev { transform: rotate(-90deg); }
+.nav-sub { display: flex; flex-direction: column; gap: 3px; padding-left: 14px; }
+.nav-sub[hidden] { display: none; }
+/* Clips are being dragged: show the folders so they can be dropped on one. */
+body.moving-clips #app:not(.side-min) .nav-sub[hidden] { display: flex; }
 .side-foot { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--line); }
+/* Sidebar folded to a strip of icons (the button at the left of the top bar). */
+#app.side-min { grid-template-columns: 68px 1fr; }
+#app.side-min .side { padding: 10px 10px 14px; }
+#app.side-min .nav-label, #app.side-min .nav-item .label, #app.side-min .nav-item .badge, #app.side-min .nav-chev, #app.side-min .nav-sub, #app.side-min .rec-card > div { display: none; }
+#app.side-min .nav-item { justify-content: center; padding: 0; gap: 0; }
+#app.side-min nav { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+#app.side-min .rec-card { justify-content: center; padding: 8px 0; }
 .rec-card { display: flex; align-items: center; gap: 12px; padding: 8px 12px; }
 .rec-card #rec-title { font-weight: 600; }
 .rec-sub { color: var(--muted); font-size: 12.5px; }

@@ -108,6 +108,8 @@ Settings → Appearance has twelve colour themes. Custom CSS, applied after the 
 
 ## Library
 
+The sidebar folds to a strip of icons with the button at the left of the top bar. Folders sit under one "Folders" row there, closed until you open it (it opens by itself while clips are being dragged); the folder chips above the grid run from the fullest folder to the emptiest. Search is an icon in the top bar that opens when clicked or with Ctrl K.
+
 Right-click a clip for its menu: open, copy file, favorite, rename, set the game, move to a folder, open in the editor (trim), render with Blur, open file location, select, delete. On a selection of several clips the menu acts on all of them. Right-click a folder to rename or delete it. Folders are also listed in the sidebar; drop dragged clips on one to move them.
 
 Drag across the grid to draw a selection box. `Ctrl` or `Shift` while dragging adds to the selection. `Ctrl`+click or the tick box on a card toggles one clip, `Shift`+click selects a range, `Ctrl`+`A` selects everything in view, `Esc` clears. While clips are selected a plain click selects instead of opening.
@@ -126,6 +128,12 @@ Open a clip and press **Edit** (or right-click → Open in editor). Under the vi
 - **Audio per piece.** Each piece of each audio row can be muted or set from 0 to 200 %. Each row also has its own mute and volume.
 - **Add audio.** Drop audio files on the window, or press Add audio: each becomes a new row that can be moved and trimmed.
 - **Speed** 0.25x to 4x (pitch kept) and **Colour** (presets, four sliders, your own presets) in the side column.
+- **Select.** Click a piece, Ctrl+click to add or remove one, Shift+click for a block, or drag across the lanes to draw a selection box. The toolbar buttons and shortcuts act on everything selected.
+- **Right-click** a piece for its menu: split here, cut out or restore, and per piece of one track: mute, level (25 to 200 %), solo (silence the other tracks there), or on the video row hide the picture (black, the audio plays on).
+- **Hide cut parts** (the menu, the toolbar toggle or `H`) closes the cut-out parts up, so the timeline shows the clip as it will be saved. A thin mark stays where something was cut; right-click it to restore that part.
+- **Colour per piece.** The Colour pane works on the selected pieces, or on the whole clip when nothing is selected, and says which.
+- **Fullscreen** (the button beside Done, or `F`) puts the whole editor on the full screen. Esc leaves it.
+- **Shortcuts.** The keyboard button lists every editor shortcut. Click one and press the new keys to change it; a key taken from another command is named. Reset one or all.
 - **Zoom** the timeline with Ctrl + wheel, `+` / `-`, or Fit.
 - **Export**, or **Export and render with Blur**. The preview plays what the export will produce: cuts are skipped and levels applied.
 

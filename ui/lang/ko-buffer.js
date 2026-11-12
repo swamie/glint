@@ -23,6 +23,9 @@ glintAddLanguage("ko", "한국어", {
   "Search settings": "설정 검색",
   "No setting matches “{text}”": "“{text}”에 맞는 설정이 없어요",
   "Used in Glint's window, the clip overlay and the tray menu. The tray menu changes the next time Glint starts": "Glint 창, 클립 오버레이, 트레이 메뉴에 쓰여요. 트레이 메뉴는 Glint를 다음에 시작할 때 바뀌어요",
+  "Hide the sidebar": "사이드바 숨기기",
+  "Show the sidebar": "사이드바 보이기",
+  "Version": "버전",
   "Compact": "간단히 표시",
   "Shows only the two stars in a small square, with no text. Problems, such as a clip that failed, still show the full box": "글자 없이 작은 상자에 별 두 개만 보여 줘요. 클립 저장 실패 같은 문제는 원래 상자로 알려 줘요",
 });

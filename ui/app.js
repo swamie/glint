@@ -148,24 +148,39 @@ const clipBinds = () => S.settings.keybinds.filter((k) => k.action === "clip");
 const quickSecs = () => Math.min(...clipBinds().map((k) => k.seconds), 3600) || 30;
 const maxSecs = () => Math.max(30, ...clipBinds().map((k) => k.seconds));
 
+// Layout choices that belong to this window, not to the settings file: remembered in localStorage.
+const uiPref = (key, def) => { try { const v = localStorage.getItem(key); return v === null ? def : v === "1"; } catch { return def; } };
+const setUiPref = (key, on) => { try { localStorage.setItem(key, on ? "1" : "0"); } catch {} };
+S.sideMin = uiPref("glint.sideMin", false);         // sidebar folded to icons
+S.foldersOpen = uiPref("glint.foldersOpen", false); // the Folders row in the sidebar unfolded
+
 function renderChrome() {
   if (!S.settings) return;
   // Texts that live in index.html: data-i18n holds the English text, data-i18n-ph a placeholder.
   for (const el of $$("[data-i18n]")) el.textContent = t(el.dataset.i18n);
   for (const el of $$("[data-i18n-ph]")) el.placeholder = t(el.dataset.i18nPh);
   if (typeof updRender === "function") updRender(); // its tooltip is text too
+  // The sidebar can be folded to a strip of icons, so every item carries its name as a tooltip.
+  $("#app").classList.toggle("side-min", S.sideMin);
+  $("#side-toggle").title = S.sideMin ? t("Show the sidebar") : t("Hide the sidebar");
+  $("#side-toggle").setAttribute("aria-label", $("#side-toggle").title);
+  $("#search").title = t("Search clips and games");
   const navItem = (id, label, icon, count) =>
-    `<button class="nav-item${S.page === id ? " active" : ""}" data-page="${id}">${ICON[icon]}<span class="label">${label}</span>${count ? `<span class="badge">${count}</span>` : ""}</button>`;
+    `<button class="nav-item${S.page === id ? " active" : ""}" data-page="${id}" title="${esc(label)}">${ICON[icon]}<span class="label">${label}</span>${count ? `<span class="badge">${count}</span>` : ""}</button>`;
+  // Folders: one row that unfolds the list (closed to begin with). In the list: click to open,
+  // right-click to rename or delete, drop dragged clips on one to move them.
+  const inFolder = S.page === "library" && !!S.folder;
+  const folderList = S.folders.map((f) => {
+    const n = S.clips.filter((c) => c.folder === f).length;
+    return `<button class="nav-item small${inFolder && S.folder === f ? " active" : ""}" data-folder="${esc(f)}" title="${esc(f)}">${ICON.folder}<span class="label">${esc(f)}</span>${n ? `<span class="badge">${n}</span>` : ""}</button>`;
+  }).join("") + `<button class="nav-item small ghost" data-act="folder-new">${ICON.plus}<span class="label">${t("New folder")}</span></button>`;
   $("#nav-general").innerHTML =
     navItem("library", t("Library"), "library", S.clips.length).replace(' active"', S.folder ? '"' : ' active"') +
     navItem("favorites", t("Favorites"), "star", S.clips.filter((c) => c.favorite).length) +
-    navItem("rendered", t("Rendered"), "blur", S.clips.filter((c) => c.kind === "blur").length);
-  // Folders: click to open, right-click to rename or delete, drop dragged clips on one to move them.
-  $("#nav-folders").innerHTML =
-    S.folders.map((f) => {
-      const n = S.clips.filter((c) => c.folder === f).length;
-      return `<button class="nav-item small${S.page === "library" && S.folder === f ? " active" : ""}" data-folder="${esc(f)}" title="${esc(f)}">${ICON.folder}<span class="label">${esc(f)}</span>${n ? `<span class="badge">${n}</span>` : ""}</button>`;
-    }).join("") + `<button class="nav-item small ghost" data-act="folder-new">${ICON.plus}<span class="label">${t("New folder")}</span></button>`;
+    navItem("rendered", t("Rendered"), "blur", S.clips.filter((c) => c.kind === "blur").length) +
+    // While closed, the row itself is lit when the folder being viewed is hidden inside it.
+    `<button class="nav-item nav-fold${inFolder && (!S.foldersOpen || S.sideMin) ? " active" : ""}" data-act="folders-toggle" aria-expanded="${S.foldersOpen}" title="${esc(t("Folders"))}">${ICON.folder}<span class="label">${t("Folders")}</span>${S.folders.length ? `<span class="badge">${S.folders.length}</span>` : ""}<svg class="nav-chev" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></svg></button>` +
+    `<div class="nav-sub" id="nav-folders"${S.foldersOpen ? "" : " hidden"}>${folderList}</div>`;
   $("#nav-tools").innerHTML =
     navItem("keybinds", t("Keybinds"), "keys", S.settings.keybinds.length) +
     navItem("recording", t("Capture"), "rec") +
@@ -265,7 +280,7 @@ function folderRowHtml() {
   return `<div class="folders">
     ${chip("*", t("All clips"), S.clips.length)}
     ${S.folders.length ? chip("", t("Main folder"), count("")) : ""}
-    ${S.folders.map((f) => chip(f, f, count(f), ICON.folder)).join("")}
+    ${[...S.folders].sort((a, b) => count(b) - count(a) || a.localeCompare(b)).map((f) => chip(f, f, count(f), ICON.folder)).join("") /* fullest folder first */}
     <button class="chip ghost" data-act="folder-new">${ICON.plus}<span>${t("New folder")}</span></button>
     ${S.folder ? `<span class="sp"></span><button class="btn sm" data-act="folder-rename">${t("Rename")}</button><button class="btn sm danger" data-act="folder-del">${ICON.trash}${t("Delete folder")}</button>` : ""}
   </div>`;
@@ -898,6 +913,7 @@ function renderSettings() {
       ${row(t("Application ID"), t("Discord only shows a presence from an app registered with it. Create one named Glint at discord.com/developers/applications (free, about a minute) and paste its Application ID here"), `<input class="field" type="text" inputmode="numeric" data-set="discord_app_id" value="${esc(s.discord_app_id || "")}" placeholder="${esc(t("18 or 19 digits"))}" spellcheck="false" style="width:210px">`)}
     </div>
     <div class="section"><h2>${t("Updates")}</h2>
+      ${row(t("Version"), "", `<span class="path">Glint ${esc(S.version || "")}</span>`)}
       ${row(t("Check for updates daily"), t("Asks GitHub once a day whether a newer Glint has been released. Nothing about you or this PC is sent"), toggle("update_check"))}
     </div>
     <div class="section"><h2>${t("Program")}</h2>
@@ -996,6 +1012,12 @@ document.addEventListener("click", async (e) => {
         return;
       }
       case "games-more": S.gamesOpen = !S.gamesOpen; return render();
+      case "side-toggle": S.sideMin = !S.sideMin; setUiPref("glint.sideMin", S.sideMin); return renderChrome();
+      case "folders-toggle":
+        // From the icon strip, the row opens the sidebar with the folders showing.
+        if (S.sideMin) { S.sideMin = false; S.foldersOpen = true; setUiPref("glint.sideMin", false); } else S.foldersOpen = !S.foldersOpen;
+        setUiPref("glint.foldersOpen", S.foldersOpen);
+        return renderChrome();
       case "css-clear": S.settings.custom_css = ""; S.cssOpen = true; window.applyGlintTheme(S.settings.theme, ""); return saveSettings(true);
       case "css-prompt": await copyText(THEME_PROMPT); return flash(t("Prompt copied. Paste it into an AI and say what look you want."));
       case "rec-use": {
@@ -1116,8 +1138,11 @@ window.addEventListener("keydown", (e) => {
     }
     if (best) { e.preventDefault(); invoke("fire_keybind", { id: best.id }).catch(() => {}); return; }
   }
+  // The editor timeline's right-click menu is open: the keyboard is its own (arrows, Enter,
+  // Esc closes it). This listener runs before the menu's, so it has to stand aside.
+  if (document.querySelector(".tl-menu")) return;
   const inField = e.target.matches?.("input, select, textarea");
-  if (e.ctrlKey && e.code === "KeyK") { e.preventDefault(); $("#q").focus(); $("#q").select(); }
+  if (e.ctrlKey && e.code === "KeyK") { e.preventDefault(); $("#search").classList.add("open"); $("#q").focus(); $("#q").select(); }
   else if (isLib() && !S.open && !inField && e.ctrlKey && e.code === "KeyA") { e.preventDefault(); S.sel = new Set(visibleClips().list.map((c) => c.id)); syncSel(); }
   else if (isLib() && !S.open && !inField && e.code === "Delete" && S.sel.size) { e.preventDefault(); bulkDelete(); }
   else if (e.code === "Escape" && !S.open && (S.sel.size || !$("#menu").hidden)) { if (!$("#menu").hidden) closeMenu(); else clearSel(); }
@@ -1125,7 +1150,14 @@ window.addEventListener("keydown", (e) => {
   else if (S.open && S.player && !e.ctrlKey && !e.altKey && !inField && S.player.key(e)) e.preventDefault();
 }, true);
 
+// The search box is an icon until it is used: open while it has the focus or holds text.
+const syncSearch = () => $("#search").classList.toggle("open", document.activeElement === $("#q") || !!$("#q").value);
+$("#q").addEventListener("focus", syncSearch);
+$("#q").addEventListener("blur", syncSearch);
+// Opened on the press itself, so the field is already wide when the click puts the caret in it.
+$("#search").addEventListener("mousedown", () => $("#search").classList.add("open"));
 $("#q").addEventListener("input", (e) => {
+  syncSearch();
   S.q = e.target.value;
   S.sel.clear();
   if (!["library", "favorites", "rendered"].includes(S.page)) S.page = "library";
@@ -1151,7 +1183,8 @@ async function refreshState() {
   if (!S.sounds.length) S.sounds = (await invoke("list_sounds")) || [];
   window.applyGlintTheme(S.settings.theme, S.settings.custom_css);
   glintSetLanguage(S.settings.language || "en");
-  $("#ver").textContent = "v" + st.version;
+  S.version = st.version;
+  $("#ver").title = "Glint v" + st.version; // the logo in the top bar
   render();
 }
 async function pollStatus() {

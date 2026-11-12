@@ -229,6 +229,10 @@ pub struct Settings {
     pub ui_zoom: u32,
     /// The user's own colour-correction presets for the editor.
     pub color_presets: Vec<ColorPreset>,
+    /// Editor shortcuts the user changed: command -> key combinations such as
+    /// "Ctrl+Shift+KeyZ" (see `ED_KEYS` in ui/editor.js). A command that is
+    /// not listed keeps its default keys; an empty list means no shortcut.
+    pub editor_keys: std::collections::BTreeMap<String, Vec<String>>,
     pub autostart: bool,
     pub close_to_tray: bool,
     pub ffmpeg_path: String,
@@ -281,6 +285,7 @@ impl Default for Settings {
             blur_parallel: 2,
             ui_zoom: 100,
             color_presets: Vec::new(),
+            editor_keys: Default::default(),
             autostart: false,
             close_to_tray: true,
             ffmpeg_path: String::new(),

@@ -9,6 +9,7 @@
 .tl-btn:hover:not(:disabled) { background: var(--raised-2); }
 .tl-btn:disabled { opacity: .35; cursor: default; }
 .tl-btn.on { color: var(--accent); }
+.tl-btn[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .tl-btn svg { width: 17px; height: 17px; }
 .tl-sep { flex: none; width: 1px; height: 18px; margin: 0 6px; background: var(--line-2); }
 .tl-sp { flex: 1 1 0; min-width: 8px; }
@@ -62,12 +63,33 @@
 .tl-tip { position: absolute; left: 0; top: 2px; z-index: 5; padding: 1px 7px; border-radius: 5px; background: var(--raised-2); border: 1px solid var(--line-2); font: 600 11.5px var(--mono); white-space: nowrap; pointer-events: none; }
 .tl-tip[hidden] { display: none; }
 
+/* Joints (cut parts hidden): where something was cut out. The line itself is drawn on the canvases; this is the hover / right-click target. */
+.tl-joint { position: absolute; left: 0; bottom: 0; width: 8px; margin-left: -4px; pointer-events: auto; cursor: context-menu; }
+.tl-joint b { position: absolute; left: 0; top: 2px; width: 8px; height: 8px; border-radius: 2px; background: var(--warn); transform: rotate(45deg); box-shadow: 0 1px 3px rgba(0, 0, 0, .5); opacity: .85; }
+.tl-joint:hover b { opacity: 1; }
+
+/* Rubber band selection. Position and size are set inline (translate + width / height inside .tl-lanes). */
+.tl-band { position: absolute; left: 0; top: 0; z-index: 4; border: 1px solid var(--accent); border-radius: 3px; background: color-mix(in srgb, var(--accent) 14%, transparent); pointer-events: none; }
+.tl-band[hidden] { display: none; }
+
 .tl.tl-dragging, .tl.tl-dragging * { cursor: grabbing !important; }
 .tl.tl-dragging[data-tl-drag="cut"], .tl.tl-dragging[data-tl-drag="cut"] *,
 .tl.tl-dragging[data-tl-drag="left"], .tl.tl-dragging[data-tl-drag="left"] *,
 .tl.tl-dragging[data-tl-drag="right"], .tl.tl-dragging[data-tl-drag="right"] * { cursor: col-resize !important; }
 .tl.tl-dragging[data-tl-drag="seek"], .tl.tl-dragging[data-tl-drag="seek"] * { cursor: ew-resize !important; }
-.tl.tl-dragging[data-tl-drag="click"], .tl.tl-dragging[data-tl-drag="click"] * { cursor: default !important; }
+.tl.tl-dragging[data-tl-drag="click"], .tl.tl-dragging[data-tl-drag="click"] *,
+.tl.tl-dragging[data-tl-drag="band"], .tl.tl-dragging[data-tl-drag="band"] * { cursor: default !important; }
+
+/* ---------- right-click menu ---------- */
+/* It is a .menu.ctx (style.css) appended to <body>; above the viewer modal (z-index 20), below confirm dialogs (30). */
+.menu.ctx.tl-menu { z-index: 28; max-height: calc(100vh - 16px); overflow-y: auto; } /* no submenus, so it may scroll in a short window */
+.tl-menu .tl-mlevel { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; flex: none; min-height: 34px; padding: 4px 6px 4px 10px; font-weight: 600; }
+.tl-menu .tl-mlevel > svg { flex: none; width: 15px; height: 15px; color: var(--muted); }
+.tl-menu .tl-mchips { display: flex; gap: 3px; margin-left: auto; }
+.tl-menu .tl-mchips button { height: 26px; padding: 0 7px; gap: 0; border: 1px solid var(--line-2); border-radius: 6px; font: 600 11.5px var(--mono); color: var(--text); }
+.tl-menu .tl-mchips button.on { background: color-mix(in srgb, var(--accent) 22%, transparent); border-color: var(--accent); color: var(--text); }
+.tl-menu .tl-mchips button.on::after { content: none; }
+.tl-menu button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* ---------- horizontal scrollbar under the lanes ---------- */
 .tl-sbar { display: grid; grid-template-columns: var(--tl-head) minmax(0, 1fr); border-top: 1px solid var(--line); }

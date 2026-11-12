@@ -34,12 +34,30 @@ const ED_ZOOM_STEP = 1.5;       // + / - zoom factor
 const ED_THUMBS = 30;           // film strip frames asked from editor_thumbs
 const ED_LOAD_TIMEOUT = 15000;  // ms an audio element may take to load
 const ED_CHEV = '<svg class="e-chev" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>';
+const ED_ICON_UNFULL = '<svg viewBox="0 0 24 24"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>';
+// Shortcuts that act on the timeline's selection: sent to the timeline's run() when it has one.
+const ED_TL_CMDS = new Set(["split", "remove", "mute", "louder", "quieter", "solo", "blank", "selectAll", "clearSel", "hideCuts"]);
 
 const edFmtVal = (key, x) => (ED_SLIDERS.find((s) => s[0] === key)[4] === "pct" ? `${Math.round(x * 100)}%` : x.toFixed(2));
 const edSameColor = (a, b) => ED_COLOR_KEYS.every((k) => Math.abs(a[k] - b[k]) < 0.005);
 const edBaseName = (path) => String(path).split(/[\\/]/).pop() || String(path);
 /** Used to tell whether an edit changed the model (so a no-op leaves no undo step). */
-const edState = (m) => JSON.stringify([m.cuts, m.removed, m.audio, m.speed, m.color]);
+const edState = (m) => JSON.stringify([m.cuts, m.removed, m.audio, m.speed, m.colors, m.blank]);
+
+/**
+ * What the Colour pane edits. `sels`: the timeline's selected pieces ({ row, seg }),
+ * `sel` its primary one, `now` the playhead. Any row of a segment counts.
+ * Returns { segs, shown }: segs = sorted segment indexes, or null for the whole
+ * clip (nothing selected); shown = the segment whose values the sliders show
+ * (the primary, else the first selected; for the whole clip the one at the playhead).
+ */
+function edColorTarget(m, sels, sel, now) {
+  const n = m.colors.length;
+  const list = Array.isArray(sels) && sels.length ? sels : sel ? [sel] : [];
+  const segs = [...new Set(list.map((s) => s?.seg).filter((i) => Number.isInteger(i) && i >= 0 && i < n))].sort((a, b) => a - b);
+  if (!segs.length) return { segs: null, shown: Math.max(0, Math.min(n - 1, emSegmentAt(m, now || 0))) };
+  return { segs, shown: segs.includes(sel?.seg) ? sel.seg : segs[0] };
+}
 /** A text field: keys typed there are never shortcuts. Sliders and check boxes are not text fields. */
 const edTextTarget = (node) => !!node?.matches?.('textarea, select, [contenteditable=""], [contenteditable="true"], input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="button"])');
 
@@ -84,13 +102,17 @@ function edLand(m, at, back, frame) {
 
 /* ---------- keyboard shortcuts (edit mode) ---------- */
 // Key names shown in the Shortcuts pop-up, by KeyboardEvent.code. Words go through t() when shown.
-const ED_KEY_NAMES = { Space: "Space", Delete: "Del", Backspace: "Backspace", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right", BracketLeft: "[", BracketRight: "]", Comma: ",", Period: ".", Equal: "+", NumpadAdd: "+", Minus: "-", NumpadSubtract: "-", Escape: "Esc", Home: "Home", End: "End" };
-const edKeyName = (code) => ED_KEY_NAMES[code] || code.replace(/^Key/, "").replace(/^Digit/, "");
+const ED_KEY_NAMES = {
+  Space: "Space", Delete: "Del", Backspace: "Backspace", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right", BracketLeft: "[", BracketRight: "]", Comma: ",", Period: ".", Equal: "+", NumpadAdd: "+", Minus: "-", NumpadSubtract: "-", Escape: "Esc", Home: "Home", End: "End",
+  Enter: "Enter", NumpadEnter: "Enter", Tab: "Tab", PageUp: "PgUp", PageDown: "PgDn", Insert: "Ins", Slash: "/", Backslash: "\\", Semicolon: ";", Quote: "'", Backquote: "`", NumpadMultiply: "*", NumpadDivide: "/", NumpadDecimal: ".",
+};
+const edKeyName = (code) => ED_KEY_NAMES[code] || code.replace(/^Key/, "").replace(/^Digit/, "").replace(/^Numpad(?=\d)/, "Num ");
 /** One key combination. `codes`: space-separated KeyboardEvent.code values that all count. shift: true, false or null (either). */
 const edCombo = (codes, { ctrl = false, shift = false } = {}) => ({ codes: codes.split(" "), ctrl, shift });
 // The one table of editor shortcuts: the key handlers match against it and the
 // Shortcuts pop-up is built from it. `cmd` is run by the player's command();
-// `once` ignores auto-repeat. Keep each group's rows together.
+// `once` ignores auto-repeat. Keep each group's rows together. `keys` are the
+// defaults: S.settings.editor_keys may replace them per cmd (see edKeysOf).
 const ED_KEYS = [
   { group: "Playback", what: "Play or pause", cmd: "play", once: true, keys: [edCombo("Space")] },
   { group: "Playback", what: "Back 5 seconds", cmd: "back5", keys: [edCombo("ArrowLeft")] },
@@ -104,12 +126,14 @@ const ED_KEYS = [
   { group: "Playback", what: "Go to the start", cmd: "home", keys: [edCombo("Home")] },
   { group: "Playback", what: "Go to the end", cmd: "end", keys: [edCombo("End")] },
   { group: "Playback", what: "Loop on or off", cmd: "loop", once: true, keys: [edCombo("KeyL")] },
-  { group: "Playback", what: "Fullscreen", cmd: "full", once: true, keys: [edCombo("KeyF")] },
+  { group: "Playback", what: "Fullscreen editor on or off", cmd: "fullscreen", once: true, keys: [edCombo("KeyF")] },
   { group: "Editing", what: "Split at the playhead", cmd: "split", once: true, keys: [edCombo("KeyS")] },
   { group: "Editing", what: "Cut out the selected segment, or restore it", cmd: "remove", once: true, keys: [edCombo("Delete"), edCombo("Backspace")] },
   { group: "Editing", what: "Mute or unmute the selected audio segment", cmd: "mute", once: true, keys: [edCombo("KeyM")] },
   { group: "Editing", what: "Raise the selected audio segment by 10%", cmd: "louder", keys: [edCombo("ArrowUp")] },
   { group: "Editing", what: "Lower the selected audio segment by 10%", cmd: "quieter", keys: [edCombo("ArrowDown")] },
+  { group: "Editing", what: "Solo the selected audio segment", cmd: "solo", once: true, keys: [edCombo("KeyD")] },
+  { group: "Editing", what: "Hide or show the video in the selected segment", cmd: "blank", once: true, keys: [edCombo("KeyB")] },
   { group: "Editing", what: "Cut out everything before the playhead", cmd: "trimStart", once: true, keys: [edCombo("KeyI")] },
   { group: "Editing", what: "Cut out everything from the playhead on", cmd: "trimEnd", once: true, keys: [edCombo("KeyO")] },
   { group: "Editing", what: "Undo", cmd: "undo", keys: [edCombo("KeyZ", { ctrl: true })] },
@@ -118,39 +142,143 @@ const ED_KEYS = [
   { group: "Timeline", what: "Zoom in", cmd: "zoomIn", keys: [edCombo("Equal NumpadAdd", { shift: null })] },
   { group: "Timeline", what: "Zoom out", cmd: "zoomOut", keys: [edCombo("Minus NumpadSubtract", { shift: null })] },
   { group: "Timeline", what: "Fit the whole clip", cmd: "fit", once: true, keys: [edCombo("KeyF", { shift: true })] },
-  { group: "Other", what: "Close a pop-up, or leave the editor", cmd: "escape", keys: [edCombo("Escape")] },
+  { group: "Timeline", what: "Hide or show the cut parts in the timeline", cmd: "hideCuts", once: true, keys: [edCombo("KeyH")] },
+  { group: "Timeline", what: "Select every segment", cmd: "selectAll", once: true, keys: [edCombo("KeyA", { ctrl: true })] },
+  { group: "Timeline", what: "Clear the selection", cmd: "clearSel", once: true, keys: [] },
+  { group: "Other", what: "Close a pop-up, clear the selection, or leave the editor", cmd: "escape", keys: [edCombo("Escape")] },
 ];
 
+/* User bindings: S.settings.editor_keys = { [cmd]: ["Ctrl+Shift+KeyZ", ...] }.
+   Modifiers in the order Ctrl, Shift, then the KeyboardEvent.code. An entry
+   replaces that cmd's defaults, [] means no shortcut, no entry means the defaults.
+   The functions below take the map as a parameter so they stay pure (and testable). */
+const edUserKeys = () => {
+  const u = typeof S !== "undefined" ? S.settings?.editor_keys : null;
+  return u && typeof u === "object" && !Array.isArray(u) ? u : {};
+};
+const ED_MOD_CODE = /^(Control|Shift|Alt|Meta|OS)/; // codes of the modifier keys themselves
+const edComboStr = (code, ctrl, shift) => [ctrl && "Ctrl", shift && "Shift", code].filter(Boolean).join("+");
+/** "Ctrl+Shift+KeyZ" -> a combo ({ codes: [code], ctrl, shift }), or null if malformed (Alt, Win and bare modifiers are refused). */
+function edParseCombo(str) {
+  if (typeof str !== "string" || !str) return null;
+  const parts = str.split("+"), code = parts.pop();
+  if (!/^[A-Za-z][A-Za-z0-9]*$/.test(code || "") || ED_MOD_CODE.test(code)) return null; // a KeyboardEvent.code, not a modifier
+  let ctrl = false, shift = false;
+  for (const p of parts) {
+    if (p === "Ctrl" && !ctrl) ctrl = true;
+    else if (p === "Shift" && !shift) shift = true;
+    else return null;
+  }
+  return { codes: [code], ctrl, shift };
+}
+/** A list of combos as stored strings. A combo with several codes, or with shift: null (either), gives one string per variant. */
+const edComboStrs = (list) => list.flatMap((k) => k.codes.flatMap((code) => (k.shift === null ? [false, true] : [k.shift]).map((sh) => edComboStr(code, k.ctrl, sh))));
+/** The combos that run `entry` now: the user's, else the defaults. */
+function edKeysOf(entry, user = edUserKeys()) {
+  const own = user[entry.cmd];
+  return Array.isArray(own) ? own.map(edParseCombo).filter(Boolean) : entry.keys;
+}
+const edComboHits = (k, code, ctrl, shift) => k.codes.includes(code) && k.ctrl === ctrl && (k.shift === null || k.shift === shift);
+const edSameList = (a, b) => a.length === b.length && a.every((s) => b.includes(s));
+
+/** Takes the combos `strs` away from every cmd but `keep`. Returns { user: new map, lost: [{ cmd, strs }] }. */
+function edStrip(user, keep, strs) {
+  const out = { ...user }, lost = [];
+  for (const entry of ED_KEYS) {
+    if (entry.cmd === keep) continue;
+    const list = edComboStrs(edKeysOf(entry, out));
+    const left = list.filter((s) => !strs.includes(s));
+    if (left.length === list.length) continue;
+    out[entry.cmd] = left;
+    lost.push({ cmd: entry.cmd, strs: list.filter((s) => strs.includes(s)) });
+  }
+  return { user: out, lost };
+}
+/** Drops entries that equal their cmd's defaults, so the settings only hold real changes. */
+function edTidy(user) {
+  const out = { ...user };
+  for (const [cmd, list] of Object.entries(out)) {
+    const entry = ED_KEYS.find((x) => x.cmd === cmd);
+    if (entry && Array.isArray(list) && edSameList(edComboStrs(list.map(edParseCombo).filter(Boolean)), edComboStrs(entry.keys))) delete out[cmd];
+  }
+  return out;
+}
+/** `str` becomes cmd's only shortcut; any other cmd that had it loses it. Returns { user, lost } or null. */
+function edBind(user, cmd, str) {
+  const k = edParseCombo(str);
+  if (!k || !ED_KEYS.some((x) => x.cmd === cmd)) return null;
+  const norm = edComboStr(k.codes[0], k.ctrl, k.shift);
+  const r = edStrip(user, cmd, [norm]);
+  r.user[cmd] = [norm];
+  r.user = edTidy(r.user);
+  return r;
+}
+/** Back to cmd's defaults; another cmd that was given one of them loses it. Returns { user, lost } or null. */
+function edResetKey(user, cmd) {
+  const entry = ED_KEYS.find((x) => x.cmd === cmd);
+  if (!entry) return null;
+  const out = { ...user };
+  delete out[cmd];
+  const r = edStrip(out, cmd, edComboStrs(entry.keys));
+  r.user = edTidy(r.user);
+  return r;
+}
+
 /** The shortcut a key press means in edit mode: { entry, combo }, or null. */
-function edKeyFind(e) {
+function edKeyFind(e, user = edUserKeys()) {
   if (e.altKey || e.metaKey) return null;
   for (const entry of ED_KEYS) {
-    const combo = entry.keys.find((k) => k.codes.includes(e.code) && k.ctrl === e.ctrlKey && (k.shift === null || k.shift === e.shiftKey));
+    const combo = edKeysOf(entry, user).find((k) => edComboHits(k, e.code, e.ctrlKey, e.shiftKey));
     if (combo) return { entry, combo };
   }
   return null;
 }
+const edComboParts = (k) => [k.ctrl && "Ctrl", k.shift === true && "Shift", edKeyName(k.codes[0])].filter(Boolean);
 function edComboHtml(k) {
-  const parts = [k.ctrl && "Ctrl", k.shift === true && "Shift", edKeyName(k.codes[0])].filter(Boolean);
-  return parts.map((p) => `<kbd>${esc(t(p))}</kbd>`).join('<span class="e-kplus">+</span>');
+  return edComboParts(k).map((p) => `<kbd>${esc(t(p))}</kbd>`).join('<span class="e-kplus">+</span>');
 }
+const edComboText = (k) => edComboParts(k).map((p) => t(p)).join("+");
+/** The first shortcut of `cmd` as text ("Ctrl+Z"), or "" when it has none. */
+const edKeyText = (cmd) => { const entry = ED_KEYS.find((x) => x.cmd === cmd); const k = entry && edKeysOf(entry)[0]; return k ? edComboText(k) : ""; };
+/** A tooltip with the command's current shortcut: "Label (F)". */
+const edTip = (label, cmd) => { const k = edKeyText(cmd); return k ? `${label} (${k})` : label; };
 
 /* ---------- pop-ups (speed list, shortcut list) ---------- */
 let edPopClose = null; // closes the open pop-up, if any
+let edCap = null;      // the Shortcuts pop-up while it waits for a new key: { key(e) }
+let edFsLeft = -1e9;   // performance.now() when fullscreen was last left (see the Escape rule below)
+document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement) edFsLeft = performance.now(); });
 
 // The one window key listener of this file. Registered at load time, before
-// app.js adds its own capture listener, so it runs first: Escape closes an open
-// pop-up (or leaves edit mode) instead of the whole viewer, and the editor's Ctrl
-// shortcuts are handled here, since app.js only passes keys without Ctrl to S.player.key.
+// app.js adds its own capture listener, so it runs first (and its
+// stopImmediatePropagation keeps app.js's handler from seeing the key at all):
+// a key being captured for a shortcut goes nowhere else (no clip keybind fires),
+// Escape closes an open pop-up (or leaves fullscreen) instead of the whole viewer,
+// and the editor's Ctrl shortcuts are handled here, since app.js only passes
+// keys without Ctrl to S.player.key.
 window.addEventListener("keydown", (e) => {
+  if (edCap) { e.preventDefault(); e.stopImmediatePropagation(); edCap.key(e); return; }
   if (typeof askKey !== "undefined" && askKey) return; // app.js's prompt is open: it owns the keyboard
+  // The timeline's right-click menu is open: it has its own keys (arrows, Enter, Esc closes it).
+  // This listener was added first, so without this it would take Esc before the menu does.
+  if (document.querySelector(".tl-menu")) return;
   if (edPopClose && e.code === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); edPopClose(); return; }
   if (typeof S === "undefined" || !S.open || !S.player) return;
+  // Escape while fullscreen only leaves fullscreen. The webview may leave it by
+  // itself before the key arrives, so an Escape just after leaving is dropped too
+  // (app.js would otherwise take it as "close the viewer").
+  if (e.code === "Escape" && (document.fullscreenElement || performance.now() - edFsLeft < 400)) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (document.fullscreenElement) document.exitFullscreen().catch((err) => console.warn("Glint: exitFullscreen failed", err));
+    return;
+  }
   S.player.resumeAudio?.();
   if (!S.player.editing || edTextTarget(e.target)) return;
   const hit = edKeyFind(e);
+  // Escape rebound away from "escape": it does nothing in edit mode (rather than closing the viewer).
+  if (!hit && e.code === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); return; }
   if (!hit || !(hit.combo.ctrl || hit.entry.cmd === "escape")) return; // the rest arrives through S.player.key
-  if (hit.entry.cmd === "escape" && document.fullscreenElement) return; // Escape leaves fullscreen first
   e.preventDefault();
   e.stopImmediatePropagation();
   if (e.repeat && hit.entry.once) return;
@@ -199,30 +327,132 @@ function edOpenPop({ anchor, host, value, above = false, onPick }) {
   edPopClose = close;
 }
 
-/** The Shortcuts pop-up over the viewer, built from ED_KEYS. */
+/** Saves new editor bindings and refreshes everything that shows them. */
+function edSaveKeys(user) {
+  if (typeof S === "undefined" || !S.settings) return;
+  S.settings.editor_keys = user;
+  saveSettings();
+  S.player?.ed?.keysChanged?.();
+}
+/** The message for combos another command lost: '{key} was taken from "{other}".' */
+function edLostText(lost) {
+  return lost.filter((x) => x.strs.length).map((x) => {
+    const entry = ED_KEYS.find((k) => k.cmd === x.cmd);
+    const key = x.strs.map((s) => edComboText(edParseCombo(s))).join(", ");
+    return t('{key} was taken from "{other}".', { key, other: entry ? t(entry.what) : x.cmd });
+  }).join(" ");
+}
+
+/**
+ * The Shortcuts pop-up over the viewer, built from ED_KEYS with the current
+ * bindings. Clicking a row's keys waits for a new combination (Ctrl and/or
+ * Shift plus one key; Esc cancels). While it waits, the window key listener
+ * hands every key to `edCap` only, and the global hotkeys are paused the way
+ * app.js's Keybinds page does it (the backend's pause lapses after 12 s, so it is renewed).
+ */
 function edOpenKeys(host) {
   edPopClose?.();
   const box = document.createElement("div");
   box.className = "e-keys";
   box.setAttribute("role", "dialog");
   box.setAttribute("aria-label", t("Keyboard shortcuts"));
-  let rows = "", group = "";
-  for (const k of ED_KEYS) {
-    if (k.group !== group) { group = k.group; rows += `<div class="e-kgroup">${esc(t(group))}</div>`; }
-    rows += `<div class="e-krow"><span class="e-kcap">${k.keys.map(edComboHtml).join('<span class="e-kor"></span>')}</span><span class="e-kwhat">${esc(t(k.what))}</span></div>`;
+  let cap = null, renew = 0, msg = "", bad = false;
+
+  const keysHtml = (entry) => {
+    const list = edKeysOf(entry);
+    return list.length ? list.map(edComboHtml).join('<span class="e-kor"></span>') : `<span class="e-knone">${esc(t("No shortcut"))}</span>`;
+  };
+  function render() {
+    const user = edUserKeys();
+    let rows = "", group = "";
+    for (const k of ED_KEYS) {
+      if (k.group !== group) { group = k.group; rows += `<div class="e-kgroup">${esc(t(group))}</div>`; }
+      const what = t(k.what), listening = cap === k.cmd;
+      rows += `<div class="e-krow${listening ? " listening" : ""}">
+        <button type="button" class="e-kcap" data-e-bind="${esc(k.cmd)}" aria-label="${esc(t("Change the shortcut for {what}", { what }))}">${listening ? `<span class="e-kwait">${esc(t("Press a key…"))}</span>` : keysHtml(k)}</button>
+        <span class="e-kwhat">${esc(what)}</span>
+        <button type="button" class="btn sm e-kreset" data-e-reset="${esc(k.cmd)}" aria-label="${esc(t("Reset the shortcut for {what}", { what }))}" ${k.cmd in user ? "" : "disabled"}>${esc(t("Reset"))}</button>
+      </div>`;
+    }
+    const keepScroll = $(".e-keys-box", box)?.scrollTop || 0;
+    box.innerHTML = `<div class="e-keys-box">
+        <div class="e-keys-head"><div class="e-title">${esc(t("Keyboard shortcuts"))}</div>
+          <button type="button" class="btn sm" data-e-keys-resetall ${Object.keys(user).length ? "" : "disabled"}>${esc(t("Reset all"))}</button>
+          <button type="button" class="btn sm" data-e-keys-close>${esc(t("Close"))}</button></div>
+        <div class="small">${esc(t("These work while the editor is open."))} ${esc(t("Click a shortcut, then press the new keys. Esc cancels."))}</div>
+        <div class="small e-keys-msg${bad ? " e-bad" : ""}" role="status" ${msg ? "" : "hidden"}>${esc(msg)}</div>
+        <div class="e-keys-list">${rows}</div>
+      </div>`;
+    $(".e-keys-box", box).scrollTop = keepScroll;
   }
-  box.innerHTML = `<div class="e-keys-box">
-      <div class="e-keys-head"><div class="e-title">${esc(t("Keyboard shortcuts"))}</div><button type="button" class="btn sm" data-e-keys-close>${esc(t("Close"))}</button></div>
-      <div class="small">${esc(t("These work while the editor is open."))}</div>
-      <div class="e-keys-list">${rows}</div>
-    </div>`;
+  const say = (text, isBad = false) => { msg = text; bad = isBad; };
+  const suspend = (on) => { try { invoke("suspend_hotkeys", { on }).catch((e) => console.warn("Glint: suspend_hotkeys failed", e)); } catch (e) { console.warn("Glint: suspend_hotkeys failed", e); } };
+
+  function stopCapture() {
+    if (cap === null) return;
+    cap = null;
+    edCap = null;
+    clearInterval(renew);
+    renew = 0;
+    window.removeEventListener("blur", cancelCapture);
+    suspend(false);
+  }
+  // Leaving the window (back to a game, say) must not leave the clip hotkeys paused.
+  function cancelCapture() { stopCapture(); render(); }
+  function startCapture(cmd) {
+    if (cap === null) {
+      suspend(true);
+      renew = setInterval(() => suspend(true), 5000);
+      window.addEventListener("blur", cancelCapture);
+    }
+    cap = cmd;
+    edCap = { key: onKey };
+    say("");
+    render();
+  }
+  function onKey(e) {
+    if (e.repeat) return;
+    if (e.code === "Escape") { stopCapture(); say(""); return render(); }
+    if (!e.code || ED_MOD_CODE.test(e.code)) return; // a modifier on its own: wait for the key
+    if (e.altKey || e.metaKey) { say(t("Alt and Win cannot be used here. Use Ctrl, Shift or a key on its own."), true); return render(); }
+    const cmd = cap, r = edBind(edUserKeys(), cmd, edComboStr(e.code, e.ctrlKey, e.shiftKey));
+    stopCapture();
+    if (!r) return render();
+    say(edLostText(r.lost));
+    edSaveKeys(r.user);
+    render();
+  }
+
+  render();
   host.appendChild(box);
   function close() {
     if (edPopClose !== close) return;
     edPopClose = null;
+    stopCapture();
     box.remove();
   }
-  box.addEventListener("click", (e) => { if (e.target === box || e.target.closest("[data-e-keys-close]")) close(); });
+  box.addEventListener("click", async (e) => {
+    if (e.target === box || e.target.closest("[data-e-keys-close]")) return close();
+    const bind = e.target.closest("[data-e-bind]"), reset = e.target.closest("[data-e-reset]");
+    if (bind) {
+      if (cap === bind.dataset.eBind) { stopCapture(); return render(); } // a second click cancels
+      return startCapture(bind.dataset.eBind);
+    }
+    if (cap !== null) { stopCapture(); render(); } // a click anywhere else in the pop-up cancels the wait
+    if (reset) {
+      const r = edResetKey(edUserKeys(), reset.dataset.eReset);
+      if (!r) return;
+      say(edLostText(r.lost));
+      edSaveKeys(r.user);
+      render();
+    } else if (e.target.closest("[data-e-keys-resetall]")) {
+      if (!(await ask(t("Reset every editor shortcut to its default?"), t("Reset all")))) return;
+      if (edPopClose !== close) return; // closed meanwhile
+      say(t("All editor shortcuts are back to their defaults."));
+      edSaveKeys({});
+      render();
+    }
+  });
   edPopClose = close;
 }
 
@@ -301,6 +531,7 @@ function openClip(id) {
           <svg class="e-defs" aria-hidden="true"><filter id="e-gamma" color-interpolation-filters="sRGB"><feComponentTransfer>${gammaFn("R")}${gammaFn("G")}${gammaFn("B")}</feComponentTransfer></filter></svg>
           <video src="${fileSrc(c.path)}" autoplay playsinline></video>
           <div class="p-audio" aria-hidden="true"></div>
+          <div class="e-blank-tag">${L("Video hidden in this segment")}</div>
           <div class="p-big" hidden>${PICON.play}</div>
           <div class="p-ui">
             <div class="p-bar">
@@ -342,14 +573,16 @@ function openClip(id) {
           <button class="btn wide" data-v="close">${L("Close")}</button>
         </div>
         <div class="v-pane v-edit">
-          <div class="e-head"><div class="e-h">${L("Edit")}</div><button class="btn sm" data-v="edit-done">${L("Done")}</button></div>
+          <div class="e-head"><div class="e-h">${L("Edit")}</div>
+            <button type="button" class="e-ibtn" data-v="shortcuts" aria-label="${L("Keyboard shortcuts")}" title="${L("Keyboard shortcuts")}">${ICON.keys}</button>
+            <button type="button" class="e-ibtn e-fsbtn" data-v="editor-full" aria-pressed="false"></button>
+            <button class="btn sm" data-v="edit-done">${L("Done")}</button></div>
           <section class="e-sec">
             <div class="e-title">${L("Speed")}</div>
             <div class="e-line"><button type="button" class="btn sm e-speed" aria-haspopup="menu" aria-expanded="false" aria-label="${L("Clip speed")}"></button><span class="small e-speed-note"></span></div>
           </section>
           <section class="e-sec e-color"></section>
           <section class="e-sec e-export"></section>
-          <section class="e-sec"><button class="btn wide" data-v="shortcuts">${L("Shortcuts")}</button></section>
         </div>
       </div>
       <div class="e-drop" hidden><div class="e-drop-box">${L("Drop audio files to add them as new tracks")}</div></div>
@@ -385,7 +618,8 @@ function mountPlayer(root, c) {
     vol: 0.6, muted: false,   // master volume, also applied to the preview audio
     model: null,              // the edit model, made on first entering edit mode, dropped with the player
     tl: null,                 // timeline handle while edit mode is on
-    sel: null,                // last selection the timeline reported
+    sel: null,                // last primary selection the timeline reported: { row, seg }
+    sels: [],                 // every selected piece it reported (row = "video" or an audio row id)
     src: new Map(),           // preview audio by model row id: { id, kind, path, title, a, node, gain, state }
     trackState: "idle",       // the clip's own tracks: idle | loading | on | failed | none
     ctx: null,                // AudioContext: null = not made yet, false = not available
@@ -404,6 +638,7 @@ function mountPlayer(root, c) {
     try { fn(P.tl); } catch (e) { console.error("Glint: timeline call failed", e); }
   };
   P.alive = () => !dead;
+  P.refreshTimeline = () => tl((h) => h.refresh());
 
   /* ----- Web Audio: one context per player, a GainNode per preview element ----- */
   P.audioCtx = () => {
@@ -576,11 +811,23 @@ function mountPlayer(root, c) {
     v.playbackRate = r;
     for (const s of P.src.values()) if (s.a) { s.a.defaultPlaybackRate = r; s.a.playbackRate = r; }
   }
+  // Colour and hiding are per segment, so the preview follows the playhead:
+  // paint() calls this every frame while playing and after every seek or edit.
+  // The DOM is only touched when something changed.
+  let shownCss = "", shownExp = "", shownBlank = false, shownSeg = -1;
   function applyColor() {
-    const col = ed() ? P.model.color : ED_NO_COLOR;
-    v.style.filter = edFilterCss(col);
-    const exp = String(Math.round((1 / col.gamma) * 10000) / 10000);
-    for (const f of $$("#e-gamma feFuncR, #e-gamma feFuncG, #e-gamma feFuncB", root)) f.setAttribute("exponent", exp);
+    const m = ed(), now = v.currentTime;
+    const col = m ? emColorAt(m, now) : ED_NO_COLOR;
+    const css = edFilterCss(col), exp = String(Math.round((1 / (col.gamma || 1)) * 10000) / 10000);
+    if (css !== shownCss) { shownCss = css; v.style.filter = css; }
+    if (exp !== shownExp) {
+      shownExp = exp;
+      for (const f of $$("#e-gamma feFuncR, #e-gamma feFuncG, #e-gamma feFuncB", root)) f.setAttribute("exponent", exp);
+    }
+    const blank = !!m && emBlankAt(m, now); // black picture, the audio plays on
+    if (blank !== shownBlank) { shownBlank = blank; box.classList.toggle("e-blank", blank); }
+    const seg = m ? emSegmentAt(m, now) : -1;
+    if (seg !== shownSeg) { shownSeg = seg; P.ed?.playheadSeg?.(); } // the Colour pane may show the playhead's segment
   }
   P.applyColor = applyColor;
 
@@ -616,6 +863,7 @@ function mountPlayer(root, c) {
       : `${fmtClock(now)} / ${fmtClock(dur())}`;
     if (v.buffered.length) el(".p-buf").style.width = pct(toBar(v.buffered.end(v.buffered.length - 1)));
     if (P.editing) levels(now);
+    applyColor();
   }
   const tick = () => {
     if (P.editing) syncAudio(false);
@@ -672,7 +920,35 @@ function mountPlayer(root, c) {
     wake();
   };
   P.time = () => v.currentTime;
-  P.fullscreen = () => (document.fullscreenElement ? document.exitFullscreen() : box.requestFullscreen().catch((e) => console.warn("Glint: fullscreen refused", e)));
+  const leaveFull = () => (document.fullscreenElement ? document.exitFullscreen().catch((e) => console.warn("Glint: exitFullscreen failed", e)) : Promise.resolve());
+  /** Edit mode: the whole editor (video, timeline, side column) fullscreen, or back. */
+  P.editorFull = () => (document.fullscreenElement ? leaveFull() : root.requestFullscreen().catch((e) => console.warn("Glint: fullscreen refused", e)));
+  P.isEditorFull = () => document.fullscreenElement === root;
+  // Outside edit mode the video alone goes fullscreen; in edit mode that would hide the timeline.
+  P.fullscreen = () => (P.editing ? P.editorFull() : document.fullscreenElement ? leaveFull() : box.requestFullscreen().catch((e) => console.warn("Glint: fullscreen refused", e)));
+  // app.js's prompt (#confirm) and messages (#flash) live outside the viewer, and
+  // only the fullscreen element is drawn in fullscreen: move them into it meanwhile.
+  function adoptOverlays(on) {
+    const home = document.getElementById("modal");
+    for (const id of ["confirm", "flash"]) { // back in index.html's order: #modal, #confirm, #flash
+      const node = document.getElementById(id);
+      if (!node) continue;
+      if (on && node.parentNode !== root) root.appendChild(node);
+      else if (!on && node.parentNode === root) {
+        const before = id === "flash" ? document.getElementById("confirm") || home : home;
+        if (before && before.parentNode !== root) before.after(node); else document.body.appendChild(node);
+      }
+    }
+  }
+  function onFullscreen() {
+    if (dead) return;
+    const on = P.isEditorFull();
+    root.classList.toggle("e-full", on);
+    adoptOverlays(on);
+    P.ed?.fullChanged?.(on);
+    tl((h) => h.refresh()); // the timeline's width may have changed
+  }
+  document.addEventListener("fullscreenchange", onFullscreen);
 
   /* ----- edit mode ----- */
   /** Resolves once the video's length is known (or failed to load). */
@@ -720,8 +996,21 @@ function mountPlayer(root, c) {
         getTime: () => v.currentTime,
         onSeek: (sec) => P.seek(sec),
         onChange: (what) => P.edSync(what),
-        onSelect: (sel) => { P.sel = sel || null; },
+        // sel: the primary piece { row, seg } or null; sels: every selected piece (older timelines pass only sel).
+        onSelect: (sel, sels) => {
+          P.sel = sel || null;
+          P.sels = Array.isArray(sels) ? sels.filter((s) => s && Number.isInteger(s.seg)) : P.sel ? [P.sel] : [];
+          P.ed?.selChanged?.();
+        },
         onAddAudio: () => edPickAudio(),
+        // The timeline's own buttons: "shortcuts", "fullscreen", or any ED_KEYS cmd.
+        onCommand: (name) => {
+          if (name === "shortcuts") P.openKeys();
+          else if (name === "fullscreen") P.editorFull();
+          else if (ED_KEYS.some((k) => k.cmd === name)) P.command(name);
+          else console.warn("Glint: unknown timeline command", name);
+        },
+        keyText: edKeyText, // the current shortcut of an ED_KEYS cmd as text ("Ctrl+Z"), for tooltips; "" if none
       });
     } catch (e) {
       console.error("Glint: mountTimeline failed", e);
@@ -736,6 +1025,7 @@ function mountPlayer(root, c) {
     const h = P.tl;
     P.tl = null;
     P.sel = null;
+    P.sels = [];
     if (h) { try { h.destroy(); } catch (e) { console.error("Glint: timeline destroy failed", e); } }
     const host = el(".e-tl");
     if (host) host.textContent = "";
@@ -760,6 +1050,18 @@ function mountPlayer(root, c) {
       tl((h) => h.setThumbs(P.thumbs));
     }).catch((e) => { if (!dead) console.warn("Glint: editor_thumbs failed; the video row shows no film strip.", e); });
   }
+
+  /** The timeline's selection now: { sel, sels } (see onSelect). Asks the timeline when it can, else uses what onSelect last said. */
+  P.selection = () => {
+    let sel = P.sel, sels = P.sels;
+    if (P.tl) {
+      try { if (typeof P.tl.selection === "function") sel = P.tl.selection() ?? null; } catch (e) { console.error("Glint: timeline selection() failed", e); }
+      try { if (typeof P.tl.selections === "function") { const x = P.tl.selections(); if (Array.isArray(x)) sels = x; } } catch (e) { console.error("Glint: timeline selections() failed", e); }
+    }
+    sels = Array.isArray(sels) ? sels.filter((s) => s && Number.isInteger(s.seg)) : [];
+    if (!sels.length && sel && Number.isInteger(sel.seg)) sels = [sel];
+    return { sel: sel || null, sels };
+  };
 
   /** Re-sync the preview and the side column after the model changed (from the timeline, a key or the side column). */
   P.edSync = (what) => {
@@ -813,6 +1115,7 @@ function mountPlayer(root, c) {
       v.loop = P.loop && !on; // while editing, looping is handled by guard() and "ended"
       if (on) v.pause();
       else { edPopClose?.(); dropTimeline(); }
+      if (document.fullscreenElement) leaveFull(); // video-only or editor fullscreen does not fit the other mode
       applyRate();
       applyColor();
       output(true);
@@ -850,15 +1153,43 @@ function mountPlayer(root, c) {
       case "home": return P.seek(0);
       case "end": return P.seek(dur(), true);
       case "loop": return P.setLoop(!P.loop);
-      case "full": return P.fullscreen();
+      case "fullscreen": return P.editorFull();
       case "zoomIn": return tl((h) => h.zoom(ED_ZOOM_STEP));
       case "zoomOut": return tl((h) => h.zoom(1 / ED_ZOOM_STEP));
       case "fit": return tl((h) => h.fit());
       case "export": return edExport(false);
-      case "escape": if (edPopClose) edPopClose(); else P.setEdit(false); return;
+      case "escape": // in turn: the pop-up, the selection, the editor
+        if (edPopClose) return edPopClose();
+        if (P.selection().sels.length && typeof P.tl?.run === "function") {
+          try { if (P.tl.run("clearSel")) return; } catch (e) { console.error("Glint: timeline run(clearSel) failed", e); }
+        }
+        return P.setEdit(false);
     }
     const m = P.model;
     if (!m) return flash(t("The editor is still loading"));
+    // Selection commands go to the timeline, which applies them to every selected
+    // piece, snapshots and reports the change itself. The code further down is the
+    // fallback for a timeline without run() (or none at all): primary selection only.
+    if (ED_TL_CMDS.has(cmd) && typeof P.tl?.run === "function") {
+      const { sel: before, sels } = P.selection();
+      let ok, threw = false;
+      try { ok = !!P.tl.run(cmd); } catch (e) { threw = true; console.error(`Glint: timeline run(${cmd}) failed, using the editor's own code`, e); }
+      if (!threw) {
+        if (ok) {
+          if (cmd === "louder" || cmd === "quieter") {
+            const sel = P.selection().sel || before, row = sel && sel.row !== "video" ? emRow(P.model, sel.row) : null;
+            if (row && Number.isInteger(sel.seg) && sel.seg < row.gains.length) flash(t("Level {pct}%", { pct: Math.round(row.gains[sel.seg] * 100) }));
+          }
+          return;
+        }
+        // Nothing happened: say why when it is the usual reason.
+        if (cmd === "split") return flash(t("Too close to a cut point to split here"));
+        if ((cmd === "remove" || cmd === "blank") && !sels.length) return flash(t("Select a segment on the timeline first"));
+        if (cmd === "remove") return flash(t("At least one part of the clip has to stay"));
+        if (["mute", "louder", "quieter", "solo"].includes(cmd) && !sels.some((s) => s.row !== "video")) return flash(t("Select an audio segment on the timeline first"));
+        return;
+      }
+    }
     switch (cmd) {
       case "cutPrev": {
         const pts = [0, ...m.cuts].filter((x) => x < now - 0.02);
@@ -874,20 +1205,27 @@ function mountPlayer(root, c) {
       case "undo": if (emUndo(m)) { tl((h) => h.refresh()); P.edSync("undo"); } else flash(t("Nothing to undo")); return;
       case "redo": if (emRedo(m)) { tl((h) => h.refresh()); P.edSync("redo"); } else flash(t("Nothing to redo")); return;
     }
-    let sel = P.sel;
-    if (P.tl) { try { sel = P.tl.selection() ?? null; } catch (e) { console.error("Glint: timeline selection() failed", e); } }
+    if (cmd === "hideCuts") {
+      if (typeof P.tl?.setHideCuts === "function" && typeof P.tl.hideCuts === "function") tl((h) => h.setHideCuts(!h.hideCuts()));
+      return;
+    }
+    if (cmd === "selectAll" || cmd === "clearSel") return; // need the timeline's run()
+    if (!ED_TL_CMDS.has(cmd)) return;
+    const { sel } = P.selection();
     const seg = sel && Number.isInteger(sel.seg) ? sel.seg : -1;
-    if (cmd === "remove") {
+    if (cmd === "remove" || cmd === "blank") {
       if (seg < 0 || seg >= m.removed.length) return flash(t("Select a segment on the timeline first"));
+      if (cmd === "blank") return P.edit("blank", (mm) => emSetBlank(mm, seg, !mm.blank[seg]));
       const off = !m.removed[seg];
       return P.edit(off ? "cut" : "restore", (mm) => emSetRemoved(mm, seg, off), t("At least one part of the clip has to stay"));
     }
-    // mute, louder, quieter: the selected audio segment. With the video row selected they do nothing.
+    // mute, louder, quieter, solo: the selected audio segment. With the video row selected they do nothing.
     if (sel?.row === "video") return;
     const row = sel ? m.audio.find((r) => r.id === sel.row) : null;
     if (!row || seg < 0 || seg >= row.gains.length) return flash(t("Select an audio segment on the timeline first"));
     const g = row.gains[seg];
     if (cmd === "mute") return P.edit("mute", (mm) => emSetGain(mm, row.id, seg, g > 0.005 ? 0 : 1));
+    if (cmd === "solo") return P.edit("solo", (mm) => emSolo(mm, row.id, seg), t("Solo needs at least two audio tracks"));
     const next = clamp(Math.round((g + (cmd === "louder" ? ED_GAIN_STEP : -ED_GAIN_STEP)) * 100) / 100, 0, EM_MAX_GAIN);
     if (P.edit("gain", (mm) => emSetGain(mm, row.id, seg, next))) flash(t("Level {pct}%", { pct: Math.round(next * 100) }));
   };
@@ -908,6 +1246,8 @@ function mountPlayer(root, c) {
     P.model = null;
     P.waves.clear();
     P.thumbs = null;
+    document.removeEventListener("fullscreenchange", onFullscreen);
+    adoptOverlays(false); // now: the caller is about to empty #modal, and they must not go with it
     if (document.fullscreenElement) document.exitFullscreen().catch((e) => console.warn("Glint: exitFullscreen failed", e));
     v.pause();
     v.removeAttribute("src");
@@ -1010,9 +1350,33 @@ function mountPlayer(root, c) {
 function mountEditor(root, c, P) {
   const pane = $(".v-edit", root);
   const speedBtn = $(".e-speed", pane);
-  let lastExport = "", colorDrag = false;
+  let lastExport = "", lastTarget = "";
+  let colorDrag = null; // during a slider gesture: the segments it edits (null = every segment, see target()); false between gestures
   const model = () => P.model;
-  const color = () => P.model?.color ?? ED_NO_COLOR;
+  /** What the Colour pane edits now (edColorTarget: the timeline's selection, or the whole clip). */
+  const target = () => { const m = model(), s = P.selection(); return m ? edColorTarget(m, s.sels, s.sel, P.time()) : { segs: null, shown: 0 }; };
+  /** The values the sliders show: the target's (primary) segment. */
+  const color = () => P.model?.colors[target().shown] ?? ED_NO_COLOR;
+
+  /** "Applies to: …" and "Apply to the whole clip", at the top of the pane. */
+  function renderTarget() {
+    const box = $(".e-target", pane), m = model();
+    if (!box) return;
+    let html = "";
+    if (m) {
+      const tg = target(), n = m.colors.length;
+      const line = !tg.segs || n < 2 ? t("Applies to: the whole clip")
+        : tg.segs.length === 1 ? t("Applies to: segment {n} of {total}", { n: tg.segs[0] + 1, total: n })
+        : t("Applies to: {n} segments", { n: tg.segs.length });
+      const shown = m.colors[tg.shown], same = m.colors.every((col) => emSameColor(col, shown));
+      html = `<div class="small e-target-line">${esc(line)}</div>`;
+      if (!tg.segs && !same) html += `<div class="small e-note">${esc(t("The segments have different colours. The sliders show the one at the playhead."))}</div>`;
+      if (n > 1) html += `<button type="button" class="btn sm e-all" data-e-act="color-all" ${same ? "disabled" : ""}>${esc(t("Apply to the whole clip"))}</button>`;
+    }
+    if (html === lastTarget) return;
+    lastTarget = html;
+    box.innerHTML = html;
+  }
 
   const presetList = () => [...ED_PRESETS.map((p, i) => ["b" + i, p]), ...edUserPresets().map((p, i) => ["u" + i, p])];
 
@@ -1027,6 +1391,7 @@ function mountEditor(root, c, P) {
     const user = edUserPresets(), col = color(), off = model() ? "" : "disabled";
     $(".e-color", pane).innerHTML = `
       <div class="e-title">${esc(t("Colour"))} <span class="e-tag" hidden>${esc(t("Custom"))}</span></div>
+      <div class="e-target"></div>
       <div class="e-chips">
         ${ED_PRESETS.map((p, i) => `<button type="button" class="e-chip" data-e-chip="b${i}" data-e-preset="b${i}" ${off}>${esc(t(p.name))}</button>`).join("")}
         ${user.map((p, i) => `<span class="e-chip e-user" data-e-chip="u${i}"><button type="button" data-e-preset="u${i}" ${off}>${esc(p.name)}</button><button type="button" class="e-x" data-e-delpreset="${esc(p.name)}" aria-label="${esc(t("Delete preset {name}", { name: p.name }))}" title="${esc(t("Delete preset"))}">${ICON.x}</button></span>`).join("")}
@@ -1035,6 +1400,8 @@ function mountEditor(root, c, P) {
         ${ED_SLIDERS.map(([k, label, min, max]) => `<label class="e-slider"><span>${esc(t(label))}</span><input type="range" min="${min}" max="${max}" step="0.01" value="${col[k]}" data-e-color="${k}" ${off}><output data-e-val="${k}">${edFmtVal(k, col[k])}</output></label>`).join("")}
       </div>
       <button type="button" class="btn sm e-save" data-e-act="preset-save" ${off}>${esc(t("Save as preset"))}</button>`;
+    lastTarget = "";
+    renderTarget();
     markPreset();
   }
   function syncSliders() {
@@ -1057,13 +1424,14 @@ function mountEditor(root, c, P) {
   async function savePreset() {
     const m = model();
     if (!m) return;
+    const col = { ...color() }; // the target's values as they are now, before the prompt
     const name = await askText(t("Name this colour preset"), "", t("Save preset"));
     if (!name) return;
     const low = name.toLowerCase();
     if (ED_PRESETS.some((p) => p.name.toLowerCase() === low || t(p.name).toLowerCase() === low)) return flash(t("A built-in preset already has that name"), true);
     if (!Array.isArray(S.settings.color_presets)) S.settings.color_presets = [];
     const list = S.settings.color_presets;
-    const p = { name, ...Object.fromEntries(ED_COLOR_KEYS.map((k) => [k, Math.round(m.color[k] * 1000) / 1000])) };
+    const p = { name, ...Object.fromEntries(ED_COLOR_KEYS.map((k) => [k, Math.round(col[k] * 1000) / 1000])) };
     const i = list.findIndex((x) => x?.name?.toLowerCase() === low);
     if (i >= 0) list[i] = p; else list.push(p);
     saveSettings();
@@ -1126,23 +1494,36 @@ function mountEditor(root, c, P) {
   pane.addEventListener("input", (e) => {
     const d = e.target.dataset, m = model();
     if (!("eColor" in d) || !m) return;
-    if (!colorDrag) { emSnapshot(m); colorDrag = true; } // one undo step per drag
-    m.color[d.eColor] = +e.target.value;
+    // One undo step per drag. The target is fixed for the whole gesture.
+    if (colorDrag === false) { emSnapshot(m); colorDrag = target().segs; }
+    const x = +e.target.value;
+    emSetColor(m, colorDrag, { [d.eColor]: x });
     P.applyColor();
-    $(`[data-e-val="${d.eColor}"]`, pane).textContent = edFmtVal(d.eColor, m.color[d.eColor]);
+    $(`[data-e-val="${d.eColor}"]`, pane).textContent = edFmtVal(d.eColor, x);
     markPreset();
+    renderTarget();
     renderExport();
   });
   // Sliders are inputs, and app.js skips player keys while an input has focus.
-  pane.addEventListener("change", (e) => { if (e.target.type === "range") { colorDrag = false; e.target.blur(); } });
+  pane.addEventListener("change", (e) => {
+    if (e.target.type !== "range") return;
+    e.target.blur();
+    if (colorDrag === false) return;
+    colorDrag = false;
+    P.refreshTimeline(); // the timeline may mark segments that have a colour
+    P.edSync("color");
+  });
   pane.addEventListener("click", async (e) => {
     const btn = e.target.closest("[data-e-preset],[data-e-delpreset],[data-e-act],.e-speed");
     if (!btn) return;
     const d = btn.dataset;
     try {
       if ("ePreset" in d) {
-        const p = presetList().find(([k]) => k === d.ePreset)?.[1];
-        if (p) P.edit("color", (m) => { for (const k of ED_COLOR_KEYS) m.color[k] = p[k]; });
+        const p = presetList().find(([k]) => k === d.ePreset)?.[1], segs = target().segs;
+        if (p) P.edit("color", (m) => emSetColor(m, segs, p));
+      } else if (d.eAct === "color-all") {
+        const shown = { ...color() };
+        P.edit("color", (m) => emSetColor(m, null, shown));
       } else if ("eDelpreset" in d) await deletePreset(d.eDelpreset);
       else if (d.eAct === "preset-save") await savePreset();
       else if (btn === speedBtn && model()) {
@@ -1154,18 +1535,44 @@ function mountEditor(root, c, P) {
 
   P.onEdit = (on) => { if (on) renderExport(); };
 
+  /** The header's icon buttons: their tooltips name the current shortcut, the fullscreen one shows its state. */
+  function renderHead() {
+    const full = P.isEditorFull(), fsBtn = $(".e-fsbtn", pane);
+    const label = full ? t("Leave fullscreen") : t("Fullscreen editor");
+    fsBtn.innerHTML = full ? ED_ICON_UNFULL : PICON.full;
+    fsBtn.setAttribute("aria-label", label);
+    fsBtn.setAttribute("aria-pressed", String(full));
+    fsBtn.title = edTip(label, "fullscreen");
+    fsBtn.classList.toggle("on", full);
+  }
+  /** The colour target or the shown values changed without an edit (new selection, the playhead crossed a segment). */
+  function colorTarget() {
+    if (!model() || colorDrag !== false) return; // never move a slider under the pointer
+    syncSliders();
+    markPreset();
+    renderTarget();
+  }
+
   /** Called by P.edSync after any change of the model or the preview audio. */
   function sync(what) {
     renderSpeed();
     if (what === "load") renderColor(); // enables the controls once the model exists
-    else { syncSliders(); markPreset(); }
+    else colorTarget();
     renderExport();
   }
 
   renderSpeed();
   renderColor();
   renderExport();
-  return { renderExport, paintProgress, sync };
+  renderHead();
+  return {
+    renderExport, paintProgress, sync,
+    selChanged: colorTarget,
+    // Only the whole-clip target follows the playhead.
+    playheadSeg: () => { if (!target().segs) colorTarget(); },
+    fullChanged: renderHead,
+    keysChanged: renderHead,
+  };
 }
 
 /* ---------- adding audio files ---------- */
@@ -1318,6 +1725,7 @@ async function viewerAction(act) {
     else if (act === "edit" || act === "trim") S.player.setEdit(!S.player.editing);
     else if (act === "edit-done" || act === "trim-cancel") S.player.setEdit(false);
     else if (act === "shortcuts") S.player.openKeys();
+    else if (act === "editor-full") S.player.editorFull();
     else if (act === "export") await edExport(false);
     else if (act === "export-blur") await edExport(true);
     else if (act === "blur") { S.jobs[id] = { pct: 0, state: "running", message: "" }; $("#v-blur").innerHTML = blurPanel(c); await invoke("blur_clip", { id }); }

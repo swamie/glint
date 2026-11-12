@@ -60,12 +60,16 @@ pub struct TrackVolume {
     pub volume: f32,
 }
 
-/// A range of source time, in seconds.
+/// A range of source time, in seconds, and how its picture looks.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct Range {
     pub start: f64,
     pub end: f64,
+    /// This range's colour correction; replaces `ExportOpts::color` here. None = that one.
+    pub color: Option<Color>,
+    /// The picture is black here (same size and frame timing); the audio plays on.
+    pub blank: bool,
 }
 
 /// A source range where an audio row is louder or quieter than its own volume.
@@ -134,7 +138,8 @@ pub struct ExportOpts {
     /// Volume per source audio track. Empty = keep the clip's audio tracks as they are.
     pub tracks: Vec<TrackVolume>,
     /// Timeline edit: the source ranges to keep, in order, joined end to end.
-    /// Empty = use `start`..`end` (one range).
+    /// Empty = use `start`..`end` (one range). Ranges that look different
+    /// (colour, blank) may touch: the end of one is the start of the next.
     pub segments: Vec<Range>,
     /// Timeline edit: the audio rows to mix into ONE track. Empty = fall back
     /// to `tracks` (and, if that is empty too, keep the clip's audio as recorded).
@@ -160,6 +165,12 @@ fn same(a: f64, b: f64) -> bool {
 
 fn is_neutral(c: &Color) -> bool {
     [c.brightness, c.contrast, c.saturation, c.gamma].iter().all(|v| !v.is_finite() || same(*v as f64, 1.0))
+}
+
+/// True if `a` and `b` give the same picture (a non-finite field counts as 1, as in `is_neutral`).
+fn same_color(a: &Color, b: &Color) -> bool {
+    let f = |v: f32| if v.is_finite() { v as f64 } else { 1.0 };
+    [(a.brightness, b.brightness), (a.contrast, b.contrast), (a.saturation, b.saturation), (a.gamma, b.gamma)].iter().all(|&(x, y)| same(f(x), f(y)))
 }
 
 fn clamped(v: f32, lo: f64, hi: f64) -> f64 {
@@ -463,28 +474,63 @@ fn run_with_progress(ffmpeg: &Path, args: &[String], expected: f64, progress: &m
 /// Sample rate of the timeline mix (`ExportOpts::audio`).
 const MIX_RATE: u32 = 48_000;
 
-/// The source ranges to keep: `segments` clamped into the clip, sorted, with
-/// overlaps merged; or the one range `start`..`end` when there are none.
-fn kept_ranges(opts: &ExportOpts, duration: f64) -> Vec<(f64, f64)> {
+/// One kept source range `a`..`b` and how its picture looks in the result.
+#[derive(Clone, Debug)]
+struct Kept {
+    a: f64,
+    b: f64,
+    /// The colour that applies here: the range's own, else `ExportOpts::color`
+    /// (neutral on a blank range, where nothing of the picture is left to correct).
+    color: Color,
+    blank: bool,
+}
+
+impl Kept {
+    fn looks_like(&self, o: &Kept) -> bool {
+        self.blank == o.blank && same_color(&self.color, &o.color)
+    }
+}
+
+/// The source ranges to keep: `segments` clamped into the clip and sorted,
+/// with ranges that touch or overlap merged when they look the same; or the
+/// one range `start`..`end` when there are none. A range that looks different
+/// from the one before starts exactly where that one ends: an overlap goes to
+/// the earlier range, and a gap under 1 ms (rounding in the UI) is closed.
+fn kept_ranges(opts: &ExportOpts, duration: f64) -> Vec<Kept> {
     if opts.segments.is_empty() {
         let start = if opts.start.is_finite() { opts.start.clamp(0.0, duration) } else { 0.0 };
         let to_end = !(opts.end.is_finite() && opts.end > start) || opts.end >= duration;
-        return vec![(start, if to_end { duration } else { opts.end })];
+        return vec![Kept { a: start, b: if to_end { duration } else { opts.end }, color: opts.color.clone(), blank: false }];
     }
-    let mut r: Vec<(f64, f64)> = opts
+    let mut r: Vec<Kept> = opts
         .segments
         .iter()
         .filter(|g| g.start.is_finite() && g.end.is_finite())
-        .map(|g| (g.start.clamp(0.0, duration), g.end.clamp(0.0, duration)))
-        .filter(|(a, b)| b - a > 0.001)
+        .map(|g| Kept {
+            a: g.start.clamp(0.0, duration),
+            b: g.end.clamp(0.0, duration),
+            color: if g.blank { Color::default() } else { g.color.clone().unwrap_or_else(|| opts.color.clone()) },
+            blank: g.blank,
+        })
+        .filter(|k| k.b - k.a > 0.001)
         .collect();
-    r.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut out: Vec<(f64, f64)> = Vec::new();
-    for (a, b) in r {
-        match out.last_mut() {
-            Some(last) if a <= last.1 + 1e-3 => last.1 = last.1.max(b),
-            _ => out.push((a, b)),
+    // Stable: of two ranges that start together, the one sent first wins.
+    r.sort_by(|x, y| x.a.total_cmp(&y.a));
+    let mut out: Vec<Kept> = Vec::new();
+    for mut k in r {
+        if let Some(last) = out.last_mut() {
+            if k.a <= last.b + 1e-3 {
+                if k.looks_like(last) {
+                    last.b = last.b.max(k.b);
+                    continue;
+                }
+                k.a = last.b;
+                if k.b - k.a <= 0.001 {
+                    continue;
+                }
+            }
         }
+        out.push(k);
     }
     out
 }
@@ -785,7 +831,8 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         return Err("Could not read the clip's length".into());
     }
     let speed = if opts.speed.is_finite() { opts.speed.clamp(0.25, 4.0) } else { 1.0 };
-    let ranges = kept_ranges(opts, duration);
+    let pieces = kept_ranges(opts, duration);
+    let ranges: Vec<(f64, f64)> = pieces.iter().map(|k| (k.a, k.b)).collect();
     let kept: f64 = ranges.iter().map(|(a, b)| b - a).sum();
     let (Some(&(base, _)), Some(&(_, last_end))) = (ranges.first(), ranges.last()) else {
         return Err("The selection is too short".into());
@@ -801,8 +848,10 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
 
     // Nothing but a cut: the lossless trim is faster and keeps the original
     // quality. Its result stays kind "trim" and is named "(trim)", because
-    // that is exactly what it is.
-    if k_count == 1 && same(speed, 1.0) && is_neutral(&opts.color) && opts.tracks.is_empty() && opts.audio.is_empty() {
+    // that is exactly what it is. The one range's own look decides (it
+    // replaces `opts.color`), so a coloured or blank range is never copied.
+    let plain = pieces.iter().all(|k| !k.blank && is_neutral(&k.color));
+    if k_count == 1 && same(speed, 1.0) && plain && opts.tracks.is_empty() && opts.audio.is_empty() {
         let meta = crate::clip::trim(s, src, base, if to_end { duration } else { last_end }, true)?;
         progress(100.0);
         return Ok(meta);
@@ -822,6 +871,17 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     // result and `interleave` joins them by timestamp, which, unlike `concat`,
     // keeps every range exactly as long as its audio (concat guesses a VFR
     // segment's length from its mean frame interval).
+    //
+    // Look: when every range looks the same, the colour is applied once after
+    // the join, as before. Otherwise each range gets its own colour (or is
+    // painted black) on its own branch, before the join, and every branch ends
+    // in the same pixel format and colour tags so `interleave` joins like
+    // with like. A blank range keeps its source frames and only overwrites
+    // their pixels, so its size, frame timing and length are the source's.
+    let (matrix, range) = video_colorspace(&ffmpeg, &src_path);
+    let uniform = pieces.iter().all(|k| !k.blank && same_color(&k.color, &pieces[0].color));
+    let tags = format!("setparams=colorspace={}:range={range}", if matrix == "bt601" { "smpte170m" } else { matrix });
+    let black = if range == "pc" { 0 } else { 16 };
     let on_screen = frames_on_screen(&ffmpeg, &src_path, &ranges.iter().map(|r| r.0).collect::<Vec<_>>());
     let mut video_inputs: Vec<(f64, Option<f64>)> = Vec::new();
     let mut graph: Vec<String> = Vec::new();
@@ -835,9 +895,21 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         // `-t` only bounds the reading; the exact end is the `trim`, because an
         // input's `-t` counts from its first frame, not from the seek point.
         video_inputs.push((seek, (!open_end).then(|| b - seek + 0.5)));
-        let trim = if open_end { String::new() } else { format!("trim=end={:.6},", b - seek) };
+        // The end is half a millisecond early too, the mirror of the seek: a
+        // frame at (or within rounding of) `b` is left to the next range,
+        // which takes it as the frame on screen at its start. Touching ranges
+        // then share no frame and lose none, whatever the timestamp rounding.
+        let trim = if open_end { String::new() } else { format!("trim=end={:.6},", b - seek - 0.0005) };
         let label = if k_count == 1 { "vj".to_string() } else { format!("v{k}") };
-        graph.push(format!("[{k}:v:0]{trim}setpts='({placed:.6}+if(eq(N,0),0,max(0,T-{:.6})))/{speed:.6}/TB'[{label}]", a - seek));
+        let look = if uniform {
+            String::new()
+        } else if pieces[k].blank {
+            format!(",format=yuv420p,lutyuv=y={black}:u=128:v=128,{tags}")
+        } else {
+            let c = color_filter(&pieces[k].color, matrix, range).map(|f| format!(",{f}")).unwrap_or_default();
+            format!("{c},format=yuv420p,{tags}")
+        };
+        graph.push(format!("[{k}:v:0]{trim}setpts='({placed:.6}+if(eq(N,0),0,max(0,T-{:.6})))/{speed:.6}/TB'{look}[{label}]", a - seek));
         placed += b - a;
     }
     if k_count > 1 {
@@ -858,12 +930,11 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     // ffmpeg 8 refuses `-r` together with `-fps_mode vfr`, and CFR would
     // duplicate frames through every still stretch.
     let cap = if src.fps > 0 { src.fps.min(240) } else { 60 };
-    let (matrix, range) = video_colorspace(&ffmpeg, &src_path);
     let mut video = "[vj]null".to_string();
     if speed > 1.0 + 1e-3 {
         video += &format!(",select='if(gte(t,ld(0)),st(0,max(ld(0),t-1/{cap})+1/{cap})*0+1,0)'");
     }
-    if let Some(f) = color_filter(&opts.color, matrix, range) {
+    if let Some(f) = color_filter(&pieces[0].color, matrix, range).filter(|_| uniform) {
         video += ",";
         video += &f;
     }
@@ -1049,8 +1120,21 @@ fn near(a: f64, b: f64, tol: f64) -> bool {
 
 /// Mean luma and mean saturation over every frame (ffmpeg `signalstats`).
 fn signal_stats(ffmpeg: &Path, file: &Path) -> Option<(f64, f64)> {
-    let out = util::hidden_cmd(ffmpeg)
-        .args(["-hide_banner", "-nostats", "-nostdin", "-i"])
+    signal_stats_at(ffmpeg, file, 0.0, f64::INFINITY)
+}
+
+/// Like `signal_stats`, over the frames from `from` to `to` seconds only.
+fn signal_stats_at(ffmpeg: &Path, file: &Path, from: f64, to: f64) -> Option<(f64, f64)> {
+    let mut cmd = util::hidden_cmd(ffmpeg);
+    cmd.args(["-hide_banner", "-nostats", "-nostdin"]);
+    if from > 0.0 {
+        cmd.args(["-ss", &format!("{from:.3}")]);
+    }
+    if to.is_finite() {
+        cmd.args(["-t", &format!("{:.3}", to - from)]);
+    }
+    let out = cmd
+        .arg("-i")
         .arg(file)
         .args(["-an", "-vf", "signalstats,metadata=mode=print", "-f", "null", "-"])
         .stdin(Stdio::null())
@@ -1310,6 +1394,7 @@ fn run_self_test(r: &mut Report) {
     r.check("too-short selection is refused cleanly", bad.is_err() && count_before == count_after, &format!("{:?}", bad.err()));
 
     timeline_checks(r, &ffmpeg, &s, &src, &dir, (f_desk, f_mic), base);
+    look_checks(r, &ffmpeg, &s, &src, f_desk);
     if let Some(clip) = std::env::var_os("GLINT_EDITOR_BENCH") {
         bench(r, &ffmpeg, &s, Path::new(&clip));
     }
@@ -1379,7 +1464,7 @@ fn timeline_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, 
         let p = library::probe(ffmpeg, Path::new(&m.path), true).ok_or("probe failed")?;
         Ok((m, p, ms))
     };
-    let seg = |v: &[(f64, f64)]| v.iter().map(|&(start, end)| Range { start, end }).collect::<Vec<_>>();
+    let seg = |v: &[(f64, f64)]| v.iter().map(|&(start, end)| Range { start, end, ..Default::default() }).collect::<Vec<_>>();
     let titles_of = |m: &ClipMeta| audio_titles(ffmpeg, Path::new(&m.path)).unwrap_or_default().into_iter().map(Option::unwrap_or_default).collect::<Vec<_>>();
     let desc = |p: &library::Probe, ms: u128| format!("dur={:.3} frames={} audio={} in {ms} ms", p.duration, p.frames, p.audio_streams);
     let three = ["Mix", "Desktop", "Microphone"];
@@ -1662,12 +1747,196 @@ fn bench(r: &mut Report, ffmpeg: &Path, s: &Settings, clip: &Path) {
         r.line(&format!("INFO bench thumbs({count}): {} ms, {:?}", started.elapsed().as_millis(), t.as_ref().map(Vec::len)));
     }
     let d = src.duration;
-    let opts = ExportOpts { segments: vec![Range { start: d * 0.1, end: d * 0.1 + 2.0 }, Range { start: d * 0.5, end: d * 0.5 + 2.0 }, Range { start: d * 0.9, end: d * 0.9 + 2.0 }], ..Default::default() };
+    let at = |start: f64| Range { start, end: start + 2.0, ..Default::default() };
+    let opts = ExportOpts { segments: vec![at(d * 0.1), at(d * 0.5), at(d * 0.9)], ..Default::default() };
     let started = Instant::now();
     let e = export(s, &src, &opts, &mut |_| {});
     r.line(&format!("INFO bench export of 3 x 2 s ranges: {} ms, {:?}", started.elapsed().as_millis(), e.map(|m| m.duration)));
     if let Ok((dir, _)) = edit_dir(&src) {
         let _ = fs::remove_dir_all(dir);
+    }
+}
+
+/// Presentation times of every video frame of `file`, sorted (seconds from its start).
+fn frame_times(ffmpeg: &Path, file: &Path) -> Vec<f64> {
+    let Some(ffprobe) = library::ffprobe_for(ffmpeg) else { return Vec::new() };
+    let start = start_time(&ffprobe, file);
+    let Ok(out) = util::hidden_cmd(&ffprobe)
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time", "-of", "csv=p=0"])
+        .arg(file)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    let mut t: Vec<f64> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().trim_end_matches(',').parse::<f64>().ok()).map(|v| v - start).collect();
+    t.sort_by(f64::total_cmp);
+    t
+}
+
+/// Checks of per-range looks: a colour per kept range, blank (black) ranges,
+/// and joins between ranges that touch. The test clip moves from 0 to 3 s and
+/// from 5 to 8 s at 30 fps (a frame every 1/30 s from 0), its desktop track is
+/// a tone at `f_desk`.
+fn look_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, f_desk: u32) {
+    let src_file = Path::new(&src.path);
+    let ex = |opts: ExportOpts| -> Result<(ClipMeta, library::Probe), String> {
+        let m = export(s, src, &opts, &mut |_| {})?;
+        let p = library::probe(ffmpeg, Path::new(&m.path), true).ok_or("probe failed")?;
+        Ok((m, p))
+    };
+    let grey = Color { saturation: 0.0, ..Default::default() };
+    let piece = |start: f64, end: f64, color: Option<Color>, blank: bool| Range { start, end, color, blank };
+    let st = |m: &ClipMeta, a: f64, b: f64| signal_stats_at(ffmpeg, Path::new(&m.path), a, b);
+    let desc = |m: &ClipMeta, p: &library::Probe| format!("kind={} dur={:.3} frames={}", m.kind, p.duration, p.frames);
+    // (luma, saturation) of a window: colourful like the source, grey, or black.
+    let colourful = |x: Option<(f64, f64)>| x.is_some_and(|(y, c)| c > 10.0 && y > 30.0);
+    let greyish = |x: Option<(f64, f64)>| x.is_some_and(|(y, c)| c < 1.5 && y > 30.0);
+    let blackish = |x: Option<(f64, f64)>| x.is_some_and(|(y, c)| y < 17.5 && c < 0.5);
+
+    // --- the opts the UI sends
+    let old = serde_json::from_str::<ExportOpts>(r#"{"start":0,"end":0,"speed":1,"color":{"brightness":1,"contrast":1,"saturation":1,"gamma":1},"tracks":[],"segments":[{"start":0.5,"end":2},{"start":3,"end":4}],"audio":[]}"#);
+    let ok = matches!(&old, Ok(o) if o.segments.len() == 2 && o.segments.iter().all(|g| g.color.is_none() && !g.blank) && o.segments[1] == Range { start: 3.0, end: 4.0, ..Default::default() });
+    r.check("opts JSON without per-range fields", ok, &format!("{:?}", old.map(|o| o.segments)));
+    let new = serde_json::from_str::<ExportOpts>(
+        r#"{"speed":1,"color":{"brightness":1,"contrast":1,"saturation":1,"gamma":1},"segments":[{"start":0.5,"end":2,"color":{"brightness":1.2,"contrast":1,"saturation":0,"gamma":1}},{"start":2,"end":4,"color":{"brightness":1,"contrast":1,"saturation":1,"gamma":1},"blank":true},{"start":4,"end":5,"color":{"saturation":0.5}}]}"#,
+    );
+    let ok = matches!(&new, Ok(o) if o.segments.len() == 3
+        && o.segments[0].color == Some(Color { brightness: 1.2, saturation: 0.0, ..Default::default() }) && !o.segments[0].blank
+        && o.segments[1].blank && o.segments[1].color == Some(Color::default())
+        && o.segments[2].color == Some(Color { saturation: 0.5, ..Default::default() }) && !o.segments[2].blank);
+    r.check("opts JSON with per-range colour and blank", ok, &format!("{:?}", new.map(|o| o.segments)));
+
+    // --- merging
+    let ks = |segments: Vec<Range>| kept_ranges(&ExportOpts { segments, ..Default::default() }, 8.0).iter().map(|k| (k.a, k.b, k.blank, is_neutral(&k.color))).collect::<Vec<_>>();
+    let same_look = ks(vec![piece(0.0, 1.0, None, false), piece(1.0, 2.0, Some(Color::default()), false)]);
+    let touching = ks(vec![piece(0.0, 1.0, None, false), piece(1.0, 2.0, Some(grey.clone()), false), piece(2.0005, 3.0, None, true)]);
+    let overlap = ks(vec![piece(1.0, 2.0, Some(grey.clone()), false), piece(0.0, 1.5, None, false)]);
+    let ok = same_look == [(0.0, 2.0, false, true)] && touching == [(0.0, 1.0, false, true), (1.0, 2.0, false, false), (2.0, 3.0, true, true)] && overlap == [(0.0, 1.5, false, true), (1.5, 2.0, false, false)];
+    r.check("kept ranges merge only where they look the same", ok, &format!("{same_look:?} / {touching:?} / {overlap:?}"));
+
+    // --- a colour per range: colourful, grey, colourful; the second join touches
+    let opts = ExportOpts { segments: vec![piece(0.5, 2.5, None, false), piece(5.5, 6.5, Some(grey.clone()), false), piece(6.5, 7.5, None, false)], ..Default::default() };
+    match ex(opts) {
+        Ok((m, p)) => {
+            // Result: 0..2 s colourful, 2..3 s grey, 3..4 s colourful.
+            let (a, b, c) = (st(&m, 0.2, 1.8), st(&m, 2.1, 2.9), st(&m, 3.1, 3.9));
+            let src_b = signal_stats_at(ffmpeg, src_file, 5.6, 6.4);
+            let luma_kept = matches!((b, src_b), (Some(x), Some(y)) if near(x.0, y.0, 6.0));
+            let ok = m.kind == "edit" && near(p.duration, 4.0, 0.07) && colourful(a) && greyish(b) && luma_kept && colourful(c);
+            r.check("per-range saturation 0 greys that range only", ok, &format!("{} ranges {a:?} {b:?} {c:?}, source of the grey one {src_b:?}", desc(&m, &p)));
+        }
+        Err(e) => r.check("per-range saturation 0 greys that range only", false, &e),
+    }
+
+    // --- touching ranges: the border frame. At 2.0 s the source has a frame,
+    // so 0.5..2.0 + 2.0..2.9 must give the same 72 frames as 0.5..2.9 in one.
+    let spacing = |t: &[f64]| t.windows(2).map(|w| w[1] - w[0]).fold((f64::INFINITY, 0.0f64), |(lo, hi), d| (lo.min(d), hi.max(d)));
+    let one = ex(ExportOpts { segments: vec![piece(0.5, 2.9, Some(grey.clone()), false)], ..Default::default() }).map(|(m, _)| frame_times(ffmpeg, Path::new(&m.path)));
+    let two = ex(ExportOpts { segments: vec![piece(0.5, 2.0, None, false), piece(2.0, 2.9, Some(grey.clone()), false)], ..Default::default() });
+    match (one, two) {
+        (Ok(one), Ok((m, p))) => {
+            let f = Path::new(&m.path);
+            let t = frame_times(ffmpeg, f);
+            let (lo, hi) = spacing(&t);
+            r.line(&format!("INFO touching join on a frame: {} frames (one range: {}), spacing {lo:.4}..{hi:.4} s", t.len(), one.len()));
+            let ok = t.len() == 72 && one.len() == 72 && lo > 0.030 && hi < 0.037 && near(p.duration, 2.4, 0.07);
+            r.check("touching ranges join without a repeated or lost frame", ok, &format!("{} frames, one range {}, spacing {lo:.4}..{hi:.4}", t.len(), one.len()));
+            let gap = band_db_at(ffmpeg, f, 1, f_desk, 1.4, 1.6).zip(band_db_at(ffmpeg, f, 1, f_desk, 0.5, 1.0));
+            r.check("no audio gap where ranges touch", gap.is_some_and(|(j, n)| near(j, n, 1.0)), &format!("join, elsewhere {gap:?}"));
+            let (a, b) = (st(&m, 0.1, 1.4), st(&m, 1.6, 2.3));
+            r.check("touching ranges each keep their own colour", colourful(a) && greyish(b), &format!("{a:?} then {b:?}"));
+        }
+        (Err(e), _) | (_, Err(e)) => r.check("touching ranges join without a repeated or lost frame", false, &e),
+    }
+    // Between frames (2.01 s): the frame on screen (2.0 s) ends the first range
+    // uncorrected and opens the second one grey, so it is there twice, 10 ms apart.
+    match ex(ExportOpts { segments: vec![piece(0.5, 2.01, None, false), piece(2.01, 2.9, Some(grey.clone()), false)], ..Default::default() }) {
+        Ok((m, p)) => {
+            let t = frame_times(ffmpeg, Path::new(&m.path));
+            let (lo, hi) = spacing(&t);
+            r.line(&format!("INFO touching join between frames: {} frames, spacing {lo:.4}..{hi:.4} s", t.len()));
+            let ok = t.len() == 73 && lo > 0.008 && hi < 0.037 && near(p.duration, 2.4, 0.07);
+            r.check("touching ranges between frames repeat the frame on screen once", ok, &format!("{} frames, spacing {lo:.4}..{hi:.4}", t.len()));
+        }
+        Err(e) => r.check("touching ranges between frames repeat the frame on screen once", false, &e),
+    }
+
+    // --- blank: black picture, audio and length kept. The last range runs to the clip's end.
+    let ref_desk = band_db_at(ffmpeg, src_file, 1, f_desk, 5.6, 7.4);
+    let opts = ExportOpts { segments: vec![piece(0.5, 2.5, None, false), piece(5.5, 7.5, None, true), piece(7.5, 8.0, None, false)], ..Default::default() };
+    match ex(opts) {
+        Ok((m, p)) => {
+            let f = Path::new(&m.path);
+            // Result: 0..2 s picture, 2..4 s black, 4..4.5 s picture.
+            let (a, b, c) = (st(&m, 0.2, 1.8), st(&m, 2.1, 3.9), st(&m, 4.1, 4.45));
+            let t = frame_times(ffmpeg, f);
+            let in_blank = t.iter().filter(|&&x| (2.0..3.999).contains(&x)).count();
+            let lv = band_db_at(ffmpeg, f, 1, f_desk, 2.2, 3.8);
+            let ok = near(p.duration, 4.5, 0.07) && p.audio_streams == 3 && colourful(a) && blackish(b) && colourful(c) && (58..=61).contains(&in_blank);
+            r.check("blank range is black, as long as the range, with its frames", ok, &format!("{} ranges {a:?} {b:?} {c:?}, {in_blank} frames in the blank 2 s", desc(&m, &p)));
+            r.check("blank range keeps its audio", matches!((ref_desk, lv), (Some(x), Some(y)) if near(x, y, 1.0)), &format!("{lv:?} source {ref_desk:?}"));
+        }
+        Err(e) => r.check("blank range is black, as long as the range, with its frames", false, &e),
+    }
+    // With speed, on libx264 (the fallback encoder): 2 + 2 s at 2.0x.
+    let opts = ExportOpts { speed: 2.0, segments: vec![piece(0.5, 2.5, Some(grey.clone()), false), piece(5.5, 7.5, None, true)], ..Default::default() };
+    let cpu = Settings { encoder: "x264".into(), ..s.clone() };
+    match export(&cpu, src, &opts, &mut |_| {}).and_then(|m| library::probe(ffmpeg, Path::new(&m.path), true).map(|p| (m, p)).ok_or("probe failed".into())) {
+        Ok((m, p)) => {
+            let (a, b) = (st(&m, 0.1, 0.9), st(&m, 1.1, 1.9));
+            r.check("grey + blank ranges at 2.0x with libx264", near(p.duration, 2.0, 0.07) && greyish(a) && blackish(b), &format!("{} {a:?} {b:?}", desc(&m, &p)));
+        }
+        Err(e) => r.check("grey + blank ranges at 2.0x with libx264", false, &e),
+    }
+
+    // --- the top-level colour
+    let two = |c: [Option<Color>; 2]| {
+        let [x, y] = c;
+        vec![piece(0.5, 2.5, x, false), piece(5.5, 7.5, y, false)]
+    };
+    match ex(ExportOpts { color: grey.clone(), segments: two([None, None]), ..Default::default() }) {
+        Ok((m, p)) => {
+            let (a, b) = (st(&m, 0.2, 1.8), st(&m, 2.2, 3.8));
+            r.check("top-level saturation 0 greys every range", near(p.duration, 4.0, 0.07) && greyish(a) && greyish(b), &format!("{} {a:?} {b:?}", desc(&m, &p)));
+        }
+        Err(e) => r.check("top-level saturation 0 greys every range", false, &e),
+    }
+    match ex(ExportOpts { color: grey.clone(), segments: two([None, Some(Color::default())]), ..Default::default() }) {
+        Ok((m, _)) => {
+            let (a, b) = (st(&m, 0.2, 1.8), st(&m, 2.2, 3.8));
+            r.check("a range's own colour replaces the top-level one", greyish(a) && colourful(b), &format!("{a:?} {b:?}"));
+        }
+        Err(e) => r.check("a range's own colour replaces the top-level one", false, &e),
+    }
+    match ex(ExportOpts { segments: two([Some(grey.clone()), Some(grey.clone())]), ..Default::default() }) {
+        Ok((m, _)) => {
+            let (a, b) = (st(&m, 0.2, 1.8), st(&m, 2.2, 3.8));
+            r.check("the same own colour on every range greys them all", greyish(a) && greyish(b), &format!("{a:?} {b:?}"));
+        }
+        Err(e) => r.check("the same own colour on every range greys them all", false, &e),
+    }
+
+    // --- the lossless cut is only for a plain range
+    match ex(ExportOpts { segments: vec![piece(1.0, 2.5, Some(grey.clone()), false)], ..Default::default() }) {
+        Ok((m, p)) => {
+            let a = st(&m, 0.1, 1.4);
+            r.check("one range with its own colour is re-encoded", m.kind == "edit" && near(p.duration, 1.5, 0.07) && greyish(a), &format!("{} {a:?}", desc(&m, &p)));
+        }
+        Err(e) => r.check("one range with its own colour is re-encoded", false, &e),
+    }
+    match ex(ExportOpts { segments: vec![piece(1.0, 2.5, None, true)], ..Default::default() }) {
+        Ok((m, p)) => {
+            let a = st(&m, 0.1, 1.4);
+            r.check("one blank range is re-encoded black", m.kind == "edit" && near(p.duration, 1.5, 0.07) && p.audio_streams == 3 && blackish(a), &format!("{} {a:?}", desc(&m, &p)));
+        }
+        Err(e) => r.check("one blank range is re-encoded black", false, &e),
+    }
+    // Its own neutral colour replaces a top-level one: nothing left to change.
+    match ex(ExportOpts { color: grey.clone(), segments: vec![piece(1.0, 2.5, Some(Color::default()), false)], ..Default::default() }) {
+        Ok((m, p)) => r.check("one range with its own neutral colour uses the lossless cut", m.kind == "trim", &desc(&m, &p)),
+        Err(e) => r.check("one range with its own neutral colour uses the lossless cut", false, &e),
     }
 }
 

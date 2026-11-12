@@ -20,13 +20,16 @@
 //              volume: the row's own level, 0..EM_MAX_GAIN; muted silences the whole row
 //              file rows: the file's audio from trimStart, `length` seconds
 //              long, placed so it starts at source time `offset`
+//   colors     one colour correction per segment: { brightness, contrast, saturation, gamma }, 1 = unchanged
+//   blank      one flag per segment: true = the picture is black there while the audio plays on
 //   speed      export speed, 0.25..4
-//   color      { brightness, contrast, saturation, gamma }, 1 = unchanged
 //   undo, redo snapshots (JSON strings) for emUndo / emRedo
 
 const EM_MIN_SEG = 0.1; // shortest segment a split or a drag may leave, seconds
 const EM_MAX_GAIN = 2;
 const EM_EPS = 1e-6;
+const EM_COLOR_KEYS = ["brightness", "contrast", "saturation", "gamma"];
+const emNoColor = () => ({ brightness: 1, contrast: 1, saturation: 1, gamma: 1 });
 
 /**
  * A fresh model. `tracks` is the result of the `editor_audio_tracks` command
@@ -42,8 +45,9 @@ function emNew(duration, tracks) {
     cuts: [],
     removed: [false],
     audio: shown.map((t) => ({ id: `t${t.index}`, kind: "track", index: t.index, title: t.title || `Track ${t.index + 1}`, path: t.path || "", volume: 1, muted: false, gains: [1] })),
+    colors: [emNoColor()],
+    blank: [false],
     speed: 1,
-    color: { brightness: 1, contrast: 1, saturation: 1, gamma: 1 },
     undo: [],
     redo: [],
   };
@@ -64,14 +68,15 @@ function emSegmentAt(m, t) {
 
 /* ---------- undo ---------- */
 
-const emState = (m) => JSON.stringify({ cuts: m.cuts, removed: m.removed, audio: m.audio, speed: m.speed, color: m.color });
+const emState = (m) => JSON.stringify({ cuts: m.cuts, removed: m.removed, audio: m.audio, speed: m.speed, colors: m.colors, blank: m.blank });
 function emRestore(m, json) {
   const s = JSON.parse(json);
   m.cuts = s.cuts;
   m.removed = s.removed;
   m.audio = s.audio;
   m.speed = s.speed;
-  m.color = s.color;
+  m.colors = s.colors;
+  m.blank = s.blank;
 }
 
 /** Call BEFORE changing the model, so the change can be undone. Clears redo. */
@@ -107,6 +112,8 @@ function emSplit(m, t) {
   if (t - seg.start < EM_MIN_SEG || seg.end - t < EM_MIN_SEG) return -1;
   m.cuts.splice(i, 0, t);
   m.removed.splice(i, 0, m.removed[i]);
+  m.colors.splice(i, 0, { ...m.colors[i] });
+  m.blank.splice(i, 0, m.blank[i]);
   for (const row of m.audio) row.gains.splice(i, 0, row.gains[i]);
   return i;
 }
@@ -116,6 +123,8 @@ function emJoin(m, c) {
   if (c < 0 || c >= m.cuts.length) return false;
   m.cuts.splice(c, 1);
   m.removed.splice(c + 1, 1);
+  m.colors.splice(c + 1, 1);
+  m.blank.splice(c + 1, 1);
   for (const row of m.audio) row.gains.splice(c + 1, 1);
   return true;
 }
@@ -155,10 +164,12 @@ function emTrimEnd(m, t) {
   return true;
 }
 
-/** Back to one whole, kept segment. Row levels and files stay. */
+/** Back to one whole, kept segment. Row levels and files stay; the first segment's colour becomes the clip's. */
 function emResetCuts(m) {
   m.cuts = [];
   m.removed = [false];
+  m.colors = [{ ...m.colors[0] }];
+  m.blank = [false];
   for (const row of m.audio) row.gains = [1];
 }
 
@@ -215,6 +226,53 @@ function emPlayable(m, t) {
   return null;
 }
 
+/* ---------- picture: colour and hiding, per segment ---------- */
+
+const emSameColor = (a, b = emNoColor()) => EM_COLOR_KEYS.every((k) => Math.abs((a?.[k] ?? 1) - (b?.[k] ?? 1)) < 0.005);
+
+/** The colour correction in force at source time `t`. */
+const emColorAt = (m, t) => m.colors[emSegmentAt(m, t)] || emNoColor();
+/** True if the picture is hidden (black) at source time `t`. */
+const emBlankAt = (m, t) => !!m.blank[emSegmentAt(m, t)];
+
+/**
+ * Change the colour correction of some segments. `segs`: segment indexes, or
+ * null for every segment (the whole clip). `change`: any of the four colour
+ * keys; keys left out keep their value.
+ */
+function emSetColor(m, segs, change) {
+  const list = segs == null ? m.colors.map((_, i) => i) : segs;
+  let any = false;
+  for (const i of list) {
+    if (i < 0 || i >= m.colors.length) continue;
+    for (const k of EM_COLOR_KEYS) if (k in change && Number.isFinite(+change[k])) m.colors[i][k] = +change[k];
+    any = true;
+  }
+  return any;
+}
+
+/** Hide the picture of segment `i` (black, the audio plays on), or show it again. */
+function emSetBlank(m, i, on) {
+  if (i < 0 || i >= m.blank.length) return false;
+  m.blank[i] = !!on;
+  return true;
+}
+
+/**
+ * The kept parts as the export needs them: like emKept, but neighbours are
+ * joined only when they look the same. [{ start, end, color, blank }]
+ */
+function emPieces(m) {
+  const out = [];
+  for (const s of emSegments(m)) {
+    if (s.removed) continue;
+    const last = out[out.length - 1];
+    if (last && Math.abs(last.end - s.start) < EM_EPS && last.blank === !!m.blank[s.i] && emSameColor(last.color, m.colors[s.i])) last.end = s.end;
+    else out.push({ start: s.start, end: s.end, color: { ...m.colors[s.i] }, blank: !!m.blank[s.i] });
+  }
+  return out;
+}
+
 /* ---------- audio ---------- */
 
 const emRow = (m, id) => m.audio.find((r) => r.id === id) || null;
@@ -233,6 +291,26 @@ function emSetGain(m, id, i, gain) {
   const row = emRow(m, id);
   if (!row || i < 0 || i >= row.gains.length) return false;
   row.gains[i] = Math.min(EM_MAX_GAIN, Math.max(0, +gain || 0));
+  return true;
+}
+
+/** True if row `id` is the only one heard in segment `i` (and at least one other row exists). */
+function emIsSolo(m, id, i) {
+  const row = emRow(m, id);
+  return !!row && m.audio.length > 1 && row.gains[i] > 0 && m.audio.every((r) => r === row || r.gains[i] === 0);
+}
+
+/**
+ * Solo: silence every other row in segment `i`, so only row `id` is heard
+ * there. On a segment that is already soloed this way, the others come back
+ * at their recorded level.
+ */
+function emSolo(m, id, i) {
+  const row = emRow(m, id);
+  if (!row || i < 0 || i >= row.gains.length || m.audio.length < 2) return false;
+  const undo = emIsSolo(m, id, i);
+  for (const r of m.audio) if (r !== row) r.gains[i] = undo ? 1 : 0;
+  if (!undo && row.gains[i] === 0) row.gains[i] = 1;
   return true;
 }
 
@@ -287,11 +365,10 @@ function emPlaceFile(m, id, change) {
 
 /* ---------- export ---------- */
 
-const emSameColor = (c) => ["brightness", "contrast", "saturation", "gamma"].every((k) => Math.abs((c[k] ?? 1) - 1) < 0.005);
 /** True if no audio row differs from the clip as recorded (so the export can keep the original tracks). */
 const emAudioUntouched = (m) => m.audio.every((r) => r.kind === "track" && !r.muted && Math.abs(r.volume - 1) < 0.005 && r.gains.every((g, i) => m.removed[i] || Math.abs(g - 1) < 0.005));
 /** True if the edit is nothing but one kept range: the export can cut it without re-encoding. */
-const emIsPlainCut = (m) => emKept(m).length === 1 && Math.abs(m.speed - 1) < 0.005 && emSameColor(m.color) && emAudioUntouched(m);
+const emIsPlainCut = (m) => emKept(m).length === 1 && Math.abs(m.speed - 1) < 0.005 && emPieces(m).every((p) => !p.blank && emSameColor(p.color)) && emAudioUntouched(m);
 /** True if the result would differ from the source at all. */
 const emChanged = (m) => !(emIsPlainCut(m) && m.removed.every((r) => !r));
 
@@ -299,7 +376,12 @@ const emRound = (x) => Math.round(x * 1000) / 1000;
 
 /**
  * The `opts` for the `export_clip` command.
- *   segments  the kept source ranges, in order
+ *   segments  the kept source ranges, in order: { start, end }, plus
+ *             `color` when the kept parts do not all share one colour
+ *             correction (it then replaces the top-level `color` for that
+ *             range) and `blank: true` where the picture is hidden (black)
+ *   color     the colour correction of the whole result when every kept part
+ *             shares it; neutral when the ranges carry their own
  *   audio     [] = keep the clip's audio tracks as recorded. Otherwise one
  *             entry per row that is heard, mixed into ONE track:
  *             { source: "track" | "file", index, path, offset, trim_start,
@@ -309,6 +391,8 @@ const emRound = (x) => Math.round(x * 1000) / 1000;
  */
 function emToOpts(m) {
   const segs = emSegments(m);
+  const pieces = emPieces(m);
+  const uniform = pieces.every((p) => emSameColor(p.color, pieces[0].color));
   const audio = emAudioUntouched(m)
     ? []
     : m.audio
@@ -327,14 +411,14 @@ function emToOpts(m) {
     start: 0,
     end: 0,
     speed: m.speed,
-    color: { ...m.color },
+    color: uniform && pieces.length ? { ...pieces[0].color } : emNoColor(),
     tracks: [],
-    segments: emKept(m).map((r) => ({ start: emRound(r.start), end: emRound(r.end) })),
+    segments: pieces.map((p) => ({ start: emRound(p.start), end: emRound(p.end), ...(uniform ? {} : { color: { ...p.color } }), ...(p.blank ? { blank: true } : {}) })),
     audio,
   };
 }
 
 // Lets the functions be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { EM_MIN_SEG, EM_MAX_GAIN, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, emRow, emRowCovers, emGainAt, emSetGain, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts };
+  module.exports = { EM_MIN_SEG, EM_MAX_GAIN, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, emRow, emRowCovers, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts };
 }

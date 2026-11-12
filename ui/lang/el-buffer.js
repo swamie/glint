@@ -23,6 +23,9 @@ glintAddLanguage("el", "Ελληνικά", {
   "Search settings": "Αναζήτηση ρυθμίσεων",
   "No setting matches “{text}”": "Καμία ρύθμιση δεν ταιριάζει με “{text}”",
   "Used in Glint's window, the clip overlay and the tray menu. The tray menu changes the next time Glint starts": "Χρησιμοποιείται στο παράθυρο του Glint, στην επικάλυψη κλιπ και στο μενού της περιοχής ειδοποιήσεων. Το μενού αλλάζει στην επόμενη εκκίνηση του Glint",
+  "Hide the sidebar": "Απόκρυψη πλαϊνής στήλης",
+  "Show the sidebar": "Εμφάνιση πλαϊνής στήλης",
+  "Version": "Έκδοση",
   "Compact": "Συμπαγής",
   "Shows only the two stars in a small square, with no text. Problems, such as a clip that failed, still show the full box": "Δείχνει μόνο τα δύο αστέρια σε ένα μικρό τετράγωνο, χωρίς κείμενο. Τα προβλήματα, όπως ένα κλιπ που απέτυχε, εμφανίζονται στο πλήρες πλαίσιο",
 });

@@ -43,7 +43,13 @@
   document.getElementById("s").textContent = d.sub || "";
   document.getElementById("mic").hidden = !d.mic;
   if ((d.pos || "tr").endsWith("l")) document.body.classList.add("left");
-  if (d.compact) document.body.classList.add("compact");
+  if (d.compact) {
+    document.body.classList.add("compact");
+    // The mark is drawn off-centre in its 48 x 48 box (it spans x 3..45, y 3..40, and the
+    // big star sits left of the middle). Alone in a square that shows, so frame it on
+    // the point between the drawing's middle and the big star's.
+    document.querySelector(".glint").setAttribute("viewBox", "0 -1.5 46 46");
+  }
   const box = document.querySelector(".toast");
   box.style.zoom = d.zoom || 1;
   // Opacity goes on the page so the slide animation (which also fades) still works on the box.
