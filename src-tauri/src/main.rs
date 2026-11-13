@@ -9,15 +9,19 @@ mod clip;
 mod compress;
 mod core;
 mod denoise;
+mod deps;
 mod discord;
 mod editor;
 mod games;
 mod hotkeys;
 mod import;
 mod jobs;
+mod join;
 mod keys;
 mod lang;
 mod library;
+mod polish;
+mod procaudio;
 mod recorder;
 mod settings;
 mod sound;
@@ -28,13 +32,26 @@ mod win;
 
 fn main() {
     util::now_secs(); // start the app clock
+    if deps::fake_ffmpeg() {
+        return; // --deps-test's stand-in for an old ffmpeg (only as ffmpeg.exe with GLINT_FAKE_FFMPEG=1)
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(i) = args.iter().position(|a| a == "--deps-test") {
+        // glint.exe --deps-test <report.txt>: Check and repair (downloads ffmpeg once into a scratch folder).
+        deps::self_test(args.get(i + 1).map(String::as_str).unwrap_or("deps.txt"));
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--bench") {
         bench::run(&args[i + 1..]);
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--hotkey-test") {
         keys::self_test(args.get(i + 1).map(String::as_str).unwrap_or("hotkeys.json"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--blur-sync-test") {
+        // glint.exe --blur-sync-test <report.txt>: what Blur is handed keeps audio and video in step (renders through Blur when it is installed).
+        blur::sync_self_test(args.get(i + 1).map(String::as_str).unwrap_or("blur-sync.txt"));
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--blur-test") {
@@ -92,6 +109,11 @@ fn main() {
         }
         return;
     }
+    if let Some(i) = args.iter().position(|a| a == "--gameaudio-test") {
+        // glint.exe --gameaudio-test <report.txt>: the "Game" audio track, from ring to clip to editor; then a silent live capture.
+        procaudio::self_test(args.get(i + 1).map(String::as_str).unwrap_or("gameaudio.txt"));
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--buffer-test") {
         // glint.exe --buffer-test <report.txt>: the RAM / disk replay buffer on made-up data.
         recorder::self_test(args.get(i + 1).map(String::as_str).unwrap_or("buffer.txt"));
@@ -107,9 +129,19 @@ fn main() {
         win::memory_test(args.get(i + 1).map(String::as_str).unwrap_or("memory.txt"));
         return;
     }
+    if let Some(i) = args.iter().position(|a| a == "--join-test") {
+        // glint.exe --join-test <report.txt>: "Edit together" on made-up clips.
+        join::self_test(args.get(i + 1).map(String::as_str).unwrap_or("join.txt"));
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--compress-test") {
         // glint.exe --compress-test <report.txt>: Compress for Discord on made-up clips (never the clipboard).
         compress::self_test(args.get(i + 1).map(String::as_str).unwrap_or("compress.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--polish-test") {
+        // glint.exe --polish-test <report.txt>: capture method choice, themed icon, thumbnail shapes.
+        polish::self_test(args.get(i + 1).map(String::as_str).unwrap_or("polish.txt"));
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--folders-test") {

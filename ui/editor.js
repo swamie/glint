@@ -114,7 +114,9 @@ function edUserPresets() {
 /** The tracks to edit when editor_audio_tracks fails: same rows, no files (the preview then uses the clip's own audio). */
 function edFallbackTracks(c) {
   const n = c.audio_tracks || 0;
-  if (n === 3) return [{ index: 0, title: t("Mix"), path: "" }, { index: 1, title: t("Desktop"), path: "" }, { index: 2, title: t("Microphone"), path: "" }];
+  // English titles, as the clip's own tags are: the edit model matches them ("Mix", "Desktop", "Game") and the timeline translates them.
+  if (n === 3) return [{ index: 0, title: "Mix", path: "" }, { index: 1, title: "Desktop", path: "" }, { index: 2, title: "Microphone", path: "" }];
+  if (n === 4) return [{ index: 0, title: "Mix", path: "" }, { index: 1, title: "Desktop", path: "" }, { index: 2, title: "Microphone", path: "" }, { index: 3, title: "Game", path: "" }];
   return Array.from({ length: n }, (_, i) => ({ index: i, title: n === 1 ? t("Audio") : t("Track {n}", { n: i + 1 }), path: "" }));
 }
 
@@ -547,6 +549,7 @@ function edTracksText(n) {
   if (!n) return t("No audio");
   if (n === 1) return t("1 audio track");
   if (n === 3) return t("Mix + desktop + mic tracks");
+  if (n === 4) return t("Mix + desktop + mic + game tracks");
   return t("{n} audio tracks", { n });
 }
 
@@ -1011,6 +1014,7 @@ function mountPlayer(root, c) {
       if (dead) return null;
       P.model = emNew(dur(), tracks);
       emSetMarks(P.model, edMarksLoad(c.id)); // drops any past the clip's end
+      if (typeof joinApplyCuts === "function") joinApplyCuts(P.model, c); // "Edit together": a split where each joined clip starts
       return P.model;
     })();
     return modelJob;

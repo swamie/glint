@@ -43,6 +43,16 @@ Add, remove and rebind under **Keybinds**. One key can carry several bindings; t
 
 **Switching the capture monitor.** A keybind can have the action "Switch the capture monitor" instead of saving a clip. Set to "Next monitor" it steps through the monitors in order; set to a particular monitor it goes straight to that one. It changes the same setting as the monitor choice under Capture, so the clip keys set to "capture monitor", the tray's "Save clip now" and the Clip button all follow it, and a small box on the new monitor names it. A monitor that was not being buffered before the switch starts with an empty buffer.
 
+**Components.** Settings → Components lists what Glint needs (ffmpeg, ffprobe, and Blur, which is optional), says which are installed, missing or too old, and installs them with one button: ffmpeg from the GyanD builds on GitHub, Blur 2.23 from its own releases. ffmpeg goes beside Glint.exe, or into `%LOCALAPPDATA%\Glint\bin` when that folder cannot be written. If ffmpeg is missing, the status bar's message has an "Install ffmpeg" button; capture starts as soon as it is in place.
+
+**Game audio.** Capture → "Separate game audio track" (off by default) records the current game's sound on its own, using Windows' per-process loopback (Windows 10 version 2004 or newer). A clip then has a last track named Game: Mix, Desktop, Microphone, Game. Desktop still holds everything the PC played, the game included. In the editor, the Game track is heard only where Desktop is muted, so muting Desktop and keeping Game drops voice chat and music.
+
+**Edit together.** Select two or more clips, right-click → Edit together. Glint joins them, oldest first, into one new clip (kind "joined") and opens it in the editor with a split where each clip starts. Clips of the same format are joined without re-encoding; if their sound and picture lengths would drift apart, only the sound is rebuilt; clips of different sizes or rates are re-encoded, letterboxed to the largest. The original clips are not changed.
+
+**Windows 10.** Windows Graphics Capture draws a yellow border around the captured screen, and Windows only lets a program hide it from Windows 11 on. On Windows 10, capture method Auto therefore uses Desktop Duplication, which has no border.
+
+**Taskbar icon.** Settings → "Match the taskbar icon to the theme" colours Glint's taskbar and tray icon with the theme's accent (`--accent`, `--accent-2`), a custom theme's included.
+
 Keys are read by a global keyboard hook. Windows does not feed that hook while Glint's own window has focus, so the window matches the same keybinds itself in that case; a press that arrives both ways is counted once. If Medal is still running it also reacts to `F8`: quit it or rebind one of the two.
 
 Every key press that fires, and every clip saved or failed, is written to `%APPDATA%\Glint\glint.log`. Start Glint with the environment variable `GLINT_DEBUG_KEYS=1` to log every key event the hook sees.

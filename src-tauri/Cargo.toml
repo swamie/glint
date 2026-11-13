@@ -1,6 +1,6 @@
 [package]
 name = "glint"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2021"
 description = "Offline instant-replay clipper"
 default-run = "glint"
@@ -34,12 +34,21 @@ nnnoiseless = { version = "0.5", default-features = false }
 # Writes game icons taken from executables.
 png = "0.17"
 
+# Named directly because `windows::core::implement` expands to `::windows_core` paths
+# (procaudio.rs). Already a dependency of `windows`: nothing new is downloaded.
+windows-core = "0.58"
+
 [dependencies.windows]
 version = "0.58"
 features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Media_Audio",
+    # Per-process loopback (the "Game" audio track): COM, the activation
+    # completion handler, and the session meters its self-test reads.
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+    "implement",
     "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_LibraryLoader",

@@ -38,13 +38,16 @@ const emNoColor = () => ({ brightness: 1, contrast: 1, saturation: 1, gamma: 1 }
 
 /**
  * A fresh model. `tracks` is the result of the `editor_audio_tracks` command
- * ([{ index, title, path }], possibly empty). A 3-track clip shows Desktop and
- * Microphone (tracks 1 and 2), since track 0 is their ready-made mix; any other
- * clip shows every track it has.
+ * ([{ index, title, path }], possibly empty). The track titled "Mix" is not
+ * shown, since it is the ready-made mix of Desktop and Microphone: a clip with
+ * Mix, Desktop, Microphone (and Game) shows Desktop, Microphone (and Game).
+ * Without a "Mix" title the older rule applies: a 3-track clip hides track 0.
+ * Any other clip shows every track it has.
  */
 function emNew(duration, tracks) {
   const list = tracks || [];
-  const shown = list.length === 3 ? list.filter((t) => t.index !== 0) : list;
+  const titled = list.length > 1 && list.some((x) => x.title === "Mix");
+  const shown = titled ? list.filter((x) => x.title !== "Mix") : list.length === 3 ? list.filter((x) => x.index !== 0) : list;
   return {
     duration: Math.max(0, +duration || 0),
     cuts: [],
@@ -443,10 +446,37 @@ const emRow = (m, id) => m.audio.find((r) => r.id === id) || null;
 /** True if file row `row` has sound at source time `t`. Track rows always do. */
 const emRowCovers = (row, t) => row.kind !== "file" || (t >= row.offset - EM_EPS && t < row.offset + row.length);
 
+/* The "Game" track (only the game's own sound) is already part of "Desktop"
+ * (everything the PC played). Played or mixed together, the game would be
+ * twice as loud. So the result is built from Desktop + Microphone as before,
+ * and Game is used INSTEAD of Desktop: it is heard only in the segments where
+ * Desktop is silent (muted, level 0, or another row soloed). Mute Desktop and
+ * keep Game to keep the game and drop voice chat and music. */
+
+/** The clip's own track row with this title ("Desktop", "Game"), or null. */
+const emTrackRow = (m, title) => m.audio.find((r) => r.kind === "track" && r.title === title) || null;
+
+/** True if `row` is the Game track and is left out in segment `i` because Desktop is heard there. */
+function emGameHidden(m, row, i) {
+  if (!row || row.kind !== "track" || row.title !== "Game") return false;
+  const d = emTrackRow(m, "Desktop");
+  return !!d && !d.muted && d.volume > 0.005 && (d.gains[i] ?? 1) > 0.005;
+}
+
+/** What the timeline says about a row, in English (translate with t()): "" for most rows. */
+function emRowHint(m, row) {
+  if (!row || row.kind !== "track") return "";
+  if (row.title === "Game" && emTrackRow(m, "Desktop")) return "Only the game's sound. Desktop already includes it, so Game is heard only where Desktop is muted";
+  if (row.title === "Desktop" && emTrackRow(m, "Game")) return "Everything the PC played, the game included. Mute it and keep Game on to drop voice chat and music";
+  return "";
+}
+
 /** How loud `row` is at source time `t`: 0 = silent, 1 = as recorded. */
 function emGainAt(m, row, t) {
   if (row.muted || !emRowCovers(row, t)) return 0;
-  return row.volume * row.gains[emSegmentAt(m, t)];
+  const i = emSegmentAt(m, t);
+  if (emGameHidden(m, row, i)) return 0;
+  return row.volume * row.gains[i];
 }
 
 /** Set the level of segment `i` on a row (0 mutes it). */
@@ -556,10 +586,12 @@ function emToOpts(m) {
   const segs = emSegments(m);
   const pieces = emPieces(m);
   const uniform = pieces.every((p) => emSameColor(p.color, pieces[0].color));
+  // A Game row counts as silent where Desktop is heard (see emGameHidden); left out if that is everywhere.
+  const gainOf = (r, i) => (emGameHidden(m, r, i) ? 0 : r.gains[i]);
   const audio = emAudioUntouched(m)
     ? []
     : m.audio
-        .filter((r) => !r.muted && r.volume > 0.005)
+        .filter((r) => !r.muted && r.volume > 0.005 && segs.some((s) => !s.removed && gainOf(r, s.i) > 0.005))
         .map((r) => ({
           source: r.kind,
           index: r.kind === "track" ? r.index : 0,
@@ -568,7 +600,7 @@ function emToOpts(m) {
           trim_start: r.kind === "file" ? emRound(r.trimStart) : 0,
           length: r.kind === "file" ? emRound(r.length) : 0,
           volume: emRound(r.volume),
-          regions: segs.filter((s) => !s.removed && Math.abs(r.gains[s.i] - 1) >= 0.005).map((s) => ({ start: emRound(s.start), end: emRound(s.end), gain: emRound(r.gains[s.i]) })),
+          regions: segs.filter((s) => !s.removed && Math.abs(gainOf(r, s.i) - 1) >= 0.005).map((s) => ({ start: emRound(s.start), end: emRound(s.end), gain: emRound(gainOf(r, s.i)) })),
         }));
   return {
     start: 0,
@@ -583,5 +615,5 @@ function emToOpts(m) {
 
 // Lets the functions be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { EM_MIN_SEG, EM_MAX_GAIN, EM_EPS, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emTrimBounds, emSameSeg, emSetTrimStart, emSetTrimEnd, emSegCopy, emSegPaste, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts };
+  module.exports = { EM_MIN_SEG, EM_MAX_GAIN, EM_EPS, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emTrimBounds, emSameSeg, emSetTrimStart, emSetTrimEnd, emSegCopy, emSegPaste, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emTrackRow, emGameHidden, emRowHint, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts };
 }

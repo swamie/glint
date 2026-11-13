@@ -14,6 +14,23 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.11", date: "2026-11-14",
+    new: [
+      t("Settings → Components checks for ffmpeg and Blur and installs anything missing. If ffmpeg is missing, the status bar has an Install ffmpeg button."),
+      t("Edit together: select several clips, right-click, and they are joined, oldest first, into one new clip that opens in the editor with a split where each clip starts. Your original clips stay as they are."),
+      t("Separate game audio track (Capture, off until you switch it on): a track with only the game's sound. In the editor, mute Desktop and keep Game to drop voice chat and music."),
+      t("The taskbar icon can take your theme's colour: Settings, next to the themes."),
+    ],
+    improved: [
+      t("On Windows 10, Auto capture no longer shows the yellow border around the screen."),
+      t("Clip cards: more room around the text, and the folder is shown only when it differs from the game."),
+    ],
+    fixed: [
+      t("A trimmed clip rendered with Blur no longer has its sound out of step with the picture."),
+      t("Clip thumbnails always show the whole frame, also with a custom theme and for stretched, ultrawide and portrait clips."),
+    ],
+  },
+  {
     version: "0.1.10", date: "2026-11-13",
     new: [
       t("A keybind can switch the capture monitor: to the next monitor, or straight to one you pick. Your \"capture monitor\" clip keys, the tray and the Clip button follow it."),

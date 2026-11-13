@@ -84,6 +84,18 @@ fn is_compress(kind: &str) -> bool {
     kind == "compress"
 }
 
+/// "Edit together" jobs running at once (join.rs; their own lane too).
+const JOIN_PARALLEL: usize = 1;
+
+/// The lane of a job kind: 0 Blur, 1 compress, 2 join ("Edit together").
+fn lane_of(kind: &str) -> usize {
+    match kind {
+        "compress" => 1,
+        "join" => 2,
+        _ => 0,
+    }
+}
+
 struct Hooks {
     limit: Box<dyn Fn() -> u32 + Send + Sync>,
     emit: Box<dyn Fn(&str, Value) + Send + Sync>,
@@ -299,7 +311,7 @@ impl Inner {
 
     /// The older per-clip event the library cards and the viewer use (Blur jobs only).
     fn blur_progress(&self, j: &Job) {
-        if is_compress(&j.kind) {
+        if lane_of(&j.kind) != 0 {
             return;
         }
         let message = if j.state == "done" { &j.result_id } else { &j.message };
@@ -318,16 +330,16 @@ impl Inner {
             }
             let limit = self.limit();
             // Running jobs per lane: [blur, compress].
-            let mut running = [0usize; 2];
+            let mut running = [0usize; 3];
             for j in st.list.iter().filter(|j| j.state == "running") {
-                running[is_compress(&j.kind) as usize] += 1;
+                running[lane_of(&j.kind)] += 1;
             }
-            let caps = [limit, COMPRESS_PARALLEL];
+            let caps = [limit, COMPRESS_PARALLEL, JOIN_PARALLEL];
             for i in 0..st.list.len() {
                 if st.list[i].state != "queued" {
                     continue;
                 }
-                let lane = is_compress(&st.list[i].kind) as usize;
+                let lane = lane_of(&st.list[i].kind);
                 if running[lane] >= caps[lane] {
                     continue;
                 }
@@ -485,6 +497,8 @@ pub fn enqueue_blur(core: &Arc<Core>, clip_id: String) -> Result<Job, String> {
         let result = blur::render_cancellable(&blur_cli, &src, &out, &s.blur, cancel, |pct| progress(pct));
         reserved().lock().unwrap().remove(&out);
         result?;
+        // Blur keeps every audio track but drops their titles; a clip with a Game track needs them in the editor.
+        crate::clip::restore_titles(&ffmpeg, &src, &out);
         let mut new = library::register(&ffmpeg, &out, &title, &m.game, "blur");
         new.folder = m.folder.clone();
         core.lib.lock().unwrap().add(new.clone());

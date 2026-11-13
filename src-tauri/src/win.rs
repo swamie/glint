@@ -377,6 +377,8 @@ pub struct Hardware {
     pub gpu: Option<Gpu>,
     /// Encoder that card provides: "nvenc" | "amf" | "qsv", or "x264" with no usable card.
     pub encoder: String,
+    /// Windows build number (`windows_build`), 0 if unknown.
+    pub windows_build: u32,
 }
 
 /// Read the display adapters and the CPU name from the registry (no WMI, so it is instant).
@@ -417,5 +419,21 @@ pub fn hardware() -> Hardware {
         Some("intel") => "qsv",
         _ => "x264",
     };
-    Hardware { gpus, cpu, gpu, encoder: encoder.to_string() }
+    Hardware { gpus, cpu, gpu, encoder: encoder.to_string(), windows_build: windows_build() }
+}
+
+/// The Windows build number (19045 = Windows 10 22H2, 22000 and up = Windows 11), 0 if unknown.
+/// Read from the registry once; no window is needed.
+pub fn windows_build() -> u32 {
+    static BUILD: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *BUILD.get_or_init(|| {
+        use winreg::enums::HKEY_LOCAL_MACHINE;
+        use winreg::RegKey;
+        RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+            .and_then(|k| k.get_value::<String, _>("CurrentBuildNumber"))
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0)
+    })
 }

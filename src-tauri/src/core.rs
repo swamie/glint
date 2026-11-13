@@ -38,6 +38,9 @@ pub struct Status {
     pub game: String,
     /// Discord Rich Presence state: "off", "connected", or the reason it is not.
     pub discord: String,
+    /// The separate game audio track: "off", "waiting" (no game), "capturing",
+    /// "failed" (this game could not be captured), "unavailable" (Windows too old).
+    pub game_audio: String,
     /// One per buffered monitor, the capture monitor first. The fields above
     /// describe the capture monitor; `buffer_bytes`, `buffer_disk_bytes` and
     /// `ram_total` count all of them.
@@ -275,6 +278,28 @@ impl Core {
             util::log(&format!("game: {}", after.as_deref().unwrap_or("none")));
             self.emit("status-changed", ());
         }
+        self.sync_game_audio();
+    }
+
+    /// Start, switch or stop the game's own audio capture (the "Game" track):
+    /// it follows the current game's process while the setting is on and
+    /// clipping runs, and nothing runs otherwise.
+    pub fn sync_game_audio(&self) {
+        let ga = crate::procaudio::global();
+        let on = self.settings.lock().unwrap().game_audio;
+        let cfgs = self.rec.current_cfgs();
+        if !on || !self.rec.is_running() || cfgs.is_empty() {
+            if ga.status() != "off" {
+                ga.off();
+            }
+            return;
+        }
+        let pid = self.playing.lock().unwrap().as_ref().map(|p| p.pid);
+        // Same length and place as the desktop and microphone rings (see `Recorder::start`).
+        let max_secs = cfgs.iter().map(|c| c.max_secs).fold(0.0, f64::max);
+        let first = &cfgs[0];
+        let cfg = crate::procaudio::RingCfg { max_secs: max_secs + 5.0, window: crate::spill::window(&first.buffer, first.buffer_ram_secs, max_secs), dir: first.buffer_dir.clone() };
+        ga.sync(pid, cfg);
     }
 
     /// Name to file a clip under, as of this moment.
@@ -393,6 +418,7 @@ impl Core {
         } else {
             self.start_recording();
         }
+        self.sync_game_audio();
     }
 
     pub fn status(&self) -> Status {
@@ -436,7 +462,9 @@ impl Core {
                 primary: c.primary,
             })
             .collect();
-        let buffer_bytes = st.video_bytes + st.audio_bytes;
+        let game_audio = crate::procaudio::global();
+        let (game_ram, game_disk) = game_audio.bytes();
+        let buffer_bytes = st.video_bytes + st.audio_bytes + game_ram as u64;
         Status {
             recording: st.running,
             encoder: st.status.encoder,
@@ -448,7 +476,7 @@ impl Core {
             buffer_secs: st.buffer_secs,
             buffer_max: (st.max_secs - 5.0).max(0.0),
             buffer_bytes,
-            buffer_disk_bytes: st.video_disk_bytes + st.audio_disk_bytes,
+            buffer_disk_bytes: st.video_disk_bytes + st.audio_disk_bytes + game_disk as u64,
             cpu_pct: s.cpu_pct,
             ram_app: ram_self.saturating_sub(buffer_bytes),
             ram_ffmpeg: ram_ff,
@@ -457,6 +485,7 @@ impl Core {
             error: st.status.error,
             game: self.playing.lock().unwrap().as_ref().map(|p| p.name.clone()).unwrap_or_default(),
             discord: self.discord.lock().unwrap().clone(),
+            game_audio: game_audio.status(),
             captures,
         }
     }
@@ -551,7 +580,9 @@ impl Core {
         }
         // The overlay goes where the picture came from.
         let mon = cfg.monitor;
-        let cap = clip::Capture { snap, desk, mic, width: cfg.width, height: cfg.height, fps: cfg.fps };
+        // The game's own sound for the same time, when it was captured for any of it.
+        let game_pcm = if s.game_audio { crate::procaudio::global().plan(&snap.segments).map(crate::audio::Plan::read) } else { None };
+        let cap = clip::Capture { snap, desk, mic, game: game_pcm, width: cfg.width, height: cfg.height, fps: cfg.fps };
         let started = std::time::Instant::now();
         match clip::write(&s, cap, &game) {
             Ok(meta) => {
@@ -648,6 +679,9 @@ impl Core {
             if self.rec.current_cfgs() != cfgs {
                 self.rec.start(cfgs);
             }
+        }
+        if new.game_audio != old.game_audio || self.rec.is_running() {
+            self.sync_game_audio();
         }
     }
 

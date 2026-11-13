@@ -498,7 +498,10 @@ function mountTimeline(host, opts) {
       if (!h) continue;
       h.classList.toggle("off", !!r.muted);
       const name = h.querySelector(".tl-hname");
-      if (name.textContent !== t(r.title)) { name.textContent = t(r.title); name.title = t(r.title); }
+      if (name.textContent !== t(r.title)) name.textContent = t(r.title);
+      const hint = typeof emRowHint === "function" ? emRowHint(m, r) : "";
+      const tip = hint ? `${t(r.title)}\n${t(hint)}` : t(r.title);
+      if (name.title !== tip) name.title = tip;
       const mb = h.querySelector(".tl-hmute");
       const key = r.muted ? "m" : "v";
       if (mb.dataset.tlState !== key) {
@@ -1185,7 +1188,8 @@ function mountTimeline(host, opts) {
         const s1 = Math.min(timeAtX(x + tlBarStep), s0 + tlBarStep / st.pps), sc = (s0 + s1) / 2;
         if (sc < a || sc >= b) continue;
         while (si < segs.length - 1 && sc >= segs[si].end) si++;
-        const g = row.muted ? 0 : (row.gains[si] ?? 1) * row.volume;
+        // A Game row is drawn quiet where Desktop is heard: the result uses one or the other, never both.
+        const g = row.muted || (typeof emGameHidden === "function" && emGameHidden(m, row, si)) ? 0 : (row.gains[si] ?? 1) * row.volume;
         const base = file ? row.trimStart - row.offset : 0;
         const p = tlPeakMax(wave.peaks, (s0 + base) * wave.ps, (s1 + base) * wave.ps);
         const hh = Math.max(1, Math.min(1, p * g) * half);

@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "glint"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "chrono",
  "clipboard-win",
@@ -1575,6 +1575,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "trash",
  "windows 0.58.0",
+ "windows-core 0.58.0",
  "winreg 0.52.0",
 ]
 

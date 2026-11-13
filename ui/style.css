@@ -185,6 +185,11 @@ select.field option { background: var(--raised); }
 .thumb .star svg { width: 14px; height: 14px; fill: currentColor; stroke: none; }
 .thumb .job { position: absolute; inset: auto 0 0 0; height: 4px; background: rgba(255, 255, 255, .12); }
 .thumb .job i { display: block; height: 100%; background: var(--accent); }
+/* The picture: inline styles in cardHtml fit the whole frame; this only keeps it out of the way of clicks and drags. */
+.thumb .thumb-img { pointer-events: none; user-select: none; }
+/* Name and details sit in from the card's edges (the thumbnail's rounded corner), not flush with them. */
+.card h3 { padding: 0 6px; }
+.card p { padding: 0 6px 4px; }
 .card h3 { margin: 10px 0 2px; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* The name is its own hit area: a click on it does not open the clip, a double click renames it in place. */
 .card .ctitle { cursor: default; }

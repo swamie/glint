@@ -194,6 +194,8 @@ pub struct Settings {
     pub mic: bool,
     /// Clean the microphone track with RNNoise when a clip is saved.
     pub mic_denoise: bool,
+    /// Also record the current game's own sound (its process tree) as an extra "Game" track.
+    pub game_audio: bool,
     pub record_on_start: bool,
     pub sound: bool,
     /// One of `sound::SOUNDS`, or "custom" to play `sound_file`.
@@ -219,6 +221,12 @@ pub struct Settings {
     /// Colour theme id (see ui/themes.js) and the user's own CSS, applied after it.
     pub theme: String,
     pub custom_css: String,
+    /// Colour the taskbar and tray icon with the theme's accent. The UI stores the
+    /// accent colours it computed (`--accent`, `--accent-2`, "#rrggbb") so the
+    /// icon is right at the next start before the window has loaded.
+    pub icon_theme: bool,
+    pub icon_accent: String,
+    pub icon_accent_2: String,
     /// Discord Rich Presence, and the Application ID it identifies as.
     pub discord_rpc: bool,
     pub discord_app_id: String,
@@ -279,6 +287,7 @@ impl Default for Settings {
             desktop_audio: true,
             mic: true,
             mic_denoise: false,
+            game_audio: false,
             record_on_start: true,
             sound: true,
             sound_name: "chirp".into(),
@@ -295,6 +304,9 @@ impl Default for Settings {
             toast_mic: true,
             theme: "glint".into(),
             custom_css: String::new(),
+            icon_theme: false,
+            icon_accent: String::new(),
+            icon_accent_2: String::new(),
             discord_rpc: false,
             discord_app_id: String::new(),
             update_check: true,

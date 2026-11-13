@@ -1,0 +1,19 @@
+/* Settings → Components and the status bar's "Install ffmpeg" (deps.js). */
+.deps .deps-state.ok { color: var(--ok); }
+.deps .deps-state.missing { color: var(--danger); }
+.deps .deps-state.old { color: var(--warn); }
+.deps .row .hint .path { display: inline-block; max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.deps-live:empty, .deps-live:has(> .deps-prog[hidden]:only-child) { display: none; }
+.deps-live { display: flex; flex-direction: column; gap: 6px; padding: 10px 18px; border-bottom: 1px solid var(--line); }
+.deps-prog { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.deps-prog[hidden] { display: none; }
+.deps-bar { position: relative; flex: 1; min-width: 80px; height: 6px; border-radius: 999px; background: var(--raised-2); overflow: hidden; }
+.deps-bar i { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: inherit; transition: width .2s linear; }
+.deps-prog-text { color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.deps-err { color: var(--danger); font-size: 12px; white-space: normal; }
+
+/* The status bar's one-line form. */
+.deps-sb { display: inline-flex; align-items: center; gap: 8px; margin-left: 8px; vertical-align: middle; }
+.deps-sb .btn.sm { height: 20px; padding: 0 8px; font-size: 11px; }
+.deps-sb .deps-prog.small .deps-bar { flex: none; width: 90px; height: 4px; }
+.deps-sb .deps-prog-text, .deps-sb .deps-err { font-size: 11.5px; white-space: nowrap; }

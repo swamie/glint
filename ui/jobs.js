@@ -94,7 +94,7 @@ function jobsClipTitle(clipId, fallback) {
 
 /** Every row, newest first: { key, kind, title, state, pct, message, job }. */
 function jobsRows() {
-  const rows = jobsList.map((j) => ({ key: j.id, kind: j.kind === "compress" ? "compress" : "blur", title: jobsClipTitle(j.clip_id, j.title), state: j.state, pct: +j.pct || 0, message: j.message || "", start: +j.queued || 0, job: j }));
+  const rows = jobsList.map((j) => ({ key: j.id, kind: j.kind === "compress" || j.kind === "join" ? j.kind : "blur", title: jobsClipTitle(j.clip_id, j.title), state: j.state, pct: +j.pct || 0, message: j.message || "", start: +j.queued || 0, job: j }));
   for (const [id, x] of jobsExports) rows.push({ key: "export:" + id, kind: "export", title: jobsClipTitle(id, ""), state: x.pct >= 100 ? "exported" : "exporting", pct: x.pct, message: "", start: x.start, job: null });
   return rows.sort((a, b) => b.start - a.start);
 }
@@ -151,7 +151,7 @@ function jobsRenderButton(rows) {
   const btn = jobsButton(slot);
   const overall = active.length ? Math.round(active.reduce((s, r) => s + (r.state === "queued" ? 0 : r.pct), 0) / active.length) : 0;
   // "rendering" while only renders and exports run; "working" once a compression is among them.
-  const rendering = active.every((r) => r.kind !== "compress");
+  const rendering = active.every((r) => r.kind !== "compress" && r.kind !== "join");
   const label = !active.length ? t("Renders") : rendering ? t("{n} rendering", { n: active.length }) : t("{n} working", { n: active.length });
   const bad = !active.length && jobsUnseen && jobsList.some((j) => j.state === "error" && !jobsSeen.has(j.id));
   const fresh = !active.length && jobsUnseen;
@@ -174,6 +174,11 @@ function jobsRenderButton(rows) {
 function jobsStateLine(r) {
   const pct = Math.floor(r.pct);
   const squeeze = r.kind === "compress";
+  if (r.kind === "join") { // "Edit together" (join.js)
+    if (r.state === "queued") return t("Waiting to join");
+    if (r.state === "running") return t("Joining {pct} %", { pct });
+    if (r.state === "done") return t("Joined");
+  }
   switch (r.state) {
     case "queued": return squeeze ? t("Waiting to compress for Discord") : t("Waiting");
     case "running": return squeeze ? t("Compressing for Discord {pct} %", { pct }) : t("Rendering {pct} %", { pct });

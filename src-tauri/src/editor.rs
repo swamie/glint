@@ -389,7 +389,7 @@ fn atempo_chain(speed: f64) -> String {
 
 /// Choose the H.264 encoder: the user's encoder setting, or on "auto" the first
 /// hardware encoder that can encode two frames (same probe as the recorder).
-fn pick_encoder(ffmpeg: &Path, wanted: &str) -> String {
+pub(crate) fn pick_encoder(ffmpeg: &Path, wanted: &str) -> String {
     static CACHE: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
     if matches!(wanted, "nvenc" | "amf" | "qsv" | "x264") {
         return wanted.to_string();
@@ -420,7 +420,7 @@ fn pick_encoder(ffmpeg: &Path, wanted: &str) -> String {
 }
 
 /// Encoder options for a visually clean export (roughly CRF/CQ 18-20).
-fn video_codec_args(enc: &str) -> Vec<String> {
+pub(crate) fn video_codec_args(enc: &str) -> Vec<String> {
     let a: &[&str] = match enc {
         "nvenc" => &["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", "19", "-b:v", "0", "-forced-idr", "1"],
         "amf" => &["-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "18", "-qp_p", "20", "-qp_b", "20"],

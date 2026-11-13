@@ -66,7 +66,7 @@ pub fn hidden_cmd_prio(program: &Path) -> Command {
     c
 }
 
-/// Locate a tool: explicit path, next to our exe, then PATH. Scoop shims are
+/// Locate a tool: explicit path, next to our exe, `%LOCALAPPDATA%\Glint\bin`, then PATH. Scoop shims are
 /// resolved to the real exe so kill() and CPU stats hit the right process.
 pub fn find_exe(custom: &str, name: &str) -> Option<PathBuf> {
     let file = format!("{name}.exe");
@@ -80,6 +80,8 @@ pub fn find_exe(custom: &str, name: &str) -> Option<PathBuf> {
             cands.push(d.join("bin").join(&file));
         }
     }
+    // Where "Check and repair" puts ffmpeg when Glint's own folder is read-only (deps.rs).
+    cands.push(crate::deps::local_bin_dir().join(&file));
     if let Some(paths) = std::env::var_os("PATH") {
         for d in std::env::split_paths(&paths) {
             cands.push(d.join(&file));

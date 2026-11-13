@@ -27,6 +27,10 @@ pub struct ClipMeta {
     pub audio_tracks: u32,
     /// Subfolder of the clips folder that holds the file. "" = the clips folder itself.
     pub folder: String,
+    /// Kind "joined" ("Edit together", join.rs): where each joined clip after the first starts, seconds.
+    /// The editor opens the clip with a split at each. Not written for other clips.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub joins: Vec<f64>,
 }
 
 pub struct Library {
@@ -161,6 +165,17 @@ pub fn probe(ffmpeg: &Path, file: &Path, count_frames: bool) -> Option<Probe> {
     Some(p)
 }
 
+/// The thumbnail filter: first turn non-square pixels square (an anamorphic or
+/// "stretched" import stores 1440x1080 with a 4:3 sample aspect, which a JPEG
+/// cannot carry, so a plain `scale=480:-2` came out squashed), then fit the
+/// whole frame inside 640x640 without cropping. Rotation is applied by ffmpeg.
+pub const THUMB_VF: &str = "scale=w='trunc(iw*sar/2)*2':h=ih,setsar=1,scale=640:640:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1";
+
+/// Where in a clip the thumbnail is taken: the middle.
+pub fn thumb_at(duration: f64) -> f64 {
+    if duration.is_finite() && duration > 0.0 { duration * 0.5 } else { 0.0 }
+}
+
 /// Grab one frame as the library thumbnail. Returns the jpg path ("" on failure).
 pub fn make_thumb(ffmpeg: &Path, video: &Path, id: &str, at: f64) -> String {
     let out = thumbs_dir().join(format!("{id}.jpg"));
@@ -169,7 +184,7 @@ pub fn make_thumb(ffmpeg: &Path, video: &Path, id: &str, at: f64) -> String {
         let _ = util::hidden_cmd(ffmpeg)
             .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{pos:.2}"), "-i"])
             .arg(video)
-            .args(["-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "5"])
+            .args(["-frames:v", "1", "-vf", THUMB_VF, "-q:v", "5"])
             .arg(&out)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -187,7 +202,7 @@ pub fn register(ffmpeg: &Path, file: &Path, title: &str, game: &str, kind: &str)
     let id = util::new_id();
     let p = probe(ffmpeg, file, false).unwrap_or_default();
     ClipMeta {
-        thumb: make_thumb(ffmpeg, file, &id, (p.duration * 0.5).min(5.0)),
+        thumb: make_thumb(ffmpeg, file, &id, thumb_at(p.duration)),
         id,
         path: file.to_string_lossy().into_owned(),
         title: title.to_string(),
@@ -202,5 +217,6 @@ pub fn register(ffmpeg: &Path, file: &Path, title: &str, game: &str, kind: &str)
         kind: kind.to_string(),
         audio_tracks: p.audio_streams,
         folder: String::new(),
+        joins: Vec::new(),
     }
 }

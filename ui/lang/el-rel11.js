@@ -1,0 +1,12 @@
+"use strict";
+// Greek: the 0.1.11 changelog.
+glintAddLanguage("el", "Ελληνικά", {
+  "Settings → Components checks for ffmpeg and Blur and installs anything missing. If ffmpeg is missing, the status bar has an Install ffmpeg button.": "Ρυθμίσεις → Στοιχεία: ελέγχει αν υπάρχουν το ffmpeg και το Blur και εγκαθιστά ό,τι λείπει. Αν λείπει το ffmpeg, η γραμμή κατάστασης έχει κουμπί εγκατάστασης του ffmpeg.",
+  "Edit together: select several clips, right-click, and they are joined, oldest first, into one new clip that opens in the editor with a split where each clip starts. Your original clips stay as they are.": "Επεξεργασία μαζί: επιλέξτε πολλά κλιπ, κάντε δεξί κλικ και ενώνονται, από το παλαιότερο, σε ένα νέο κλιπ που ανοίγει στον επεξεργαστή με διαχωρισμό εκεί όπου αρχίζει κάθε κλιπ. Τα αρχικά κλιπ μένουν όπως είναι.",
+  "Separate game audio track (Capture, off until you switch it on): a track with only the game's sound. In the editor, mute Desktop and keep Game to drop voice chat and music.": "Ξεχωριστό κομμάτι ήχου παιχνιδιού (Καταγραφή, ανενεργό μέχρι να το ενεργοποιήσετε): ένα κομμάτι μόνο με τον ήχο του παιχνιδιού. Στον επεξεργαστή, κάντε σίγαση στην Επιφάνεια εργασίας και κρατήστε το Παιχνίδι για να αφαιρέσετε τη φωνητική συνομιλία και τη μουσική.",
+  "The taskbar icon can take your theme's colour: Settings, next to the themes.": "Το εικονίδιο της γραμμής εργασιών μπορεί να πάρει το χρώμα του θέματός σας: Ρυθμίσεις, δίπλα στα θέματα.",
+  "On Windows 10, Auto capture no longer shows the yellow border around the screen.": "Στα Windows 10, η αυτόματη καταγραφή δεν δείχνει πια το κίτρινο περίγραμμα γύρω από την οθόνη.",
+  "Clip cards: more room around the text, and the folder is shown only when it differs from the game.": "Κάρτες κλιπ: περισσότερος χώρος γύρω από το κείμενο, και ο φάκελος φαίνεται μόνο όταν διαφέρει από το παιχνίδι.",
+  "A trimmed clip rendered with Blur no longer has its sound out of step with the picture.": "Ένα κομμένο κλιπ που αποδίδεται με το Blur δεν έχει πια τον ήχο εκτός συγχρονισμού με την εικόνα.",
+  "Clip thumbnails always show the whole frame, also with a custom theme and for stretched, ultrawide and portrait clips.": "Οι μικρογραφίες των κλιπ δείχνουν πάντα ολόκληρο το καρέ, και με προσαρμοσμένο θέμα και για τεντωμένα, υπερευρεία και κατακόρυφα κλιπ.",
+});

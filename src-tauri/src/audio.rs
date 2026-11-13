@@ -254,6 +254,27 @@ impl AudioRing {
         self.trim();
     }
 
+    /// Bring the ring up to `now` with silence when nothing has arrived for a
+    /// while. Process loopback sends no packets at all while its process is
+    /// silent; without this the ring would stop short of the present until the
+    /// next sound. Starts the clock on a ring that has had nothing yet.
+    pub fn pad_to(&mut self, now: f64) {
+        if self.cap_frames == 0 {
+            return;
+        }
+        if !self.active {
+            self.t0 = now;
+            self.written = 0;
+            self.active = true;
+            return;
+        }
+        let behind = ((now - self.t0) * self.rate as f64) as i64 - self.written as i64;
+        if behind > (self.rate / 10) as i64 {
+            // One silent frame ending at `now`: `push` fills the gap before it in pieces.
+            self.push(&[0, 0], now);
+        }
+    }
+
     /// Where the audio for a list of wall-clock ranges is. Missing audio is silence.
     pub fn plan(&self, segs: &[(f64, f64)]) -> Option<Plan> {
         if !self.active {

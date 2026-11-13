@@ -219,7 +219,7 @@ function renderChrome() {
   $("#sb-state").innerHTML = !on
     ? t("Paused")
     : st.error
-      ? `<b style="color:var(--danger)">${esc(st.error)}</b>`
+      ? `<b style="color:var(--danger)">${esc(st.error)}</b>${typeof depsErrorExtra === "function" ? depsErrorExtra(st.error) : ""}`
       : (() => {
         const info = `${st.width}×${st.height} @ ${st.fps} fps${enc ? " · " + enc : ""}`;
         return st.game ? t("<b>Clipping</b> {game} · {info}", { game: esc(st.game), info }) : t("<b>Clipping</b> {info}", { info });
@@ -262,20 +262,22 @@ const titleHtml = (c) => `<span class="ctitle" title="${esc(c.title + "\n" + t("
 function cardHtml(c) {
   const job = S.jobs[c.id];
   const bg = c.thumb
-    ? `style="background-image:url('${fileSrc(c.thumb)}')"`
+    ? ""
     : `style="background:linear-gradient(135deg,hsl(${hue(c.game)} 45% 22%),hsl(${(hue(c.game) + 50) % 360} 50% 12%))"`;
   // The tag names what made the clip; a Discord copy's is the brand name, so it is not translated.
+  // The picture is an <img> fitted by inline styles: a custom theme's `.thumb { background: … }`
+  // once reset a background-image's size, so cards showed only the frame's top-left corner.
   return `<article class="card${S.sel.has(c.id) ? " sel" : ""}" data-clip="${c.id}" data-hover>
     <div class="thumb" ${bg}>
-      ${c.thumb ? "" : `<div class="ph">${esc(c.game.slice(0, 1).toUpperCase())}</div>`}
+      ${c.thumb ? `<img class="thumb-img" src="${esc(fileSrc(c.thumb))}" alt="" draggable="false" decoding="async" onerror="this.remove()" style="${THUMB_IMG_STYLE}">` : `<div class="ph">${esc(c.game.slice(0, 1).toUpperCase())}</div>`}
       <span class="check" title="${esc(t("Select"))}">${ICON.check}</span>
       ${c.favorite ? `<span class="star">${ICON.star}</span>` : ""}
-      ${c.kind !== "clip" ? `<span class="tag tag-${esc(c.kind)}">${esc({ trim: t("trim"), edit: t("edit"), import: t("import"), discord: "Discord" }[c.kind] || c.kind)}</span>` : ""}
+      ${c.kind !== "clip" ? `<span class="tag tag-${esc(c.kind)}">${esc({ trim: t("trim"), edit: t("edit"), import: t("import"), discord: "Discord", joined: t("joined") }[c.kind] || c.kind)}</span>` : ""}
       <span class="dur">${fmtDur(c.duration)}</span>
       ${job && job.state === "running" ? `<div class="job"><i style="width:${job.pct}%"></i></div>` : ""}
     </div>
     <h3>${titleHtml(c)}</h3>
-    <p><span>${esc(c.game)}</span>${c.folder && S.folder === null ? `<span>${esc(c.folder)}</span>` : ""}<span>${timeAgo(c.created)}</span><span>${fmtSize(c.size)}</span></p>
+    <p><span>${esc(c.game)}</span>${S.folder === null && folderDiffers(c) ? `<span>${esc(c.folder)}</span>` : ""}<span>${timeAgo(c.created)}</span><span>${fmtSize(c.size)}</span></p>
   </article>`;
 }
 
@@ -513,7 +515,7 @@ function openClipMenu(id, x, y) {
     + mItem("fav", allFav ? t("Remove favorite") : t("Favorite"), ICON.star, "", "", "none")
     + (many ? "" : mItem("rename", t("Rename…"), ICON.edit))
     + "<hr>" + mSub(t("Game"), ICON.game, gameItems) + mSub(t("Folder"), ICON.folder, folderItems(menuIds)) + "<hr>"
-    + (many ? mSub(t("Compress for Discord"), ICON.compress, compressItems) + "<hr>"
+    + (many ? (typeof joinMenuItem === "function" ? joinMenuItem(clips) : "") + mSub(t("Compress for Discord"), ICON.compress, compressItems) + "<hr>"
       : mItem("edit", t("Open in editor"), ICON.cut) + (S.blur ? mItem("blur", t("Render with Blur"), ICON.blur, "", "", "launch") : "") + mSub(t("Compress for Discord"), ICON.compress, compressItems) + mItem("reveal", t("Open file location"), ICON.folder) + "<hr>")
     + (many ? mItem("deselect", t("Clear selection"), ICON.x) : mItem("select", S.sel.has(id) ? t("Deselect") : t("Select"), ICON.check))
     + mItem("delete", t("Delete"), ICON.trash, "", "danger");
@@ -569,6 +571,7 @@ async function menuAction(m, arg) {
     }
     case "rename": return editTitle(id);
     case "compress": return compressIds(ids, +arg || 10);
+    case "join": return joinClips(ids); // join.js
     case "game": return setGame(arg);
     case "game-new": { const game = await askText(t("Game name"), c?.game || "", t("Set game")); if (game) await setGame(game); return; }
     case "move": return moveIds(ids, arg);
@@ -823,7 +826,8 @@ How theming works: the app reads its colours from CSS variables on :root. Set th
   --muted      secondary text
   --dim        faint text and disabled items
   --accent     highlight colour: active items, primary buttons, progress bars
-  --accent-2   lighter accent, for hover
+               (it also colours the big star of the taskbar and tray icon when "Match the taskbar icon to the theme" is on)
+  --accent-2   lighter accent, for hover (also the small star of that icon)
   --accent-ink text drawn on top of the accent colour (must contrast with --accent)
   --danger, --ok, --warn   red, green, yellow status colours
   --radius     corner radius, e.g. 8px
@@ -954,7 +958,7 @@ function bufferPlan() {
   // "RAM + disk" on a buffer barely longer than its RAM part stays in RAM.
   const allRam = mode === "ram" || (mode === "mixed" && total <= window + 15);
   const ramSecs = allRam ? total : mode === "disk" ? 0 : window;
-  const perSec = ((s.bitrate || S.status.max_mbps || 0) * 1e6) / 8 + ((s.desktop_audio ? 1 : 0) + (s.mic ? 1 : 0)) * 192000;
+  const perSec = ((s.bitrate || S.status.max_mbps || 0) * 1e6) / 8 + ((s.desktop_audio ? 1 : 0) + (s.mic ? 1 : 0) + (s.game_audio ? 1 : 0)) * 192000;
   return { mode, allRam, window, ram: perSec * Math.max(ramSecs, 1), disk: allRam ? 0 : perSec * (total - ramSecs) };
 }
 
@@ -985,7 +989,7 @@ function renderRecording() {
   const bufferDir = s.buffer_dir || "%LOCALAPPDATA%\\Glint\\buffer";
   const extra = kbExtraMons(); // these keep their own capture whatever the Monitor dropdown says
   $("#view").innerHTML = pageHead(t("Capture"), t("What the replay buffer captures")) + `
-    ${st.error && st.recording ? `<div class="note bad"><b>${t("Capture problem:")}</b> ${esc(st.error)}</div>` : ""}
+    ${st.error && st.recording ? `<div class="note bad"><b>${t("Capture problem:")}</b> ${esc(st.error)}${typeof depsErrorExtra === "function" ? depsErrorExtra(st.error) : ""}</div>` : ""}
     <div class="section"><h2>${t("Video")}</h2>
       ${row(t("Monitor"), t("The screen that is captured") + (extra.length ? `<br>${t("Also buffered for a keybind: {list}", { list: extra.map((m) => esc(m.name)).join(", ") })}` : ""), select("monitor", S.monitors.map((m) => [m.index, monLabel(m)]), true))}
       ${row(t("Resolution"), t("Scaled on the GPU. Lower is lighter and smaller"), select("height", resOpts, true))}
@@ -994,7 +998,7 @@ function renderRecording() {
       ${row(t("Bitrate"), s.bitrate ? (plan.disk ? t("Fixed. Moving pictures use all of it; the {length} buffer can reach {size}", { length: fmtLen(maxSecs()), size: fmtSize((s.bitrate * 1e6 * maxSecs()) / 8) }) : t("Fixed. Moving pictures use all of it; the {length} buffer can reach {size} of RAM", { length: fmtLen(maxSecs()), size: fmtSize((s.bitrate * 1e6 * maxSecs()) / 8) })) : t("Auto picks the bitrate from the Quality level below"), select("bitrate", [[0, t("Auto")], ...[...new Set([5, 8, 10, 15, 20, 30, 40, 50, 60, 80, 100, s.bitrate])].filter(Boolean).sort((a, b) => a - b).map((b) => [b, `${b} Mbps`])], true))}
       ${s.bitrate ? "" : row(t("Quality"), st.max_mbps ? t("Current ceiling {mbps} Mbps; quiet scenes use much less", { mbps: st.max_mbps.toFixed(0) }) : t("Quality-targeted bitrate"), select("quality", [["low", t("Low")], ["medium", t("Medium")], ["high", t("High")], ["ultra", t("Ultra")]]))}
       ${row(t("Encoder"), t("Auto picks your GPU's hardware encoder"), select("encoder", [["auto", t("Auto")], ["nvenc", "NVIDIA NVENC"], ["amf", "AMD AMF"], ["qsv", "Intel Quick Sync"], ["x264", t("x264 (CPU, heavy)")]]))}
-      ${row(t("Capture method"), t("Graphics Capture is smoother at high frame rates"), select("method", [["auto", t("Auto")], ["wgc", "Windows Graphics Capture"], ["dda", "Desktop Duplication"]]))}
+      ${row(t("Capture method"), t("Graphics Capture is smoother at high frame rates") + win10CaptureHint(), select("method", [["auto", t("Auto")], ["wgc", "Windows Graphics Capture"], ["dda", "Desktop Duplication"]]))}
       ${row(t("Show cursor"), "", toggle("cursor"))}
     </div>
     <div class="section"><h2>${t("Replay buffer")}</h2>
@@ -1006,6 +1010,7 @@ function renderRecording() {
       ${row(t("Desktop audio"), t("Everything you hear, from the default output device"), toggle("desktop_audio"))}
       ${row(t("Microphone"), t("Default input device, saved as its own track"), toggle("mic"))}
       ${row(t("Microphone noise suppression"), t("Cuts background noise such as fans and hum from your voice (RNNoise). Applied when a clip is saved, so it costs nothing while clipping"), toggle("mic_denoise"))}
+      ${row(t("Separate game audio track"), t("Adds a track with only the game's sound, so you can keep the game and drop everything else (voice chat, music) when editing. Needs Windows 10 version 2004 or newer.") + (s.game_audio && st.game_audio === "unavailable" ? `<br><b>${t("Not available on this version of Windows.")}</b>` : s.game_audio && st.game_audio === "failed" ? `<br><b>${t("The current game's sound could not be captured.")}</b>` : ""), toggle("game_audio"))}
     </div>
     <div class="section"><h2>${t("Behaviour")}</h2>
       ${row(t("Start clipping when Glint starts"), t("Otherwise the buffer stays off until you resume"), toggle("record_on_start"))}
@@ -1027,6 +1032,7 @@ function renderSettings() {
     ${S.ffmpeg ? "" : `<div class="note bad">${t("<b>ffmpeg.exe was not found.</b> Glint needs ffmpeg 8 or newer. Install it or set its path below.")}</div>`}
     <div class="section"><h2>${t("Appearance")}</h2>
       <div class="themes">${window.GLINT_THEMES.map((th) => `<button class="theme${(s.theme || "glint") === th.id ? " active" : ""}" data-theme="${th.id}" style="background:${th.vars.panel || "#0a0e16"};color:${th.vars.text || "#e8edf6"}"><i style="background:${th.vars.accent || "#62b6f7"}"></i>${esc(th.name)}</button>`).join("")}</div>
+      ${row(t("Match the taskbar icon to the theme"), t("Colours Glint's icon in the taskbar and the tray with the theme's accent, including a custom theme's"), toggle("icon_theme"))}
       ${row(t("Renders button"), t("The button in the top bar that lists Blur renders and their progress"), select("renders_button", [["auto", t("While rendering")], ["always", t("Always")], ["never", t("Never")]]))}
       ${row(t("Interface size"), t("Makes everything in the window bigger or smaller, so more or less fits on screen"), select("ui_zoom", [70, 80, 90, 100, 110, 125, 150].map((z) => [z, `${z}%`]), true))}
       <details class="css-box"${S.cssOpen || s.custom_css ? " open" : ""}>
@@ -1088,7 +1094,8 @@ function renderSettings() {
     </div>
     <div class="section"><h2>${t("Program")}</h2>
       ${row(t("ffmpeg.exe path"), S.ffmpeg ? t("Using {path}", { path: `<span class="path" title="${esc(S.ffmpeg)}">${esc(S.ffmpeg)}</span>` }) : t("Not found"), `<input class="field" type="text" data-set="ffmpeg_path" value="${esc(S.settings.ffmpeg_path)}" placeholder="${esc(t("Auto"))}" style="width:340px">`)}
-    </div>`;
+    </div>
+    ${typeof depsSection === "function" ? depsSection() : ""}`;
   // The Capture page's settings can be found from here too: its sections are
   // added to this page, hidden until a search asks for them.
   const own = $("#view").innerHTML;

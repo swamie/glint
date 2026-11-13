@@ -37,6 +37,7 @@ pub fn show_main(app: &AppHandle) {
         if built.is_ok() {
             let zoom = app.state::<Arc<Core>>().settings().ui_zoom;
             apply_zoom(&app, zoom);
+            crate::polish::apply_icon(&app, &app.state::<Arc<Core>>().settings()); // the theme-coloured icon, if on
         }
     });
 }
@@ -549,6 +550,13 @@ fn compress_clip(core: St, id: String, mb: u32) -> Result<crate::jobs::Job, Stri
     crate::compress::enqueue(core.inner(), id, mb)
 }
 
+/// "Edit together": queue a job that joins clips `ids` (2..=20, oldest first)
+/// into one new clip of kind "joined", announced with "clip-joined" (see join.rs).
+#[tauri::command(async)]
+fn join_clips(core: St, ids: Vec<String>) -> Result<crate::jobs::Job, String> {
+    crate::join::enqueue(core.inner(), ids)
+}
+
 #[tauri::command]
 fn suspend_hotkeys(on: bool) {
     hotkeys::suspend(on);
@@ -559,6 +567,23 @@ fn suspend_hotkeys(on: bool) {
 #[tauri::command(async)]
 fn fire_keybind(core: St, id: String) {
     core.inner().on_hotkey(&id);
+}
+
+/// Settings → Components: the programs Glint uses, and what is installing now.
+#[tauri::command(async)]
+fn check_deps(core: St) -> serde_json::Value {
+    serde_json::json!({ "items": crate::deps::check(&core.settings()), "installing": crate::deps::installing() })
+}
+
+/// Download and install "ffmpeg" (with ffprobe) or "blur". Progress comes as "deps-progress" events.
+#[tauri::command(async)]
+fn install_dep(core: St, id: String) -> Result<Vec<crate::deps::Item>, String> {
+    crate::deps::install_for_ui(core.inner(), &id)
+}
+
+#[tauri::command]
+fn cancel_dep_install() -> bool {
+    crate::deps::cancel()
 }
 
 #[tauri::command]
@@ -681,9 +706,14 @@ pub fn run(minimized: bool) {
             export_clip,
             blur_clip,
             compress_clip,
+            join_clips,
             suspend_hotkeys,
             fire_keybind,
-            win_action
+            check_deps,
+            install_dep,
+            cancel_dep_install,
+            win_action,
+            crate::polish::set_app_icon
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -692,6 +722,8 @@ pub fn run(minimized: bool) {
             let _ = app.asset_protocol_scope().allow_directory(library::thumbs_dir(), true);
             let _ = app.asset_protocol_scope().allow_directory(crate::games::icons_dir(), true);
             build_tray(&handle, core.clone())?;
+            crate::polish::apply_icon(&handle, &core.settings()); // tray icon in the theme's colour, if on
+            crate::polish::spawn_thumb_repair(core.clone());
             core.watch();
 
             // Updates: clear what the last update left behind, then look for a new

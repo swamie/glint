@@ -13,6 +13,9 @@ pub struct Capture {
     pub snap: Snapshot,
     pub desk: Option<Pcm>,
     pub mic: Option<Pcm>,
+    /// The game's own sound (process loopback), None when it was not captured
+    /// for any of the clip's time. Becomes the last track, titled "Game".
+    pub game: Option<Pcm>,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -40,7 +43,10 @@ fn reserve_path(dir: &Path, base: &str, ext: &str) -> PathBuf {
 /// Mux the snapshot into `<clips_dir>/<game> <timestamp>.mp4`.
 ///
 /// Audio layout: with both sources, track 1 is the mix (what players and chat
-/// apps use), track 2 desktop only, track 3 mic only.
+/// apps use), track 2 desktop only, track 3 mic only. With game audio, a
+/// "Game" track is added LAST (Mix, Desktop, Microphone, Game; or Desktop,
+/// Game), so the index of every other track stays what it always was. The mix
+/// stays desktop + mic: the game is already part of the desktop sound.
 pub fn write(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, String> {
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg").ok_or("ffmpeg.exe was not found")?;
     if s.mic_denoise {
@@ -60,11 +66,16 @@ pub fn write(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, Str
     let tmp = util::tmp_dir();
 
     let mut inputs: Vec<(PathBuf, u32, &str)> = Vec::new();
-    for (pcm, tag, name) in [(&cap.desk, "d", "Desktop"), (&cap.mic, "m", "Microphone")] {
+    for (pcm, tag, name) in [(&cap.desk, "d", "Desktop"), (&cap.mic, "m", "Microphone"), (&cap.game, "g", "Game")] {
         if let Some(p) = pcm {
             if !p.data.is_empty() {
                 let f = tmp.join(format!("{id}_{tag}.pcm"));
-                write_pcm(&f, p).map_err(|e| format!("Cannot write temp audio: {e}"))?;
+                if let Err(e) = write_pcm(&f, p) {
+                    for (f, _, _) in &inputs {
+                        let _ = fs::remove_file(f);
+                    }
+                    return Err(format!("Cannot write temp audio: {e}"));
+                }
                 inputs.push((f, p.rate, name));
             }
         }
@@ -78,21 +89,7 @@ pub fn write(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, Str
     for (f, rate, _) in &inputs {
         cmd.args(["-f", "s16le", "-ar", &rate.to_string(), "-ac", "2", "-i"]).arg(f);
     }
-    match inputs.len() {
-        2 => {
-            cmd.args(["-filter_complex", "[1:a][2:a]amix=inputs=2:duration=longest:normalize=0[mix]"]);
-            cmd.args(["-map", "0:v:0", "-map", "[mix]", "-map", "1:a", "-map", "2:a"]);
-            cmd.args(["-metadata:s:a:0", "title=Mix", "-metadata:s:a:1", "title=Desktop", "-metadata:s:a:2", "title=Microphone"]);
-            cmd.args(["-disposition:a:0", "default", "-disposition:a:1", "0", "-disposition:a:2", "0"]);
-        }
-        1 => {
-            cmd.args(["-map", "0:v:0", "-map", "1:a"]);
-            cmd.arg("-metadata:s:a:0").arg(format!("title={}", inputs[0].2));
-        }
-        _ => {
-            cmd.args(["-map", "0:v:0"]);
-        }
-    }
+    let titles = audio_layout(&mut cmd, &inputs.iter().map(|(_, _, name)| *name).collect::<Vec<_>>());
     // The "fast" AAC coder halves audio encode time on long clips (measured 11.8 s -> 5.5 s for 10 min x 3 tracks).
     cmd.args(["-c:v", "copy", "-c:a", "aac", "-aac_coder", "fast", "-b:a", "160k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart"]);
     cmd.arg("-metadata").arg(format!("title={title}"));
@@ -126,7 +123,7 @@ pub fn write(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, Str
 
     let duration = cap.snap.duration;
     Ok(ClipMeta {
-        thumb: library::make_thumb(&ffmpeg, &out, &id, (duration * 0.5).min(5.0)),
+        thumb: library::make_thumb(&ffmpeg, &out, &id, library::thumb_at(duration)),
         id,
         path: out.to_string_lossy().into_owned(),
         title,
@@ -139,16 +136,120 @@ pub fn write(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, Str
         fps: cap.fps,
         favorite: false,
         kind: "clip".into(),
-        audio_tracks: match inputs.len() {
-            2 => 3,
-            n => n as u32,
-        },
+        audio_tracks: titles.len() as u32,
         folder,
+        joins: Vec::new(),
     })
 }
 
+/// Add the `-map`, title and disposition arguments for the audio inputs
+/// `names` (ffmpeg inputs 1, 2, ... in that order; input 0 is the video).
+/// Returns the titles of the audio tracks written, in order.
+///
+/// Desktop + Microphone get their mix as track 1; a "Game" input is always
+/// the last track and is never part of the mix (the desktop sound holds it).
+pub fn audio_layout(cmd: &mut std::process::Command, names: &[&str]) -> Vec<&'static str> {
+    let game = names.iter().position(|n| *n == "Game");
+    let base: Vec<(usize, &str)> = names.iter().copied().enumerate().filter(|(_, n)| *n != "Game").collect();
+    let mut maps: Vec<String> = Vec::new();
+    let mut titles: Vec<&'static str> = Vec::new();
+    let title_of = |n: &str| -> &'static str {
+        match n {
+            "Desktop" => "Desktop",
+            "Microphone" => "Microphone",
+            "Game" => "Game",
+            _ => "Audio",
+        }
+    };
+    if base.len() == 2 {
+        let (a, b) = (base[0].0 + 1, base[1].0 + 1);
+        cmd.arg("-filter_complex").arg(format!("[{a}:a][{b}:a]amix=inputs=2:duration=longest:normalize=0[mix]"));
+        maps.push("[mix]".into());
+        titles.push("Mix");
+    }
+    for (i, n) in &base {
+        maps.push(format!("{}:a", i + 1));
+        titles.push(title_of(n));
+    }
+    if let Some(g) = game {
+        maps.push(format!("{}:a", g + 1));
+        titles.push("Game");
+    }
+    cmd.args(["-map", "0:v:0"]);
+    for m in &maps {
+        cmd.arg("-map").arg(m);
+    }
+    for (i, t) in titles.iter().enumerate() {
+        cmd.arg(format!("-metadata:s:a:{i}")).arg(format!("title={t}"));
+        if titles.len() > 1 {
+            cmd.arg(format!("-disposition:a:{i}")).arg(if i == 0 { "default" } else { "0" });
+        }
+    }
+    titles
+}
+
+/// Titles of the audio streams of `file`, in stream order ("" = untitled).
+/// ffmpeg's MP4 reader gives a track title back as the tag "name"; either is taken.
+pub fn audio_titles(ffmpeg: &Path, file: &Path) -> Vec<String> {
+    let Some(ffprobe) = library::ffprobe_for(ffmpeg) else { return Vec::new() };
+    let Ok(out) = util::hidden_cmd(&ffprobe)
+        .args(["-v", "error", "-select_streams", "a", "-show_entries", "stream=index:stream_tags=title,name", "-of", "default=nw=1"])
+        .arg(file)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    let mut v: Vec<(Option<String>, Option<String>)> = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if line.starts_with("index=") {
+            v.push((None, None));
+        } else if let Some(last) = v.last_mut() {
+            if let Some(x) = line.strip_prefix("TAG:title=") {
+                last.0 = Some(x.trim().to_string()).filter(|x| !x.is_empty());
+            } else if let Some(x) = line.strip_prefix("TAG:name=") {
+                last.1 = Some(x.trim().to_string()).filter(|x| !x.is_empty());
+            }
+        }
+    }
+    v.into_iter().map(|(a, b)| a.or(b).unwrap_or_default()).collect()
+}
+
+/// Give `out` (made from `src` by another program, such as Blur) the audio
+/// track titles of `src` again, when `src` has a "Game" track: the editor tells
+/// Mix, Desktop, Microphone and Game apart by their titles, and an untitled
+/// 4-track file would show the mix as a row of its own. A stream copy; `out`
+/// is left as it is when the track counts differ or anything fails.
+pub fn restore_titles(ffmpeg: &Path, src: &Path, out: &Path) {
+    let want = audio_titles(ffmpeg, src);
+    if !want.iter().any(|t| t == "Game") {
+        return;
+    }
+    let have = audio_titles(ffmpeg, out);
+    if have == want || have.len() != want.len() {
+        return;
+    }
+    let ext = out.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "mp4".into());
+    let tmp = out.with_extension(format!("titles.{ext}"));
+    let mut cmd = util::hidden_cmd(ffmpeg);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(out).args(["-map", "0", "-c", "copy"]);
+    for (i, t) in want.iter().enumerate().filter(|(_, t)| !t.is_empty()) {
+        cmd.arg(format!("-metadata:s:a:{i}")).arg(format!("title={t}"));
+    }
+    if ext.eq_ignore_ascii_case("mp4") || ext.eq_ignore_ascii_case("mov") {
+        cmd.args(["-movflags", "+faststart"]);
+    }
+    let ok = cmd.arg(&tmp).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    if ok && audio_titles(ffmpeg, &tmp) == want && fs::rename(&tmp, out).is_ok() {
+        return;
+    }
+    let _ = fs::remove_file(&tmp);
+}
+
 /// Cut `[start, end]` out of a clip without re-encoding (snaps to keyframes, 1 s apart).
-/// With `include_mic == false` on a 3-track clip, only the desktop track is kept.
+/// With `include_mic == false` on a 3-track clip, only the desktop track is kept
+/// (on a 4-track clip, desktop and game: Mix, Desktop, Microphone, Game).
 pub fn trim(s: &Settings, src: &ClipMeta, start: f64, end: f64, include_mic: bool) -> Result<ClipMeta, String> {
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg").ok_or("ffmpeg.exe was not found")?;
     if end - start < 0.5 {
@@ -160,10 +261,25 @@ pub fn trim(s: &Settings, src: &ClipMeta, start: f64, end: f64, include_mic: boo
     let out = util::unique_path(&dir, &util::sanitize_filename(&title), "mp4");
     let mut cmd = util::hidden_cmd(&ffmpeg);
     cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{start:.3}"), "-to", &format!("{end:.3}"), "-i"]).arg(&src_path);
-    if !include_mic && src.audio_tracks >= 3 {
+    let names = audio_titles(&ffmpeg, &src_path);
+    let kept: Vec<usize> = if !include_mic && src.audio_tracks >= 3 {
         cmd.args(["-map", "0:v:0", "-map", "0:a:1", "-disposition:a:0", "default"]);
+        if src.audio_tracks >= 4 {
+            cmd.args(["-map", "0:a:3", "-disposition:a:1", "0"]);
+            vec![1, 3]
+        } else {
+            vec![1]
+        }
     } else {
         cmd.args(["-map", "0"]);
+        (0..names.len()).collect()
+    };
+    // A stream copy loses the track titles (MP4 hands them back as "name", which
+    // is not written out again); the editor tells the tracks apart by them.
+    for (o, i) in kept.iter().enumerate() {
+        if let Some(n) = names.get(*i).filter(|n| !n.is_empty()) {
+            cmd.arg(format!("-metadata:s:a:{o}")).arg(format!("title={n}"));
+        }
     }
     cmd.args(["-c", "copy", "-movflags", "+faststart"]).arg(&out);
     let output = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().map_err(|e| format!("Could not start ffmpeg: {e}"))?;

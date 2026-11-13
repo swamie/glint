@@ -12,9 +12,9 @@ if (!window.__TAURI__) {
   const state = {
     settings: {
       clips_dir: "C:\\Users\\you\\Videos\\Glint", game_folders: false, monitor: 0, height: 0, fps: 60, quality: "high", bitrate: 0, encoder: "auto", method: "auto", buffer: "mixed", buffer_ram_secs: 30, buffer_dir: "",
-      cursor: true, desktop_audio: true, mic: true, mic_denoise: false, record_on_start: true, sound: true, sound_name: "chirp", sound_volume: 40, sound_file: "",
+      cursor: true, desktop_audio: true, mic: true, mic_denoise: false, game_audio: false, record_on_start: true, sound: true, sound_name: "chirp", sound_volume: 40, sound_file: "",
       toast: true, toast_pos: "tr", toast_opacity: 96, toast_scale: 100, toast_secs: 3.5, toast_length: true, toast_game: true, toast_mic: true,
-      ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", discord_rpc: false, discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true,
+      ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", icon_theme: false, icon_accent: "", icon_accent_2: "", discord_rpc: false, discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true,
       compress_mb: 10, ui_sounds: false, ui_sounds_hover: false, ui_sounds_volume: 50,
       ffmpeg_path: "", blur_path: "",
       keybinds: [
@@ -110,6 +110,64 @@ if (!window.__TAURI__) {
     }
     window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
   };
+  // Settings → Components: what deps.rs reports, and a pretend 3 s download for "install_dep".
+  const NOT_FOUND = "ffmpeg.exe was not found. Install ffmpeg or set its path in Settings.";
+  const mockDeps = {
+    have: { ffmpeg: true, blur: false },
+    busy: "",
+    cancel: false,
+    started: false,
+    sync() {
+      if (!this.started) {
+        this.started = true;
+        let off = window.__mockNoFfmpeg;
+        try { off = off || localStorage.getItem("glint.mockNoFfmpeg") === "1"; } catch {}
+        if (off) this.have.ffmpeg = false;
+      }
+      state.ffmpeg = this.have.ffmpeg ? "C:\\Users\\you\\AppData\\Local\\Programs\\Glint\\ffmpeg.exe" : null;
+      if (!this.have.ffmpeg) state.status.error = NOT_FOUND;
+      else if (state.status.error === NOT_FOUND) state.status.error = "";
+      state.blur = this.have.blur ? "C:\\Users\\you\\AppData\\Local\\Glint\\blur\\blur-cli.exe" : null;
+    },
+    items() {
+      const f = this.have.ffmpeg, dir = "C:\\Users\\you\\AppData\\Local\\Programs\\Glint\\";
+      return [
+        { id: "ffmpeg", name: "ffmpeg", required: true, installable: true, state: f ? "ok" : "missing", path: f ? dir + "ffmpeg.exe" : "", version: f ? "8.0.1-essentials_build-www.gyan.dev" : "", note: "Records the replay buffer and saves clips. Required." },
+        { id: "ffprobe", name: "ffprobe", required: true, installable: true, state: f ? "ok" : "missing", path: f ? dir + "ffprobe.exe" : "", version: f ? "8.0.1-essentials_build-www.gyan.dev" : "", note: "Reads clip lengths and sizes for the library. Installed together with ffmpeg." },
+        { id: "blur", name: "Blur", required: false, installable: true, state: this.have.blur ? "ok" : "missing", path: this.have.blur ? state.blur : "", version: "", note: "Optional: motion-blur renders of finished clips. Windows may ask for permission while it installs." },
+        { id: "curl", name: "curl.exe", required: false, installable: false, state: "ok", path: "C:\\Windows\\System32\\curl.exe", version: "8.13.0", note: "Part of Windows 10 version 1803 and newer. Only needed to install the parts above." },
+        { id: "tar", name: "tar.exe", required: false, installable: false, state: "ok", path: "C:\\Windows\\System32\\tar.exe", version: "3.7.7", note: "Part of Windows 10 version 1803 and newer. Only needed to install the parts above." },
+      ];
+    },
+    async install(id) {
+      if (this.busy) throw "Another install is already running.";
+      if (!(id in this.have)) throw "Nothing to install for that.";
+      this.busy = id;
+      this.cancel = false;
+      const total = id === "ffmpeg" ? 101e6 : 412e6;
+      try {
+        for (let i = 1; i <= 15; i++) {
+          await new Promise((r) => setTimeout(r, 200));
+          if (this.cancel) throw "Cancelled.";
+          if (window.__mockOffline && i === 3) throw "The download failed. Check your internet connection and try again.";
+          window.__mockEmit("deps-progress", { id, phase: "download", done: Math.round((total * i) / 15), total, error: "" });
+        }
+        window.__mockEmit("deps-progress", { id, phase: "unpack", done: total, total, error: "" });
+        await new Promise((r) => setTimeout(r, 400));
+        window.__mockEmit("deps-progress", { id, phase: "install", done: total, total, error: "" });
+        await new Promise((r) => setTimeout(r, 300));
+        this.have[id] = true;
+        this.sync();
+        window.__mockEmit("deps-progress", { id, phase: "done", done: 0, total: 0, error: "" });
+        return this.items();
+      } catch (e) {
+        window.__mockEmit("deps-progress", { id, phase: "error", done: 0, total: 0, error: String(e) });
+        throw e;
+      } finally {
+        this.busy = "";
+      }
+    },
+  };
   window.__TAURI__ = {
     core: {
       convertFileSrc: (p) => p,
@@ -192,6 +250,40 @@ if (!window.__TAURI__) {
             pumpJobs();
             return answer;
           }
+          case "join_clips": {
+            // "Edit together", refused like join.rs; window.__mockJoinMissing = true: a clip's file is gone.
+            // Runs on its own (about 2 s), then "clip-joined" with a split where each clip starts.
+            const picked = clips.filter((c) => args.ids.includes(c.id)).sort((a, b) => a.created - b.created);
+            if (picked.length < 2) throw "Pick at least two clips to edit together";
+            if (picked.length > 20) throw "Edit together takes at most 20 clips";
+            if (picked.reduce((s, c) => s + c.duration, 0) > 1800) throw "Edit together takes at most 30 minutes of clips";
+            if (window.__mockJoinMissing) throw `The video file of "${picked[picked.length - 1].title}" is missing`;
+            const key = "join:" + picked.map((c) => c.id).join(",");
+            if (jobs.some((j) => j.clip_id === key && ["queued", "running"].includes(j.state))) throw "Those clips are already being joined";
+            const title = `${picked[0].title} + ${picked.length - 1} more`;
+            const job = { id: "j" + Date.now() + jobs.length, clip_id: key, title, kind: "join", state: "running", pct: 0, message: "", result_id: "", queued: Date.now() };
+            jobs.push(job);
+            const answer = { ...job };
+            const tick = setInterval(() => {
+              if (job.state !== "running") { clearInterval(tick); return; }
+              job.pct = Math.min(100, job.pct + 10);
+              if (job.pct >= 100) {
+                clearInterval(tick);
+                let at = 0;
+                const joins = picked.slice(0, -1).map((c) => (at += c.duration));
+                // The preview's real video is 20 s long, so splits past that are not shown in the editor.
+                const made = { ...picked[0], id: "g" + Date.now(), title, kind: "joined", created: Date.now(), duration: at + picked[picked.length - 1].duration, joins, path: "/__test.mp4", favorite: false };
+                clips.push(made);
+                window.__mockEmit("clips-changed", made.id);
+                window.__mockEmit("clip-joined", { clip: made, joins, mode: "copy", secs: 2 });
+                job.state = "done";
+                job.result_id = made.id;
+              }
+              window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
+            }, 200);
+            window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
+            return answer;
+          }
           case "blur_clip": {
             if (jobs.some((j) => j.clip_id === args.id && j.kind !== "compress" && ["queued", "running"].includes(j.state))) throw "That clip is already rendering";
             const src = clips.find((x) => x.id === args.id);
@@ -212,12 +304,18 @@ if (!window.__TAURI__) {
           case "delete_clips": { const n = clips.length; clips = clips.filter((c) => !args.ids.includes(c.id)); return n - clips.length; }
           case "copy_clips": return args.ids.length;
           case "set_favorites": clips.forEach((c) => { if (args.ids.includes(c.id)) c.favorite = args.favorite; }); return null;
-          case "get_state": syncCaptures(); return state;
-          case "get_status": case "toggle_recording": return syncCaptures();
+          case "get_state": mockDeps.sync(); syncCaptures(); return state;
+          case "get_status": case "toggle_recording": mockDeps.sync(); return syncCaptures();
           case "save_settings": state.settings = args.settings; return syncCaptures();
           case "list_clips": case "rescan_library": return clips;
           case "set_favorite": { const c = clips.find((x) => x.id === args.id); c.favorite = args.favorite; return c; }
           case "rename_clip": { const c = clips.find((x) => x.id === args.id); c.title = args.title; return c; }
+          // Settings → Components (deps.js). Blur starts missing. localStorage["glint.mockNoFfmpeg"] = "1" (then reload):
+          // ffmpeg and ffprobe are missing too and the status bar shows the "not found" error with its
+          // Install button. window.__mockOffline = true: installs fail as with no internet.
+          case "check_deps": await new Promise((r) => setTimeout(r, 400)); mockDeps.sync(); return { items: mockDeps.items(), installing: mockDeps.busy };
+          case "install_dep": return mockDeps.install(args.id);
+          case "cancel_dep_install": mockDeps.cancel = true; return !!mockDeps.busy;
           default: return null;
         }
       },

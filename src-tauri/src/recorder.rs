@@ -636,11 +636,13 @@ fn resolve_encoder(ffmpeg: &Path, wanted: &str) -> String {
 
 /// Windows Graphics Capture (ffmpeg 8+) when available, else Desktop Duplication.
 fn resolve_method(ffmpeg: &Path, wanted: &str) -> String {
-    static CACHE: Mutex<Option<(PathBuf, bool)>> = Mutex::new(None);
+    // Keyed by path and file time: "Check and repair" (deps.rs) can put a newer ffmpeg at the same path.
+    static CACHE: Mutex<Option<((PathBuf, Option<std::time::SystemTime>), bool)>> = Mutex::new(None);
     if wanted == "wgc" || wanted == "dda" {
         return wanted.to_string();
     }
-    let cached = CACHE.lock().unwrap().as_ref().filter(|(p, _)| p == ffmpeg).map(|(_, ok)| *ok);
+    let key = (ffmpeg.to_path_buf(), std::fs::metadata(ffmpeg).and_then(|m| m.modified()).ok());
+    let cached = CACHE.lock().unwrap().as_ref().filter(|(k, _)| *k == key).map(|(_, ok)| *ok);
     let has_wgc = cached.unwrap_or_else(|| {
         let ok = util::hidden_cmd(ffmpeg)
             .args(["-hide_banner", "-filters"])
@@ -649,10 +651,11 @@ fn resolve_method(ffmpeg: &Path, wanted: &str) -> String {
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).contains(" gfxcapture "))
             .unwrap_or(false);
-        *CACHE.lock().unwrap() = Some((ffmpeg.to_path_buf(), ok));
+        *CACHE.lock().unwrap() = Some((key.clone(), ok));
         ok
     });
-    if has_wgc { "wgc".into() } else { "dda".into() }
+    // Windows 10 draws a yellow border around a Graphics Capture that cannot be turned off.
+    crate::polish::pick_method(wanted, has_wgc, crate::win::windows_build()).into()
 }
 
 /// The ffmpeg command line of the capture.
