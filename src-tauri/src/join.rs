@@ -1,14 +1,18 @@
-//! "Edit together": join several clips, oldest first, into ONE new clip and
-//! remember where each of them starts, so the editor can open it with a split
-//! at every join. The source clips are never changed.
+//! "Edit together": join several clips, in the order they were selected, into
+//! ONE working file (a "draft") and remember where each of them starts and its
+//! title, so the editor can open it with every clip as a part of its own that
+//! can be moved. The source clips are never changed. What the editor exports
+//! from the draft is a normal clip; the draft itself is never shown in the
+//! library and is deleted when the editor is done with it (`discard_draft`)
+//! and at the next start (`library::sweep_drafts`).
 //!
 //! It is a background job of kind "join" (its own lane in jobs.rs). The job:
 //! 1. probes every clip (streams, start times, packet counts from the header,
 //!    the first packet of each stream);
 //! 2. picks one of three ways (`Mode`):
 //!    - "copy": every clip has the same video (codec, profile, level, size,
-//!      pixel format, aspect) and the same audio (track count, codec, rate,
-//!      channels). ffmpeg's concat demuxer joins them with `-c copy`. The
+//!      pixel format, aspect) and the same audio (the same tracks by title, in
+//!      the result's order; codec, rate, channels). ffmpeg's concat demuxer joins them with `-c copy`. The
 //!      `duration` of every file in the list is chosen so the timestamps of
 //!      every stream stay monotonic and, as far as that allows, the audio stays
 //!      on the picture. AAC frames are played back to back, so each file's
@@ -24,15 +28,19 @@
 //!      width x height of the clips, the others scaled to fit and letterboxed
 //!      (never stretched, sample aspect ratio honoured), the highest frame
 //!      rate, H.264 with the editor's encoder choice (hardware, libx264 when it
-//!      fails), a keyframe at every join.
-//!    Audio of the last two ways: the same number of tracks in every clip keeps
-//!    the tracks (titles of the first clip); otherwise one stereo track made
-//!    from each clip's first track (the mix). A clip without audio gives silence.
-//! 3. writes `.<name>.joining` beside the first clip (deleted on any failure or
-//!    cancel), then renames it to `<first title> + <n> more.mp4`;
+//!      fails, at a higher quality than an export since the editor usually
+//!      encodes the draft once more), a keyframe at every join.
+//!    Audio: the tracks are matched by TITLE (`Tracks::of`), so Desktop,
+//!    Microphone and Game stay apart even when the clips have different track
+//!    sets; a clip without a track gives silence there. The last two ways lay
+//!    the sound out again with that mapping; a straight copy needs every clip
+//!    to have exactly the result's tracks.
+//! 3. writes `.<id>.mp4.joining` in `<clips_dir>\.drafts` (deleted on any
+//!    failure or cancel), then renames it to `<id>.mp4`;
 //! 4. measures where each clip starts in the new file (the keyframe nearest
-//!    to the planned join), registers it (kind "joined", the first clip's game
-//!    and folder, `joins` = those times) and emits
+//!    to the planned join), registers it as a draft (kind "joined", `draft`,
+//!    title "<first title> + <n> more", the first clip's game and folder,
+//!    `joins` = those times, `join_names` = the clips' titles) and emits
 //!    "clip-joined" { clip, joins, mode, secs }.
 use crate::core::Core;
 use crate::jobs::{Job, Runner};
@@ -261,23 +269,112 @@ impl Mode {
     }
 }
 
-/// The audio of the result.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Tracks {
-    None,
-    /// Track k of every clip becomes track k (titles of the first clip).
-    Keep(Vec<String>),
-    /// One stereo track from every clip's first track.
-    Mix,
+/// The audio of the result: its tracks by title, and which track of each clip
+/// is heard on each of them.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Tracks {
+    /// Titles of the result's tracks, in order (empty = no audio).
+    pub titles: Vec<String>,
+    /// `feeds[i][k]`: the track of clip i heard on result track k (None = silence).
+    pub feeds: Vec<Vec<Option<usize>>>,
+}
+
+/// The titles Glint writes, in the order the result lists them.
+const KNOWN: [&str; 4] = ["Mix", "Desktop", "Microphone", "Game"];
+
+/// The name each track of a clip is matched by:
+/// - a known title (any letter case) is that title ("mix" -> "Mix");
+/// - a clip with ONE track: "Mix" (an import, an exported edit, a clip with one
+///   sound source), unless that track is titled Desktop, Microphone or Game;
+/// - three untitled tracks (clips of older versions): Mix, Desktop, Microphone,
+///   the editor's own rule for such clips;
+/// - any other title is kept as it is; any other untitled track is "Track <n>";
+/// - a name a clip already used gets " (2)", " (3)", ...
+pub fn track_names(a: &[AInfo]) -> Vec<String> {
+    let canon = |t: &str| KNOWN.iter().find(|k| k.eq_ignore_ascii_case(t.trim())).map(|k| k.to_string());
+    let untitled = a.iter().all(|x| x.title.trim().is_empty());
+    let mut out: Vec<String> = Vec::with_capacity(a.len());
+    for (k, x) in a.iter().enumerate() {
+        let t = x.title.trim();
+        let name = if a.len() == 1 {
+            canon(t).filter(|n| n != "Mix").unwrap_or_else(|| "Mix".into())
+        } else if untitled && a.len() == 3 {
+            KNOWN[k].to_string()
+        } else if let Some(n) = canon(t) {
+            n
+        } else if t.is_empty() {
+            format!("Track {}", k + 1)
+        } else {
+            t.to_string()
+        };
+        let mut unique = name.clone();
+        let mut n = 2;
+        while out.contains(&unique) {
+            unique = format!("{name} ({n})");
+            n += 1;
+        }
+        out.push(unique);
+    }
+    out
 }
 
 impl Tracks {
     fn titles(&self) -> Vec<String> {
-        match self {
-            Tracks::None => Vec::new(),
-            Tracks::Keep(t) => t.clone(),
-            Tracks::Mix => vec!["Mix".into()],
+        self.titles.clone()
+    }
+
+    /// The result's tracks for `srcs`, matched by title (see `track_names`):
+    /// - the result has every name any clip has, in the order Mix, Desktop,
+    ///   Microphone, Game, then the others as first seen;
+    /// - a clip's track with that name is heard on it; a clip without one gives
+    ///   silence, with two exceptions that keep every clip audible in the editor
+    ///   (which hides "Mix" and builds the sound from Desktop + Microphone, Game
+    ///   only where Desktop is muted):
+    ///   - on "Mix", a clip without a Mix track gives its first track (its whole sound);
+    ///   - on "Desktop", a clip without Desktop gives its Mix when it has nothing
+    ///     but Mix (and Game), else its Game track when it has one;
+    /// - "Desktop" is added when the result has more than one track and some
+    ///   clip has nothing but a Mix (and Game): that clip's sound needs a row the editor shows.
+    pub fn of(srcs: &[Src]) -> Tracks {
+        let names: Vec<Vec<String>> = srcs.iter().map(|s| track_names(&s.a)).collect();
+        let mut seen: Vec<String> = Vec::new();
+        for n in names.iter().flatten() {
+            if !seen.contains(n) {
+                seen.push(n.clone());
+            }
         }
+        if seen.is_empty() {
+            return Tracks { titles: Vec::new(), feeds: vec![Vec::new(); srcs.len()] };
+        }
+        let mix_only = |ns: &Vec<String>| ns.iter().any(|n| n == "Mix") && ns.iter().all(|n| n == "Mix" || n == "Game");
+        if seen.len() > 1 && !seen.iter().any(|n| n == "Desktop") && names.iter().any(mix_only) {
+            seen.push("Desktop".into());
+        }
+        let mut titles: Vec<String> = KNOWN.iter().map(|k| k.to_string()).filter(|k| seen.contains(k)).collect();
+        titles.extend(seen.iter().filter(|n| !KNOWN.contains(&n.as_str())).cloned());
+        let feeds = names
+            .iter()
+            .map(|ns| {
+                let at = |t: &str| ns.iter().position(|n| n == t);
+                titles
+                    .iter()
+                    .map(|t| match at(t) {
+                        Some(k) => Some(k),
+                        None if ns.is_empty() => None,
+                        None if t == "Mix" => Some(0),
+                        None if t == "Desktop" && mix_only(ns) => at("Mix"),
+                        None if t == "Desktop" => at("Game"),
+                        None => None,
+                    })
+                    .collect()
+            })
+            .collect();
+        Tracks { titles, feeds }
+    }
+
+    /// True when clip `i`'s tracks are exactly the result's, in order (a straight copy can take them).
+    fn identity(&self, i: usize, count: usize) -> bool {
+        self.feeds.get(i).is_some_and(|f| f.len() == count && f.iter().enumerate().all(|(k, x)| *x == Some(k)))
     }
 }
 
@@ -328,15 +425,12 @@ pub fn plan(srcs: &[Src], fps_hint: &[u32]) -> Result<Plan, String> {
     }
     let n = srcs.len();
     let counts: Vec<usize> = srcs.iter().map(|s| s.a.len()).collect();
-    let tracks = if counts.iter().all(|&c| c == 0) {
-        Tracks::None
-    } else if counts.iter().all(|&c| c == counts[0]) {
-        Tracks::Keep(srcs[0].a.iter().enumerate().map(|(k, a)| if a.title.trim().is_empty() { format!("Track {}", k + 1) } else { a.title.clone() }).collect())
-    } else {
-        Tracks::Mix
-    };
+    let tracks = Tracks::of(srcs);
     let video_same = srcs.iter().all(|s| same_video(s.video(), srcs[0].video()));
-    let audio_same = counts.iter().all(|&c| c == counts[0]) && (0..counts[0]).all(|k| srcs.iter().all(|s| s.a[k].same(&srcs[0].a[k])));
+    // A straight copy takes track k of every file as track k: every clip must have exactly the result's tracks.
+    let audio_same = counts.iter().all(|&c| c == counts[0])
+        && (0..srcs.len()).all(|i| tracks.identity(i, counts[0]))
+        && (0..counts[0]).all(|k| srcs.iter().all(|s| s.a[k].same(&srcs[0].a[k])));
     let lens: Vec<f64> = srcs.iter().map(Src::vspan).collect();
 
     // A straight copy: the smallest `duration` per file that keeps every stream monotonic,
@@ -452,12 +546,8 @@ fn audio_chain(src: &Src, input: usize, track: Option<usize>, len: f64, label: &
 }
 
 /// Which track of clip `i` feeds output track `k`.
-fn source_track(tracks: &Tracks, src: &Src, k: usize) -> Option<usize> {
-    match tracks {
-        Tracks::None => None,
-        Tracks::Keep(_) => (k < src.a.len()).then_some(k),
-        Tracks::Mix => (!src.a.is_empty()).then_some(0),
-    }
+fn source_track(tracks: &Tracks, src: &Src, i: usize, k: usize) -> Option<usize> {
+    tracks.feeds.get(i).and_then(|f| f.get(k).copied().flatten()).filter(|&t| t < src.a.len())
 }
 
 fn head() -> Vec<String> {
@@ -500,7 +590,7 @@ fn copy_args(srcs: &[Src], plan: &Plan, list: &Path, title: &str, out: &Path) ->
         for (i, s) in srcs.iter().enumerate() {
             for k in 0..outs {
                 let label = format!("a{i}_{k}");
-                g.push(audio_chain(s, i + 1, source_track(&plan.tracks, s, k), plan.lens[i], &label));
+                g.push(audio_chain(s, i + 1, source_track(&plan.tracks, s, i, k), plan.lens[i], &label));
                 cat.push_str(&format!("[{label}]"));
             }
         }
@@ -533,6 +623,29 @@ fn copy_args(srcs: &[Src], plan: &Plan, list: &Path, title: &str, out: &Path) ->
     a
 }
 
+/// The editor's encoder settings with a higher quality: the draft is encoded
+/// once more by the editor's export, and two generations at the export's
+/// quality would show. Same speed preset (only the quantizer is lower), so the
+/// cost is a larger temporary file. Unknown arguments are left as they are.
+fn draft_quality(args: Vec<String>) -> Vec<String> {
+    let mut out = args;
+    for i in 1..out.len() {
+        let better = match out[i - 1].as_str() {
+            "-crf" => "14",
+            "-cq" => "15",
+            "-qp_i" => "14",
+            "-qp_p" | "-qp_b" => "16",
+            "-global_quality" => "16",
+            _ => continue,
+        };
+        // Never worse than what the editor asks for.
+        if out[i].parse::<u32>().is_ok_and(|v| v > better.parse::<u32>().unwrap_or(0)) {
+            out[i] = better.into();
+        }
+    }
+    out
+}
+
 /// Arguments for "encode" with encoder `enc` ("nvenc" | "amf" | "qsv" | "x264").
 fn encode_args(srcs: &[Src], plan: &Plan, enc: &str, title: &str, out: &Path) -> Vec<String> {
     let mut a = head();
@@ -552,7 +665,7 @@ fn encode_args(srcs: &[Src], plan: &Plan, enc: &str, title: &str, out: &Path) ->
         cat.push_str(&format!("[v{i}]"));
         for k in 0..outs {
             let label = format!("a{i}_{k}");
-            g.push(audio_chain(s, i, source_track(&plan.tracks, s, k), plan.lens[i], &label));
+            g.push(audio_chain(s, i, source_track(&plan.tracks, s, i, k), plan.lens[i], &label));
             cat.push_str(&format!("[{label}]"));
         }
     }
@@ -565,7 +678,7 @@ fn encode_args(srcs: &[Src], plan: &Plan, enc: &str, title: &str, out: &Path) ->
         a.push("-map".into());
         a.push(format!("[ao{k}]"));
     }
-    a.extend(crate::editor::video_codec_args(enc));
+    a.extend(draft_quality(crate::editor::video_codec_args(enc)));
     a.extend(sv(&["-pix_fmt", "yuv420p"]));
     // A keyframe where every clip starts: the joins can be cut without re-encoding.
     let keys: Vec<String> = plan.starts.iter().skip(1).map(|t| format!("{t:.3}")).collect();
@@ -813,7 +926,9 @@ pub fn joined_title(first: &str, more: usize) -> String {
     format!("{} + {more} more", head.trim_end())
 }
 
-/// Clips `ids` from the library, oldest first; refuses what "Edit together" cannot take.
+/// Clips `ids` from the library in the order given (the order the user selected
+/// them; a repeated id counts once, where it first appears); refuses what
+/// "Edit together" cannot take. A draft is not a clip here.
 pub fn pick(core: &Core, ids: &[String]) -> Result<Vec<ClipMeta>, String> {
     let mut uniq: Vec<&String> = Vec::new();
     for id in ids {
@@ -830,14 +945,13 @@ pub fn pick(core: &Core, ids: &[String]) -> Result<Vec<ClipMeta>, String> {
     let lib = core.lib.lock().unwrap();
     let mut clips: Vec<ClipMeta> = Vec::with_capacity(uniq.len());
     for id in uniq {
-        clips.push(lib.get(id).ok_or("Clip not found")?);
+        clips.push(lib.get(id).filter(|c| !c.draft).ok_or("Clip not found")?);
     }
     drop(lib);
     let total: f64 = clips.iter().map(|c| c.duration.max(0.0)).sum();
     if total > MAX_TOTAL_SECS {
         return Err(format!("Edit together takes at most {} minutes of clips", (MAX_TOTAL_SECS / 60.0).round()));
     }
-    clips.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.title.cmp(&b.title)));
     for c in &clips {
         if !Path::new(&c.path).is_file() {
             return Err(format!("The video file of \"{}\" is missing", c.title));
@@ -846,8 +960,9 @@ pub fn pick(core: &Core, ids: &[String]) -> Result<Vec<ClipMeta>, String> {
     Ok(clips)
 }
 
-/// Queue "Edit together" of `ids`. The job's `clip_id` is "join:<ids, oldest first>",
-/// so the same selection cannot be queued twice; its title is the new clip's.
+/// Queue "Edit together" of `ids`. The job's `clip_id` is "join:<ids in that
+/// order>", so the same selection cannot be queued twice (and `Jobs::busy`
+/// sees every source clip in it); its title is the draft's.
 pub fn enqueue(core: &Arc<Core>, ids: Vec<String>) -> Result<Job, String> {
     let clips = pick(core, &ids)?;
     let key = format!("join:{}", clips.iter().map(|c| c.id.as_str()).collect::<Vec<_>>().join(","));
@@ -878,21 +993,25 @@ pub fn enqueue(core: &Arc<Core>, ids: Vec<String>) -> Result<Job, String> {
         }
         progress(1.0);
         let first = &clips[0];
-        let first_path = PathBuf::from(&first.path);
-        let dir = first_path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(&s.clips_dir));
-        let out = util::unique_path(&dir, &util::sanitize_filename(&title), "mp4");
+        // The draft: `<clips_dir>\.drafts\<id>.mp4` (beside the first clip's folder if no clips folder is set).
+        let root = if s.clips_dir.trim().is_empty() { Path::new(&first.path).parent().map(Path::to_path_buf).unwrap_or_default() } else { PathBuf::from(&s.clips_dir) };
+        let dir = library::drafts_dir(&root);
+        let id = util::new_id();
+        let out = dir.join(format!("{id}.mp4"));
         let fps: Vec<u32> = clips.iter().map(|c| c.fps).collect();
         let done = join(&ffmpeg, &srcs, &fps, &out, &title, &s.encoder, cancel, &mut |p| progress(p))?;
-        let mut new = library::register(&ffmpeg, &done.file, &title, &first.game, "joined");
+        let mut new = library::register_id(&ffmpeg, &done.file, id, &title, &first.game, "joined");
+        new.draft = true;
         new.folder = first.folder.clone();
-        new.joins = clean_joins(&done.starts, new.duration.max(done.duration));
+        let names: Vec<String> = clips.iter().map(|c| c.title.clone()).collect();
+        (new.joins, new.join_names) = clean_parts(&done.starts, &names, new.duration.max(done.duration));
         if new.fps == 0 || done.mode != Mode::Encode {
             new.fps = clips.iter().map(|c| c.fps).max().unwrap_or(new.fps).max(new.fps);
         }
+        // Never "clips-changed": a draft is not in the library the user sees.
         core.lib.lock().unwrap().add(new.clone());
-        core.emit("clips-changed", new.id.clone());
         let secs = started.elapsed().as_secs_f64();
-        util::log(&format!("join: done in {secs:.1} s, mode {}, joins {:?}", done.mode.name(), new.joins));
+        util::log(&format!("join: draft done in {secs:.1} s, mode {}, joins {:?}", done.mode.name(), new.joins));
         core.emit("clip-joined", event_payload(&new, done.mode, secs));
         Ok(new.id)
     });
@@ -902,14 +1021,51 @@ pub fn enqueue(core: &Arc<Core>, ids: Vec<String>) -> Result<Job, String> {
 /// The cut points to store: every start but the first, rounded to the millisecond,
 /// in order and inside the clip.
 pub fn clean_joins(starts: &[f64], duration: f64) -> Vec<f64> {
-    let mut out: Vec<f64> = Vec::new();
-    for &t in starts.iter().skip(1) {
+    clean_parts(starts, &[], duration).0
+}
+
+/// `clean_joins` with the title of every part (`names[i]` = clip i's title,
+/// "Clip <n>" when missing), kept aligned: the result has `joins.len() + 1`
+/// names. When a start is dropped, the shorter part loses its name: a start
+/// too close to the one before (or to 0) drops the part before it, a start
+/// too close to the end drops its own part.
+pub fn clean_parts(starts: &[f64], names: &[String], duration: f64) -> (Vec<f64>, Vec<String>) {
+    let name = |i: usize| names.get(i).filter(|n| !n.trim().is_empty()).cloned().unwrap_or_else(|| format!("Clip {}", i + 1));
+    let mut joins: Vec<f64> = Vec::new();
+    let mut kept: Vec<String> = vec![name(0)];
+    for (i, &t) in starts.iter().enumerate().skip(1) {
         let t = (t * 1000.0).round() / 1000.0;
-        if t > 0.1 && (duration <= 0.0 || t < duration - 0.1) && out.last().is_none_or(|&l| t > l + 0.1) {
-            out.push(t);
+        if duration > 0.0 && t >= duration - 0.1 {
+            continue;
+        }
+        if t > 0.1 && joins.last().is_none_or(|&l| t > l + 0.1) {
+            joins.push(t);
+            kept.push(name(i));
+        } else if let Some(last) = kept.last_mut() {
+            *last = name(i);
         }
     }
-    out
+    (joins, kept)
+}
+
+/// Delete draft `id` (entry, file, thumbnail) when it is a draft and no queued
+/// or running job uses it. Returns whether it was deleted.
+pub fn discard_draft(core: &Core, id: &str) -> bool {
+    if core.jobs.busy(id) {
+        return false;
+    }
+    let meta = {
+        let mut lib = core.lib.lock().unwrap();
+        if !lib.get(id).is_some_and(|c| c.draft) {
+            return false;
+        }
+        lib.remove(id)
+    };
+    if let Some(m) = meta {
+        library::remove_draft_files(&m);
+        util::log(&format!("join: draft {id} discarded"));
+    }
+    true
 }
 
 /// The "clip-joined" payload.
@@ -966,6 +1122,8 @@ struct Spec<'a> {
     vfr: bool,
     sar: &'a str,
     flash: f64,
+    /// Track titles ("" = untitled); empty = Mix, Desktop, Microphone, Extra, ...
+    names: &'a [&'a str],
 }
 
 fn make_clip(ffmpeg: &Path, out: &Path, sp: &Spec) -> Result<(), String> {
@@ -997,10 +1155,13 @@ fn make_clip(ffmpeg: &Path, out: &Path, sp: &Spec) -> Result<(), String> {
     }
     if sp.tracks > 0 {
         a.extend(sv(&["-c:a", "aac", "-b:a", "128k", "-ac", "2"]));
-        let names = ["Mix", "Desktop", "Microphone"];
+        let names: &[&str] = if sp.names.is_empty() { &["Mix", "Desktop", "Microphone"] } else { sp.names };
         for k in 0..sp.tracks as usize {
-            a.push(format!("-metadata:s:a:{k}"));
-            a.push(format!("title={}", names.get(k).copied().unwrap_or("Extra")));
+            let name = names.get(k).copied().unwrap_or("Extra");
+            if !name.is_empty() {
+                a.push(format!("-metadata:s:a:{k}"));
+                a.push(format!("title={name}"));
+            }
         }
     }
     a.push(out.to_string_lossy().into_owned());
@@ -1038,6 +1199,12 @@ fn flashes(ffmpeg: &Path, file: &Path) -> Vec<f64> {
 /// Starts of the beeps on track `k`, decoding the audio back to back (as a player does).
 /// The time is counted from the track's first decoded sample plus the track's start time.
 fn beeps(ffmpeg: &Path, ffprobe: &Path, file: &Path, k: usize) -> Vec<f64> {
+    beeps_f(ffmpeg, ffprobe, file, k).into_iter().map(|(t, _)| t).collect()
+}
+
+/// `beeps` with the pitch of each beep (Hz, from the zero crossings of its first 40 ms):
+/// track k of a test clip beeps at 1000 + 300 k Hz, so the pitch tells which track it came from.
+fn beeps_f(ffmpeg: &Path, ffprobe: &Path, file: &Path, k: usize) -> Vec<(f64, f64)> {
     let Ok(out) = util::hidden_cmd(ffmpeg)
         .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-i"])
         .arg(file)
@@ -1050,13 +1217,16 @@ fn beeps(ffmpeg: &Path, ffprobe: &Path, file: &Path, k: usize) -> Vec<f64> {
         return Vec::new();
     };
     let start = ffprobe_out(ffprobe, &["-v", "error", "-select_streams", &format!("a:{k}"), "-show_entries", "stream=start_time", "-of", "default=nw=1:nk=1"], file).and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(0.0);
+    let pcm: Vec<i16> = out.stdout.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
     let mut found = Vec::new();
     let mut quiet = 48_000usize;
-    for (i, b) in out.stdout.chunks_exact(2).enumerate() {
-        let s = i16::from_le_bytes([b[0], b[1]]).unsigned_abs();
-        if s > 3000 {
+    for (i, &v) in pcm.iter().enumerate() {
+        if v.unsigned_abs() > 3000 {
             if quiet > 4800 {
-                found.push(start + i as f64 / 48_000.0);
+                let win = &pcm[i..(i + 1920).min(pcm.len())];
+                let crossings = win.windows(2).filter(|w| (w[0] < 0) != (w[1] < 0)).count();
+                let secs = win.len() as f64 / 48_000.0;
+                found.push((start + i as f64 / 48_000.0, if secs > 0.0 { crossings as f64 / 2.0 / secs } else { 0.0 }));
             }
             quiet = 0;
         } else {
@@ -1120,6 +1290,8 @@ struct Case<'a> {
     tracks: usize,
     titles: Vec<&'a str>,
     size: Option<(u32, u32, u32)>,
+    /// `feeds[i][k]`: the track of clip i expected on result track k (None = silence).
+    feeds: Vec<Vec<Option<usize>>>,
 }
 
 fn run_self_test(r: &mut Report) {
@@ -1148,7 +1320,49 @@ fn run_self_test(r: &mut Report) {
     let mut silent = mk("1/90000", 189, 1280);
     silent.a.clear();
     let p = plan(&[mk("1/90000", 189, 1280), silent], &[]);
-    r.check("plan: a clip without audio: picture copied, one mixed track", p.as_ref().is_ok_and(|p| p.mode == Mode::CopyVideo && p.tracks == Tracks::Mix), &format!("{:?}", p.as_ref().map(|p| (p.mode, p.tracks.clone()))));
+    r.check("plan: a clip without audio: picture copied, one track, silence for that clip", p.as_ref().is_ok_and(|p| p.mode == Mode::CopyVideo && p.tracks.titles == ["Mix"] && p.tracks.feeds == vec![vec![Some(0)], vec![None]]), &format!("{:?}", p.as_ref().map(|p| (p.mode, p.tracks.clone()))));
+    let mut desk = mk("1/90000", 189, 1280);
+    desk.a[0].title = "Desktop".into();
+    let p = plan(&[mk("1/90000", 189, 1280), desk], &[]);
+    r.check("plan: same picture, different track titles: the sound is laid out again, by title", p.as_ref().is_ok_and(|p| p.mode == Mode::CopyVideo && p.tracks.titles == ["Mix", "Desktop"] && p.tracks.feeds == vec![vec![Some(0), Some(0)], vec![Some(0), Some(0)]]), &format!("{:?}", p.as_ref().map(|p| (p.mode, p.tracks.clone()))));
+
+    // Tracks matched by title.
+    let au = |titles: &[&str]| titles.iter().map(|t| AInfo { title: t.to_string(), ..Default::default() }).collect::<Vec<_>>();
+    let src_of = |titles: &[&str]| Src { a: au(titles), ..Default::default() };
+    let names_ok = [
+        (vec![""], vec!["Mix"]),
+        (vec!["Audio"], vec!["Mix"]),
+        (vec!["Desktop"], vec!["Desktop"]),
+        (vec!["", "", ""], vec!["Mix", "Desktop", "Microphone"]),
+        (vec!["", ""], vec!["Track 1", "Track 2"]),
+        (vec!["mix", "DESKTOP", "Voice", "Voice"], vec!["Mix", "Desktop", "Voice", "Voice (2)"]),
+    ]
+    .iter()
+    .all(|(i, o)| track_names(&au(i)) == *o);
+    r.check("track names: one track is the mix, old untitled 3-track clips, letter case, repeats", names_ok, "");
+    let t = Tracks::of(&[src_of(&["Mix", "Desktop", "Microphone", "Game"]), src_of(&["Mix", "Desktop", "Microphone"]), src_of(&[""]), Src::default()]);
+    r.check(
+        "tracks: different track sets keep every title apart; a one-track clip is heard on Mix and Desktop, silence elsewhere",
+        t.titles == ["Mix", "Desktop", "Microphone", "Game"]
+            && t.feeds == vec![vec![Some(0), Some(1), Some(2), Some(3)], vec![Some(0), Some(1), Some(2), None], vec![Some(0), Some(0), None, None], vec![None, None, None, None]],
+        &format!("{t:?}"),
+    );
+    let t = Tracks::of(&[src_of(&["Microphone"]), src_of(&[""])]);
+    r.check("tracks: a mix-only clip beside a microphone-only clip adds Desktop so the editor hears it", t.titles == ["Mix", "Desktop", "Microphone"] && t.feeds == vec![vec![Some(0), None, Some(0)], vec![Some(0), Some(0), None]], &format!("{t:?}"));
+    let t = Tracks::of(&[src_of(&["Desktop", "Game"]), src_of(&["Mix", "Desktop", "Microphone"])]);
+    r.check("tracks: a clip without Mix gives its first track on Mix", t.titles == ["Mix", "Desktop", "Microphone", "Game"] && t.feeds[0] == vec![Some(0), Some(0), None, Some(1)], &format!("{t:?}"));
+    let t = Tracks::of(&[src_of(&["", ""]), src_of(&["", ""])]);
+    r.check("tracks: same untitled tracks stay as they are (a copy can take them)", t.titles == ["Track 1", "Track 2"] && t.identity(0, 2) && t.identity(1, 2), &format!("{t:?}"));
+    let x = draft_quality(crate::editor::video_codec_args("x264"));
+    let nv = draft_quality(crate::editor::video_codec_args("nvenc"));
+    r.check("draft encode: lower quantizer, same speed preset", x.windows(2).any(|w| w[0] == "-crf" && w[1] == "14") && x.windows(2).any(|w| w[0] == "-preset" && w[1] == "veryfast") && nv.windows(2).any(|w| w[0] == "-cq" && w[1] == "15"), &format!("{x:?} {nv:?}"));
+    let nm: Vec<String> = ["A", "B", "C", "D", "E"].iter().map(|s| s.to_string()).collect();
+    let (j, n) = clean_parts(&[0.0, 3.00049, 3.05, 7.5, 9.95], &nm, 10.0);
+    r.check("join names stay aligned when a join is dropped (the shorter part loses its name)", j == vec![3.0, 7.5] && n == ["A", "C", "D"], &format!("{j:?} {n:?}"));
+    let (j, n) = clean_parts(&[0.0, 0.05, 4.0], &nm[..2], 8.0);
+    r.check("join names: a part too short at the start gives way; a missing name is \"Clip <n>\"", j == vec![4.0] && n == ["B", "Clip 3"], &format!("{j:?} {n:?}"));
+    let jb = Job { clip_id: "join:a1,b2".into(), ..Default::default() };
+    r.check("a join job uses each of its clips", jb.uses("a1") && jb.uses("b2") && !jb.uses("a") && !jb.uses("c3") && !Job { clip_id: "a1b2".into(), ..Default::default() }.uses("a1"), "");
     let mut blind = mk("1/90000", 189, 1280);
     blind.v = None;
     blind.title = "Audio only".into();
@@ -1168,7 +1382,9 @@ fn run_self_test(r: &mut Report) {
     let dir = root.join("Test Game");
     let _ = fs::create_dir_all(&dir);
 
-    let sp = |w, h, fps, secs, audio_extra, tracks, vfr, sar, flash| Spec { w, h, fps, secs, audio_extra, tracks, vfr, sar, flash };
+    let sp = |w, h, fps, secs, audio_extra, tracks, vfr, sar, flash| Spec { w, h, fps, secs, audio_extra, tracks, vfr, sar, flash, names: &[] };
+    let named = |s: Spec<'static>, names: &'static [&'static str]| Spec { names, ..s };
+    let (n0, n1, n2, n3) = (Some(0), Some(1), Some(2), Some(3));
     let cases = vec![
         Case {
             name: "same format (one VFR, 3 tracks)",
@@ -1177,6 +1393,7 @@ fn run_self_test(r: &mut Report) {
             tracks: 3,
             titles: vec!["Mix", "Desktop", "Microphone"],
             size: None,
+            feeds: vec![vec![n0, n1, n2], vec![n0, n1, n2]],
         },
         Case {
             name: "same format, sound 90 ms short in each (would drift)",
@@ -1185,14 +1402,29 @@ fn run_self_test(r: &mut Report) {
             tracks: 1,
             titles: vec!["Mix"],
             size: None,
+            feeds: vec![vec![n0], vec![n0], vec![n0]],
         },
         Case {
             name: "one clip without audio",
             files: vec![("s1", sp(320, 240, 60, 3.0, 0.0, 0, false, "1", 1.0)), ("s2", sp(320, 240, 60, 3.0, 0.0, 2, false, "1", 1.2))],
             mode: Mode::CopyVideo,
-            tracks: 1,
-            titles: vec!["Mix"],
+            tracks: 2,
+            titles: vec!["Mix", "Desktop"],
             size: None,
+            feeds: vec![vec![None, None], vec![n0, n1]],
+        },
+        Case {
+            name: "different track sets (Mix/Desktop/Microphone/Game, Mix/Desktop/Microphone, one untitled track)",
+            files: vec![
+                ("f1", named(sp(320, 240, 60, 3.0, 0.0, 4, false, "1", 1.0), &["Mix", "Desktop", "Microphone", "Game"])),
+                ("f2", sp(320, 240, 60, 3.0, 0.0, 3, false, "1", 1.4)),
+                ("f3", named(sp(320, 240, 60, 3.0, 0.0, 1, false, "1", 0.7), &[""])),
+            ],
+            mode: Mode::CopyVideo,
+            tracks: 4,
+            titles: vec!["Mix", "Desktop", "Microphone", "Game"],
+            size: None,
+            feeds: vec![vec![n0, n1, n2, n3], vec![n0, n1, n2, None], vec![n0, n0, None, None]],
         },
         Case {
             name: "different sizes, rates and track counts",
@@ -1202,9 +1434,10 @@ fn run_self_test(r: &mut Report) {
                 ("e3", sp(160, 200, 30, 2.5, 0.0, 2, true, "1", 0.8)),
             ],
             mode: Mode::Encode,
-            tracks: 1,
-            titles: vec!["Mix"],
+            tracks: 3,
+            titles: vec!["Mix", "Desktop", "Microphone"],
             size: Some((320, 240, 60)),
+            feeds: vec![vec![n0, n1, n2], vec![n0, n0, None], vec![n0, n1, None]],
         },
     ];
 
@@ -1272,24 +1505,41 @@ fn run_self_test(r: &mut Report) {
             ok = worst <= 0.05;
         }
         r.check(&format!("{}: every clip starts where the join point says (within 50 ms)", case.name), ok, &format!("worst {:.1} ms, flashes {fl:?}", worst * 1000.0));
-        // Sync: at every clip with sound, the beep is as far from the flash as in the clip itself.
-        if case.tracks > 0 {
-            for k in 0..case.tracks {
-                let off = offsets(&fl, &beeps(&ffmpeg, &ffprobe, &out, k));
-                let mut worst = 0.0f64;
-                let mut good = off.len() == srcs.len();
-                for (i, (_, spec)) in case.files.iter().enumerate() {
-                    if !good {
-                        break;
+        // Sync and routing: on every track, each clip's beep is as far from its flash as in
+        // the clip itself and has the pitch of the clip's track that should feed it;
+        // where the clip has no such track, there is no beep.
+        for k in 0..case.tracks {
+            let be = beeps_f(&ffmpeg, &ffprobe, &out, k);
+            let near: Vec<Option<(f64, f64)>> = fl.iter().map(|&f| be.iter().map(|&(b, hz)| (b - f, hz)).filter(|(d, _)| d.abs() < 0.3).min_by(|a, b| a.0.abs().total_cmp(&b.0.abs()))).collect();
+            let mut worst = 0.0f64;
+            let mut good = near.len() == srcs.len();
+            let mut why = String::new();
+            for i in 0..srcs.len() {
+                if !good {
+                    break;
+                }
+                let want = case.feeds.get(i).and_then(|f| f.get(k).copied()).flatten();
+                match (want, near[i], src_off[i]) {
+                    (Some(t), Some((o, hz)), Some(so)) => {
+                        worst = worst.max((o - so).abs());
+                        let pitch = 1000.0 + 300.0 * t as f64;
+                        if (hz - pitch).abs() > 100.0 {
+                            good = false;
+                            why = format!("clip {} beeps at {hz:.0} Hz, its track {} is {pitch:.0} Hz", i + 1, t + 1);
+                        }
                     }
-                    match (spec.tracks > 0, off.get(i).copied().flatten(), src_off[i]) {
-                        (true, Some(o), Some(so)) => worst = worst.max((o - so).abs()),
-                        (false, None, _) => {}
-                        _ => good = false,
+                    (None, None, _) => {}
+                    (w, n, _) => {
+                        good = false;
+                        why = format!("clip {}: wanted {w:?}, heard {n:?}", i + 1);
                     }
                 }
-                r.check(&format!("{}: track {} in sync at every join (within 40 ms; silent clips silent)", case.name, k + 1), good && worst <= 0.04, &format!("worst {:.1} ms, offsets {off:?}, sources {src_off:?}", worst * 1000.0));
             }
+            r.check(
+                &format!("{}: track {} ({}) carries the right clip tracks, in sync at every join (within 40 ms), silence where a clip has none", case.name, k + 1, case.titles.get(k).copied().unwrap_or("?")),
+                good && worst <= 0.04,
+                &format!("worst {:.1} ms {why}, heard {near:?}, sources {src_off:?}", worst * 1000.0),
+            );
         }
         r.check(&format!("{}: source files untouched", case.name), paths.iter().map(|p| fingerprint(p)).collect::<Vec<_>>() == before, "");
         r.check(&format!("{}: progress reached 100 and never went back", case.name), pcts.last() == Some(&100.0) && pcts.windows(2).all(|w| w[1] >= w[0]), &format!("{} updates", pcts.len()));
@@ -1331,7 +1581,7 @@ fn run_self_test(r: &mut Report) {
     }
     core.jobs.connect(&core);
     let mut ids = Vec::new();
-    // Registered newest first, so the join must sort them back.
+    // Selected newer first: the join must keep that order (no more "oldest first").
     for (n, (name, created)) in [("a2", 2_000u64), ("a1", 1_000u64)].iter().enumerate() {
         let p = dir.join(format!("{name}.mp4"));
         let mut m = library::register(&ffmpeg, &p, &format!("Test {name}"), "Test Game", "clip");
@@ -1359,35 +1609,121 @@ fn run_self_test(r: &mut Report) {
     r.check("nothing was queued by the refusals", core.jobs.list().is_empty(), "");
 
     let job = enqueue(&core, ids.clone());
-    r.check("join queued as a job of kind \"join\"", job.as_ref().is_ok_and(|j| j.kind == "join" && j.title == "Test a1 + 1 more"), &format!("{:?}", job.as_ref().map(|j| (&j.kind, &j.title)).map_err(|e| e.clone())));
-    let dup = enqueue(&core, vec![ids[1].clone(), ids[0].clone()]);
+    r.check("join queued as a job of kind \"join\", titled after the first clip SELECTED", job.as_ref().is_ok_and(|j| j.kind == "join" && j.title == "Test a2 + 1 more"), &format!("{:?}", job.as_ref().map(|j| (&j.kind, &j.title)).map_err(|e| e.clone())));
+    r.check("the job key lists the clips in the order given", job.as_ref().is_ok_and(|j| j.clip_id == format!("join:{},{}", ids[0], ids[1])), &format!("{:?}", job.as_ref().map(|j| j.clip_id.clone())));
+    let dup = enqueue(&core, ids.clone());
     r.check("the same selection twice is refused while it runs", dup.as_ref().is_err_and(|e| e == "Those clips are already being joined"), &format!("{:?}", dup.err()));
+    let state = |jid: &str| core.jobs.list().into_iter().find(|j| j.id == jid).unwrap_or_default();
+    // A job that runs until it is cancelled, on clip key `key`.
+    let hold = |key: &str, kind: &str| core.jobs.enqueue(key, "hold", kind, Box::new(|cancel, _| {
+        while !cancel.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        Err(CANCELLED.into())
+    }));
+    let release = |job: Result<Job, String>| {
+        if let Ok(j) = job {
+            core.jobs.cancel(&j.id);
+            wait_until(10.0, || !matches!(state(&j.id).state.as_str(), "queued" | "running"));
+        }
+    };
+    let mut draft: Option<ClipMeta> = None;
     if let Ok(job) = job {
-        let state = |jid: &str| core.jobs.list().into_iter().find(|j| j.id == jid).unwrap_or_default();
         let ended = wait_until(120.0, || !matches!(state(&job.id).state.as_str(), "queued" | "running"));
         let j = state(&job.id);
         r.check("the join job finishes", ended && j.state == "done", &format!("{} {}", j.state, j.message));
         match core.lib.lock().unwrap().get(&j.result_id) {
             Some(n) => {
                 let p = Path::new(&n.path);
-                r.check("library: kind \"joined\"", n.kind == "joined", &n.kind);
-                r.check("library: title is the oldest clip's + 1 more", n.title == "Test a1 + 1 more", &n.title);
-                r.check("library: file beside the first clip, named after the title", p.parent() == Some(dir.as_path()) && p.file_name().is_some_and(|f| f == "Test a1 + 1 more.mp4"), &n.path);
-                r.check("library: game and folder of the first clip", n.game == "Test Game" && n.folder == "Test Game", &format!("{} / {}", n.game, n.folder));
-                r.check("library: one join point, where the second clip starts (about 4.0 s)", n.joins.len() == 1 && (n.joins[0] - 4.0).abs() < 0.06, &format!("{:?}", n.joins));
-                r.check("library: thumbnail made", !n.thumb.is_empty() && Path::new(&n.thumb).is_file(), &n.thumb);
-                r.check("library: length about 9 s, 3 tracks", (n.duration - 9.0).abs() < 0.1 && n.audio_tracks == 3, &format!("{:.3} s, {} tracks", n.duration, n.audio_tracks));
+                r.check("draft: kind \"joined\", marked draft", n.kind == "joined" && n.draft, &format!("{} {}", n.kind, n.draft));
+                r.check("draft: title is the first selected clip's + 1 more", n.title == "Test a2 + 1 more", &n.title);
+                r.check("draft: file is <clips>\\.drafts\\<id>.mp4", p == root.join(".drafts").join(format!("{}.mp4", n.id)) && p.is_file(), &n.path);
+                use std::os::windows::fs::MetadataExt;
+                r.check("draft: the .drafts folder is hidden", fs::metadata(root.join(".drafts")).is_ok_and(|m| m.file_attributes() & 0x2 != 0), "");
+                r.check("draft: game and folder of the first clip", n.game == "Test Game" && n.folder == "Test Game", &format!("{} / {}", n.game, n.folder));
+                // a2 (5 s, first as selected) has 20 ms more sound than picture; a straight copy waits for it (plus AAC frames).
+                r.check("draft: in the order given: one join point where the second clip starts (5.0 to 5.1 s)", n.joins.len() == 1 && (5.0..5.1).contains(&n.joins[0]), &format!("{:?}", n.joins));
+                r.check("draft: join names are the clips' titles in that order, one more than the joins", n.join_names == ["Test a2", "Test a1"] && n.join_names.len() == n.joins.len() + 1, &format!("{:?}", n.join_names));
+                r.check("draft: thumbnail made", !n.thumb.is_empty() && Path::new(&n.thumb).is_file(), &n.thumb);
+                r.check("draft: length about 9 s, 3 tracks", (n.duration - 9.0).abs() < 0.1 && n.audio_tracks == 3, &format!("{:.3} s, {} tracks", n.duration, n.audio_tracks));
                 let saved = fs::read_to_string(util::data_dir().join("library.json")).unwrap_or_default();
-                r.check("library.json keeps the join points", saved.contains("\"joins\":["), "");
+                r.check("library.json keeps the join points, names and the draft mark", saved.contains("\"joins\":[") && saved.contains("\"join_names\":[") && saved.contains("\"draft\":true"), "");
                 let ev = event_payload(&n, Mode::Copy, 1.5);
-                r.check("clip-joined payload has clip, joins, mode, secs", ev["clip"]["id"] == n.id.as_str() && ev["joins"].as_array().is_some_and(|a| a.len() == 1) && ev["mode"] == "copy" && ev["secs"] == 1.5, &ev.to_string());
+                r.check("clip-joined payload has clip (the draft), joins, mode, secs", ev["clip"]["id"] == n.id.as_str() && ev["clip"]["draft"] == true && ev["joins"].as_array().is_some_and(|a| a.len() == 1) && ev["mode"] == "copy" && ev["secs"] == 1.5, &ev.to_string());
+                draft = Some(n);
             }
             None => r.check("result registered in the library", false, &j.result_id),
         }
     }
     let plain = core.lib.lock().unwrap().get(&ids[0]).map(|c| serde_json::to_string(&c).unwrap_or_default()).unwrap_or_default();
-    r.check("a plain clip's entry has no \"joins\" key", !plain.is_empty() && !plain.contains("joins"), "");
+    r.check("a plain clip's entry has no \"joins\", \"join_names\" or \"draft\" key", !plain.is_empty() && !plain.contains("joins") && !plain.contains("join_names") && !plain.contains("draft"), "");
+
+    // 5. The draft is hidden from everything that shows or acts on clips.
+    if let Some(d) = draft.clone() {
+        let visible = core.lib.lock().unwrap().visible();
+        r.check("list_clips leaves the draft out (and keeps the clips)", !visible.iter().any(|c| c.id == d.id) && ids.iter().all(|id| visible.iter().any(|c| &c.id == id)), "");
+        r.check("the folder list does not show .drafts", core.folders() == ["Test Game"], &format!("{:?}", core.folders()));
+        core.rescan();
+        let after = core.lib.lock().unwrap().get(&d.id).unwrap_or_default();
+        let stray = core.lib.lock().unwrap().clips.iter().filter(|c| !c.draft && library::in_drafts_dir(Path::new(&c.path))).count();
+        r.check("rescan neither adds the draft's file as a clip nor moves the draft out of its first clip's folder", after.draft && after.folder == "Test Game" && stray == 0, &format!("{} / {stray}", after.folder));
+        r.check("a draft cannot be renamed, favourited, copied or deleted", core.rename_clip(&d.id, "x").is_err_and(|e| e == library::DRAFT_ERR) && core.lib.lock().unwrap().get_saved(&d.id).is_err_and(|e| e == library::DRAFT_ERR), "");
+        let moved = core.move_clips(&[d.id.clone()], "");
+        r.check("moving clips skips a draft (its file stays in .drafts)", moved == Ok(0) && Path::new(&d.path).is_file(), &format!("{moved:?}"));
+        r.check("a draft cannot be the source of Edit together", enqueue(&core, vec![d.id.clone(), ids[0].clone()]).is_err_and(|e| e == "Clip not found"), "");
+        r.check("discard_draft refuses a clip that is not a draft", !discard_draft(&core, &ids[0]) && core.lib.lock().unwrap().get(&ids[0]).is_some(), "");
+        let busy = hold(&d.id, "blur");
+        r.check("discard_draft refuses while a job uses the draft", busy.is_ok() && !discard_draft(&core, &d.id) && Path::new(&d.path).is_file() && core.lib.lock().unwrap().get(&d.id).is_some(), &format!("{:?}", busy.as_ref().err()));
+        release(busy);
+        let gone = discard_draft(&core, &d.id);
+        r.check("discard_draft deletes the entry, the file and the thumbnail", gone && core.lib.lock().unwrap().get(&d.id).is_none() && !Path::new(&d.path).exists() && !Path::new(&d.thumb).exists(), "");
+        r.check("discard_draft of a draft already gone is false", !discard_draft(&core, &d.id), "");
+    }
+
+    // 6. A clip that a queued or running join reads cannot be renamed or moved.
+    let other = ids[1].clone();
+    let busy = hold(&format!("join:zz,{other}"), "join");
+    r.check("rename is refused while a join job uses the clip", busy.is_ok() && core.rename_clip(&other, "Renamed").is_err_and(|e| e.contains("being rendered")), "");
+    let moved = core.move_clips(&[other.clone()], "Elsewhere");
+    r.check("move is refused while a join job uses the clip", moved.as_ref().is_err_and(|e| e.contains("being rendered")) && core.lib.lock().unwrap().get(&other).is_some_and(|c| c.folder == "Test Game"), &format!("{moved:?}"));
+    release(busy);
+    let renamed = core.rename_clip(&other, "Test a1 renamed");
+    r.check("rename works again once the join job has ended", renamed.as_ref().is_ok_and(|c| c.path.ends_with("Test a1 renamed.mp4")), &format!("{:?}", renamed.err()));
     core.jobs.shutdown();
+
+    // 7. The start-up sweep.
+    {
+        let drafts = root.join(".drafts");
+        let old_root = util::data_dir().join("old clips");
+        let old_drafts = old_root.join(".drafts");
+        let _ = fs::create_dir_all(drafts.join("sub"));
+        let _ = fs::create_dir_all(&old_drafts);
+        let w = |p: &Path| {
+            let _ = fs::write(p, b"x");
+            p.to_string_lossy().into_owned()
+        };
+        let thumb = w(&library::thumbs_dir().join("sweep-test.jpg"));
+        let entry = |id: &str, path: String, thumb: &str| ClipMeta { id: id.into(), path, title: id.into(), kind: "joined".into(), draft: true, thumb: thumb.into(), ..Default::default() };
+        let kept_in_sub = w(&drafts.join("sub").join("keep.mp4"));
+        let not_in_drafts = w(&dir.join("not a draft.mp4"));
+        {
+            let mut lib = core.lib.lock().unwrap();
+            lib.add(entry("sw1", w(&drafts.join("sw1.mp4")), &thumb));
+            lib.add(entry("sw2", w(&old_drafts.join("sw2.mp4")), ""));
+            lib.add(entry("sw3", not_in_drafts.clone(), ""));
+        }
+        let joining = w(&drafts.join(".x.mp4.joining"));
+        let before = core.lib.lock().unwrap().visible().len();
+        let n = library::sweep_drafts(&mut core.lib.lock().unwrap(), &root);
+        let lib = core.lib.lock().unwrap();
+        r.check("sweep: every draft entry is dropped, the clips stay", !lib.clips.iter().any(|c| c.draft) && lib.visible().len() == before && ids.iter().all(|id| lib.get(id).is_some()), "");
+        r.check("sweep: files in .drafts are deleted, also in a former clips folder's .drafts", n == 3 && !drafts.join("sw1.mp4").exists() && !old_drafts.join("sw2.mp4").exists() && !Path::new(&joining).exists(), &format!("{n} deleted"));
+        r.check("sweep: nothing outside a .drafts folder, and no subfolder, is touched", Path::new(&kept_in_sub).is_file() && Path::new(&not_in_drafts).is_file() && dir.join("a2.mp4").is_file(), "");
+        r.check("sweep: a draft's thumbnail is deleted", !Path::new(&thumb).exists(), "");
+        let saved = fs::read_to_string(util::data_dir().join("library.json")).unwrap_or_default();
+        r.check("sweep: library.json has no draft left", !saved.contains("\"draft\":true"), "");
+        let _ = fs::remove_dir_all(&old_root);
+    }
 
     // 5. Optional: GLINT_JOIN_FILES="<a.mp4>|<b.mp4>|..." joins real clips (read only) into the test folder.
     if let Some(list) = std::env::var_os("GLINT_JOIN_FILES") {

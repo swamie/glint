@@ -144,11 +144,17 @@ pub struct ExportOpts {
     /// Timeline edit: the audio rows to mix into ONE track. Empty = fall back
     /// to `tracks` (and, if that is empty too, keep the clip's audio as recorded).
     pub audio: Vec<AudioEdit>,
+    /// `segments` are played in the order given (clips moved around in an
+    /// "Edit together" draft) instead of in source order. They never overlap;
+    /// two neighbours in the list merge only when they touch in source time
+    /// and look the same. Audio rows stay in source time and are cut the same
+    /// way, so each range keeps its own sound.
+    pub ordered: bool,
 }
 
 impl Default for ExportOpts {
     fn default() -> Self {
-        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new() }
+        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new(), ordered: false }
     }
 }
 
@@ -496,6 +502,7 @@ impl Kept {
 /// one range `start`..`end` when there are none. A range that looks different
 /// from the one before starts exactly where that one ends: an overlap goes to
 /// the earlier range, and a gap under 1 ms (rounding in the UI) is closed.
+/// With `ordered` the list keeps its order (see `ExportOpts::ordered`).
 fn kept_ranges(opts: &ExportOpts, duration: f64) -> Vec<Kept> {
     if opts.segments.is_empty() {
         let start = if opts.start.is_finite() { opts.start.clamp(0.0, duration) } else { 0.0 };
@@ -514,6 +521,23 @@ fn kept_ranges(opts: &ExportOpts, duration: f64) -> Vec<Kept> {
         })
         .filter(|k| k.b - k.a > 0.001)
         .collect();
+    if opts.ordered {
+        // In the order given: only list neighbours that touch in source time join up.
+        let mut out: Vec<Kept> = Vec::new();
+        for mut k in r {
+            if let Some(last) = out.last_mut() {
+                if (k.a - last.b).abs() <= 1e-3 {
+                    if k.looks_like(last) {
+                        last.b = k.b;
+                        continue;
+                    }
+                    k.a = last.b;
+                }
+            }
+            out.push(k);
+        }
+        return out;
+    }
     // Stable: of two ranges that start together, the one sent first wins.
     r.sort_by(|x, y| x.a.total_cmp(&y.a));
     let mut out: Vec<Kept> = Vec::new();
@@ -606,7 +630,7 @@ fn check_audio_file(ffmpeg: &Path, path: &str) -> Result<AudioProbe, String> {
 }
 
 /// Decide what the result's audio is, and check every file it uses.
-/// `base` is the first kept range's start and `total` the span up to the last one's end.
+/// `base` is the lowest kept source time and `total` the span from it up to the highest.
 #[allow(clippy::too_many_arguments)]
 fn audio_plan(ffmpeg: &Path, src_path: &Path, opts: &ExportOpts, titles: &[Option<String>], duration: f64, base: f64, total: f64, ranges: usize, speed: f64) -> Result<AudioPlan, String> {
     let n_audio = titles.len();
@@ -694,10 +718,17 @@ fn audio_plan(ffmpeg: &Path, src_path: &Path, opts: &ExportOpts, titles: &[Optio
             _ => {}
         }
     }
+    // A file row covering several moved clips comes as one entry per clip: still one source.
+    let file_of = |r: &MixRow| match &r.source {
+        Source::File { path, .. } => Some(path.clone()),
+        Source::Track(..) => None,
+    };
+    let one_file = !file_title.is_empty() && !rows.is_empty() && rows.iter().all(|r| file_of(r).is_some() && file_of(r) == file_of(&rows[0]));
     let title = match rows.as_slice() {
         [] => return Ok(AudioPlan::Silent),
         [MixRow { source: Source::Track(i, _), .. }] => track_title(*i),
         [MixRow { source: Source::File { .. }, .. }] if !file_title.is_empty() => file_title,
+        _ if one_file => file_title,
         _ => "Mix".into(),
     };
     Ok(AudioPlan::Mix { rows, title })
@@ -834,16 +865,22 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     let pieces = kept_ranges(opts, duration);
     let ranges: Vec<(f64, f64)> = pieces.iter().map(|k| (k.a, k.b)).collect();
     let kept: f64 = ranges.iter().map(|(a, b)| b - a).sum();
-    let (Some(&(base, _)), Some(&(_, last_end))) = (ranges.first(), ranges.last()) else {
+    let Some(&(_, last_end)) = ranges.last() else {
         return Err("The selection is too short".into());
     };
     if kept < 0.1 {
         return Err("The selection is too short".into());
     }
-    // The last range runs to the end of the file: no `-t`, so nothing is lost
-    // to a duration that was rounded on the way through the UI.
-    let to_end = last_end >= duration - 0.002;
-    let total = last_end - base;
+    // The source span the ranges come from, `base`..`top`: the clip's audio
+    // and the mix are laid out on it. In source order (not `ordered`) that is
+    // the first range's start to the last one's end.
+    let base = ranges.iter().map(|r| r.0).fold(f64::INFINITY, f64::min);
+    let top = ranges.iter().map(|r| r.1).fold(f64::NEG_INFINITY, f64::max);
+    let reaches_end = |b: f64| b >= duration - 0.002;
+    // A range runs to the end of the file: no `-t` on the audio, so nothing is
+    // lost to a duration that was rounded on the way through the UI.
+    let to_end = reaches_end(top);
+    let total = top - base;
     let k_count = ranges.len();
 
     // Nothing but a cut: the lossless trim is faster and keeps the original
@@ -890,8 +927,9 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         // Half a millisecond early so rounding never drops the frame itself;
         // frames are at least 4 ms apart even at 240 fps.
         let seek = on_screen[k].map(|f| (f - 0.0005).max(0.0)).filter(|f| *f <= a).unwrap_or(a);
-        let last = k + 1 == k_count;
-        let open_end = last && to_end;
+        // Only the last range in the result may read on to the file's end:
+        // anything past an earlier range's end would land in the next one.
+        let open_end = k + 1 == k_count && reaches_end(b);
         // `-t` only bounds the reading; the exact end is the `trim`, because an
         // input's `-t` counts from its first frame, not from the seek point.
         video_inputs.push((seek, (!open_end).then(|| b - seek + 0.5)));
@@ -953,8 +991,10 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         AudioPlan::Mix { rows, .. } => rows.iter().any(|r| matches!(r.source, Source::Track(..))),
     };
     let first_file = clip_audio + needs_clip as usize;
-    // The kept ranges on the timeline of the clip's audio input (0 = `base`).
-    let local: Vec<(f64, Option<f64>)> = ranges.iter().enumerate().map(|(k, &(a, b))| (a - base, (!(k + 1 == k_count && to_end)).then_some(b - base))).collect();
+    // The kept ranges on the timeline of the clip's audio input (0 = `base`),
+    // in result order (`cut_chain` takes them in any order). A range that
+    // reaches the file's end reads to the input's end (it has no `-t` then).
+    let local: Vec<(f64, Option<f64>)> = ranges.iter().map(|&(a, b)| (a - base, (!reaches_end(b)).then_some(b - base))).collect();
     let mut file_inputs: Vec<(String, f64, f64)> = Vec::new();
 
     match &plan {
@@ -1013,7 +1053,8 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     }
 
     let title = format!("{} (edit)", src.title);
-    let dir = src_path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(&s.clips_dir));
+    // Beside the source; from a draft, into its folder in the clips folder.
+    let (dir, folder) = crate::clip::output_dir(s, src);
     let out = util::unique_path(&dir, &util::sanitize_filename(&title), "mp4");
     let src_s = src_path.to_string_lossy().into_owned();
 
@@ -1079,8 +1120,8 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     // The file's average rate reflects how busy the screen was; report the
     // highest rate the export can hold instead (see `cap` above).
     meta.fps = ((cap as f64) * speed.min(1.0)).round().max(1.0) as u32;
-    // Written beside the source, so it sits in the same library folder.
-    meta.folder = src.folder.clone();
+    // Written beside the source (a draft: in its folder), so it sits in that library folder.
+    meta.folder = folder;
     Ok(meta)
 }
 
@@ -1395,6 +1436,7 @@ fn run_self_test(r: &mut Report) {
 
     timeline_checks(r, &ffmpeg, &s, &src, &dir, (f_desk, f_mic), base);
     look_checks(r, &ffmpeg, &s, &src, f_desk);
+    ordered_checks(r, &ffmpeg, &s, &dir);
     if let Some(clip) = std::env::var_os("GLINT_EDITOR_BENCH") {
         bench(r, &ffmpeg, &s, Path::new(&clip));
     }
@@ -1938,6 +1980,253 @@ fn look_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, f_de
         Ok((m, p)) => r.check("one range with its own neutral colour uses the lossless cut", m.kind == "trim", &desc(&m, &p)),
         Err(e) => r.check("one range with its own neutral colour uses the lossless cut", false, &e),
     }
+}
+
+/// Checks of `ExportOpts::ordered` (clips moved around in an "Edit together"
+/// draft) and of exports from a draft. The test clip here moves for 8 s and
+/// its one audio track ("Desktop") is a tone that steps every 2 s, so each
+/// stretch of source time is told apart by its picture and by its pitch.
+fn ordered_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path) {
+    // Far enough apart that the double band-pass of `band_db_at` holds each 35+ dB above the others.
+    let steps = [300u32, 700, 1500, 4000];
+    let tone_at = |t: f64| steps[((t / 2.0).floor() as usize).min(3)];
+    let src_file = dir.join("steps.mp4");
+    let built = run_ffmpeg(
+        ffmpeg,
+        &[
+            "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=8",
+            "-f", "lavfi", "-i", "aevalsrc='0.5*sin(2*PI*t*if(lt(t,2),300,if(lt(t,4),700,if(lt(t,6),1500,4000))))':s=48000:d=8",
+            "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-force_key_frames", "expr:gte(t,n_forced*1)",
+            "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-metadata:s:a:0", "title=Desktop", "-movflags", "+faststart", &src_file.to_string_lossy(),
+        ],
+    );
+    r.check("ordered: build stepped test clip", built.is_ok(), built.as_ref().err().map(String::as_str).unwrap_or(""));
+    if built.is_err() {
+        return;
+    }
+    let mut src = library::register(ffmpeg, &src_file, "Steps", "Test Game", "clip");
+    src.fps = 30;
+    src.folder = "Test Game".into();
+    let ex = |src: &ClipMeta, opts: ExportOpts| -> Result<(ClipMeta, library::Probe), String> {
+        let m = export(s, src, &opts, &mut |_| {})?;
+        let p = library::probe(ffmpeg, Path::new(&m.path), true).ok_or("probe failed")?;
+        Ok((m, p))
+    };
+    let piece = |start: f64, end: f64, color: Option<Color>, blank: bool| Range { start, end, color, blank };
+    let refs: Vec<Option<f64>> = (0..4).map(|i| band_db_at(ffmpeg, &src_file, 0, steps[i], i as f64 * 2.0 + 0.2, i as f64 * 2.0 + 1.8)).collect();
+    r.line(&format!("INFO stepped clip tone levels {refs:?}"));
+    // Out of source order; the first one runs to the clip's end.
+    let order = [(6.5, 8.0), (0.3, 1.8), (4.2, 5.6)];
+    let total: f64 = order.iter().map(|(a, b)| b - a).sum();
+    // Each range's picture and pitch at its place in the result.
+    let per_range = |out: &Path| -> (bool, String) {
+        let mut ok = true;
+        let mut detail = String::new();
+        let mut at = 0.0;
+        for &(a, b) in &order {
+            let pic = grey_frame(ffmpeg, out, at + 0.5);
+            let (right, wrong) = (frame_diff(&pic, &grey_frame(ffmpeg, &src_file, a + 0.5)), frame_diff(&pic, &grey_frame(ffmpeg, &src_file, at + 0.5)));
+            let own = tone_at(a);
+            let lv = band_db_at(ffmpeg, out, 0, own, at + 0.15, at + (b - a) - 0.15);
+            let others: Vec<Option<f64>> = order.iter().map(|o| tone_at(o.0)).filter(|f| *f != own).map(|f| band_db_at(ffmpeg, out, 0, f, at + 0.15, at + (b - a) - 0.15)).collect();
+            let r0 = refs[steps.iter().position(|f| *f == own).unwrap_or(0)];
+            let sound = matches!((r0, lv), (Some(x), Some(y)) if near(x, y, 1.5)) && others.iter().all(|o| matches!((r0, o), (Some(x), Some(y)) if *y < x - 30.0));
+            ok &= right < 6.0 && right < wrong && sound;
+            detail += &format!("[{a}..{b} at {at:.1}: picture diff {right:.1} vs {wrong:.1}, {own} Hz {lv:.1?} others {others:.1?}] ");
+            at += b - a;
+        }
+        (ok, detail)
+    };
+
+    // --- order, picture and sound
+    let segs = order.iter().map(|&(a, b)| piece(a, b, None, false)).collect::<Vec<_>>();
+    match ex(&src, ExportOpts { segments: segs.clone(), ordered: true, ..Default::default() }) {
+        Ok((m, p)) => {
+            let out = Path::new(&m.path);
+            r.check("ordered: ranges out of source order last their sum", m.kind == "edit" && near(p.duration, total, 0.07) && p.audio_streams == 1, &format!("dur {:.3} for {total:.3}, audio {}", p.duration, p.audio_streams));
+            let (ok, detail) = per_range(out);
+            r.check("ordered: each range's picture and sound, in the order given", ok, &detail);
+        }
+        Err(e) => r.check("ordered: ranges out of source order last their sum", false, &e),
+    }
+    // The same list without `ordered` is sorted, as before.
+    match ex(&src, ExportOpts { segments: segs.clone(), ..Default::default() }) {
+        Ok((m, _)) => {
+            let pic = grey_frame(ffmpeg, Path::new(&m.path), 0.5);
+            let d = frame_diff(&pic, &grey_frame(ffmpeg, &src_file, 0.8));
+            r.check("not ordered: the same ranges play in source order", d < 6.0, &format!("diff to the source at 0.8 s {d:.1}"));
+        }
+        Err(e) => r.check("not ordered: the same ranges play in source order", false, &e),
+    }
+
+    // --- with a look per range: grey, blank, as recorded
+    let grey = Color { saturation: 0.0, ..Default::default() };
+    let looks = vec![piece(6.5, 8.0, Some(grey.clone()), false), piece(0.3, 1.8, None, true), piece(4.2, 5.6, None, false)];
+    match ex(&src, ExportOpts { segments: looks, ordered: true, ..Default::default() }) {
+        Ok((m, p)) => {
+            let f = Path::new(&m.path);
+            let (a, b, c) = (signal_stats_at(ffmpeg, f, 0.1, 1.4), signal_stats_at(ffmpeg, f, 1.6, 2.9), signal_stats_at(ffmpeg, f, 3.1, 4.3));
+            let grey_ok = a.is_some_and(|(y, c)| c < 1.5 && y > 30.0);
+            let black_ok = b.is_some_and(|(y, c)| y < 17.5 && c < 0.5);
+            let colour_ok = c.is_some_and(|(y, c)| c > 10.0 && y > 30.0);
+            let blank_sound = band_db_at(ffmpeg, f, 0, steps[0], 1.65, 2.85);
+            let ok = near(p.duration, total, 0.07) && grey_ok && black_ok && colour_ok && matches!((refs[0], blank_sound), (Some(x), Some(y)) if near(x, y, 1.5));
+            r.check("ordered: grey, blank and plain ranges keep their look and sound", ok, &format!("dur {:.3}, {a:?} {b:?} {c:?}, blank range's tone {blank_sound:.1?}", p.duration));
+        }
+        Err(e) => r.check("ordered: grey, blank and plain ranges keep their look and sound", false, &e),
+    }
+
+    // --- a file row given as two entries (one per moved clip it covers):
+    // 1.5 s of 800 Hz, then 1.5 s of 2500 Hz, heard under the first two ranges.
+    let song = dir.join("Two Part Song.wav");
+    let built = run_ffmpeg(
+        ffmpeg,
+        &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "aevalsrc='0.5*sin(2*PI*t*if(lt(t,1.5),800,2500))':s=48000:d=3", "-ac", "2", "-c:a", "pcm_s16le", &song.to_string_lossy()],
+    );
+    r.check("ordered: build two-part audio file", built.is_ok(), built.as_ref().err().map(String::as_str).unwrap_or(""));
+    let song_s = song.to_string_lossy().into_owned();
+    let (s1, s2) = (800u32, 2500u32);
+    let (ref1, ref2) = (band_db_at(ffmpeg, &song, 0, s1, 0.15, 1.35), band_db_at(ffmpeg, &song, 0, s2, 1.65, 2.85));
+    let entry = |offset: f64, trim_start: f64, length: f64| AudioEdit { source: "file".into(), path: song_s.clone(), offset, trim_start, length, volume: 1.0, ..Default::default() };
+    let entries = vec![entry(6.5, 0.0, 1.5), entry(0.3, 1.5, 1.5)];
+    let track0 = AudioEdit { source: "track".into(), index: 0, volume: 1.0, ..Default::default() };
+    let mut audio = vec![track0];
+    audio.extend(entries.iter().cloned());
+    match ex(&src, ExportOpts { segments: segs.clone(), ordered: true, audio, ..Default::default() }) {
+        Ok((m, p)) => {
+            let f = Path::new(&m.path);
+            let lv = |freq: u32, a: f64, b: f64| band_db_at(ffmpeg, f, 0, freq, a, b);
+            let (a6, a9, b6, b9, c6, c9) = (lv(s1, 0.15, 1.35), lv(s2, 0.15, 1.35), lv(s1, 1.65, 2.85), lv(s2, 1.65, 2.85), lv(s1, 3.15, 4.25), lv(s2, 3.15, 4.25));
+            let (t_a, t_c) = (lv(steps[3], 0.15, 1.35), lv(steps[2], 3.15, 4.25));
+            let (ref600, ref900) = (ref1, ref2);
+            let loud = |x: Option<f64>, r0: Option<f64>| matches!((r0, x), (Some(r0), Some(x)) if near(x, r0, 1.5));
+            let quiet = |x: Option<f64>, r0: Option<f64>| matches!((r0, x), (Some(r0), Some(x)) if x < r0 - 30.0);
+            let titles = audio_titles(ffmpeg, f).unwrap_or_default();
+            let ok = near(p.duration, total, 0.07)
+                && loud(a6, ref600) && quiet(a9, ref900)
+                && loud(b9, ref900) && quiet(b6, ref600)
+                && quiet(c6, ref600) && quiet(c9, ref900)
+                && loud(t_a, refs[3]) && loud(t_c, refs[2])
+                && titles == [Some("Mix".to_string())];
+            r.check(
+                "ordered: a file row given as two entries plays each part under its clip",
+                ok,
+                &format!("file {s1}/{s2} Hz: first {a6:.1?}/{a9:.1?}, second {b6:.1?}/{b9:.1?}, third {c6:.1?}/{c9:.1?}; clip tones {t_a:.1?} {t_c:.1?}; file {ref600:.1?}/{ref900:.1?}; titles {titles:?}"),
+            );
+        }
+        Err(e) => r.check("ordered: a file row given as two entries plays each part under its clip", false, &e),
+    }
+    match ex(&src, ExportOpts { segments: segs.clone(), ordered: true, audio: entries, ..Default::default() }) {
+        Ok((m, _)) => {
+            let titles = audio_titles(ffmpeg, Path::new(&m.path)).unwrap_or_default();
+            r.check("ordered: a file row in two entries alone keeps the file's name", titles == [Some("Two Part Song".to_string())], &format!("{titles:?}"));
+        }
+        Err(e) => r.check("ordered: a file row in two entries alone keeps the file's name", false, &e),
+    }
+
+    // --- merging neighbours
+    let ks = |segments: Vec<Range>, ordered: bool| kept_ranges(&ExportOpts { segments, ordered, ..Default::default() }, 8.0).iter().map(|k| (k.a, k.b, k.blank)).collect::<Vec<_>>();
+    let p = |a: f64, b: f64| piece(a, b, None, false);
+    let merged = ks(vec![p(4.0, 5.0), p(5.0, 6.0), p(0.5, 1.5)], true);
+    let apart = ks(vec![p(5.0, 6.0), p(0.5, 1.5), p(6.0, 7.0)], true);
+    let backwards = ks(vec![p(5.0, 6.0), p(4.0, 5.0)], true);
+    let looks_differ = ks(vec![p(4.0, 5.0), piece(5.0005, 6.0, None, true)], true);
+    let sorted = ks(vec![p(5.0, 6.0), p(4.0, 5.0)], false);
+    let ok = merged == [(4.0, 6.0, false), (0.5, 1.5, false)]
+        && apart == [(5.0, 6.0, false), (0.5, 1.5, false), (6.0, 7.0, false)]
+        && backwards == [(5.0, 6.0, false), (4.0, 5.0, false)]
+        && looks_differ == [(4.0, 5.0, false), (5.0, 6.0, true)]
+        && sorted == [(4.0, 6.0, false)];
+    r.check("ordered: only list neighbours that touch in source and look alike merge", ok, &format!("{merged:?} / {apart:?} / {backwards:?} / {looks_differ:?} / not ordered {sorted:?}"));
+    let neighbours = vec![p(4.0, 5.0), p(5.0, 6.0), p(0.5, 1.5)];
+    match ex(&src, ExportOpts { segments: neighbours, ordered: true, ..Default::default() }) {
+        Ok((m, pr)) => {
+            let f = Path::new(&m.path);
+            let t = frame_times(ffmpeg, f);
+            // 2 s + 1 s at 30 fps; no tone break inside the merged 4..6 s.
+            let steady = band_db_at(ffmpeg, f, 0, steps[2], 0.2, 1.8);
+            let ok = near(pr.duration, 3.0, 0.07) && (88..=91).contains(&t.len()) && matches!((refs[2], steady), (Some(x), Some(y)) if near(x, y, 1.5));
+            r.check("ordered: touching neighbours play as one range", ok, &format!("dur {:.3}, {} frames, 4..6 s tone {steady:.1?}", pr.duration, t.len()));
+        }
+        Err(e) => r.check("ordered: touching neighbours play as one range", false, &e),
+    }
+    match ex(&src, ExportOpts { segments: vec![p(5.0, 6.0), p(4.0, 5.0)], ordered: true, ..Default::default() }) {
+        Ok((m, pr)) => {
+            let f = Path::new(&m.path);
+            let pic = grey_frame(ffmpeg, f, 1.5);
+            let (right, wrong) = (frame_diff(&pic, &grey_frame(ffmpeg, &src_file, 4.5)), frame_diff(&pic, &grey_frame(ffmpeg, &src_file, 5.5)));
+            r.check("ordered: ranges that touch in source the other way round stay apart", near(pr.duration, 2.0, 0.07) && right < 6.0 && right < wrong, &format!("dur {:.3}, diff {right:.1} vs {wrong:.1}", pr.duration));
+        }
+        Err(e) => r.check("ordered: ranges that touch in source the other way round stay apart", false, &e),
+    }
+
+    draft_checks(r, ffmpeg, s, dir, &src, &order);
+}
+
+/// Exports from a draft ("Edit together"): into its folder in the clips
+/// folder (or the clips folder itself when that is gone), never a draft; a
+/// lossless whole export is the joined clip itself.
+fn draft_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path, plain: &ClipMeta, order: &[(f64, f64)]) {
+    let drafts = dir.join(".drafts");
+    let _ = fs::create_dir_all(&drafts);
+    let _ = fs::create_dir_all(dir.join("Draft Game"));
+    let make = |folder: &str| -> Option<ClipMeta> {
+        let id = util::new_id();
+        let file = drafts.join(format!("{id}.mp4"));
+        fs::copy(&plain.path, &file).ok()?;
+        let mut m = library::register(ffmpeg, &file, "Joined clips", "Draft Game", "joined");
+        m.fps = 30;
+        m.folder = folder.into();
+        m.draft = true;
+        m.joins = vec![3.0, 5.5];
+        m.join_names = vec!["One".into(), "Two".into(), "Three".into()];
+        Some(m)
+    };
+    let Some(draft) = make("Draft Game") else {
+        r.check("draft: test draft made", false, "");
+        return;
+    };
+    let in_folder = |m: &ClipMeta, sub: &str| {
+        let want = if sub.is_empty() { dir.to_path_buf() } else { dir.join(sub) };
+        Path::new(&m.path).parent() == Some(want.as_path()) && m.folder == sub && !m.draft
+    };
+    let ex = |src: &ClipMeta, opts: ExportOpts| export(s, src, &opts, &mut |_| {});
+    let parts = vec![Range { start: 0.0, end: 3.0, ..Default::default() }, Range { start: 3.0, end: 5.5, ..Default::default() }, Range { start: 5.5, end: 8.0, ..Default::default() }];
+    for (label, opts) in [("nothing changed", ExportOpts::default()), ("its parts as they are", ExportOpts { segments: parts, ..Default::default() })] {
+        match ex(&draft, opts) {
+            Ok(m) => {
+                let ok = in_folder(&m, "Draft Game") && m.kind == "joined" && m.title == "Joined clips" && m.joins == draft.joins && m.join_names == draft.join_names && near(m.duration, draft.duration, 0.05);
+                r.check(&format!("draft: lossless whole export ({label}) is the joined clip"), ok, &format!("{} kind {} title {:?} joins {:?} names {:?} folder {:?} draft {}", m.path, m.kind, m.title, m.joins, m.join_names, m.folder, m.draft));
+            }
+            Err(e) => r.check(&format!("draft: lossless whole export ({label}) is the joined clip"), false, &e),
+        }
+    }
+    match ex(&draft, ExportOpts { start: 1.0, end: 5.0, ..Default::default() }) {
+        Ok(m) => {
+            let ok = in_folder(&m, "Draft Game") && m.kind == "trim" && m.title == "Joined clips (trim)" && m.joins.is_empty() && m.join_names.is_empty();
+            r.check("draft: a lossless cut is a trim without joins, in the draft's folder", ok, &format!("{} kind {} title {:?} joins {:?}", m.path, m.kind, m.title, m.joins));
+        }
+        Err(e) => r.check("draft: a lossless cut is a trim without joins, in the draft's folder", false, &e),
+    }
+    let moved = order.iter().map(|&(start, end)| Range { start, end, ..Default::default() }).collect::<Vec<_>>();
+    match ex(&draft, ExportOpts { segments: moved, ordered: true, ..Default::default() }) {
+        Ok(m) => {
+            let ok = in_folder(&m, "Draft Game") && m.kind == "edit" && m.title == "Joined clips (edit)" && m.joins.is_empty() && m.join_names.is_empty();
+            r.check("draft: a re-encoded export is an edit without joins, in the draft's folder", ok, &format!("{} kind {} title {:?} joins {:?}", m.path, m.kind, m.title, m.joins));
+        }
+        Err(e) => r.check("draft: a re-encoded export is an edit without joins, in the draft's folder", false, &e),
+    }
+    match make("Gone Game").map(|d| (ex(&d, ExportOpts::default()), ex(&d, ExportOpts { speed: 2.0, ..Default::default() }))) {
+        Some((Ok(a), Ok(b))) => {
+            let ok = in_folder(&a, "") && in_folder(&b, "") && !dir.join("Gone Game").exists();
+            r.check("draft: with its folder gone, exports go to the clips folder", ok, &format!("{} ({:?}) / {} ({:?})", a.path, a.folder, b.path, b.folder));
+        }
+        Some((Err(e), _)) | Some((_, Err(e))) => r.check("draft: with its folder gone, exports go to the clips folder", false, &e),
+        None => r.check("draft: with its folder gone, exports go to the clips folder", false, "draft not made"),
+    }
+    let left = fs::read_dir(&drafts).map(|d| d.count()).unwrap_or(0);
+    r.check("draft: nothing written into the drafts folder", left == 2, &format!("{left} files"));
 }
 
 /// Set a folder's modified time `age` into the past (to test the stale-folder sweep).

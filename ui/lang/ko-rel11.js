@@ -11,4 +11,12 @@ glintAddLanguage("ko", "한국어", {
   "Clip thumbnails always show the whole frame, also with a custom theme and for stretched, ultrawide and portrait clips.": "클립 썸네일이 항상 화면 전체를 보여 줘요. 사용자 테마를 쓸 때도, 늘린 화면·울트라와이드·세로 클립도 마찬가지예요.",
   "A trimmed clip that is exported again, compressed for Discord or joined no longer has its picture ahead of the sound. The trim now starts on the frame that was on screen, so it can begin a moment earlier than you asked.": "잘라 낸 클립을 다시 내보내거나, Discord용으로 압축하거나, 이어 붙여도 화면이 소리보다 앞서지 않아요. 이제 자르기는 그때 화면에 있던 프레임에서 시작해서, 고른 시점보다 아주 조금 일찍 시작할 수 있어요.",
   "What's new: the text is set closer together.": "새 소식: 글자 간격을 좁혔어요.",
+  "Edit together: the clips now open in the editor as separate clips, in the order you selected them. Drag a clip in the Clips strip to move it, or right-click it to move it or cut it out. Nothing is added to your library until you export.": "한 번에 편집: 이제 클립이 선택한 순서대로, 각각 따로 편집기에 열려요. 클립 줄에서 클립을 끌어 옮기거나, 우클릭해서 옮기거나 잘라 낼 수 있어요. 내보내기 전에는 라이브러리에 아무것도 추가되지 않아요.",
+  "Edit together keeps Desktop, Microphone and Game as separate tracks, even when the clips were recorded with different tracks.": "한 번에 편집에서 클립마다 녹음된 트랙이 달라도 데스크톱, 마이크, 게임 트랙을 따로 유지해요.",
+  "A trim starts exactly where you set it: sound from before the start no longer comes back.": "자르기가 정확히 설정한 곳에서 시작해요. 시작점 앞의 소리가 다시 들어오지 않아요.",
+  "Settings → Components: ffmpeg can be installed again in one session, a failed install never leaves Glint without ffmpeg, and the replay buffer restarts only when it has to.": "설정 → 구성 요소: 앱을 켠 채로 ffmpeg를 다시 설치할 수 있고, 설치가 실패해도 ffmpeg가 없어지지 않으며, 꼭 필요할 때만 리플레이 버퍼를 다시 시작해요.",
+  "With only the microphone and the game sound recorded, the main audio track now has both, so Discord and other players hear the game.": "마이크와 게임 소리만 녹음한 경우에도 기본 오디오 트랙에 둘 다 들어가서, Discord나 다른 플레이어에서 게임 소리가 들려요.",
+  "Settings → Components no longer stays on Installing after the window was opened again, and finds ffprobe beside an ffmpeg you chose yourself.": "설정 → 구성 요소가 창을 다시 연 뒤 설치 중에 멈춰 있지 않고, 직접 고른 ffmpeg 옆의 ffprobe를 찾아요.",
+  "A clip that is waiting to be edited together can no longer be renamed or moved in the meantime.": "한 번에 편집을 기다리는 클립은 그동안 이름을 바꾸거나 옮길 수 없어요.",
+  "If Blur's timing fix fails, the clip still renders.": "Blur의 타이밍 보정이 실패해도 클립은 렌더링돼요.",
 });

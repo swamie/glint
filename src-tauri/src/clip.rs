@@ -47,6 +47,8 @@ fn reserve_path(dir: &Path, base: &str, ext: &str) -> PathBuf {
 /// "Game" track is added LAST (Mix, Desktop, Microphone, Game; or Desktop,
 /// Game), so the index of every other track stays what it always was. The mix
 /// stays desktop + mic: the game is already part of the desktop sound.
+/// Without desktop sound the mix is mic + game (Mix, Microphone, Game), so
+/// track 1 still holds everything that was heard.
 pub fn write(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, String> {
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg").ok_or("ffmpeg.exe was not found")?;
     if s.mic_denoise {
@@ -139,6 +141,8 @@ pub fn write(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, Str
         audio_tracks: titles.len() as u32,
         folder,
         joins: Vec::new(),
+        join_names: Vec::new(),
+        draft: false,
     })
 }
 
@@ -147,10 +151,17 @@ pub fn write(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, Str
 /// Returns the titles of the audio tracks written, in order.
 ///
 /// Desktop + Microphone get their mix as track 1; a "Game" input is always
-/// the last track and is never part of the mix (the desktop sound holds it).
+/// the last track and is part of the mix only when there is no "Desktop"
+/// input (the desktop sound holds the game): Microphone + Game then get their
+/// mix as track 1, because players, chat apps, Compress for Discord and joins
+/// take track 1 only.
 pub fn audio_layout(cmd: &mut std::process::Command, names: &[&str]) -> Vec<&'static str> {
     let game = names.iter().position(|n| *n == "Game");
     let base: Vec<(usize, &str)> = names.iter().copied().enumerate().filter(|(_, n)| *n != "Game").collect();
+    let mix_game = match (game, base.as_slice()) {
+        (Some(g), [(m, n)]) if *n != "Desktop" => Some((*m, g)),
+        _ => None,
+    };
     let mut maps: Vec<String> = Vec::new();
     let mut titles: Vec<&'static str> = Vec::new();
     let title_of = |n: &str| -> &'static str {
@@ -161,9 +172,9 @@ pub fn audio_layout(cmd: &mut std::process::Command, names: &[&str]) -> Vec<&'st
             _ => "Audio",
         }
     };
-    if base.len() == 2 {
-        let (a, b) = (base[0].0 + 1, base[1].0 + 1);
-        cmd.arg("-filter_complex").arg(format!("[{a}:a][{b}:a]amix=inputs=2:duration=longest:normalize=0[mix]"));
+    let pair = if base.len() == 2 { Some((base[0].0, base[1].0)) } else { mix_game };
+    if let Some((a, b)) = pair {
+        cmd.arg("-filter_complex").arg(format!("[{}:a][{}:a]amix=inputs=2:duration=longest:normalize=0[mix]", a + 1, b + 1));
         maps.push("[mix]".into());
         titles.push("Mix");
     }
@@ -247,45 +258,90 @@ pub fn restore_titles(ffmpeg: &Path, src: &Path, out: &Path) {
     let _ = fs::remove_file(&tmp);
 }
 
-/// A cut may start this long before the asked time to land on a frame.
-const TRIM_SNAP_SECS: f64 = 1.5;
+/// The most a lossless cut may start before the asked time (checked by
+/// `--blur-sync-test`). The cut starts AT the asked time; see `trim_start`.
+pub const TRIM_EARLY_MAX: f64 = 0.05;
 
-/// Where a lossless cut asked for at `start` begins, as ffmpeg's `-ss` value:
-/// the time of the video frame on screen at `start` (the last one at or
-/// before it), so the cut starts exactly on a frame.
+/// The `-ss` value of a lossless cut asked for at `start`, and the `-bsf:v`
+/// that goes with it (None when nothing needs it).
 ///
 /// Clips from the buffer have a variable frame rate: on a still screen the
-/// frame on screen can be a second old. A cut that starts between two frames
-/// is right in a player (the MP4 edit list says where it starts), but ffmpeg
-/// reads such a file with the video starting at the first frame AFTER the cut,
-/// so every re-encode of the trim (editor export, Compress for Discord, a
-/// join) had its picture early by that gap: 5 ms in motion, up to 1.3 s on a
-/// still screen. The price is a cut that starts up to that gap early, with
-/// the same picture. Further back than `TRIM_SNAP_SECS` the asked time is kept.
-/// Six decimals: three could round up past the frame and drop it.
-fn trim_start(ffmpeg: &Path, file: &Path, start: f64) -> String {
-    match crate::editor::frames_on_screen(ffmpeg, file, &[start]).first().copied().flatten() {
-        Some(f) if f >= 0.0 && f <= start + 1e-4 && start - f <= TRIM_SNAP_SECS => format!("{f:.6}"),
-        _ => format!("{start:.3}"),
-    }
+/// frame on screen at `start` (the last one at or before it) can be a second
+/// old. A cut that starts between two frames is right in a player (the MP4
+/// edit list says where it starts), but ffmpeg's MP4 reader moves the first
+/// frame it shows to 0, which is the first frame AFTER the cut, so every
+/// re-encode of the trim (editor export, Compress for Discord, a join) had its
+/// picture early by that gap: 5 ms in motion, up to 1.3 s on a still screen.
+/// Starting the cut on that frame instead (0.1.12) brought back up to that
+/// much of the sound the user cut away and made the trim longer than asked.
+///
+/// So the cut starts exactly at `start`, and the frame on screen there is
+/// re-timed to the cut (its presentation time only, so decoding is untouched):
+/// a player shows that same frame from the cut on either way, and ffmpeg now
+/// finds a frame exactly at the start and moves nothing. `setts` sees packet
+/// times relative to the `-ss` point.
+fn trim_start(ffmpeg: &Path, file: &Path, start: f64) -> (String, Option<String>) {
+    let ss = format!("{start:.6}");
+    let bsf = match crate::editor::frames_on_screen(ffmpeg, file, &[start]).first().copied().flatten() {
+        // Frames are at least 4 ms apart, so the 1 ms window holds that frame only.
+        Some(f) if f >= 0.0 && f < start - 0.0005 => {
+            let rel = f - start;
+            Some(format!("setts=pts='if(between(PTS*TB\\,{:.6}\\,{:.6})\\,0\\,PTS)'", rel - 0.001, (rel + 0.001).min(0.0)))
+        }
+        _ => None,
+    };
+    (ss, bsf)
 }
 
-/// Cut `[start, end]` out of a clip without re-encoding (snaps to keyframes, 1 s apart).
-/// With `include_mic == false` on a 3-track clip, only the desktop track is kept
-/// (on a 4-track clip, desktop and game: Mix, Desktop, Microphone, Game).
+/// Where an export or trim of `src` is written, and its library folder: beside
+/// the source; for a draft ("Edit together") in `<clips>\<its folder>`, or the
+/// clips folder itself when that folder is gone.
+pub fn output_dir(s: &Settings, src: &ClipMeta) -> (PathBuf, String) {
+    let clips = PathBuf::from(&s.clips_dir);
+    if src.draft {
+        let d = clips.join(&src.folder);
+        return if !src.folder.is_empty() && d.is_dir() { (d, src.folder.clone()) } else { (clips, String::new()) };
+    }
+    (Path::new(&src.path).parent().map(Path::to_path_buf).unwrap_or(clips), src.folder.clone())
+}
+
+/// Cut `[start, end]` out of a clip without re-encoding. It starts at `start`
+/// exactly (an edit list hides the frames from the keyframe before; see `trim_start`).
+/// With `include_mic == false` the microphone is left out: the tracks titled
+/// "Mix" and "Microphone" are dropped (Mix, Desktop, Microphone, Game keeps
+/// Desktop and Game; Mix, Microphone, Game keeps Game). An untitled 3-track
+/// clip keeps track 2 (desktop) only.
+///
+/// A draft ("Edit together") is cut into its folder in the clips folder, and
+/// a cut of the whole draft is the joined clip itself: its title, kind
+/// "joined", its joins and part names.
 pub fn trim(s: &Settings, src: &ClipMeta, start: f64, end: f64, include_mic: bool) -> Result<ClipMeta, String> {
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg").ok_or("ffmpeg.exe was not found")?;
     if end - start < 0.5 {
         return Err("The selection is too short".into());
     }
     let src_path = PathBuf::from(&src.path);
-    let dir = src_path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(&s.clips_dir));
-    let title = format!("{} (trim)", src.title);
+    let (dir, folder) = output_dir(s, src);
+    let duration = if src.duration > 0.0 { src.duration } else { library::probe(&ffmpeg, &src_path, false).map(|p| p.duration).unwrap_or(0.0) };
+    let whole_draft = src.draft && include_mic && start <= 0.002 && duration > 0.0 && end >= duration - 0.002;
+    let title = if whole_draft { src.title.clone() } else { format!("{} (trim)", src.title) };
     let out = util::unique_path(&dir, &util::sanitize_filename(&title), "mp4");
+    let (ss, bsf) = trim_start(&ffmpeg, &src_path, start);
     let mut cmd = util::hidden_cmd(&ffmpeg);
-    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &trim_start(&ffmpeg, &src_path, start), "-to", &format!("{end:.3}"), "-i"]).arg(&src_path);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &ss, "-to", &format!("{end:.3}"), "-i"]).arg(&src_path);
+    if let Some(b) = &bsf {
+        cmd.args(["-bsf:v", b]);
+    }
     let names = audio_titles(&ffmpeg, &src_path);
-    let kept: Vec<usize> = if !include_mic && src.audio_tracks >= 3 {
+    let titled = names.iter().any(|n| n == "Mix" || n == "Microphone");
+    let kept: Vec<usize> = if !include_mic && titled {
+        let keep: Vec<usize> = (0..names.len()).filter(|&i| names[i] != "Mix" && names[i] != "Microphone").collect();
+        cmd.args(["-map", "0:v:0"]);
+        for (o, i) in keep.iter().enumerate() {
+            cmd.arg("-map").arg(format!("0:a:{i}")).arg(format!("-disposition:a:{o}")).arg(if o == 0 { "default" } else { "0" });
+        }
+        keep
+    } else if !include_mic && src.audio_tracks >= 3 {
         cmd.args(["-map", "0:v:0", "-map", "0:a:1", "-disposition:a:0", "default"]);
         if src.audio_tracks >= 4 {
             cmd.args(["-map", "0:a:3", "-disposition:a:1", "0"]);
@@ -310,10 +366,14 @@ pub fn trim(s: &Settings, src: &ClipMeta, start: f64, end: f64, include_mic: boo
         let _ = fs::remove_file(&out);
         return Err(format!("Trim failed: {}", util::last_lines(&output.stderr, 2)));
     }
-    let mut meta = library::register(&ffmpeg, &out, &title, &src.game, "trim");
+    let mut meta = library::register(&ffmpeg, &out, &title, &src.game, if whole_draft { "joined" } else { "trim" });
     // The file's average rate reflects how busy the screen was, not the capture setting.
     meta.fps = src.fps;
-    // Written beside the source, so it sits in the same library folder.
-    meta.folder = src.folder.clone();
+    // Written beside the source (a draft: in its folder), so it sits in that library folder.
+    meta.folder = folder;
+    if whole_draft {
+        meta.joins = src.joins.clone();
+        meta.join_names = src.join_names.clone();
+    }
     Ok(meta)
 }

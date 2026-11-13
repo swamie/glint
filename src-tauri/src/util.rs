@@ -69,25 +69,33 @@ pub fn hidden_cmd_prio(program: &Path) -> Command {
 /// Locate a tool: explicit path, next to our exe, `%LOCALAPPDATA%\Glint\bin`, then PATH. Scoop shims are
 /// resolved to the real exe so kill() and CPU stats hit the right process.
 pub fn find_exe(custom: &str, name: &str) -> Option<PathBuf> {
+    let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
+    let path_dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    find_exe_in(custom, name, exe_dir.as_deref(), &crate::deps::local_bin_dir(), &path_dirs)
+}
+
+/// `find_exe` with its folders given (the self-test calls it with scratch folders).
+///
+/// "Check and repair" (deps.rs) puts a new ffmpeg into `local_bin` when Glint's own folder is
+/// read-only, so an older copy beside the exe could not be replaced. The copy in `local_bin` therefore
+/// wins over the one beside the exe unless that one is newer (file time; both come out of the
+/// ffmpeg zip with its build time). A path set by hand (`custom`) always wins.
+pub fn find_exe_in(custom: &str, name: &str, exe_dir: Option<&Path>, local_bin: &Path, path_dirs: &[PathBuf]) -> Option<PathBuf> {
     let file = format!("{name}.exe");
-    let mut cands: Vec<PathBuf> = Vec::new();
     if !custom.trim().is_empty() {
-        cands.push(PathBuf::from(custom.trim()));
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(d) = exe.parent() {
-            cands.push(d.join(&file));
-            cands.push(d.join("bin").join(&file));
+        let p = PathBuf::from(custom.trim());
+        if p.is_file() {
+            return Some(resolve_shim(p));
         }
     }
-    // Where "Check and repair" puts ffmpeg when Glint's own folder is read-only (deps.rs).
-    cands.push(crate::deps::local_bin_dir().join(&file));
-    if let Some(paths) = std::env::var_os("PATH") {
-        for d in std::env::split_paths(&paths) {
-            cands.push(d.join(&file));
-        }
-    }
-    cands.into_iter().find(|c| c.is_file()).map(resolve_shim)
+    let beside = exe_dir.and_then(|d| [d.join(&file), d.join("bin").join(&file)].into_iter().find(|c| c.is_file()));
+    let local = Some(local_bin.join(&file)).filter(|c| c.is_file());
+    let mtime = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
+    let first = match (beside, local) {
+        (Some(b), Some(l)) => Some(if mtime(&b) > mtime(&l) { b } else { l }),
+        (b, l) => b.or(l),
+    };
+    first.or_else(|| path_dirs.iter().map(|d| d.join(&file)).find(|c| c.is_file())).map(resolve_shim)
 }
 
 fn resolve_shim(p: PathBuf) -> PathBuf {

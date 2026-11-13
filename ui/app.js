@@ -442,7 +442,7 @@ function editTitle(id) {
       const i = S.clips.findIndex((k) => k.id === id);
       if (i >= 0 && meta) S.clips[i] = meta;
       if (meta && meta.id !== id) {
-        if (S.sel.delete(id)) S.sel.add(meta.id);
+        if (S.sel.has(id)) S.sel = new Set([...S.sel].map((x) => (x === id ? meta.id : x))); // keeps its place in the selection order
         if (S.anchor === id) S.anchor = meta.id;
       }
     } catch (e) { fail(e); }
@@ -1171,6 +1171,8 @@ document.addEventListener("click", async (e) => {
   if (!el) return;
   const d = el.dataset;
   try {
+    // Closing the window leaves an "Edit together" draft first (join.js: it may ask, then discards it).
+    if (d.win === "close" && typeof joinWindowClose === "function") return joinWindowClose(() => invoke("win_action", { action: d.win }));
     if (d.win) return invoke("win_action", { action: d.win });
     if (d.m) return await menuAction(d.m, d.arg || "");
     if (d.page) { endCapture(); S.page = d.page; S.tab = "all"; S.folder = null; S.sel.clear(); $("#view").scrollTop = 0; return render(); }
@@ -1340,7 +1342,7 @@ window.addEventListener("keydown", (e) => {
   if (document.querySelector(".tl-menu, .bug-dlg, .wn-dlg")) return;
   const inField = e.target.matches?.("input, select, textarea");
   if (e.ctrlKey && e.code === "KeyK") { e.preventDefault(); $("#search").classList.add("open"); $("#q").focus(); $("#q").select(); }
-  else if (isLib() && !S.open && !inField && e.ctrlKey && e.code === "KeyA") { e.preventDefault(); S.sel = new Set(visibleClips().list.map((c) => c.id)); syncSel(); }
+  else if (isLib() && !S.open && !inField && e.ctrlKey && e.code === "KeyA") { e.preventDefault(); S.sel = new Set([...S.sel, ...visibleClips().list.map((c) => c.id)]); syncSel(); } // what was picked keeps its order, the rest follow as on screen
   else if (isLib() && !S.open && !inField && e.code === "Delete" && S.sel.size) { e.preventDefault(); bulkDelete(); }
   else if (e.code === "Escape" && !S.open && (S.sel.size || !$("#menu").hidden)) { if (!$("#menu").hidden) closeMenu(); else clearSel(); }
   else if (e.code === "Escape" && S.open) { if (!document.fullscreenElement) closeClip(); }
@@ -1367,7 +1369,7 @@ $("#btn-clip").onclick = async () => {
 
 /* ---------- data ---------- */
 async function refreshClips() {
-  S.clips = await invoke("list_clips");
+  S.clips = ((await invoke("list_clips")) || []).filter((c) => !c.draft); // drafts ("Edit together") are held by join.js only
   S.folders = (await invoke("list_folders")) || [];
   S.games = (await invoke("list_games")) || [];
   const ids = new Set(S.clips.map((c) => c.id));

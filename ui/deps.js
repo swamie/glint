@@ -9,6 +9,8 @@ const DEPS = {
   checking: false,
   checked: false,   // a check ran since the window opened
   busy: "",         // id being installed
+  pending: false,   // this window's install_dep call is waiting for its answer
+  recheck: false,   // an install ended (event) while a check was running: check again
   prog: null,       // last "deps-progress" payload
   error: "",        // last install error (English, translated when shown)
   errorId: "",
@@ -122,17 +124,19 @@ function depsPaintProgress() {
 async function depsCheck() {
   if (DEPS.checking) return;
   DEPS.checking = true;
+  DEPS.recheck = false;
   depsPaint();
   try {
     const r = await invoke("check_deps");
     DEPS.items = r.items || [];
-    if (r.installing && !DEPS.busy) DEPS.busy = r.installing; // started before the window was reopened
+    if (r.installing && !DEPS.busy && !DEPS.recheck) DEPS.busy = r.installing; // started before the window was reopened
   } catch (e) {
     DEPS.error = String(e);
   } finally {
     DEPS.checking = false;
     DEPS.checked = true;
     depsPaint();
+    if (DEPS.recheck) setTimeout(depsCheck, 0); // an install ended while this check ran
   }
 }
 
@@ -143,6 +147,7 @@ async function depsInstall(id) {
   DEPS.prog = { id, phase: "download", done: 0, total: 0 };
   depsPaint();
   let ok = false;
+  DEPS.pending = true;
   try {
     DEPS.items = (await invoke("install_dep", { id })) || DEPS.items;
     ok = true;
@@ -151,6 +156,7 @@ async function depsInstall(id) {
     DEPS.errorId = id;
     DEPS.queue = [];
   }
+  DEPS.pending = false;
   DEPS.busy = "";
   DEPS.prog = null;
   if (ok) {
@@ -194,7 +200,17 @@ document.addEventListener("click", (e) => {
   if (!T || !T.event) return;
   T.event.listen("deps-progress", ({ payload: p } = {}) => {
     if (!p) return;
-    if (p.phase === "done" || p.phase === "error") return; // install_dep's answer handles the end
+    if (p.phase === "done" || p.phase === "error") {
+      if (DEPS.pending) return; // install_dep's answer handles the end
+      // An install this window did not start (begun before Settings was reopened): end it here.
+      DEPS.busy = "";
+      DEPS.prog = null;
+      if (p.phase === "error") { DEPS.error = p.error || ""; DEPS.errorId = p.id; }
+      DEPS.recheck = true; // a check running now may still have seen the install as running
+      depsCheck();
+      if (p.phase === "done" && typeof refreshState === "function") Promise.resolve().then(refreshState).catch(() => {});
+      return;
+    }
     if (!DEPS.busy) DEPS.busy = p.id;
     DEPS.prog = p;
     depsPaintProgress();

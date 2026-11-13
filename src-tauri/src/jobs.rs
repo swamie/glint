@@ -63,6 +63,13 @@ impl Job {
     fn ended(&self) -> bool {
         !matches!(self.state.as_str(), "queued" | "running")
     }
+
+    /// True when the job (whatever its state) works on clip `id`: its own clip,
+    /// or one of the clips of an "Edit together" job, whose `clip_id` is
+    /// `join:<id>,<id>,...`.
+    pub fn uses(&self, id: &str) -> bool {
+        self.clip_id == id || self.clip_id.strip_prefix("join:").is_some_and(|l| l.split(',').any(|x| x == id))
+    }
 }
 
 /// The work of one job. It gets a cancel flag to honour and a progress
@@ -159,6 +166,12 @@ impl Jobs {
     /// Every job, oldest first.
     pub fn list(&self) -> Vec<Job> {
         self.inner.state.lock().unwrap().list.clone()
+    }
+
+    /// True while a queued or running job works on clip `id` (see `Job::uses`):
+    /// its file must not be renamed, moved or discarded under it.
+    pub fn busy(&self, id: &str) -> bool {
+        self.inner.state.lock().unwrap().list.iter().any(|j| !j.ended() && j.uses(id))
     }
 
     /// Queue a job. Refused when the same clip already has a job of the same

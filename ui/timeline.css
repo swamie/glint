@@ -93,6 +93,13 @@
 .tl-bml { position: absolute; left: 0; bottom: 0; width: 1px; margin-left: -0.5px; opacity: .75; pointer-events: none;
   background: repeating-linear-gradient(to bottom, var(--accent) 0 4px, transparent 4px 7px); }
 
+/* Clip blocks ("Edit together"): the strip above the video row (drawn on its canvas), its header, and the
+   drop marker while a block is dragged (left: 0 + translateX = the gap it would go to). */
+.tl-head-parts { flex-direction: row; align-items: center; justify-content: flex-start; padding-left: 12px; color: var(--muted); font-size: 11.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-pdrop { position: absolute; left: 0; bottom: 0; width: 4px; margin-left: -2px; border-radius: 2px; background: var(--accent-2, var(--accent)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg) 55%, transparent), 0 0 8px color-mix(in srgb, var(--accent) 60%, transparent); pointer-events: none; }
+.tl-pdrop[hidden] { display: none; }
+.tl-pdrop.same { opacity: .35; }
+
 /* Rubber band selection. Position and size are set inline (translate + width / height inside .tl-lanes). */
 .tl-band { position: absolute; left: 0; top: 0; z-index: 4; border: 1px solid var(--accent); border-radius: 3px; background: color-mix(in srgb, var(--accent) 14%, transparent); pointer-events: none; }
 .tl-band[hidden] { display: none; }

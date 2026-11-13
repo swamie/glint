@@ -68,6 +68,8 @@ if (!window.__TAURI__) {
     clip(9, "Valorant 2026-11-06 21-40-55", "Valorant", 8700, 30),
     clip(10, "Valorant 2026-11-06 21-40-55 (discord)", "Valorant", 8690, 30, { kind: "discord", size: 9.4e6 }),
   ];
+  const MOCK_VIDEO_SECS = 20; // the length of "/__test.mp4" (clip c2's video), the only real one
+  let drafts = [];            // "Edit together" drafts: never in list_clips, removed by discard_draft
   // A pretend render queue: each job takes about 4 s. Blur jobs run at most settings.blur_parallel
   // at once; compress jobs ("Compress for Discord") one at a time in their own lane, as in jobs.rs.
   let jobs = [];
@@ -186,9 +188,10 @@ if (!window.__TAURI__) {
             return { path: "/__test.mp4", title: args.path.split(/[\\/]/).pop().replace(/\.[^.]+$/, ""), duration: 8, per_second: 50, peaks: Array.from({ length: 400 }, (_, i) => Math.abs(Math.sin(i / 5)) * 0.8) };
           case "pick_audio_file": return "C:\\Music\\victory.mp3";
           case "export_clip": {
-            const src = clips.find((x) => x.id === args.id);
+            const src = clips.find((x) => x.id === args.id) || drafts.find((x) => x.id === args.id);
+            if (!src) throw "Clip not found";
             for (const pct of [20, 60, 100]) { await new Promise((r) => setTimeout(r, 150)); window.__mockEmit("export-progress", { id: args.id, pct }); }
-            const made = { ...src, id: "e" + Date.now(), title: src.title + " (edit)", kind: "edit", created: Date.now() };
+            const made = { ...src, id: "e" + Date.now(), title: src.title + " (edit)", kind: "edit", created: Date.now(), draft: false, joins: [], join_names: [] };
             clips.push(made);
             return made;
           }
@@ -252,8 +255,9 @@ if (!window.__TAURI__) {
           }
           case "join_clips": {
             // "Edit together", refused like join.rs; window.__mockJoinMissing = true: a clip's file is gone.
-            // Runs on its own (about 2 s), then "clip-joined" with a split where each clip starts.
-            const picked = clips.filter((c) => args.ids.includes(c.id)).sort((a, b) => a.created - b.created);
+            // Runs on its own (about 2 s), then "clip-joined" with a DRAFT (never in list_clips): the clips
+            // in the order given, as parts of the one real 20 s video, so the editor can play every part.
+            const picked = [...new Set(args.ids)].map((id) => clips.find((c) => c.id === id)).filter(Boolean);
             if (picked.length < 2) throw "Pick at least two clips to edit together";
             if (picked.length > 20) throw "Edit together takes at most 20 clips";
             if (picked.reduce((s, c) => s + c.duration, 0) > 1800) throw "Edit together takes at most 30 minutes of clips";
@@ -269,13 +273,19 @@ if (!window.__TAURI__) {
               job.pct = Math.min(100, job.pct + 10);
               if (job.pct >= 100) {
                 clearInterval(tick);
+                // The parts are scaled into the real video's length (half shared evenly, half by each clip's
+                // own length), so every join lies inside it and no part is tiny.
+                const total = picked.reduce((s, c) => s + c.duration, 0) || 1;
+                const lens = picked.map((c) => MOCK_VIDEO_SECS * (0.5 / picked.length + (0.5 * c.duration) / total));
                 let at = 0;
-                const joins = picked.slice(0, -1).map((c) => (at += c.duration));
-                // The preview's real video is 20 s long, so splits past that are not shown in the editor.
-                const made = { ...picked[0], id: "g" + Date.now(), title, kind: "joined", created: Date.now(), duration: at + picked[picked.length - 1].duration, joins, path: "/__test.mp4", favorite: false };
-                clips.push(made);
-                window.__mockEmit("clips-changed", made.id);
-                window.__mockEmit("clip-joined", { clip: made, joins, mode: "copy", secs: 2 });
+                const joins = lens.slice(0, -1).map((n) => Math.round((at += n) * 1000) / 1000);
+                const made = {
+                  ...picked[0], id: "g" + Date.now(), title, kind: "joined", draft: true, created: Date.now(),
+                  duration: MOCK_VIDEO_SECS, size: picked.reduce((s, c) => s + c.size, 0), joins, join_names: picked.map((c) => c.title),
+                  path: "/__test.mp4", favorite: false, folder: picked[0].folder || "",
+                };
+                drafts.push(made);
+                window.__mockEmit("clip-joined", { clip: { ...made }, joins, mode: "copy", secs: 2 });
                 job.state = "done";
                 job.result_id = made.id;
               }
@@ -283,6 +293,13 @@ if (!window.__TAURI__) {
             }, 200);
             window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
             return answer;
+          }
+          case "discard_draft": {
+            // As join.rs: only a draft, and not while a queued or running job has it as its clip.
+            if (!drafts.some((d) => d.id === args.id)) return false;
+            if (jobs.some((j) => j.clip_id === args.id && ["queued", "running"].includes(j.state))) return false;
+            drafts = drafts.filter((d) => d.id !== args.id);
+            return true;
           }
           case "blur_clip": {
             if (jobs.some((j) => j.clip_id === args.id && j.kind !== "compress" && ["queued", "running"].includes(j.state))) throw "That clip is already rendering";

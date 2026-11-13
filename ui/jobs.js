@@ -88,7 +88,7 @@ function jobsExportSweep() {
 }
 
 function jobsClipTitle(clipId, fallback) {
-  const c = (typeof S !== "undefined" && S.clips || []).find((x) => x.id === clipId);
+  const c = typeof clipById === "function" ? clipById(clipId) : (typeof S !== "undefined" && S.clips || []).find((x) => x.id === clipId);
   return c?.title || fallback || t("Untitled clip");
 }
 
@@ -175,9 +175,9 @@ function jobsStateLine(r) {
   const pct = Math.floor(r.pct);
   const squeeze = r.kind === "compress";
   if (r.kind === "join") { // "Edit together" (join.js)
-    if (r.state === "queued") return t("Waiting to join");
-    if (r.state === "running") return t("Joining {pct} %", { pct });
-    if (r.state === "done") return t("Joined");
+    if (r.state === "queued") return t("Waiting to prepare for the editor");
+    if (r.state === "running") return t("Preparing for the editor {pct} %", { pct });
+    if (r.state === "done") return t("Ready for the editor");
   }
   switch (r.state) {
     case "queued": return squeeze ? t("Waiting to compress for Discord") : t("Waiting");
@@ -202,7 +202,8 @@ function jobsRowEl(r) {
   let act = "";
   // Backend jobs (Blur and compress) can be cancelled and their result opened; export rows only follow along.
   if (r.job && (r.state === "queued" || r.state === "running")) act = `<button type="button" class="btn sm jobs-act" data-j-cancel="${esc(r.job.id)}">${esc(t("Cancel"))}</button>`;
-  else if (r.job && r.state === "done" && r.job.result_id) act = `<button type="button" class="btn sm jobs-act" data-j-open="${esc(r.job.result_id)}">${esc(t("Open"))}</button>`;
+  // "Edit together" makes no library clip: its draft opens in the editor by itself (join.js), so no Open.
+  else if (r.job && r.state === "done" && r.job.result_id && r.kind !== "join") act = `<button type="button" class="btn sm jobs-act" data-j-open="${esc(r.job.result_id)}">${esc(t("Open"))}</button>`;
   const el = document.createElement("div");
   el.className = `jobs-row jobs-st-${r.state}`;
   el.innerHTML = `<div class="jobs-main">

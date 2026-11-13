@@ -14,6 +14,23 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.14", date: "2026-11-14",
+    new: [
+      t("Edit together: the clips now open in the editor as separate clips, in the order you selected them. Drag a clip in the Clips strip to move it, or right-click it to move it or cut it out. Nothing is added to your library until you export."),
+    ],
+    improved: [
+      t("Edit together keeps Desktop, Microphone and Game as separate tracks, even when the clips were recorded with different tracks."),
+      t("A trim starts exactly where you set it: sound from before the start no longer comes back."),
+      t("Settings → Components: ffmpeg can be installed again in one session, a failed install never leaves Glint without ffmpeg, and the replay buffer restarts only when it has to."),
+    ],
+    fixed: [
+      t("With only the microphone and the game sound recorded, the main audio track now has both, so Discord and other players hear the game."),
+      t("Settings → Components no longer stays on Installing after the window was opened again, and finds ffprobe beside an ffmpeg you chose yourself."),
+      t("A clip that is waiting to be edited together can no longer be renamed or moved in the meantime."),
+      t("If Blur's timing fix fails, the clip still renders."),
+    ],
+  },
+  {
     version: "0.1.13", date: "2026-11-14",
     new: [],
     improved: [

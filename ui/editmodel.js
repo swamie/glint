@@ -27,6 +27,11 @@
 //              to find a moment again: not part of undo / redo, emChanged or the export,
 //              and cutting a part out leaves the bookmarks inside it alone.
 //   undo, redo snapshots (JSON strings) for emUndo / emRedo
+//   parts      null, or (a clip made by "Edit together") the clips it is made of, in DISPLAY
+//              order: [{ src, len, title }] (src = source second where the part starts).
+//              Then every time above is a TIMELINE second: the parts laid end to end in
+//              display order; emToSrc / emFromSrc convert. Without parts timeline = source.
+//              A part border is always a cut, and a locked one (emCutLocked).
 
 const EM_MIN_SEG = 0.1; // shortest segment a split or a drag may leave, seconds
 const EM_MAX_GAIN = 2;
@@ -57,6 +62,7 @@ function emNew(duration, tracks) {
     blank: [false],
     speed: 1,
     marks: [],
+    parts: null,
     undo: [],
     redo: [],
   };
@@ -77,9 +83,18 @@ function emSegmentAt(m, t) {
 
 /* ---------- undo ---------- */
 
-const emState = (m) => JSON.stringify({ cuts: m.cuts, removed: m.removed, audio: m.audio, speed: m.speed, colors: m.colors, blank: m.blank });
+// The part order is in the snapshot only when there are parts, so a normal clip's snapshots are as before.
+const emState = (m) => JSON.stringify({ cuts: m.cuts, removed: m.removed, audio: m.audio, speed: m.speed, colors: m.colors, blank: m.blank, ...(m.parts ? { parts: m.parts } : {}) });
 function emRestore(m, json) {
   const s = JSON.parse(json);
+  if (m.parts && Array.isArray(s.parts)) {
+    // The bookmarks are not in the snapshot but move with their part: keep each at its place in its part.
+    const P0 = emParts(m);
+    const pos = (m.marks || []).map((x) => { const p = P0[emPartAt(m, x)]; return p ? { src: p.src, off: x - p.at } : { src: null, off: x }; });
+    m.parts = s.parts;
+    const P1 = emParts(m);
+    if (m.marks) m.marks = pos.map((q) => { const p = P1.find((r) => r.src === q.src); return p ? Math.min(m.duration, p.at + q.off) : q.off; }).sort((a, b) => a - b);
+  }
   m.cuts = s.cuts;
   m.removed = s.removed;
   m.audio = s.audio;
@@ -131,9 +146,9 @@ function emSplitIn(m, i, t) {
   return i;
 }
 
-/** Remove cut `c`, merging segments c and c + 1. The merged segment takes the left one's state. */
+/** Remove cut `c`, merging segments c and c + 1. The merged segment takes the left one's state. A part border (emCutLocked) stays. */
 function emJoin(m, c) {
-  if (c < 0 || c >= m.cuts.length) return false;
+  if (c < 0 || c >= m.cuts.length || emCutLocked(m, c)) return false;
   m.cuts.splice(c, 1);
   m.removed.splice(c + 1, 1);
   m.colors.splice(c + 1, 1);
@@ -142,8 +157,9 @@ function emJoin(m, c) {
   return true;
 }
 
-/** Drag cut `c` to `t`, kept between its neighbours. Returns the time used. */
+/** Drag cut `c` to `t`, kept between its neighbours. Returns the time used. A part border does not move. */
 function emMoveCut(m, c, t) {
+  if (emCutLocked(m, c)) return m.cuts[c];
   const lo = (c > 0 ? m.cuts[c - 1] : 0) + EM_MIN_SEG;
   const hi = (c < m.cuts.length - 1 ? m.cuts[c + 1] : m.duration) - EM_MIN_SEG;
   if (hi < lo) return m.cuts[c];
@@ -238,7 +254,7 @@ function emTrimLead(m, sec) {
 /** The model seen from its end (cuts and per-segment state reversed), for the end bracket; emUnmirror writes it back. */
 function emMirror(m) {
   const D = m.duration;
-  return { duration: D, cuts: m.cuts.map((c) => D - c).reverse(), removed: m.removed.slice().reverse(), colors: m.colors.slice().reverse(), blank: m.blank.slice().reverse(), audio: m.audio.map((r) => ({ gains: r.gains.slice().reverse() })) };
+  return { duration: D, _locked: emLockedTimes(m).map((x) => D - x), cuts: m.cuts.map((c) => D - c).reverse(), removed: m.removed.slice().reverse(), colors: m.colors.slice().reverse(), blank: m.blank.slice().reverse(), audio: m.audio.map((r) => ({ gains: r.gains.slice().reverse() })) };
 }
 function emUnmirror(m, mm, sec) {
   const D = m.duration;
@@ -285,14 +301,168 @@ function emSegPaste(m, s) {
   for (const r of m.audio) r.gains = g.has(r.id) ? g.get(r.id).slice() : m.removed.map(() => 1);
 }
 
-/** Back to one whole, kept segment. Row levels and files stay; the first segment's colour becomes the clip's. */
+/** Back to one whole, kept segment (one per part: the part borders stay). Row levels and files stay; the first segment's colour becomes the clip's. */
 function emResetCuts(m) {
-  m.cuts = [];
-  m.removed = [false];
-  m.colors = [{ ...m.colors[0] }];
-  m.blank = [false];
-  for (const row of m.audio) row.gains = [1];
+  const keep = emLockedTimes(m);
+  m.cuts = keep.slice();
+  m.removed = [false, ...keep.map(() => false)];
+  m.colors = m.removed.map(() => ({ ...m.colors[0] }));
+  m.blank = m.removed.map(() => false);
+  for (const row of m.audio) row.gains = m.removed.map(() => 1);
 }
+
+/* ---------- parts ("Edit together") ---------- */
+// See `parts` at the top. Every function here is plain identity / empty without parts.
+
+/** Make the parts: `starts` = source second where each part starts (the first is 0), `titles` their names.
+ *  Puts a (locked) cut at every border. Does nothing (false) when fewer than two parts result or parts exist. */
+function emSetParts(m, starts, titles) {
+  if (m.parts) return false;
+  const D = m.duration, names = Array.isArray(titles) ? titles : [];
+  const list = [];
+  (Array.isArray(starts) ? starts : []).forEach((x, k) => {
+    x = k === 0 ? 0 : +x;
+    if (!Number.isFinite(x)) return;
+    const prev = list[list.length - 1];
+    if (prev ? x >= prev.x + EM_MIN_SEG && x <= D - EM_MIN_SEG : x === 0) list.push({ x, k });
+  });
+  if (list.length < 2) return false;
+  m.parts = list.map((p, j) => ({
+    src: p.x,
+    len: (j + 1 < list.length ? list[j + 1].x : D) - p.x,
+    title: typeof names[p.k] === "string" && names[p.k] ? names[p.k] : `Clip ${p.k + 1}`,
+  }));
+  for (const at of emLockedTimes(m)) {
+    const i = emSegmentAt(m, at), edges = [0, ...m.cuts, D];
+    if (Math.abs(edges[i] - at) < 1e-6) m.cuts[i - 1] = at; // a cut is there already: it becomes the border
+    else emSplitIn(m, i, at);
+  }
+  return true;
+}
+
+/** The parts in display order: [{ i, at, end, src, len, title }] (at / end: timeline seconds); [] without parts. */
+function emParts(m) {
+  if (!m.parts) return [];
+  let at = 0;
+  return m.parts.map((p, i) => { const o = { i, at, end: at + p.len, src: p.src, len: p.len, title: p.title }; at += p.len; return o; });
+}
+
+/** Timeline seconds of the part borders (where each part after the first starts). */
+function emLockedTimes(m) {
+  if (m._locked) return m._locked; // the mirror image the end bracket works on (emMirror)
+  return emParts(m).slice(1).map((p) => p.at);
+}
+
+/** True if cut `c` is a part border: it cannot be removed or dragged. */
+function emCutLocked(m, c) {
+  const x = m.cuts[c];
+  return x !== undefined && emLockedTimes(m).some((L) => Math.abs(L - x) < 1e-6);
+}
+
+/** Display index of the part at timeline second `sec` (a border belongs to the part after it), or -1. */
+function emPartAt(m, sec) {
+  const P = emParts(m);
+  if (!P.length || !(sec >= -EM_EPS && sec <= m.duration + EM_EPS)) return -1;
+  let i = 0;
+  while (i < P.length - 1 && sec >= P[i].end - EM_EPS) i++;
+  return i;
+}
+
+/** Timeline second -> source second. */
+function emToSrc(m, sec) {
+  if (!m.parts) return sec;
+  const x = Math.min(m.duration, Math.max(0, +sec || 0));
+  const p = emParts(m)[emPartAt(m, x)];
+  return p.src + Math.min(p.len, Math.max(0, x - p.at));
+}
+
+/** Source second -> timeline second. A source border belongs to the part that starts there. */
+function emFromSrc(m, src) {
+  if (!m.parts) return src;
+  const P = emParts(m);
+  const x = Math.min(m.duration, Math.max(0, +src || 0));
+  let best = null; // the part with the largest source start at or before x
+  for (const p of P) if (p.src <= x + EM_EPS && (!best || p.src > best.src)) best = p;
+  best ||= P[0];
+  return best.at + Math.min(best.len, Math.max(0, x - best.src));
+}
+
+/** The source ranges under timeline range [a, b): [{ tl, src, len }] in timeline order; neighbours that also touch in source are merged. */
+function emSrcSpans(m, a, b) {
+  if (!(b > a)) return [];
+  if (!m.parts) return [{ tl: a, src: a, len: b - a }];
+  const out = [];
+  for (const p of emParts(m)) {
+    const lo = Math.max(a, p.at), hi = Math.min(b, p.end);
+    if (hi - lo <= EM_EPS) continue;
+    const s = { tl: lo, src: p.src + (lo - p.at), len: hi - lo };
+    const last = out[out.length - 1];
+    if (last && Math.abs(last.src + last.len - s.src) < EM_EPS) last.len += s.len;
+    else out.push(s);
+  }
+  return out;
+}
+
+/** Segment indexes inside part `i` (display index). */
+function emPartSegs(m, i) {
+  const p = emParts(m)[i];
+  if (!p) return [];
+  return emSegments(m).filter((s) => emPartAt(m, (s.start + s.end) / 2) === i).map((s) => s.i);
+}
+/** True if every segment of part `i` is cut out. */
+const emPartRemoved = (m, i) => { const segs = emPartSegs(m, i); return segs.length > 0 && segs.every((k) => m.removed[k]); };
+/** Cut part `i` out (every segment of it), or put it all back. Refused when nothing else would be kept. Does not snapshot. */
+function emSetPartRemoved(m, i, removed) {
+  const segs = emPartSegs(m, i);
+  if (!segs.length) return false;
+  if (removed && !m.removed.some((r, k) => !r && !segs.includes(k))) return false;
+  for (const k of segs) m.removed[k] = !!removed;
+  return true;
+}
+
+/**
+ * Move the part at display index `from` to display index `to`. Its segments (cuts, cut out,
+ * colour, hidden video, every row's levels) and bookmarks go with it; file rows stay where they
+ * are on the timeline. Returns true if the order changed. Does not snapshot.
+ */
+function emMovePart(m, from, to) {
+  const P = emParts(m), n = P.length;
+  if (!n || !Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < 0 || from >= n || to >= n || from === to) return false;
+  const segs = emSegments(m);
+  const groups = P.map((p) => ({ p, cuts: [], segs: [], marks: [] }));
+  for (const s of segs) {
+    const g = groups[emPartAt(m, (s.start + s.end) / 2)];
+    if (g.segs.length) g.cuts.push(s.start - g.p.at);
+    g.segs.push({ removed: m.removed[s.i], color: m.colors[s.i], blank: m.blank[s.i], gains: m.audio.map((r) => r.gains[s.i]) });
+  }
+  for (const x of m.marks || []) { const g = groups[emPartAt(m, x)]; if (g) g.marks.push(x - g.p.at); }
+  const order = groups.slice();
+  order.splice(to, 0, order.splice(from, 1)[0]);
+  const cuts = [], removed = [], colors = [], blank = [], gains = m.audio.map(() => []), marks = [];
+  let at = 0;
+  order.forEach((g, k) => {
+    if (k > 0) cuts.push(at);
+    for (const c of g.cuts) cuts.push(at + c);
+    for (const s of g.segs) {
+      removed.push(s.removed);
+      colors.push(s.color);
+      blank.push(s.blank);
+      s.gains.forEach((x, r) => gains[r].push(x));
+    }
+    // A bookmark on the very end of a part that is not last any more would sit on the next part's start: keep it inside its part.
+    for (const x of g.marks) marks.push(Math.min(m.duration, at + Math.min(x, g.p.len - (k < order.length - 1 ? EM_MARK_GAP : 0))));
+    at += g.p.len;
+  });
+  m.parts = order.map((g) => m.parts[g.p.i]);
+  Object.assign(m, { cuts, removed, colors, blank });
+  m.audio.forEach((r, k) => { r.gains = gains[k]; });
+  // Sorted; one at the very end of the clip can land on a border where another starts: keep one of them.
+  if (m.marks) m.marks = marks.sort((a, b) => a - b).filter((x, i, l) => i === 0 || x - l[i - 1] >= EM_MARK_GAP - EM_EPS);
+  return true;
+}
+
+/** True if the parts are not in source order. */
+const emReordered = (m) => !!m.parts && m.parts.some((p, i) => i > 0 && p.src < m.parts[i - 1].src);
 
 /* ---------- time mapping ---------- */
 
@@ -560,8 +730,8 @@ function emPlaceFile(m, id, change) {
 
 /** True if no audio row differs from the clip as recorded (so the export can keep the original tracks). */
 const emAudioUntouched = (m) => m.audio.every((r) => r.kind === "track" && !r.muted && Math.abs(r.volume - 1) < 0.005 && r.gains.every((g, i) => m.removed[i] || Math.abs(g - 1) < 0.005));
-/** True if the edit is nothing but one kept range: the export can cut it without re-encoding. */
-const emIsPlainCut = (m) => emKept(m).length === 1 && Math.abs(m.speed - 1) < 0.005 && emPieces(m).every((p) => !p.blank && emSameColor(p.color)) && emAudioUntouched(m);
+/** True if the edit is nothing but one kept range (one in the source too): the export can cut it without re-encoding. */
+const emIsPlainCut = (m) => emKept(m).length === 1 && (!m.parts || emSrcSpans(m, emKept(m)[0].start, emKept(m)[0].end).length === 1) && Math.abs(m.speed - 1) < 0.005 && emPieces(m).every((p) => !p.blank && emSameColor(p.color)) && emAudioUntouched(m);
 /** True if the result would differ from the source at all. */
 const emChanged = (m) => !(emIsPlainCut(m) && m.removed.every((r) => !r));
 
@@ -581,39 +751,64 @@ const emRound = (x) => Math.round(x * 1000) / 1000;
  *               length, volume, regions: [{ start, end, gain }] }
  *             `regions` lists the source ranges whose level differs from the
  *             row's volume (gain multiplies it; 0 = silent).
+ *   ordered   only with parts in another order than the source: true, and
+ *             `segments` are in display order (any source order). A file row
+ *             that spans parts then comes as one entry per source range.
+ * Every time sent is SOURCE time (emSrcSpans); without parts that is the model's time.
  */
 function emToOpts(m) {
   const segs = emSegments(m);
   const pieces = emPieces(m);
   const uniform = pieces.every((p) => emSameColor(p.color, pieces[0].color));
+  // Source ranges [{ start, end }] under timeline range [a, b); without parts exactly [a, b].
+  const srcOf = (a, b) => (m.parts ? emSrcSpans(m, a, b).map((x) => ({ start: x.src, end: x.src + x.len })) : [{ start: a, end: b }]);
   // A Game row counts as silent where Desktop is heard (see emGameHidden); left out if that is everywhere.
   const gainOf = (r, i) => (emGameHidden(m, r, i) ? 0 : r.gains[i]);
+  const regionsOf = (r) => segs.filter((s) => !s.removed && Math.abs(gainOf(r, s.i) - 1) >= 0.005)
+    .flatMap((s) => srcOf(s.start, s.end).map((x) => ({ start: emRound(x.start), end: emRound(x.end), gain: emRound(gainOf(r, s.i)) })));
+  const entries = (r) => {
+    const e = {
+      source: r.kind,
+      index: r.kind === "track" ? r.index : 0,
+      path: r.kind === "file" ? r.path : "",
+      offset: r.kind === "file" ? emRound(r.offset) : 0,
+      trim_start: r.kind === "file" ? emRound(r.trimStart) : 0,
+      length: r.kind === "file" ? emRound(r.length) : 0,
+      volume: emRound(r.volume),
+      regions: regionsOf(r),
+    };
+    if (r.kind !== "file" || !m.parts) return [e];
+    const spans = emSrcSpans(m, r.offset, r.offset + r.length);
+    if (spans.length <= 1) return [{ ...e, offset: emRound(spans[0] ? spans[0].src : emToSrc(m, r.offset)) }];
+    // One entry per source range it covers, each with the regions inside that range.
+    return spans.map((sp) => ({
+      ...e,
+      offset: emRound(sp.src),
+      trim_start: emRound(r.trimStart + (sp.tl - r.offset)),
+      length: emRound(sp.len),
+      regions: e.regions.filter((g) => g.end > sp.src + EM_EPS && g.start < sp.src + sp.len - EM_EPS)
+        .map((g) => ({ ...g, start: emRound(Math.max(g.start, sp.src)), end: emRound(Math.min(g.end, sp.src + sp.len)) })),
+    }));
+  };
   const audio = emAudioUntouched(m)
     ? []
-    : m.audio
-        .filter((r) => !r.muted && r.volume > 0.005 && segs.some((s) => !s.removed && gainOf(r, s.i) > 0.005))
-        .map((r) => ({
-          source: r.kind,
-          index: r.kind === "track" ? r.index : 0,
-          path: r.kind === "file" ? r.path : "",
-          offset: r.kind === "file" ? emRound(r.offset) : 0,
-          trim_start: r.kind === "file" ? emRound(r.trimStart) : 0,
-          length: r.kind === "file" ? emRound(r.length) : 0,
-          volume: emRound(r.volume),
-          regions: segs.filter((s) => !s.removed && Math.abs(gainOf(r, s.i) - 1) >= 0.005).map((s) => ({ start: emRound(s.start), end: emRound(s.end), gain: emRound(gainOf(r, s.i)) })),
-        }));
+    : m.audio.filter((r) => !r.muted && r.volume > 0.005 && segs.some((s) => !s.removed && gainOf(r, s.i) > 0.005)).flatMap(entries);
+  const segments = pieces.flatMap((p) => srcOf(p.start, p.end).map((x) => ({ start: emRound(x.start), end: emRound(x.end), ...(uniform ? {} : { color: { ...p.color } }), ...(p.blank ? { blank: true } : {}) })));
+  const ordered = segments.some((s, i) => i > 0 && s.start < segments[i - 1].end - 0.0005);
   return {
     start: 0,
     end: 0,
     speed: m.speed,
     color: uniform && pieces.length ? { ...pieces[0].color } : emNoColor(),
     tracks: [],
-    segments: pieces.map((p) => ({ start: emRound(p.start), end: emRound(p.end), ...(uniform ? {} : { color: { ...p.color } }), ...(p.blank ? { blank: true } : {}) })),
+    segments,
+    ...(ordered ? { ordered: true } : {}),
     audio,
   };
 }
 
 // Lets the functions be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { EM_MIN_SEG, EM_MAX_GAIN, EM_EPS, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emTrimBounds, emSameSeg, emSetTrimStart, emSetTrimEnd, emSegCopy, emSegPaste, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emTrackRow, emGameHidden, emRowHint, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts };
+  module.exports = { EM_MIN_SEG, EM_MAX_GAIN, EM_EPS, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emTrimBounds, emSameSeg, emSetTrimStart, emSetTrimEnd, emSegCopy, emSegPaste, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emTrackRow, emGameHidden, emRowHint, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts,
+    emSetParts, emParts, emPartAt, emToSrc, emFromSrc, emSrcSpans, emMovePart, emCutLocked, emLockedTimes, emPartSegs, emPartRemoved, emSetPartRemoved, emReordered, emState, emRestore };
 }

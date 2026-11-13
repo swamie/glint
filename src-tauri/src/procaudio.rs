@@ -602,6 +602,8 @@ fn test_clips(r: &mut Report) {
         ("desktop + game", true, false, Some(&ga), vec!["Desktop", "Game"]),
         ("desktop + mic, game ring empty", true, true, Some(&empty), vec!["Mix", "Desktop", "Microphone"]),
         ("desktop only", true, false, None, vec!["Desktop"]),
+        ("mic + game", false, true, Some(&ga), vec!["Mix", "Microphone", "Game"]),
+        ("game only", false, false, Some(&ga), vec!["Game"]),
     ] {
         match write(desk, mic, game, label) {
             Ok(m) => {
@@ -621,6 +623,29 @@ fn test_clips(r: &mut Report) {
     r.check("4-track: the Game track holds the game", g500 - g1000 > 20.0, &format!("500 Hz {g500:.1} dB, 1000 Hz {g1000:.1} dB"));
     let (m500, m1000, m3000) = (band(&ffmpeg, fp, 0, 500), band(&ffmpeg, fp, 0, 1000), band(&ffmpeg, fp, 0, 3000));
     r.check("4-track: the Mix is desktop + mic, without the Game track", m1000 - m500 > 20.0 && m3000 - m500 > 20.0, &format!("500 {m500:.1}, 1000 {m1000:.1}, 3000 {m3000:.1} dB"));
+    // Without desktop sound, track 1 (what players, Discord and joins take) is mic + game.
+    let mic_game = clips.iter().find(|c| c.0 == "mic + game").map(|c| c.1.clone());
+    if let Some(mg) = &mic_game {
+        let p = Path::new(&mg.path);
+        let (m500, m1000, m3000) = (band(&ffmpeg, p, 0, 500), band(&ffmpeg, p, 0, 1000), band(&ffmpeg, p, 0, 3000));
+        let (k500, k3000) = (band(&ffmpeg, p, 1, 500), band(&ffmpeg, p, 1, 3000));
+        let (g500, g3000) = (band(&ffmpeg, p, 2, 500), band(&ffmpeg, p, 2, 3000));
+        let ok = m500 - m1000 > 20.0 && m3000 - m1000 > 20.0 && k3000 - k500 > 20.0 && g500 - g3000 > 20.0;
+        r.check("mic + game: the Mix is mic + game, then each alone", ok, &format!("mix 500 {m500:.1} 1000 {m1000:.1} 3000 {m3000:.1}; mic 500 {k500:.1} 3000 {k3000:.1}; game 500 {g500:.1} 3000 {g3000:.1} dB"));
+        match crate::compress::compress(&ffmpeg, p, 10, "gameaudio-compress-mic-game", "ultrafast", &AtomicBool::new(false), &mut |_| {}) {
+            Ok(d) => {
+                let (a, m) = (band(&ffmpeg, &d.file, 0, 500), band(&ffmpeg, &d.file, 0, 3000));
+                r.check("compress mic + game: the one track has the game and the mic", titles(&ffmpeg, &d.file).len() == 1 && a > -60.0 && m > -60.0 && (a - m).abs() < 15.0, &format!("500 {a:.1}, 3000 {m:.1} dB"));
+                let _ = std::fs::remove_file(&d.file);
+            }
+            Err(e) => r.check("compress mic + game", false, &e),
+        }
+    }
+    if let Some(go) = clips.iter().find(|c| c.0 == "game only").map(|c| c.1.clone()) {
+        let p = Path::new(&go.path);
+        let (a, b) = (band(&ffmpeg, p, 0, 500), band(&ffmpeg, p, 0, 3000));
+        r.check("game only: its one track is the game", a - b > 20.0, &format!("500 {a:.1}, 3000 {b:.1} dB"));
+    }
 
     // Editor: rows come from the stream titles.
     for (label, clip, want) in [
@@ -628,6 +653,7 @@ fn test_clips(r: &mut Report) {
         ("2-track", two.clone(), vec!["Desktop", "Game"]),
         ("old 3-track", three.clone(), vec!["Mix", "Desktop", "Microphone"]),
         ("old 1-track", one.clone(), vec!["Desktop"]),
+        ("mic + game", mic_game.clone(), vec!["Mix", "Microphone", "Game"]),
     ] {
         let Some(c) = clip else { continue };
         match editor::audio_tracks(&s, &c) {
@@ -678,7 +704,7 @@ fn test_clips(r: &mut Report) {
     }
 
     // Trim without the microphone.
-    for (label, clip, want) in [("4-track", Some(four.clone()), vec!["Desktop", "Game"]), ("2-track", two.clone(), vec!["Desktop", "Game"]), ("old 3-track", three.clone(), vec!["Desktop"])] {
+    for (label, clip, want) in [("4-track", Some(four.clone()), vec!["Desktop", "Game"]), ("2-track", two.clone(), vec!["Desktop", "Game"]), ("old 3-track", three.clone(), vec!["Desktop"]), ("mic + game", mic_game.clone(), vec!["Game"])] {
         let Some(c) = clip else { continue };
         match clip::trim(&s, &c, 0.0, 4.0, false) {
             Ok(m) => {

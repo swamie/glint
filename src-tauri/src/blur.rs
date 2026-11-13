@@ -212,26 +212,44 @@ fn render_in(blur_cli: &Path, input: &Path, output: &Path, cfg: &BlurSettings, j
     let s = Settings::load();
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg");
     let issue = ffmpeg.as_deref().and_then(library::ffprobe_for).and_then(|p| sync_issue(&p, input));
-    let link = if let (Some(why), Some(ffmpeg)) = (issue, ffmpeg.as_deref()) {
+    let link = stage_input(ffmpeg.as_deref(), &s.encoder, issue, input, &ext, job, cancel)?;
+    fs::write(job.join(".blur-config.cfg"), config_text(cfg)).map_err(|e| format!("Cannot write blur config: {e}"))?;
+    run_blur(blur_cli, &link, output, cancel, progress)
+}
+
+/// The file Blur is given, in `job`: a re-timed copy when `issue` says Blur
+/// would read `input` out of step, else (or when that copy cannot be made) a
+/// hard link to `input`, or a copy of it on another drive.
+fn stage_input(ffmpeg: Option<&Path>, encoder: &str, issue: Option<String>, input: &Path, ext: &str, job: &Path, cancel: &AtomicBool) -> Result<PathBuf, String> {
+    let mut staged = None;
+    if let (Some(why), Some(ffmpeg)) = (issue, ffmpeg) {
         // Blur would read this file's timing differently from every player
         // (see `sync_issue`): hand it a clean copy instead.
         util::log(&format!("blur: {why}; giving Blur a re-timed copy"));
-        let staged = job.join("in.mp4");
-        stage_retimed(ffmpeg, &s.encoder, input, &staged, cancel)?;
-        staged
-    } else {
-        let link = job.join(format!("in.{ext}"));
-        if fs::hard_link(input, &link).is_err() {
-            // Different drive: fall back to a copy.
-            fs::copy(input, &link).map_err(|e| format!("Cannot stage the clip for Blur: {e}"))?;
+        let copy = job.join("in.mp4");
+        match stage_retimed(ffmpeg, encoder, input, &copy, cancel) {
+            Ok(()) => staged = Some(copy),
+            Err(e) if e == CANCELLED => return Err(e),
+            // Rendering possibly out of step beats not rendering at all.
+            Err(e) => util::log(&format!("blur: the re-timed copy failed ({e}); giving Blur the clip as it is")),
         }
-        link
-    };
-    fs::write(job.join(".blur-config.cfg"), config_text(cfg)).map_err(|e| format!("Cannot write blur config: {e}"))?;
+    }
+    if let Some(p) = staged {
+        return Ok(p);
+    }
+    let link = job.join(format!("in.{ext}"));
+    if fs::hard_link(input, &link).is_err() {
+        // Different drive: fall back to a copy.
+        fs::copy(input, &link).map_err(|e| format!("Cannot stage the clip for Blur: {e}"))?;
+    }
+    Ok(link)
+}
 
+/// Run blur-cli on `link` (its config sits beside it) until it finishes, stalls or is cancelled.
+fn run_blur(blur_cli: &Path, link: &Path, output: &Path, cancel: &AtomicBool, progress: &mut impl FnMut(f32)) -> Result<(), String> {
     let mut child = util::hidden_cmd(blur_cli)
         .arg("-i")
-        .arg(&link)
+        .arg(link)
         .arg("-o")
         .arg(output)
         .stdin(Stdio::null())
@@ -646,10 +664,29 @@ fn av_offsets(ffmpeg: &Path, file: &Path, track: usize) -> Result<(Vec<f64>, usi
             flashes.push(s / w);
         }
     }
-    let log = run(vec!["-map".into(), format!("0:a:{track}"), "-af".into(), "silencedetect=n=-30dB:d=0.004".into()])?;
+    let beeps = beep_times(ffmpeg, file, track)?;
+    let offsets = flashes.iter().filter_map(|v| beeps.iter().map(|a| (v - a) * 1000.0).min_by(|x, y| x.abs().total_cmp(&y.abs()))).collect();
+    Ok((offsets, beeps.len()))
+}
+
+/// The middle of each beep on audio track `track` of `file`, in seconds as a player plays it.
+fn beep_times(ffmpeg: &Path, file: &Path, track: usize) -> Result<Vec<f64>, String> {
+    let out = util::hidden_cmd(ffmpeg)
+        .args(["-hide_banner", "-nostats", "-nostdin", "-i"])
+        .arg(file)
+        .args(["-map", &format!("0:a:{track}"), "-af", "silencedetect=n=-30dB:d=0.004", "-f", "null", "-"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(util::last_lines(&out.stderr, 2));
+    }
+    let num = |l: &str, key: &str| l.split(key).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|v| v.parse::<f64>().ok());
     let mut beeps = Vec::new();
     let mut began = None;
-    for l in log.lines() {
+    for l in String::from_utf8_lossy(&out.stderr).lines() {
         if let Some(e) = num(l, "silence_end:") {
             began = Some(e);
         } else if let (Some(s), Some(b)) = (num(l, "silence_start:"), began) {
@@ -657,8 +694,7 @@ fn av_offsets(ffmpeg: &Path, file: &Path, track: usize) -> Result<(Vec<f64>, usi
             began = None;
         }
     }
-    let offsets = flashes.iter().filter_map(|v| beeps.iter().map(|a| (v - a) * 1000.0).min_by(|x, y| x.abs().total_cmp(&y.abs()))).collect();
-    Ok((offsets, beeps.len()))
+    Ok(beeps)
 }
 
 fn worst(d: &[f64]) -> f64 {
@@ -750,9 +786,27 @@ fn run_sync_test(r: &mut Report, dir: &Path) {
     // re-encoding paths see) starts the video at the first frame after the cut.
     let (in_trim, _) = av_offsets(&ffmpeg, &tpath, 0).unwrap_or_default();
     r.line(&format!("INFO the trim as ffmpeg reads it, video minus audio in ms: {}", show(&in_trim)));
-    // The cut starts on the frame on screen (`clip::trim_start`), so ffmpeg's
-    // reading is in step too; it was 985 ms early here when it started between frames.
+    // The frame on screen at the cut is re-timed to the cut (`clip::trim_start`),
+    // so ffmpeg's reading is in step too; it was 985 ms early here when the cut
+    // started between frames as it was.
     r.check("a trim read by ffmpeg (re-encodes of it) is in sync", !in_trim.is_empty() && worst(&in_trim) < 40.0, &show(&in_trim));
+    // ... and the cut starts at the asked time, not on the frame 120 ms before
+    // it (0.1.12), so no sound the user cut away comes back.
+    // Each beep's place against its instant, in ms; the source's own figure
+    // (how the measure reads a beep) is taken off.
+    let ev = test_events();
+    let late = |file: &Path, shift: f64| -> Vec<f64> {
+        let beeps = beep_times(&ffmpeg, file, 0).unwrap_or_default();
+        beeps.iter().filter_map(|bt| ev.iter().map(|e| (bt - (e - shift)) * 1000.0).min_by(|x, y| x.abs().total_cmp(&y.abs()))).collect()
+    };
+    let own = late(&src, 0.0);
+    let bias = if own.is_empty() { 0.0 } else { own.iter().sum::<f64>() / own.len() as f64 };
+    let early: Vec<f64> = late(&tpath, a).iter().map(|v| v - bias).collect();
+    let bound = crate::clip::TRIM_EARLY_MAX * 1000.0;
+    let ok = early.len() == expect && early.iter().all(|e| *e < bound && *e > -12.0);
+    r.check(&format!("a trim starts no more than {bound:.0} ms before the asked time"), ok, &format!("ms early, per beep: {} (measure's own offset {bias:+.1} taken off)", show(&early)));
+    let len = trimmed.duration;
+    r.check("a trim is as long as asked", (len - (b - a)).abs() < 0.03, &format!("{len:.3} s for {:.3} s", b - a));
 
     // What Blur is handed instead.
     let staged = dir.join("staged.mp4");
@@ -776,6 +830,19 @@ fn run_sync_test(r: &mut Report, dir: &Path) {
             r.check(&format!("re-timed copy in sync (track {})", track + 1), d.len() == expect && worst(&d) < 12.0, &show(&d));
         }
     }
+
+    // A re-timed copy that cannot be made (here: no ffmpeg where it should be):
+    // Blur is handed the clip as it is and the render still happens. A cancel still cancels.
+    let job = dir.join("job-fallback");
+    let _ = fs::create_dir_all(&job);
+    let bogus = dir.join("missing").join("ffmpeg.exe");
+    let res = stage_input(Some(&bogus), "x264", Some("test".into()), &tpath, "mp4", &job, &AtomicBool::new(false));
+    let same = res.as_ref().ok().and_then(|p| fs::metadata(p).ok()).map(|m| m.len()) == fs::metadata(&tpath).ok().map(|m| m.len());
+    r.check("a failed re-timed copy falls back to the clip as it is", res.is_ok() && same, &format!("{res:?}"));
+    let job = dir.join("job-cancel");
+    let _ = fs::create_dir_all(&job);
+    let res = stage_input(Some(&ffmpeg), &s.encoder, Some("test".into()), &tpath, "mp4", &job, &AtomicBool::new(true));
+    r.check("a cancel while re-timing still cancels", res.as_ref().err().is_some_and(|e| e == CANCELLED), &format!("{res:?}"));
 
     // An editor export that re-encodes (two ranges): already clean, handed over untouched.
     let opts: Result<crate::editor::ExportOpts, _> = serde_json::from_value(serde_json::json!({ "speed": 1.0, "segments": [{ "start": 0.5, "end": 2.9 }, { "start": 4.1, "end": 7.6 }] }));

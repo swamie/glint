@@ -28,11 +28,19 @@
 // With cut parts hidden there is no footage outside the brackets to drag into, so they only move inward;
 // the view mapping is held as it was for the drag (st.mapHold) and catches up on release.
 //
+// Parts (m.parts, "Edit together"): a strip of clip blocks (lane "parts") above the video row, one per part in
+// display order. Drag a block sideways to move the clip (emMovePart, one undo step, onChange("order")); click
+// it to go to its start; right-click: move left / right, cut the whole clip out or put it back. Part borders
+// are locked cuts (emCutLocked): drawn stronger, no handle, never joined. All times here are then TIMELINE
+// seconds (the model's); only the film strip and the clip's own track waveforms are source-time data and
+// are looked up through emToSrc, so each block shows its own pictures and sound.
+//
 // NOTE: never name a variable `t` here: it would hide the translation function t().
 
 const tlRulerH = 26;    // px, ruler height (keep in sync with timeline.css)
 const tlVideoH = 56;    // px, video row height
 const tlAudioH = 50;    // px, audio row height
+const tlPartsH = 28;    // px, the strip of clip blocks above the video row (only for a model with parts)
 const tlPad = 14;       // px of empty lane before 0 and after the end, so the end handles can be grabbed
 const tlMaxPps = 400;   // most pixels per second
 const tlSnapPx = 6;     // snapping distance
@@ -77,6 +85,8 @@ const tlPaths = {
   markPrev: "M20 12H9M13 7l-5 5 5 5M4 5v14",
   trimStart: "M9 4H5v16h4M10 12h10M16 8l4 4-4 4",   // [ ->
   trimEnd: "M15 4h4v16h-4M14 12H4M8 8l-4 4 4 4",    // <- ]
+  partLeft: "M20 12H6M11 7l-5 5 5 5",
+  partRight: "M4 12h14M13 7l5 5-5 5",
 };
 const tlSvg = (d) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
 let tlPath2d = null; // Path2D objects, made on first draw
@@ -233,6 +243,14 @@ function tlSelShift(list, at, delta) {
   return tlSelMerge([], list.map((s) => (s.seg > at ? { row: s.row, seg: s.seg + delta } : s)));
 }
 
+/** Dragging clip block `from` (of `mids.length`, block middles in lane x): the gap the pointer at `x` is
+ *  nearest, 0..n (before block k), and the display index the block would get there (`to`). */
+function tlPartSlot(mids, from, x) {
+  let slot = 0;
+  while (slot < mids.length && x > mids[slot]) slot++;
+  return { slot, to: slot > from ? slot - 1 : slot };
+}
+
 /** "3.2 s" style length for a tooltip. */
 const tlFmtLen = (sec) => (Math.round(Math.max(0, sec) * 10) / 10).toFixed(1);
 
@@ -340,7 +358,7 @@ function mountTimeline(host, opts) {
       <div class="tl-lanes">
         <div class="tl-ruler" data-tl-ruler title="${esc(t("Click or drag to move the playhead"))}"><canvas></canvas><div class="tl-ph-k" data-tl-ph></div><div class="tl-bmks"></div></div>
         <div class="tl-rows"></div>
-        <div class="tl-marks"><div class="tl-bmls"></div><div class="tl-joints"></div><div class="tl-trims"><div class="tl-trim s" data-tl-trim="start" style="top:${tlRulerH}px"><b></b></div><div class="tl-trim e" data-tl-trim="end" style="top:${tlRulerH}px"><b></b></div></div><div class="tl-cuts"></div><div class="tl-ph"></div></div>
+        <div class="tl-marks"><div class="tl-bmls"></div><div class="tl-joints"></div><div class="tl-trims"><div class="tl-trim s" data-tl-trim="start" style="top:${tlRulerH}px"><b></b></div><div class="tl-trim e" data-tl-trim="end" style="top:${tlRulerH}px"><b></b></div></div><div class="tl-cuts"></div><div class="tl-pdrop" hidden></div><div class="tl-ph"></div></div>
         <div class="tl-band" hidden></div>
         <div class="tl-tip" hidden></div>
       </div>
@@ -352,7 +370,7 @@ function mountTimeline(host, opts) {
     ruler: q(".tl-ruler canvas"), phK: q(".tl-ph-k"), ph: q(".tl-ph"), cuts: q(".tl-cuts"), joints: q(".tl-joints"), tip: q(".tl-tip"), band: q(".tl-band"),
     bHide: q('[data-tl-act="hide-cuts"]'), bFit: q('[data-tl-act="fit"]'),
     bmFlags: q(".tl-bmks"), bmLines: q(".tl-bmls"),
-    trimS: q('[data-tl-trim="start"]'), trimE: q('[data-tl-trim="end"]'),
+    trimS: q('[data-tl-trim="start"]'), trimE: q('[data-tl-trim="end"]'), pdrop: q(".tl-pdrop"),
     scroll: q(".tl-scroll"), spacer: q(".tl-spacer"),
     level: q("[data-tl-level]"), levelPct: q(".tl-level .tl-pct"), levelBox: q(".tl-level"),
     bSplit: q('[data-tl-act="split"]'), bRemove: q('[data-tl-act="remove"]'), bMute: q('[data-tl-act="mute"]'),
@@ -415,6 +433,14 @@ function mountTimeline(host, opts) {
   const markAll = () => { st.dirtyAll = true; st.dirtyRuler = true; st.map = null; };
   /** A segment is drawn (and can be picked) unless it is cut out while cut parts are hidden. */
   const segShown = (i) => !(st.hideCuts && m.removed[i]);
+  /** True for a clip made of parts ("Edit together"): the clip blocks strip is shown. */
+  const hasParts = () => Array.isArray(m.parts) && m.parts.length > 1;
+  /** Top of the rows that the cut handles, brackets and bookmark lines reach down from: the video row. */
+  const rowsTop = () => tlRulerH + (hasParts() ? tlPartsH : 0);
+  /** True if cut `c` is a part border (no handle, cannot be joined or dragged). */
+  const lockedCut = (c) => hasParts() && emCutLocked(m, c);
+  /** Timeline second -> source second, for the source-time data (film strip, track waveforms). */
+  const srcAt = (sec) => (hasParts() ? emToSrc(m, sec) : sec);
   /** Zoom and scroll after the view length may have changed (model change, hide cut parts). */
   function relayout() {
     if (!st.laneW) return;
@@ -481,9 +507,12 @@ function mountTimeline(host, opts) {
   }
   function buildRows() {
     st.rowsSig = rowSig();
-    el.hrows.innerHTML = `<div class="tl-head tl-head-video" style="height:${tlVideoH}px" title="${esc(opts.title || t("Video"))}" aria-label="${esc(t("Video"))}">${tlSvg(tlPaths.film)}</div>` + m.audio.map(headHtml).join("");
-    const list = [{ id: "video", kind: "video", h: tlVideoH }, ...m.audio.map((r) => ({ id: r.id, kind: r.kind, h: tlAudioH }))];
-    el.rows.innerHTML = list.map((L) => `<div class="tl-lane" data-tl-lane="${esc(L.id)}" data-tl-kind="${L.kind}" style="height:${L.h}px"><canvas></canvas></div>`).join("");
+    const partsTip = esc(t("Drag a clip to change the order. Right-click for more."));
+    el.hrows.innerHTML = (hasParts() ? `<div class="tl-head tl-head-parts" style="height:${tlPartsH}px" title="${partsTip}">${esc(t("Clips"))}</div>` : "") +
+      `<div class="tl-head tl-head-video" style="height:${tlVideoH}px" title="${esc(opts.title || t("Video"))}" aria-label="${esc(t("Video"))}">${tlSvg(tlPaths.film)}</div>` + m.audio.map(headHtml).join("");
+    const list = [...(hasParts() ? [{ id: "parts", kind: "parts", h: tlPartsH }] : []), { id: "video", kind: "video", h: tlVideoH }, ...m.audio.map((r) => ({ id: r.id, kind: r.kind, h: tlAudioH }))];
+    el.rows.innerHTML = list.map((L) => `<div class="tl-lane" data-tl-lane="${esc(L.id)}" data-tl-kind="${L.kind}" style="height:${L.h}px"${L.kind === "parts" ? ` title="${partsTip}"` : ""}><canvas></canvas></div>`).join("");
+    if (hasParts()) el.trimS.style.top = el.trimE.style.top = `${rowsTop()}px`;
     const els = el.rows.querySelectorAll(".tl-lane");
     st.lanes = list.map((L, i) => {
       const canvas = els[i].firstChild;
@@ -668,7 +697,7 @@ function mountTimeline(host, opts) {
     return true;
   }
   function doJoin(c) {
-    if (c < 0 || c >= m.cuts.length) return false;
+    if (c < 0 || c >= m.cuts.length || lockedCut(c)) return false;
     emSnapshot(m);
     emJoin(m, c);
     shiftSels(c, -1);
@@ -694,6 +723,39 @@ function mountTimeline(host, opts) {
     for (let i = j.first; i <= j.last; i++) emSetRemoved(m, i, false);
     changed("restore");
     return true;
+  }
+  /** Move clip block `from` to display index `to`: one undo step. The selection stays on the same pictures;
+   *  the editor keeps the playhead on its picture (onChange "order"). */
+  function doMovePart(from, to) {
+    const n = hasParts() ? m.parts.length : 0;
+    if (!(from >= 0 && from < n && to >= 0 && to < n) || from === to) return false;
+    const T = selTimes(), src = (s) => s && { row: s.row, at: emToSrc(m, s.at) };
+    const S = { list: T.list.map(src), prim: src(T.prim) };
+    emSnapshot(m);
+    if (!emMovePart(m, from, to)) { m.undo.pop(); return false; }
+    const back = (s) => s && { row: s.row, at: emFromSrc(m, s.at) };
+    remapSels({ list: S.list.map(back), prim: back(S.prim) });
+    st.hold = null;
+    changed("order");
+    if (marks().length) opts.onMarks?.(marks().slice()); // they moved with their clip
+    return true;
+  }
+  /** Cut clip `i` out (all of it), or put it back. Never cuts out the last kept clip. */
+  function doPartRemoved(i, removed) {
+    const segs = emPartSegs(m, i);
+    if (!segs.length || segs.every((k) => !!m.removed[k] === !!removed)) return false;
+    const T = selTimes();
+    emSnapshot(m);
+    if (!emSetPartRemoved(m, i, removed)) { m.undo.pop(); return false; }
+    remapSels(T);
+    changed(removed ? "remove" : "restore");
+    return true;
+  }
+  /** Display index of the clip block under lane x `x`, or -1. */
+  function partAtX(x) {
+    const v = vAtX(x);
+    if (!hasParts() || !(v >= 0 && v <= vdur())) return -1;
+    return emPartAt(m, toS(Math.min(v, vdur() - 1e-6)));
   }
   /* Trimming splits and merges segments anywhere before (or after) the edge, so the selection is kept as
      times (the middle of each piece's segment) and found again afterwards. */
@@ -995,10 +1057,25 @@ function mountTimeline(host, opts) {
     ctx.fillStyle = C.bg;
     m.cuts.forEach((c, i) => {
       if (c <= a || c >= b) return;
+      if (lockedCut(i)) return; // a part border: drawn below, stronger
       if (st.hideCuts && (m.removed[i] || m.removed[i + 1])) return;
       const x = X(c);
       if (x > -2 && x < st.laneW + 2) ctx.fillRect(Math.round(x) - 1, y, 2, bh);
     });
+    // Part borders ("Edit together"): a wider gap with a light line in it, on every row.
+    if (hasParts()) {
+      for (const p of emParts(m).slice(1)) {
+        if (p.at <= a || p.at >= b) continue;
+        const x = Math.round(X(p.at));
+        if (x < -4 || x > st.laneW + 4) continue;
+        ctx.fillStyle = C.bg;
+        ctx.fillRect(x - 2, y, 4, bh);
+        ctx.globalAlpha = 0.7;
+        ctx.fillStyle = C.text;
+        ctx.fillRect(x - 0.5, y, 1, bh);
+        ctx.globalAlpha = 1;
+      }
+    }
     // Joints: where something was cut out, a thin line between the neighbours (the DOM .tl-joint on top carries the tooltip).
     if (st.hideCuts) {
       ctx.fillStyle = C.warn || C.accent;
@@ -1105,13 +1182,14 @@ function mountTimeline(host, opts) {
     ctx.globalAlpha = 1;
     // Film strip: tiles fixed to the content (they do not slide while scrolling), each showing the frame nearest its middle.
     const ok = st.thumbs.filter((x) => x.ok).length;
-    if (ok && dur() > 0) {
+    // The frames are spread over the SOURCE: with parts, each block draws its own tiles (clipped to it) from its own frames.
+    const strip = (from, to, part) => {
       const n = st.thumbs.length, tw = Math.max(24, (bh * 16) / 9);
-      const from = Math.max(0, bx0), to = Math.min(st.laneW, bx1);
       for (let k = Math.floor((from + st.scrollX - tlPad) / tw); ; k++) {
         const sx = tlPad + k * tw - st.scrollX;
         if (sx >= to) break;
-        const mid = toS(((k + 0.5) * tw) / st.pps);
+        let mid = toS(((k + 0.5) * tw) / st.pps);
+        if (part) mid = emToSrc(m, Math.min(part.end - 1e-6, Math.max(part.at, mid)));
         const img = nearestThumb(Math.min(n - 1, Math.max(0, Math.floor((mid / dur()) * n))));
         if (!img) break;
         const iw = img.naturalWidth, ih = img.naturalHeight;
@@ -1122,6 +1200,22 @@ function mountTimeline(host, opts) {
         ctx.globalAlpha = 0.55;
         ctx.fillRect(Math.round(sx + tw) - 0.5, y, 1, bh);
         ctx.globalAlpha = 1;
+      }
+    };
+    if (ok && dur() > 0) {
+      const from = Math.max(0, bx0), to = Math.min(st.laneW, bx1);
+      if (!hasParts()) strip(from, to, null);
+      else {
+        for (const p of emParts(m)) {
+          const a = Math.max(from, X(p.at)), b = Math.min(to, X(p.end));
+          if (b - a < 1) continue;
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(a, y, b - a, bh);
+          ctx.clip();
+          strip(a, b, p);
+          ctx.restore();
+        }
       }
     }
     pictureMarks(ctx, C, y, bh);
@@ -1190,8 +1284,10 @@ function mountTimeline(host, opts) {
         while (si < segs.length - 1 && sc >= segs[si].end) si++;
         // A Game row is drawn quiet where Desktop is heard: the result uses one or the other, never both.
         const g = row.muted || (typeof emGameHidden === "function" && emGameHidden(m, row, si)) ? 0 : (row.gains[si] ?? 1) * row.volume;
-        const base = file ? row.trimStart - row.offset : 0;
-        const p = tlPeakMax(wave.peaks, (s0 + base) * wave.ps, (s1 + base) * wave.ps);
+        // A file's peaks follow the timeline; a track's follow the source (with parts: the part under the bar).
+        const base = file ? row.trimStart - row.offset : 0, mapped = !file && hasParts();
+        const w0 = mapped ? srcAt(s0) : s0, w1 = mapped ? w0 + (s1 - s0) : s1;
+        const p = tlPeakMax(wave.peaks, (w0 + base) * wave.ps, (w1 + base) * wave.ps);
         const hh = Math.max(1, Math.min(1, p * g) * half);
         (g > 0 ? loud : quiet).roundRect(x + 0.5, mid - hh, tlBarW, hh * 2, 1);
       }
@@ -1254,18 +1350,77 @@ function mountTimeline(host, opts) {
     label(ctx, C, "note", t(row.title), bx0, bx1, y + bh - 24);
   }
 
+  /** The clip blocks ("Edit together"): one per part in display order with its title and length. A clip cut out
+   *  entirely is hatched; the one being dragged is faded (the drop marker .tl-pdrop shows where it goes). */
+  function drawParts(L, C) {
+    const ctx = L.ctx, h = L.h;
+    prep(ctx, h);
+    if (!hasParts()) return;
+    const y = 3, bh = h - 6, mid = y + bh / 2 + 0.5;
+    const dragged = st.drag?.type === "part" && st.drag.moved ? st.drag.from : -1;
+    const sans = `600 11.5px ${C.sans}`, mono = `600 10.5px ${C.mono}`;
+    ctx.textBaseline = "middle";
+    for (const p of emParts(m)) {
+      const sp = span(p.at, p.end);
+      if (!sp) continue;
+      const x0 = sp[0] + 1.5, x1 = sp[1] - 1.5, w = x1 - x0; // a small gap between neighbours
+      if (w < 2) continue;
+      const out = emPartRemoved(m, p.i), alpha = p.i === dragged ? 0.4 : 1;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      rr(ctx, x0, y, w, bh, 6);
+      ctx.fillStyle = C.raised;
+      ctx.fill();
+      ctx.clip();
+      ctx.globalAlpha = alpha * (out ? 0.12 : 0.34);
+      ctx.fillStyle = C.accent;
+      ctx.fillRect(x0, y, w, bh);
+      ctx.globalAlpha = alpha;
+      if (out) { ctx.fillStyle = hatchFor(ctx, C); ctx.fillRect(x0, y, w, bh); }
+      ctx.restore();
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = C["line-2"];
+      rr(ctx, x0 + 0.5, y + 0.5, w - 1, bh - 1, 6);
+      ctx.stroke();
+      // Title at the visible left end, the length at the right when there is room.
+      const lx = Math.max(x0, 0) + 8, rx = Math.min(x1, st.laneW) - 8, room = rx - lx;
+      if (room > 12) {
+        const len = tlFmtTick(p.len, p.len < 10 ? 0.5 : 1);
+        ctx.font = mono;
+        const lw = ctx.measureText(len).width, showLen = room > lw + 48;
+        ctx.font = sans;
+        const title = tlEllipsize(ctx, p.title || "", room - (showLen ? lw + 10 : 0));
+        if (title) { ctx.fillStyle = out ? C.muted : C.text; ctx.fillText(title, lx, mid); }
+        if (showLen) { ctx.font = mono; ctx.fillStyle = C.muted; ctx.fillText(len, rx - lw, mid); }
+      }
+      ctx.restore();
+    }
+  }
+  /** The drop marker while a clip block is dragged: in the gap the block would go to. */
+  function placeDrop(d) {
+    const P = emParts(m);
+    const at = d.slot < P.length ? P[d.slot].at : dur();
+    el.pdrop.hidden = false;
+    el.pdrop.style.top = `${tlRulerH}px`;
+    el.pdrop.style.transform = `translateX(${Math.round(X(at))}px)`;
+    el.pdrop.classList.toggle("same", d.to === d.from);
+  }
+
   function placeCuts() {
     const n = m.cuts.length;
     if (el.cuts.children.length !== n) {
       const title = esc(t("Drag to move this cut, double-click to join the two segments"));
-      el.cuts.innerHTML = m.cuts.map((_, i) => `<div class="tl-cut" data-tl-cut="${i}" title="${title}" style="top:${tlRulerH}px"><b></b></div>`).join("");
+      el.cuts.innerHTML = m.cuts.map((_, i) => `<div class="tl-cut" data-tl-cut="${i}" title="${title}" style="top:${rowsTop()}px"><b></b></div>`).join("");
     }
     // The cuts where the kept span starts and ends are the trim brackets: no handle of their own.
     const f = m.removed.indexOf(false), l = m.removed.lastIndexOf(false);
     for (let i = 0; i < n; i++) {
       const c = el.cuts.children[i], x = X(m.cuts[i]);
       // With cut parts hidden, a cut next to a removed part sits on a joint: the joint is shown instead (and cannot be dragged).
-      const vis = x > -8 && x < st.laneW + 8 && !(st.hideCuts && (m.removed[i] || m.removed[i + 1])) && i !== f - 1 && i !== l;
+      // A part border has no handle: it cannot be dragged or joined.
+      const vis = x > -8 && x < st.laneW + 8 && !(st.hideCuts && (m.removed[i] || m.removed[i + 1])) && i !== f - 1 && i !== l && !lockedCut(i);
       c.style.transform = `translateX(${vis ? x : -100}px)`;
       c.classList.toggle("drag", st.drag?.type === "cut" && st.drag.moved && st.drag.c === i);
     }
@@ -1289,7 +1444,7 @@ function mountTimeline(host, opts) {
     if (sig !== st.markSig) {
       st.markSig = sig;
       el.bmFlags.innerHTML = list.map((b) => `<div class="tl-bmk" data-tl-bm="${b.i}" title="${esc(t("Bookmark at {time}", { time: b.at }))}"><b></b></div>`).join("");
-      el.bmLines.innerHTML = list.map(() => `<div class="tl-bml" style="top:${tlRulerH}px"></div>`).join("");
+      el.bmLines.innerHTML = list.map(() => `<div class="tl-bml" style="top:${rowsTop()}px"></div>`).join("");
     }
     list.forEach((b, k) => {
       const x = Math.round(X(b.sec) * 2) / 2, vis = x > -16 && x < st.laneW + 16;
@@ -1305,7 +1460,7 @@ function mountTimeline(host, opts) {
       st.jointSig = sig;
       el.joints.innerHTML = list.map((j, i) => {
         const title = esc(t("{sec} s cut out here", { sec: tlFmtLen(j.end - j.start) }));
-        return `<div class="tl-joint" data-tl-joint="${i}" title="${title}" style="top:${tlRulerH}px"><b></b></div>`;
+        return `<div class="tl-joint" data-tl-joint="${i}" title="${title}" style="top:${rowsTop()}px"><b></b></div>`;
       }).join("");
     }
     list.forEach((j, i) => {
@@ -1320,7 +1475,7 @@ function mountTimeline(host, opts) {
     if (st.dirtyAll || st.dirtyRuler) drawRuler(C);
     for (const L of st.lanes) {
       if (!st.dirtyAll && !st.dirty.has(L.id)) continue;
-      if (L.kind === "video") drawVideo(L, C); else drawAudio(L, C);
+      if (L.kind === "video") drawVideo(L, C); else if (L.kind === "parts") drawParts(L, C); else drawAudio(L, C);
     }
     if (st.dirtyAll) placeCuts();
     st.dirtyAll = false;
@@ -1393,6 +1548,7 @@ function mountTimeline(host, opts) {
   const laneAt = (clientY) => st.lanes.find((L) => { const r = L.el.getBoundingClientRect(); return clientY >= r.top && clientY < r.bottom; }) || null;
   /** The piece under lane x `x` on lane `id`: { row, seg }, or null (outside the clip, on a file row off its clip). */
   function pieceAtX(id, x) {
+    if (id === "parts") return null; // the clip blocks are not pieces
     const v = vAtX(x);
     if (!(v >= 0 && v <= vdur())) return null;
     const seg = emSegmentAt(m, toS(Math.min(v, vdur() - 1e-6)));
@@ -1434,7 +1590,12 @@ function mountTimeline(host, opts) {
     // A bookmark flag: the playhead goes exactly onto it; dragging on from there is an ordinary ruler drag.
     else if (bmAt !== undefined) Object.assign(d, { type: "seek", at: bmAt });
     else if (e.target.closest("[data-tl-ph], [data-tl-ruler]")) Object.assign(d, { type: "seek", moved: true });
-    else if (lane) {
+    // A clip block: a click goes to it, a drag moves it (see doMovePart).
+    else if (lane && lane.dataset.tlLane === "parts") {
+      const i = partAtX(x);
+      if (i < 0) return;
+      Object.assign(d, { type: "part", from: i, to: i, slot: i });
+    } else if (lane) {
       const id = lane.dataset.tlLane, row = id === "video" ? null : emRow(m, id);
       const hit = row?.kind === "file" ? fileHit(row, x) : null;
       const sel = pieceAtX(id, x);
@@ -1482,7 +1643,16 @@ function mountTimeline(host, opts) {
       opts.onSeek?.(at);
       return;
     }
+    if (d.type === "part") {
+      const P = emParts(m);
+      Object.assign(d, tlPartSlot(P.map((p) => X((p.at + p.end) / 2)), d.from, x));
+      placeDrop(d);
+      showTip(d.slot < P.length ? P[d.slot].at : dur(), P[d.from].title);
+      st.dirty.add("parts");
+      return;
+    }
     if (d.type === "cut") {
+      if (lockedCut(d.c)) return;
       if (!d.snapped) { emSnapshot(m); d.snapped = true; }
       const used = emMoveCut(m, d.c, snap(raw, { cut: d.c }));
       showTip(used);
@@ -1568,9 +1738,18 @@ function mountTimeline(host, opts) {
     endDrag();
     if (!d) return;
     if (d.type === "seek" && d.at !== undefined) st.hold = { at: d.at, until: performance.now() + 500 };
+    if (d.type === "part") { if (d.moved) doMovePart(d.from, d.to); else partClick(d.from); }
     if (!d.moved && d.sel !== undefined) clickSel(d);
     // A drag that ends outside the timeline must not count as a click on the viewer's backdrop.
     if (d.moved || !host.contains(e.target)) swallowClick();
+  }
+  /** A click on clip block `i`: its video pieces are selected and the playhead goes to its start. */
+  function partClick(i) {
+    const p = emParts(m)[i];
+    if (!p) return;
+    const list = emPartSegs(m, i).filter(segShown).map((seg) => ({ row: "video", seg }));
+    setSels(list, list[0] || null);
+    opts.onSeek?.(p.at);
   }
   /** A click on a piece (or on nothing): select it; Ctrl adds / removes it; Shift selects the rectangle from the primary to it. */
   function clickSel(d) {
@@ -1602,6 +1781,7 @@ function mountTimeline(host, opts) {
     host.classList.remove("tl-dragging");
     delete host.dataset.tlDrag;
     el.tip.hidden = true;
+    el.pdrop.hidden = true;
     // The rubber band fades and shrinks a little as it goes, then is hidden.
     if (!el.band.hidden) {
       el.band.classList.add("out");
@@ -1622,7 +1802,8 @@ function mountTimeline(host, opts) {
     if (st.drag) return;
     const lane = e.target.closest("[data-tl-lane]");
     let cur = "";
-    if (lane && lane.dataset.tlKind === "file") {
+    if (lane && lane.dataset.tlKind === "parts") cur = "grab";
+    else if (lane && lane.dataset.tlKind === "file") {
       const row = emRow(m, lane.dataset.tlLane);
       const rect = el.lanes.getBoundingClientRect();
       const hit = row ? fileHit(row, e.clientX - rect.left) : null;
@@ -1659,6 +1840,12 @@ function mountTimeline(host, opts) {
     if (st.drag) return;
     const rect = el.lanes.getBoundingClientRect();
     const x = e.clientX - rect.left;
+    // A clip block has its own menu.
+    if (e.target.closest("[data-tl-lane]")?.dataset.tlLane === "parts") {
+      const i = partAtX(x);
+      if (i >= 0) openMenu(partMenuHtml(i), e.clientX, e.clientY, (act) => partAct(act, i));
+      return;
+    }
     const cutEl = e.target.closest("[data-tl-cut]"), jointEl = e.target.closest("[data-tl-joint]"), bmEl = e.target.closest("[data-tl-bm]");
     const trimEl = cutEl ? null : e.target.closest("[data-tl-trim]");
     const at = timeAtX(x);
@@ -1695,7 +1882,7 @@ function mountTimeline(host, opts) {
     // On a bracket: give back all the footage on its side (only when there is some).
     if (c.trim === "start" && trimWould("start", 0)) top.push(item("trim-reset", tlPaths.restore, t("Reset the start"), { arg: "start" }));
     if (c.trim === "end" && trimWould("end", dur())) top.push(item("trim-reset", tlPaths.restore, t("Reset the end"), { arg: "end" }));
-    if (c.cut >= 0 && c.cut < m.cuts.length) top.push(item("join", tlPaths.join, t("Remove this cut point"), { arg: c.cut }));
+    if (c.cut >= 0 && c.cut < m.cuts.length && !lockedCut(c.cut)) top.push(item("join", tlPaths.join, t("Remove this cut point"), { arg: c.cut }));
     if (c.joint) top.push(item("restore-run", tlPaths.restore, t("Restore the part cut out here")));
     if (canSplitAt(c.splitAt)) top.push(item("split-at", tlPaths.split, t("Split here"), { arg: c.splitAt }));
     const plan = removePlan();
@@ -1725,6 +1912,27 @@ function mountTimeline(host, opts) {
     out.push(item("select-all", tlPaths.selAll, t("Select all pieces")), item("fit", tlPaths.fit, t("Fit the whole clip")));
     if (typeof opts.onCommand === "function") out.push("<hr>", item("shortcuts", tlPaths.keys, t("Shortcuts…")), item("fullscreen", tlPaths.full, t("Fullscreen")));
     return out.join("");
+  }
+  /** The menu of clip block `i`: move it, cut it out or put it back (both when it is partly cut out). */
+  function partMenuHtml(i) {
+    const P = emParts(m), segs = emPartSegs(m, i);
+    const item = (act, path, label) => `<button type="button" role="menuitem" data-tl-m="${act}" data-tl-arg="">${tlSvg(path)}<span>${esc(label)}</span></button>`;
+    const out = [`<div class="menu-head">${esc(P[i]?.title || "")}</div>`];
+    if (i > 0) out.push(item("part-left", tlPaths.partLeft, t("Move left")));
+    if (i < P.length - 1) out.push(item("part-right", tlPaths.partRight, t("Move right")));
+    const others = m.removed.some((r, k) => !r && !segs.includes(k)); // something else stays
+    if (segs.some((k) => !m.removed[k]) && others) out.push(item("part-cut", tlPaths.trash, t("Cut this clip out")));
+    if (segs.some((k) => m.removed[k])) out.push(item("part-restore", tlPaths.restore, t("Put this clip back")));
+    return out.join("");
+  }
+  function partAct(act, i) {
+    switch (act) {
+      case "part-left": return doMovePart(i, i - 1);
+      case "part-right": return doMovePart(i, i + 1);
+      case "part-cut": return doPartRemoved(i, true);
+      case "part-restore": return doPartRemoved(i, false);
+    }
+    return false;
   }
   function menuAct(act, arg, c) {
     switch (act) {
@@ -2007,5 +2215,5 @@ function mountTimeline(host, opts) {
 
 // Lets the pure helpers be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { tlPickStep, tlFmtTick, tlFmtPrecise, tlSnap, tlSnapV, tlFileHit, tlSpanHit, tlTrimLeft, tlPeakMax, tlHue, tlViewMap, tlSrcToView, tlViewToSrc, tlJoints, tlSelKey, tlSelHas, tlSelMerge, tlSelToggle, tlSelRect, tlBandHits, tlSelShift, tlFmtLen };
+  module.exports = { tlPickStep, tlFmtTick, tlFmtPrecise, tlSnap, tlSnapV, tlFileHit, tlSpanHit, tlTrimLeft, tlPeakMax, tlHue, tlViewMap, tlSrcToView, tlViewToSrc, tlJoints, tlSelKey, tlSelHas, tlSelMerge, tlSelToggle, tlSelRect, tlBandHits, tlSelShift, tlFmtLen, tlPartSlot };
 }

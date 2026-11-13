@@ -277,6 +277,10 @@ select.field option { background: var(--raised); }
 .v-side { display: flex; flex-direction: column; gap: 8px; padding: 16px; border-left: 1px solid var(--line); overflow-y: auto; }
 .v-title { width: 100%; background: none; border: 1px solid transparent; border-radius: 6px; padding: 3px 6px; margin: -3px -6px 0; font: 400 22px/1.15 var(--serif); outline: 0; }
 .v-title:hover, .v-title:focus { border-color: var(--line-2); background: var(--raised); }
+/* An "Edit together" draft (join.js): its name is not editable, and the edit pane shows it. */
+.v-title.v-draft-title, .v-title.v-draft-title:hover { border-color: transparent; background: none; overflow-wrap: anywhere; }
+.e-h.e-h-draft { font-size: 17px; }
+.e-draft-note { margin-top: 2px; }
 .v-meta { color: var(--muted); font-size: 12.5px; line-height: 1.65; margin-bottom: 4px; }
 .v-meta b { color: var(--text); font-weight: 600; }
 .v-close { position: absolute; top: 12px; right: 12px; }

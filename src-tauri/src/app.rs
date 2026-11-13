@@ -192,13 +192,13 @@ fn clip_now(core: St, seconds: u32) -> Result<ClipMeta, String> {
 
 #[tauri::command(async)]
 fn list_clips(core: St) -> Vec<ClipMeta> {
-    core.lib.lock().unwrap().clips.clone()
+    core.lib.lock().unwrap().visible() // never the drafts of "Edit together"
 }
 
 #[tauri::command(async)]
 fn rescan_library(core: St) -> Vec<ClipMeta> {
     core.rescan();
-    core.lib.lock().unwrap().clips.clone()
+    core.lib.lock().unwrap().visible()
 }
 
 #[tauri::command(async)]
@@ -208,13 +208,14 @@ fn rename_clip(core: St, id: String, title: String) -> Result<ClipMeta, String> 
 
 #[tauri::command(async)]
 fn set_favorite(core: St, id: String, favorite: bool) -> Result<ClipMeta, String> {
+    core.lib.lock().unwrap().get_saved(&id)?;
     core.lib.lock().unwrap().update(&id, |c| c.favorite = favorite).ok_or_else(|| "Clip not found".into())
 }
 
 /// Send the clip to the Recycle Bin and drop it from the library.
 #[tauri::command(async)]
 fn delete_clip(core: St, id: String) -> Result<(), String> {
-    let meta = core.lib.lock().unwrap().get(&id).ok_or("Clip not found")?;
+    let meta = core.lib.lock().unwrap().get_saved(&id)?;
     if Path::new(&meta.path).exists() {
         trash::delete(&meta.path).map_err(|e| format!("Could not move the clip to the Recycle Bin: {e}"))?;
     }
@@ -228,7 +229,7 @@ fn delete_clip(core: St, id: String) -> Result<(), String> {
 /// Put the clip file on the clipboard, ready to paste into Discord, Explorer or any chat.
 #[tauri::command(async)]
 fn copy_clip(core: St, id: String) -> Result<(), String> {
-    let meta = core.lib.lock().unwrap().get(&id).ok_or("Clip not found")?;
+    let meta = core.lib.lock().unwrap().get_saved(&id)?;
     if !Path::new(&meta.path).is_file() {
         return Err("The clip file no longer exists".into());
     }
@@ -249,7 +250,7 @@ fn delete_clips(core: St, ids: Vec<String>) -> Result<usize, String> {
     let mut done = 0;
     let mut failed = 0;
     for id in &ids {
-        let Some(meta) = core.lib.lock().unwrap().get(id) else { continue };
+        let Some(meta) = core.lib.lock().unwrap().get_saved(id).ok() else { continue };
         if Path::new(&meta.path).exists() && trash::delete(&meta.path).is_err() {
             failed += 1;
             continue;
@@ -272,7 +273,7 @@ fn copy_clips(core: St, ids: Vec<String>) -> Result<usize, String> {
     use clipboard_win::{formats, Clipboard, Setter};
     let paths: Vec<String> = {
         let lib = core.lib.lock().unwrap();
-        ids.iter().filter_map(|id| lib.get(id)).map(|m| m.path).filter(|p| Path::new(p).is_file()).collect()
+        ids.iter().filter_map(|id| lib.get_saved(id).ok()).map(|m| m.path).filter(|p| Path::new(p).is_file()).collect()
     };
     if paths.is_empty() {
         return Err("The clip files no longer exist".into());
@@ -285,7 +286,7 @@ fn copy_clips(core: St, ids: Vec<String>) -> Result<usize, String> {
 #[tauri::command(async)]
 fn set_favorites(core: St, ids: Vec<String>, favorite: bool) {
     let mut lib = core.lib.lock().unwrap();
-    for c in lib.clips.iter_mut().filter(|c| ids.contains(&c.id)) {
+    for c in lib.clips.iter_mut().filter(|c| !c.draft && ids.contains(&c.id)) {
         c.favorite = favorite;
     }
     lib.save();
@@ -378,7 +379,7 @@ fn delete_folder(core: St, name: String) -> Result<(), String> {
 
 #[tauri::command(async)]
 fn reveal_clip(core: St, id: String) -> Result<(), String> {
-    let meta = core.lib.lock().unwrap().get(&id).ok_or("Clip not found")?;
+    let meta = core.lib.lock().unwrap().get_saved(&id)?;
     util::reveal(std::path::Path::new(&meta.path))
 }
 
@@ -396,7 +397,7 @@ fn pick_folder(core: St) -> Option<String> {
 
 #[tauri::command(async)]
 fn trim_clip(core: St, id: String, start: f64, end: f64, include_mic: bool) -> Result<ClipMeta, String> {
-    let meta = core.lib.lock().unwrap().get(&id).ok_or("Clip not found")?;
+    let meta = core.lib.lock().unwrap().get_saved(&id)?;
     let new = clip::trim(&core.settings(), &meta, start, end, include_mic)?;
     core.lib.lock().unwrap().add(new.clone());
     Ok(new)
@@ -530,6 +531,7 @@ fn pick_import_folder() -> Option<String> {
 
 #[tauri::command(async)]
 fn blur_clip(core: St, id: String) -> Result<(), String> {
+    core.lib.lock().unwrap().get_saved(&id)?;
     core.inner().blur_clip(id)
 }
 
@@ -539,6 +541,7 @@ fn blur_clip(core: St, id: String) -> Result<(), String> {
 /// announced with "clip-compressed" (see compress.rs).
 #[tauri::command(async)]
 fn compress_clip(core: St, id: String, mb: u32) -> Result<crate::jobs::Job, String> {
+    core.lib.lock().unwrap().get_saved(&id)?;
     if (crate::compress::MIN_MB..=crate::compress::MAX_MB).contains(&mb) {
         let s = {
             let mut s = core.settings.lock().unwrap();
@@ -550,11 +553,19 @@ fn compress_clip(core: St, id: String, mb: u32) -> Result<crate::jobs::Job, Stri
     crate::compress::enqueue(core.inner(), id, mb)
 }
 
-/// "Edit together": queue a job that joins clips `ids` (2..=20, oldest first)
-/// into one new clip of kind "joined", announced with "clip-joined" (see join.rs).
+/// "Edit together": queue a job that joins clips `ids` (2..=20, in the order
+/// given, which is the order selected) into a draft (kind "joined", `draft`
+/// true, never listed), announced with "clip-joined" (see join.rs).
 #[tauri::command(async)]
 fn join_clips(core: St, ids: Vec<String>) -> Result<crate::jobs::Job, String> {
     crate::join::enqueue(core.inner(), ids)
+}
+
+/// Delete a draft of "Edit together" (entry, file, thumbnail) once the editor
+/// is done with it. False when `id` is not a draft or a job still uses it.
+#[tauri::command(async)]
+fn discard_draft(core: St, id: String) -> bool {
+    crate::join::discard_draft(core.inner(), &id)
 }
 
 #[tauri::command]
@@ -707,6 +718,7 @@ pub fn run(minimized: bool) {
             blur_clip,
             compress_clip,
             join_clips,
+            discard_draft,
             suspend_hotkeys,
             fire_keybind,
             check_deps,
@@ -719,6 +731,13 @@ pub fn run(minimized: bool) {
             let handle = app.handle().clone();
             let core = setup_core;
             let _ = core.app.set(handle.clone());
+            // Drafts of "Edit together" left by the last run. Here and not in `Core::new`:
+            // a second `Glint.exe --clip` also builds a Core before it hands over and exits,
+            // and must not delete the draft open in the running copy's editor.
+            {
+                let dir = PathBuf::from(core.settings().clips_dir);
+                library::sweep_drafts(&mut core.lib.lock().unwrap(), &dir);
+            }
             let _ = app.asset_protocol_scope().allow_directory(library::thumbs_dir(), true);
             let _ = app.asset_protocol_scope().allow_directory(crate::games::icons_dir(), true);
             build_tray(&handle, core.clone())?;

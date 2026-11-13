@@ -110,6 +110,12 @@ fn system_tool(name: &str) -> Option<PathBuf> {
 
 /// Run `exe args`, wait at most `secs`, and return its stdout (None if it did not start or failed).
 fn run_out(exe: &Path, args: &[&str], secs: u64) -> Option<String> {
+    // Only a Windows program ("MZ"): starting any other file named .exe makes Windows show an
+    // "Unsupported 16-Bit Application" box and blocks until someone closes it.
+    let mut head = [0u8; 2];
+    if fs::File::open(exe).and_then(|mut f| f.read_exact(&mut head)).is_err() || &head != b"MZ" {
+        return None;
+    }
     let mut child = util::hidden_cmd(exe).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     let mut out = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
@@ -231,8 +237,18 @@ pub fn check_with(find: &dyn Fn(&str) -> Option<PathBuf>, blur: Option<PathBuf>)
 
 /// The programs as Glint finds them right now.
 pub fn check(s: &Settings) -> Vec<Item> {
-    let custom = s.ffmpeg_path.clone();
-    check_with(&|name| util::find_exe(if name == "ffmpeg" { custom.as_str() } else { "" }, name), blur::find(s))
+    let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg");
+    let ffprobe = ffprobe_path(ffmpeg.as_deref());
+    check_with(&|name| if name == "ffmpeg" { ffmpeg.clone() } else { ffprobe.clone() }, blur::find(s))
+}
+
+/// The ffprobe Glint uses with this ffmpeg: the one beside it (also when ffmpeg's path was set by
+/// hand), else the usual search, as the library does (`library::ffprobe_for`).
+pub fn ffprobe_path(ffmpeg: Option<&Path>) -> Option<PathBuf> {
+    match ffmpeg {
+        Some(f) => crate::library::ffprobe_for(f),
+        None => util::find_exe("", "ffprobe"),
+    }
 }
 
 /* ---------- downloading ---------- */
@@ -369,16 +385,107 @@ fn find_file(dir: &Path, name: &str, depth: u32) -> Option<PathBuf> {
     None
 }
 
-/// Copy `src` over `dst`, as setup.rs does: a file in use cannot be overwritten
-/// on Windows but can be renamed, so an existing one is moved aside to `.old` first.
-pub fn put(src: &Path, dst: &Path) -> Result<(), String> {
-    if dst.exists() {
-        let old = PathBuf::from(format!("{}.old", dst.display()));
-        let _ = fs::remove_file(&old);
-        fs::rename(dst, &old).map_err(|e| format!("Could not replace {}: {e}", dst.display()))?;
-        let _ = fs::remove_file(&old); // fails harmlessly while the old file is still running
+/// `<dst>.<what>.<id>`: a staged new copy ("new") or an old file moved aside ("old").
+fn side_name(dst: &Path, what: &str, id: &str) -> PathBuf {
+    PathBuf::from(format!("{}.{what}.{id}", dst.display()))
+}
+
+/// Remove what earlier installs left in `dir`: old ffmpeg/ffprobe files moved aside
+/// (`ffmpeg.exe.old`, `ffmpeg.exe.old.<id>`) and unfinished copies (`ffmpeg.exe.new.<id>`).
+/// A file still in use (a capture running from it) stays until the next time.
+pub fn clean_asides(dir: &Path) -> usize {
+    let mut left = 0;
+    for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().to_lowercase();
+        let ours = ["ffmpeg.exe", "ffprobe.exe"].iter().any(|b| {
+            ["old", "new"].iter().any(|w| {
+                let stem = format!("{b}.{w}");
+                name == stem || name.starts_with(&format!("{stem}."))
+            })
+        });
+        if ours && e.path().is_file() && fs::remove_file(e.path()).is_err() {
+            left += 1;
+        }
     }
-    fs::copy(src, dst).map(|_| ()).map_err(|e| format!("Could not write {}: {e}", dst.display()))
+    left
+}
+
+/// At start-up: clear what earlier installs left beside Glint.exe and in `%LOCALAPPDATA%\Glint\bin`.
+pub fn clean_up_at_start() {
+    for dir in exe_dir().into_iter().chain([local_bin_dir()]) {
+        clean_asides(&dir);
+    }
+}
+
+/// Put every `(src, dst)` in place, all or nothing. A file in use cannot be overwritten on Windows
+/// but can be renamed, so:
+///   1. each `src` is copied beside its `dst` under a temporary name (a failed copy changes nothing);
+///   2. each `dst` is moved aside to a name of its own (`.old.<id>`: an earlier install's aside may
+///      still be running) and the copy renamed into place; if that fails, every file swapped so far
+///      gets its old one back;
+///   3. only when all are in place are the aside files removed (one still running stays until
+///      `clean_asides` runs again: next install, next start).
+pub fn put_all(pairs: &[(PathBuf, PathBuf)]) -> Result<(), String> {
+    put_all_with(pairs, &util::new_id(), &|a, b| fs::rename(a, b))
+}
+
+/// `put_all` with the rename given (the self-test makes one fail).
+fn put_all_with(pairs: &[(PathBuf, PathBuf)], id: &str, rename: &dyn Fn(&Path, &Path) -> std::io::Result<()>) -> Result<(), String> {
+    let mut staged: Vec<PathBuf> = Vec::new();
+    let drop_staged = |staged: &[PathBuf]| {
+        for s in staged {
+            let _ = fs::remove_file(s);
+        }
+    };
+    for (src, dst) in pairs {
+        let tmp = side_name(dst, "new", id);
+        if let Err(e) = fs::copy(src, &tmp) {
+            let _ = fs::remove_file(&tmp);
+            drop_staged(&staged);
+            return Err(format!("Could not write {}: {e}", tmp.display()));
+        }
+        staged.push(tmp);
+    }
+    // (dst, its old file moved aside)
+    let mut swapped: Vec<(PathBuf, Option<PathBuf>)> = Vec::new();
+    let undo = |swapped: &[(PathBuf, Option<PathBuf>)]| {
+        for (dst, aside) in swapped.iter().rev() {
+            let _ = fs::remove_file(dst);
+            if let Some(a) = aside {
+                if let Err(e) = rename(a, dst) {
+                    util::log(&format!("deps: could not restore {}: {e}", dst.display()));
+                }
+            }
+        }
+    };
+    for ((_, dst), tmp) in pairs.iter().zip(&staged) {
+        let aside = if dst.exists() {
+            let a = side_name(dst, "old", id);
+            if let Err(e) = rename(dst, &a) {
+                undo(&swapped);
+                drop_staged(&staged);
+                return Err(format!("Could not replace {}: {e}", dst.display()));
+            }
+            Some(a)
+        } else {
+            None
+        };
+        if let Err(e) = rename(tmp, dst) {
+            if let Some(a) = &aside {
+                let _ = rename(a, dst);
+            }
+            undo(&swapped);
+            drop_staged(&staged);
+            return Err(format!("Could not put {} in place: {e}", dst.display()));
+        }
+        swapped.push((dst.clone(), aside));
+    }
+    for (_, aside) in &swapped {
+        if let Some(a) = aside {
+            let _ = fs::remove_file(a); // fails harmlessly while the old file is still running
+        }
+    }
+    Ok(())
 }
 
 /// Download the newest ffmpeg essentials build and put ffmpeg.exe and ffprobe.exe into `dir`.
@@ -409,12 +516,11 @@ pub fn install_ffmpeg_into(dir: &Path, work: &Path, cancel: &AtomicBool, progres
     }
     progress("install", size, size);
     fs::create_dir_all(dir).map_err(|_| E_PUT.to_string())?;
-    for (src, dst) in &found {
-        put(src, dst).map_err(|e| {
-            util::log(&format!("deps: {e}"));
-            E_PUT.to_string()
-        })?;
-    }
+    clean_asides(dir);
+    put_all(&found).map_err(|e| {
+        util::log(&format!("deps: {e}"));
+        E_PUT.to_string()
+    })?;
     util::log(&format!("deps: ffmpeg and ffprobe installed into {}", dir.display()));
     Ok(())
 }
@@ -487,28 +593,52 @@ pub fn installing() -> String {
     BUSY.lock().unwrap().clone().unwrap_or_default()
 }
 
+/// True if this ffmpeg has the Graphics Capture filter (ffmpeg 8+).
+fn has_gfxcapture(ffmpeg: &Path) -> bool {
+    run_out(ffmpeg, &["-hide_banner", "-filters"], 10).is_some_and(|f| f.contains(" gfxcapture "))
+}
+
+/// After a new ffmpeg replaced the old one at the same path: must the running capture restart?
+/// Only when it is failing, or when the new ffmpeg makes the recorder pick another capture method
+/// (`polish::pick_method`, as recorder.rs does): an ffmpeg without Graphics Capture replaced while
+/// "auto" would now take it. A plain reinstall, "dda" or "wgc" chosen, or Windows 10 (where "auto"
+/// stays on Desktop Duplication) keeps the replay buffer. `old_wgc` None: the old ffmpeg was not
+/// known; then the method the capture runs with is compared.
+pub fn restart_needed(wanted: &str, old_wgc: Option<bool>, running_method: &str, new_wgc: bool, build: u32, failing: bool) -> bool {
+    use crate::polish::pick_method;
+    if failing {
+        return true;
+    }
+    let new = pick_method(wanted, new_wgc, build);
+    match old_wgc {
+        Some(old) => pick_method(wanted, old, build) != new,
+        None => running_method != new,
+    }
+}
+
 /// After ffmpeg was installed: start using it without a restart of Glint.
-pub fn use_new_ffmpeg(core: &Core) {
+/// `old_wgc`: whether the ffmpeg in use before the install had Graphics Capture.
+pub fn use_new_ffmpeg(core: &Core, old_wgc: Option<bool>) {
     let mut s = core.settings();
-    // A path set by hand to some other ffmpeg would still win over the new one.
-    if !s.ffmpeg_path.trim().is_empty() {
-        let mine = ffmpeg_target().join("ffmpeg.exe");
-        if util::find_exe(&s.ffmpeg_path, "ffmpeg").is_some_and(|p| p != mine) {
-            s.ffmpeg_path.clear();
-            core.apply_settings(s); // restarts the captures whose ffmpeg path changed
-            core.emit("settings-changed", ());
-        }
+    let mine = ffmpeg_target().join("ffmpeg.exe");
+    // Make sure the new ffmpeg is the one found: a path set by hand to some other ffmpeg would still
+    // win over it. Cleared when the usual search finds the new one, else pointed at it.
+    if mine.is_file() && util::find_exe(&s.ffmpeg_path, "ffmpeg").as_deref() != Some(mine.as_path()) {
+        s.ffmpeg_path = if util::find_exe("", "ffmpeg").as_deref() == Some(mine.as_path()) { String::new() } else { mine.to_string_lossy().into_owned() };
+        util::log(&format!("deps: ffmpeg path set to {:?}", s.ffmpeg_path));
+        core.apply_settings(s); // restarts the captures whose ffmpeg path changed
+        core.emit("settings-changed", ());
     }
     if core.rec.is_running() {
-        let cfgs = crate::core::capture_cfgs(&core.settings());
+        let s = core.settings();
+        let cfgs = crate::core::capture_cfgs(&s);
         if core.rec.current_cfgs() != cfgs {
             core.rec.start(cfgs); // the path changed: only those captures restart
         } else {
-            // Same path, new file: the old ffmpeg keeps running from its `.old` copy. Restart only
-            // when that capture is failing or lacks Graphics Capture (an old ffmpeg replaced), so a
-            // plain reinstall does not empty a working buffer.
+            // Same path, new file: the old ffmpeg keeps running from its aside copy.
             let st = core.rec.stats();
-            if !st.status.error.is_empty() || st.status.method != "wgc" {
+            let new_wgc = util::find_exe(&s.ffmpeg_path, "ffmpeg").is_some_and(|p| has_gfxcapture(&p));
+            if restart_needed(&s.method, old_wgc, &st.status.method, new_wgc, crate::win::windows_build(), !st.status.error.is_empty()) {
                 core.rec.stop();
                 core.start_recording();
             }
@@ -528,11 +658,13 @@ pub fn install_for_ui(core: &Core, id: &str) -> Result<Vec<Item>, String> {
             emit(Progress { id: id.into(), phase: phase.into(), done, total, error: String::new() });
         }
     };
+    let is_ffmpeg = id == "ffmpeg" || id == "ffprobe";
+    let old_wgc = if is_ffmpeg { util::find_exe(&core.settings().ffmpeg_path, "ffmpeg").map(|p| has_gfxcapture(&p)) } else { None };
     let result = install(id, &mut on);
     match &result {
         Ok(()) => {
-            if id == "ffmpeg" || id == "ffprobe" {
-                use_new_ffmpeg(core);
+            if is_ffmpeg {
+                use_new_ffmpeg(core, old_wgc);
             }
             emit(Progress { id: id.into(), phase: "done".into(), ..Default::default() });
         }
@@ -622,6 +754,29 @@ pub fn self_test(report_path: &str) {
     };
     let old = root.join("old");
     let _ = fake_into(&old);
+
+    // 3b. Two installs in one session while Glint's capture still runs from the first one's old file.
+    {
+        let again = root.join("again");
+        let _ = fake_into(&again);
+        let mut hold = util::hidden_cmd(&again.join("ffmpeg.exe")).arg("--deps-test-hold").env("GLINT_FAKE_FFMPEG", "1").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok();
+        std::thread::sleep(Duration::from_millis(500));
+        let running = hold.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)));
+        let new = root.join("again-src.exe");
+        let _ = fs::write(&new, b"NEW");
+        let pair = vec![(new.clone(), again.join("ffmpeg.exe"))];
+        let first = put_all(&pair);
+        let asides = || fs::read_dir(&again).into_iter().flatten().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("ffmpeg.exe.")).count();
+        let kept = asides();
+        let second = put_all(&pair);
+        lines.push(format!("INFO reinstall twice: running={running} first={first:?} second={second:?} asides in use={kept}"));
+        check(&mut lines, "a second reinstall works while the first one's old ffmpeg still runs", running && first.is_ok() && second.is_ok() && kept == 1 && fs::read(again.join("ffmpeg.exe")).unwrap_or_default() == b"NEW");
+        if let Some(mut c) = hold {
+            kill(&mut c);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        check(&mut lines, "the old file is removed once it no longer runs (next install, next start)", clean_asides(&again) == 0 && asides() == 0);
+    }
     std::env::set_var("GLINT_FAKE_FFMPEG", "1");
     let it = ffmpeg_item(in_dir(old.clone())("ffmpeg"));
     std::env::remove_var("GLINT_FAKE_FFMPEG");
@@ -655,6 +810,92 @@ pub fn self_test(report_path: &str) {
     std::env::remove_var("GLINT_BIN_DIR");
     check(&mut lines, "find_exe without it does not find that program", util::find_exe("", "glintdepsprobe").is_none());
     check(&mut lines, "a folder can be told writable", writable(&root) && !writable(&probe.join("sub")));
+
+    // 5b. Glint's own folder read-only with an old ffmpeg in it: the copy installed into the
+    // per-user folder must be the one found (unless the one beside the exe is newer, or a path was set by hand).
+    {
+        let app = root.join("fx-app");
+        let local = root.join("fx-local");
+        let on_path = root.join("fx-path");
+        let custom = root.join("fx-custom");
+        for d in [&app, &local, &on_path, &custom] {
+            let _ = fs::create_dir_all(d);
+            let _ = fs::write(d.join("ffmpeg.exe"), b"x");
+        }
+        let now = std::time::SystemTime::now();
+        let age = |p: &Path, days: u64| fs::File::options().write(true).open(p).and_then(|f| f.set_modified(now - Duration::from_secs(days * 86_400))).is_ok();
+        let aged = age(&app.join("ffmpeg.exe"), 30) && age(&local.join("ffmpeg.exe"), 1);
+        let paths = [on_path.clone()];
+        let found = |custom: &str| util::find_exe_in(custom, "ffmpeg", Some(&app), &local, &paths);
+        check(&mut lines, "find_exe: a newer ffmpeg in the per-user folder wins over an old one beside the exe", aged && found("") == Some(local.join("ffmpeg.exe")));
+        let reaged = age(&app.join("ffmpeg.exe"), 0) && age(&local.join("ffmpeg.exe"), 30);
+        check(&mut lines, "find_exe: a newer ffmpeg beside the exe wins over an old per-user one", reaged && found("") == Some(app.join("ffmpeg.exe")));
+        let mine = custom.join("ffmpeg.exe");
+        check(&mut lines, "find_exe: a path set by hand still wins", found(&mine.to_string_lossy()) == Some(mine.clone()));
+        let _ = fs::remove_file(app.join("ffmpeg.exe"));
+        let _ = fs::remove_file(local.join("ffmpeg.exe"));
+        check(&mut lines, "find_exe: then PATH", found("") == Some(on_path.join("ffmpeg.exe")));
+    }
+
+    // 5c. ffprobe goes with the ffmpeg in use, also when ffmpeg's path was set by hand.
+    {
+        let custom = root.join("probe-custom");
+        let _ = fs::create_dir_all(&custom);
+        let _ = fs::write(custom.join("ffmpeg.exe"), b"x");
+        let _ = fs::write(custom.join("ffprobe.exe"), b"x");
+        let s = Settings { ffmpeg_path: custom.join("ffmpeg.exe").to_string_lossy().into_owned(), ..Settings::default() };
+        let items = self::check(&s);
+        let path_of = |id: &str| items.iter().find(|i| i.id == id).map(|i| PathBuf::from(&i.path));
+        check(&mut lines, "ffprobe is looked up beside a hand-set ffmpeg", ffprobe_path(Some(&custom.join("ffmpeg.exe"))) == Some(custom.join("ffprobe.exe")) && path_of("ffprobe") == Some(custom.join("ffprobe.exe")) && path_of("ffmpeg") == Some(custom.join("ffmpeg.exe")));
+    }
+
+    // 5d. After a reinstall at the same path, the capture restarts only when its method changes.
+    {
+        let (w10, w11) = (19045, 26100);
+        check(&mut lines, "restart: Windows 10, auto, old ffmpeg replaced by one with Graphics Capture: no (stays Desktop Duplication)", !restart_needed("auto", Some(false), "dda", true, w10, false));
+        check(&mut lines, "restart: Windows 11, auto, old ffmpeg replaced: yes (Graphics Capture now)", restart_needed("auto", Some(false), "dda", true, w11, false));
+        check(&mut lines, "restart: dda chosen, plain reinstall: no", !restart_needed("dda", Some(true), "dda", true, w11, false));
+        check(&mut lines, "restart: Windows 11, auto, plain reinstall: no", !restart_needed("auto", Some(true), "wgc", true, w11, false));
+        check(&mut lines, "restart: auto fell back to dda at run time, plain reinstall: no", !restart_needed("auto", Some(true), "dda", true, w11, false));
+        check(&mut lines, "restart: a failing capture: yes", restart_needed("dda", Some(true), "dda", true, w10, true));
+        check(&mut lines, "restart: old ffmpeg unknown, method would change: yes", restart_needed("auto", None, "dda", true, w11, false) && !restart_needed("auto", None, "dda", true, w10, false));
+    }
+
+    // 5e. Putting ffmpeg and ffprobe in place is all or nothing.
+    {
+        let dir = root.join("put");
+        let src = root.join("put-src");
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::create_dir_all(&src);
+        let reset = || {
+            let _ = fs::write(dir.join("ffmpeg.exe"), b"OLD1");
+            let _ = fs::write(dir.join("ffprobe.exe"), b"OLD2");
+        };
+        let names = || -> Vec<String> {
+            let mut v: Vec<String> = fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            v.sort();
+            v
+        };
+        let content = |n: &str| fs::read(dir.join(n)).unwrap_or_default();
+        let untouched = || names() == ["ffmpeg.exe", "ffprobe.exe"] && content("ffmpeg.exe") == b"OLD1" && content("ffprobe.exe") == b"OLD2";
+        let pairs = vec![(src.join("ffmpeg.exe"), dir.join("ffmpeg.exe")), (src.join("ffprobe.exe"), dir.join("ffprobe.exe"))];
+        reset();
+        let _ = fs::write(src.join("ffmpeg.exe"), b"NEW1");
+        let r = put_all(&pairs);
+        check(&mut lines, "put: a copy that fails (ffprobe missing) leaves both old files in place", r.is_err() && untouched());
+        let _ = fs::write(src.join("ffprobe.exe"), b"NEW2");
+        let failing = |a: &Path, b: &Path| {
+            if a.to_string_lossy().contains(".new.") && b.ends_with("ffprobe.exe") {
+                Err(std::io::Error::other("test"))
+            } else {
+                fs::rename(a, b)
+            }
+        };
+        let r = put_all_with(&pairs, "t1", &failing);
+        check(&mut lines, "put: a swap that fails on ffprobe puts the old ffmpeg back too", r.is_err() && untouched());
+        let r = put_all(&pairs);
+        check(&mut lines, "put: both new files in place, nothing else left", r.is_ok() && names() == ["ffmpeg.exe", "ffprobe.exe"] && content("ffmpeg.exe") == b"NEW1" && content("ffprobe.exe") == b"NEW2");
+    }
 
     // 6. Errors: a download that cannot connect, cancelling, and only one install at a time.
     let never = AtomicBool::new(false);
@@ -720,6 +961,11 @@ pub fn self_test(report_path: &str) {
     lines.push(format!("INFO installed ffmpeg: state={} version={:?}", it.state, it.version));
     check(&mut lines, "the installed ffmpeg runs and has gfxcapture", it.state == "ok");
     check(&mut lines, "the installed ffprobe runs", ffprobe_item(Some(dest.join("ffprobe.exe"))).state == "ok");
+    std::thread::sleep(Duration::from_millis(300));
+    check(&mut lines, "after the install only ffmpeg and ffprobe are left (no staged or old copies)", {
+        clean_asides(&dest);
+        fs::read_dir(&dest).into_iter().flatten().flatten().all(|e| !e.file_name().to_string_lossy().to_lowercase().contains(".exe."))
+    });
     check(&mut lines, "the scratch download folder is left clean of the zip", fs::read_dir(root.join("work")).map(|d| d.flatten().all(|e| e.path().is_dir())).unwrap_or(true));
 
     let _ = fs::remove_dir_all(&root);

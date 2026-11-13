@@ -723,7 +723,8 @@ impl Core {
         let before = lib.clips.len();
         lib.clips.retain(|c| std::path::Path::new(&c.path).is_file());
         let mut changed = lib.clips.len() != before;
-        for c in lib.clips.iter_mut() {
+        // A draft keeps the folder of its first clip (its export goes there); its file is in `.drafts`.
+        for c in lib.clips.iter_mut().filter(|c| !c.draft) {
             let f = folder_of(&root, &c.path);
             if c.folder != f {
                 c.folder = f;
@@ -773,7 +774,7 @@ impl Core {
         }
         std::fs::rename(&old, &new).map_err(|e| format!("Could not rename the folder: {e}"))?;
         let mut lib = self.lib.lock().unwrap();
-        for c in lib.clips.iter_mut().filter(|c| c.folder.eq_ignore_ascii_case(from)) {
+        for c in lib.clips.iter_mut().filter(|c| !c.draft && c.folder.eq_ignore_ascii_case(from)) {
             if let Some(file) = Path::new(&c.path).file_name() {
                 c.path = new.join(file).to_string_lossy().into_owned();
             }
@@ -820,7 +821,7 @@ impl Core {
         let follow: Vec<String> = {
             let mut lib = self.lib.lock().unwrap();
             let mut follow = Vec::new();
-            for c in lib.clips.iter_mut().filter(|c| ids.contains(&c.id)) {
+            for c in lib.clips.iter_mut().filter(|c| !c.draft && ids.contains(&c.id)) {
                 if c.folder.eq_ignore_ascii_case(&util::game_folder(&c.game)) {
                     follow.push(c.id.clone());
                 }
@@ -848,9 +849,9 @@ impl Core {
         if title.chars().all(|c| "<>:\"/\\|?*.".contains(c) || c.is_whitespace() || c.is_control()) {
             return Err("That name has nothing a file name can use. Use letters or digits".into());
         }
-        let meta = self.lib.lock().unwrap().get(id).ok_or("Clip not found")?;
-        // A queued or running render holds the old path; renaming under it would break it.
-        if self.jobs.list().iter().any(|j| j.clip_id == id && (j.state == "queued" || j.state == "running")) {
+        let meta = self.lib.lock().unwrap().get_saved(id)?;
+        // A queued or running render (or "Edit together" of it) holds the old path; renaming under it would break it.
+        if self.jobs.busy(id) {
             return Err("This clip is being rendered. Rename it when the render has finished".into());
         }
         let src = PathBuf::from(&meta.path);
@@ -900,7 +901,13 @@ impl Core {
         for id in ids {
             let Some(meta) = self.lib.lock().unwrap().get(id) else { continue };
             let src = PathBuf::from(&meta.path);
-            if src.parent().map(|p| same_dir(p, &dest)).unwrap_or(false) {
+            // A draft's file stays in `.drafts`.
+            if meta.draft || src.parent().map(|p| same_dir(p, &dest)).unwrap_or(false) {
+                continue;
+            }
+            // A queued or running render (or "Edit together") reads the file where it is.
+            if self.jobs.busy(id) {
+                failed.push(format!("{} (it is being rendered)", meta.title));
                 continue;
             }
             let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Clip".into());

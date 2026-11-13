@@ -148,5 +148,6 @@ fn main() {
         bench::folders_test(args.get(i + 1).map(String::as_str).unwrap_or("folders.txt"));
         return;
     }
+    std::thread::spawn(deps::clean_up_at_start); // old ffmpeg copies an earlier "Reinstall" moved aside
     app::run(args.iter().any(|a| a == "--minimized"));
 }

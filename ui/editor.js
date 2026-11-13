@@ -75,7 +75,7 @@ const edFmtVal = (key, x) => (ED_SLIDERS.find((s) => s[0] === key)[4] === "pct" 
 const edSameColor = (a, b) => ED_COLOR_KEYS.every((k) => Math.abs(a[k] - b[k]) < 0.005);
 const edBaseName = (path) => String(path).split(/[\\/]/).pop() || String(path);
 /** Used to tell whether an edit changed the model (so a no-op leaves no undo step). */
-const edState = (m) => JSON.stringify([m.cuts, m.removed, m.audio, m.speed, m.colors, m.blank]);
+const edState = (m) => JSON.stringify([m.cuts, m.removed, m.audio, m.speed, m.colors, m.blank, ...(m.parts ? [m.parts] : [])]); // the part order only when there are parts
 
 /**
  * What the Colour pane edits. `sels`: the timeline's selected pieces ({ row, seg }),
@@ -554,8 +554,12 @@ function edTracksText(n) {
 }
 
 function openClip(id) {
-  const c = S.clips.find((x) => x.id === id);
+  // clipById (join.js) also finds an "Edit together" draft, which is never in S.clips.
+  const c = typeof clipById === "function" ? clipById(id) : S.clips.find((x) => x.id === id);
   if (!c) return;
+  // Leaving an open draft goes through its own close logic first (it may ask; join.js).
+  if (S.open && S.open !== id && typeof joinIsDraft === "function" && joinIsDraft(S.open)) return void joinLeaveDraft(() => openClip(id));
+  const draft = !!c.draft; // a draft: edit mode only, nothing to keep, copy, rename or delete
   if (S.player) { S.player.destroy(); S.player = null; }
   edDropInit();
   S.open = id;
@@ -596,8 +600,9 @@ function openClip(id) {
       </div>
       <div class="v-side">
         <div class="v-pane v-info">
-          <input class="v-title" value="${esc(c.title)}" spellcheck="false" aria-label="${L("Clip title")}">
+          ${draft ? `<div class="v-title v-draft-title">${esc(c.title)}</div>` : `<input class="v-title" value="${esc(c.title)}" spellcheck="false" aria-label="${L("Clip title")}">`}
           <div class="v-meta"><b>${esc(c.game)}</b> · ${new Date(c.created).toLocaleString()}<br>${c.width}×${c.height} · ${c.fps} fps · ${fmtDur(c.duration)} · ${fmtSize(c.size)}<br>${esc(edTracksText(c.audio_tracks))}</div>
+          ${draft ? `<button class="btn primary wide" data-v="edit">${ICON.cut}<span>${L("Edit")}</span></button>` : `
           <button class="btn primary wide" data-v="copy">${ICON.copy}<span>${L("Copy to clipboard")}</span></button>
           <div class="small">${L("Copies the file. Paste it into Discord or any chat.")}</div>
           <div class="v-sep"></div>
@@ -606,15 +611,16 @@ function openClip(id) {
           <div class="v-sep"></div>
           <button class="btn wide" data-v="fav">${ICON.star}<span>${L(c.favorite ? "Remove favorite" : "Add to favorites")}</span></button>
           <button class="btn wide" data-v="reveal">${ICON.folder}<span>${L("Show in folder")}</span></button>
-          <button class="btn wide danger" data-v="delete">${ICON.trash}<span>${L("Delete")}</span></button>
+          <button class="btn wide danger" data-v="delete">${ICON.trash}<span>${L("Delete")}</span></button>`}
           <span style="flex:1"></span>
           <button class="btn wide" data-v="close">${L("Close")}</button>
         </div>
         <div class="v-pane v-edit">
-          <div class="e-head"><div class="e-h">${L("Edit")}</div>
+          <div class="e-head"><div class="e-h${draft ? " e-h-draft" : ""}">${draft ? esc(c.title) : L("Edit")}</div>
             <button type="button" class="e-ibtn" data-v="shortcuts" aria-label="${L("Keyboard shortcuts")}" title="${L("Keyboard shortcuts")}">${ICON.keys}</button>
             <button type="button" class="e-ibtn e-fsbtn" data-v="editor-full" aria-pressed="false"></button>
-            <button class="btn sm" data-v="edit-done">${L("Done")}</button></div>
+            <button class="btn sm" data-v="edit-done">${draft ? L("Close") : L("Done")}</button></div>
+          ${draft ? `<div class="small e-draft-note">${L("Export saves the result as a new clip. The clips themselves stay as they are.")}</div>` : ""}
           <section class="e-sec">
             <div class="e-title">${L("Speed")}</div>
             <div class="e-line"><button type="button" class="btn sm e-speed" aria-haspopup="menu" aria-expanded="false" aria-label="${L("Clip speed")}"></button><span class="small e-speed-note"></span></div>
@@ -628,7 +634,15 @@ function openClip(id) {
   const root = $(".viewer", m);
   S.player = mountPlayer(root, c);
   S.player.ed = mountEditor(root, c, S.player);
-  $(".v-title", root).onchange = async (e) => {
+  if (draft) {
+    // A draft has nothing to view: it opens in edit mode, and leaving edit mode closes it
+    // (closeClip asks first when there is work to lose).
+    const P = S.player, setEdit = P.setEdit;
+    P.setEdit = P.setTrim = (on) => (!on && P.editing && S.player === P ? (closeClip(), Promise.resolve(null)) : setEdit(on));
+    const v = $("video", root);
+    const go = () => { if (S.open === id && S.player === P && !P.editing) setEdit(true); };
+    if (v && v.readyState >= 1) go(); else v?.addEventListener("loadedmetadata", go, { once: true });
+  } else $(".v-title", root).onchange = async (e) => {
     try { replaceClip(await invoke("rename_clip", { id, title: e.target.value })); } catch (err) { fail(err); e.target.value = c.title; }
   };
   // Clicking a button keeps keyboard focus off it (so Space still plays / pauses),
@@ -677,6 +691,48 @@ function mountPlayer(root, c) {
   };
   P.alive = () => !dead;
   P.refreshTimeline = () => tl((h) => h.refresh());
+  P.draft = !!c.draft; // an "Edit together" draft: Export is always possible (it saves the clips joined as they are)
+
+  /* ----- timeline time and the video's time ----- */
+  // With parts ("Edit together", m.parts) the model, the seek bar, the timeline and added files count
+  // TIMELINE seconds while the <video> and the clip's own tracks play the SOURCE. Without parts (and
+  // outside edit mode) the two are the same. playSrc is the source start of the part being played:
+  // set on every seek, moved on at every jump, so the playhead stays inside that part while the video
+  // runs past its end until the jump to the next part has landed (it never flashes elsewhere).
+  let playSrc = null;
+  const pm = () => { const m = ed(); return m && m.parts ? m : null; };
+  const playPart = (m) => emParts(m).find((p) => p.src === playSrc) || null;
+  /** The playhead in timeline seconds. */
+  function tlNow() {
+    const m = pm(), src = v.currentTime;
+    if (!m) return src;
+    const p = playPart(m);
+    if (p && src >= p.src - 0.25 && src <= p.src + p.len + 1) return p.at + clamp(src - p.src, 0, p.len);
+    const at = emFromSrc(m, src); // the video was put somewhere else: find its part again
+    playSrc = emParts(m)[emPartAt(m, at)]?.src ?? null;
+    return at;
+  }
+  /** Put the video at timeline second `sec`. */
+  function setTl(sec) {
+    const m = pm();
+    if (!m) { v.currentTime = sec; return; }
+    const p = emParts(m)[emPartAt(m, sec)];
+    playSrc = p ? p.src : null;
+    v.currentTime = emToSrc(m, sec);
+  }
+  /** The part being played, if the video has reached its end (null without parts). */
+  function pastPart(m) {
+    const p = m.parts ? playPart(m) : null;
+    return p && v.currentTime >= p.src + p.len - EM_EPS ? p : null;
+  }
+  /** Where playback goes on after the end of part `p`: the next playable moment after it in display order, or null after the last. */
+  const afterPart = (m, p) => (p.end >= m.duration - EM_EPS ? null : emPlayable(m, p.end));
+  /** Go on at timeline second `at`; no seek when it simply follows in the source (the next part starts where the video is). */
+  function jumpTo(at) {
+    const m = pm();
+    if (m && Math.abs(emToSrc(m, at) - v.currentTime) < 0.05) { playSrc = emParts(m)[emPartAt(m, at)]?.src ?? null; return; }
+    setTl(at);
+  }
 
   /* ----- Web Audio: one context per player, a GainNode per preview element ----- */
   P.audioCtx = () => {
@@ -811,15 +867,15 @@ function mountPlayer(root, c) {
       else { const vol = clamp(want, 0, 1); if (Math.abs(s.a.volume - vol) > 0.001) s.a.volume = vol; }
     }
   }
-  /** Keeps each element at its place for the video's time: tracks at the same time, file rows inside their span. */
+  /** Keeps each element at its place for the video's time: tracks at the same (source) time, file rows inside their span (timeline time). */
   function syncAudio(hard) {
-    const m = ed(), now = v.currentTime, run = !v.paused && !v.ended && v.readyState >= 3;
+    const m = ed(), src = v.currentTime, now = tlNow(), run = !v.paused && !v.ended && v.readyState >= 3;
     for (const s of P.src.values()) {
       const a = s.a;
       if (s.state !== "on" || !a) continue;
       const row = m && heard(s) ? m.audio.find((r) => r.id === s.id) : null;
       let want = null;
-      if (row) want = s.kind === "file" ? (emRowCovers(row, now) ? row.trimStart + (now - row.offset) : null) : now;
+      if (row) want = s.kind === "file" ? (emRowCovers(row, now) ? row.trimStart + (now - row.offset) : null) : src;
       const end = Number.isFinite(a.duration) ? a.duration : Infinity;
       if (want === null || want >= end - 0.01) { if (!a.paused) a.pause(); continue; }
       if (a.playbackRate !== v.playbackRate) a.playbackRate = v.playbackRate;
@@ -854,7 +910,7 @@ function mountPlayer(root, c) {
   // The DOM is only touched when something changed.
   let shownCss = "", shownExp = "", shownBlank = false, shownSeg = -1;
   function applyColor() {
-    const m = ed(), now = v.currentTime;
+    const m = ed(), now = tlNow();
     const col = m ? emColorAt(m, now) : ED_NO_COLOR;
     const css = edFilterCss(col), exp = String(Math.round((1 / (col.gamma || 1)) * 10000) / 10000);
     if (css !== shownCss) { shownCss = css; v.style.filter = css; }
@@ -876,30 +932,33 @@ function mountPlayer(root, c) {
   const barSpeed = () => (ed() ? P.model.speed || 1 : 1);
   const pct = (x) => `${clamp((x / barLen()) * 100, 0, 100)}%`;
 
-  /** While editing and playing: skip cut-out parts, stop (or loop) after the last kept part. */
+  /** While editing and playing: skip cut-out parts, go on with the next part (display order) at the end of
+   *  each part, stop (or loop) after the last kept part. `now` is timeline time. */
   function guard(now) {
     const m = ed();
     if (!m || v.paused || drag || v.seeking) return;
-    const p = emPlayable(m, now);
+    const past = pastPart(m);
+    const p = past ? afterPart(m, past) : emPlayable(m, now);
     if (p === null) {
       const kept = emKept(m);
       if (!kept.length) return;
-      if (P.loop) v.currentTime = kept[0].start;
-      else { v.pause(); const last = kept[kept.length - 1]; v.currentTime = Math.max(last.start, last.end - frame); }
-    } else if (p > now + 0.001) v.currentTime = p;
+      if (P.loop) setTl(kept[0].start);
+      else { v.pause(); const last = kept[kept.length - 1]; setTl(Math.max(last.start, last.end - frame)); }
+    } else if (past) jumpTo(p);
+    else if (p > now + 0.001) setTl(p);
   }
 
   /* ----- drawing ----- */
   function paint() {
     if (dead) return;
-    guard(v.currentTime);
-    const now = v.currentTime, m = ed();
+    guard(tlNow());
+    const now = tlNow(), m = ed();
     el(".p-prog").style.width = pct(toBar(now));
     el(".p-knob").style.left = pct(toBar(now));
     el(".p-clock").textContent = m
       ? `${fmtClock(emSrcToOut(m, now) / barSpeed())} / ${fmtClock(emOutDuration(m))}`
       : `${fmtClock(now)} / ${fmtClock(dur())}`;
-    if (v.buffered.length) el(".p-buf").style.width = pct(toBar(v.buffered.end(v.buffered.length - 1)));
+    if (v.buffered.length) { const b = v.buffered.end(v.buffered.length - 1); el(".p-buf").style.width = pct(toBar(pm() ? emFromSrc(m, b) : b)); }
     if (P.editing) levels(now);
     applyColor();
   }
@@ -944,22 +1003,24 @@ function mountPlayer(root, c) {
     if (!v.paused) { v.pause(); return; }
     const m = ed();
     if (m) {
-      const p = emPlayable(m, v.currentTime);
-      if (p === null) v.currentTime = emPlayable(m, 0) ?? 0;
-      else if (p > v.currentTime + 0.001) v.currentTime = p;
+      const now = tlNow(), past = pastPart(m);
+      const p = past ? afterPart(m, past) : emPlayable(m, now);
+      if (p === null) setTl(emPlayable(m, 0) ?? 0);
+      else if (past || p > now + 0.001) setTl(p);
     } else if (v.ended) v.currentTime = 0;
     v.play().catch((e) => console.warn("Glint: play() was refused", e));
   };
-  /** Seek to source time `sec`. While editing it never lands inside a cut-out part (see edLand), unless `raw`. */
+  /** Seek to `sec` (timeline time while editing; source time otherwise, the same without parts). While editing it never lands inside a cut-out part (see edLand), unless `raw`. */
   P.seek = (sec, back = false, raw = false) => {
     let at = clamp(sec, 0, dur());
     const m = ed();
     if (m && !raw) at = edLand(m, at, back, frame);
-    v.currentTime = at;
+    setTl(at);
     paint();
     wake();
   };
-  P.time = () => v.currentTime;
+  /** The playhead: timeline time while editing (see tlNow). */
+  P.time = () => tlNow();
   const leaveFull = () => (document.fullscreenElement ? document.exitFullscreen().catch((e) => console.warn("Glint: exitFullscreen failed", e)) : Promise.resolve());
   /** Edit mode: the whole editor (video, timeline, side column) fullscreen, or back. */
   P.editorFull = () => (document.fullscreenElement ? leaveFull() : root.requestFullscreen().catch((e) => console.warn("Glint: fullscreen refused", e)));
@@ -1014,12 +1075,18 @@ function mountPlayer(root, c) {
       if (dead) return null;
       P.model = emNew(dur(), tracks);
       emSetMarks(P.model, edMarksLoad(c.id)); // drops any past the clip's end
-      if (typeof joinApplyCuts === "function") joinApplyCuts(P.model, c); // "Edit together": a split where each joined clip starts
+      // "Edit together": each joined clip is its own part (block) on the timeline, in the order selected.
+      if (c.kind === "joined" && Array.isArray(c.joins) && c.joins.length) {
+        const starts = [0, ...c.joins], names = Array.isArray(c.join_names) ? c.join_names : [];
+        emSetParts(P.model, starts, starts.map((_, i) => (typeof names[i] === "string" && names[i].trim()) || t("Clip {n}", { n: i + 1 })));
+      }
       return P.model;
     })();
     return modelJob;
   }
   P.whenModel = ensureModel;
+  /** Saves the bookmarks in source seconds, so they find their picture again whatever the part order. */
+  const saveMarks = () => { const m = P.model; if (m) edMarksSave(c.id, (m.marks || []).map((x) => emToSrc(m, x))); };
 
   const tlFailHtml = () => `<div class="e-tl-fail">${esc(t("The timeline did not load. Speed, colour, export and the I and O keys still work."))}</div>`;
   function mountTl() {
@@ -1035,10 +1102,10 @@ function mountPlayer(root, c) {
       P.tl = mountTimeline(host, {
         model: P.model,
         title: c.title,
-        getTime: () => v.currentTime,
+        getTime: () => tlNow(),
         onSeek: (sec, exact) => P.seek(sec, false, !!exact), // exact: onto a bookmark, even inside a cut-out part
         onChange: (what) => P.edSync(what),
-        onMarks: (list) => edMarksSave(c.id, list),
+        onMarks: () => saveMarks(),
         // sel: the primary piece { row, seg } or null; sels: every selected piece (older timelines pass only sel).
         onSelect: (sel, sels) => {
           P.sel = sel || null;
@@ -1112,7 +1179,7 @@ function mountPlayer(root, c) {
     syncRows();
     applyRate();
     applyColor();
-    output(["load", "undo", "redo", "file"].includes(what));
+    output(["load", "undo", "redo", "file", "order"].includes(what));
     paint();
     P.ed?.sync(what);
   };
@@ -1138,7 +1205,7 @@ function mountPlayer(root, c) {
   P.addFileRow = (info) => {
     const m = P.model;
     emSnapshot(m);
-    const row = emAddFile(m, info, v.currentTime);
+    const row = emAddFile(m, info, tlNow());
     syncRows(); // creates its audio element
     tl((h) => h.refresh());
     const wave = { peaks: Array.isArray(info.peaks) ? info.peaks : [], perSecond: +info.per_second || 0 };
@@ -1184,7 +1251,7 @@ function mountPlayer(root, c) {
 
   /** Runs one editor shortcut (an ED_KEYS cmd). */
   P.command = (cmd) => {
-    const now = v.currentTime;
+    const now = tlNow();
     switch (cmd) {
       case "play": return P.toggle();
       case "back5": return P.seek(now - 5, true);
@@ -1249,7 +1316,7 @@ function mountPlayer(root, c) {
       case "mark": { // without the timeline: same rule as its run("mark")
         const i = emMarkNear(m, now, EM_MARK_GAP);
         if (i >= 0) emRemoveMark(m, i); else emAddMark(m, now);
-        edMarksSave(c.id, m.marks);
+        saveMarks();
         return flash(i >= 0 ? t("Bookmark removed") : t("Bookmark added"));
       }
       case "markNext": case "markPrev": {
@@ -1349,10 +1416,14 @@ function mountPlayer(root, c) {
       drift();
     });
   }
-  // Loop while editing: from the end of the clip back to the first kept part.
+  // While editing: the video's end may be the end of a part in the middle of the timeline (parts moved): go on with
+  // the next part. At the end of the timeline, loop back to the first kept part if looping.
   v.addEventListener("ended", () => {
-    if (!P.editing || !P.loop || !P.model || dead) return;
-    v.currentTime = emPlayable(P.model, 0) ?? 0;
+    if (!P.editing || !P.model || dead) return;
+    const past = P.model.parts ? playPart(P.model) : null, next = past ? afterPart(P.model, past) : null;
+    if (next !== null) setTl(next);
+    else if (!P.loop) return;
+    else setTl(emPlayable(P.model, 0) ?? 0);
     v.play().catch((e) => console.warn("Glint: play() was refused", e));
   });
   v.addEventListener("click", P.toggle);
@@ -1366,8 +1437,8 @@ function mountPlayer(root, c) {
     if (!b) return;
     switch (b.dataset.p) {
       case "play": P.toggle(); break;
-      case "back": P.seek(v.currentTime - 5, true); break;
-      case "fwd": P.seek(v.currentTime + 5); break;
+      case "back": P.seek(tlNow() - 5, true); break;
+      case "fwd": P.seek(tlNow() + 5); break;
       case "mute": setMuted(!P.muted); break;
       case "speed":
         if (b.classList.contains("open")) { edPopClose?.(); break; }
@@ -1523,9 +1594,11 @@ function mountEditor(root, c, P) {
 
   function renderExport() {
     const m = model(), job = S.exports?.[c.id];
-    const changed = !!m && emChanged(m);
+    // A draft ("Edit together") can always be exported: unchanged, it saves the clips joined as they are.
+    const changed = !!m && (emChanged(m) || !!c.draft);
     const lines = [];
     if (!m) lines.push(t("Loading the editor…"));
+    else if (!emChanged(m) && c.draft) lines.push(t("Saves the clips joined, as they are."));
     else if (!changed) lines.push(t("No changes yet."));
     else {
       lines.push(t("New clip, {len} long.", { len: fmtDurMs(emOutDuration(m)) }));
@@ -1715,7 +1788,7 @@ async function edExport(withBlur) {
   if (S.exports[id]) return;
   const m = P.model;
   if (!m) return flash(t("The editor is still loading"));
-  if (!emChanged(m)) {
+  if (!emChanged(m) && !P.draft) { // a draft is always exported (unchanged: the clips joined as they are)
     if (!withBlur) return flash(t("Nothing to export yet"));
     P.setEdit(false); // show the Blur panel
     return viewerAction("blur");
@@ -1748,7 +1821,11 @@ async function edExport(withBlur) {
   catch (e) { S.jobs[meta.id] = { pct: 0, state: "error", message: String(e) }; show(); fail(e); }
 }
 
-function closeClip() {
+/** Close the viewer. Every way out (Close, Done on a draft, Esc, the backdrop, the window's close
+ *  button) comes here. An "Edit together" draft is left through joinLeaveDraft (join.js), which may
+ *  ask first and then calls closeClip(true); `sure` skips that. */
+function closeClip(sure) {
+  if (sure !== true && typeof joinIsDraft === "function" && joinIsDraft(S.open)) return void joinLeaveDraft(() => closeClip(true));
   const m = $("#modal");
   if (S.player) { S.player.destroy(); S.player = null; }
   m.hidden = true;
@@ -1758,6 +1835,10 @@ function closeClip() {
 }
 
 function replaceClip(meta) {
+  if (!meta) return;
+  // A draft is held by join.js, never in S.clips; any other clip arriving while a draft is open is an export of it.
+  if (meta.draft && typeof joinKeepDraft === "function") return joinKeepDraft(meta);
+  if (typeof joinDraftExported === "function") joinDraftExported(meta);
   const i = S.clips.findIndex((c) => c.id === meta.id);
   if (i >= 0) S.clips[i] = meta; else S.clips.push(meta);
   render();
@@ -1765,9 +1846,11 @@ function replaceClip(meta) {
 
 async function viewerAction(act) {
   const id = S.open;
-  const c = S.clips.find((x) => x.id === id);
+  const c = typeof clipById === "function" ? clipById(id) : S.clips.find((x) => x.id === id);
   const m = $("#modal");
   if (!c) return closeClip();
+  // A draft ("Edit together") is not a file to keep: no copy, folder, favourite, delete or Blur.
+  if (c.draft && ["copy", "reveal", "fav", "delete", "blur", "blur-page"].includes(act)) return;
   try {
     if (act === "close" || act === "blur-done") closeClip();
     else if (act === "blur-page") { S.page = "blur"; closeClip(); } // closeClip() draws the page
