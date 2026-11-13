@@ -10,4 +10,5 @@ glintAddLanguage("el", "Ελληνικά", {
   "A trimmed clip rendered with Blur no longer has its sound out of step with the picture.": "Ένα κομμένο κλιπ που αποδίδεται με το Blur δεν έχει πια τον ήχο εκτός συγχρονισμού με την εικόνα.",
   "Clip thumbnails always show the whole frame, also with a custom theme and for stretched, ultrawide and portrait clips.": "Οι μικρογραφίες των κλιπ δείχνουν πάντα ολόκληρο το καρέ, και με προσαρμοσμένο θέμα και για τεντωμένα, υπερευρεία και κατακόρυφα κλιπ.",
   "A trimmed clip that is exported again, compressed for Discord or joined no longer has its picture ahead of the sound. The trim now starts on the frame that was on screen, so it can begin a moment earlier than you asked.": "Ένα κομμένο κλιπ που εξάγεται ξανά, συμπιέζεται για το Discord ή ενώνεται δεν έχει πια την εικόνα μπροστά από τον ήχο. Η κοπή αρχίζει τώρα στο καρέ που ήταν στην οθόνη, οπότε μπορεί να ξεκινά λίγο νωρίτερα από ό,τι ζητήσατε.",
+  "What's new: the text is set closer together.": "Τι νέο υπάρχει: το κείμενο είναι πιο πυκνό.",
 });

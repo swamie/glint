@@ -14,6 +14,14 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.13", date: "2026-11-14",
+    new: [],
+    improved: [
+      t("What's new: the text is set closer together."),
+    ],
+    fixed: [],
+  },
+  {
     version: "0.1.12", date: "2026-11-14",
     new: [],
     improved: [],

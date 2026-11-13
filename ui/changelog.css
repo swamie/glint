@@ -10,7 +10,7 @@
 .wn-dlg { position: fixed; inset: 0; z-index: 35; display: grid; place-items: center; padding: 24px 16px; background: rgba(3, 5, 9, .68); }
 .wn-box { display: flex; flex-direction: column; width: min(540px, 100%); max-height: min(640px, 100%); background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 24px 60px rgba(0, 0, 0, .6); color: var(--text); overflow: hidden; }
 .wn-head { display: flex; align-items: center; gap: 10px; padding: 16px 14px 12px 22px; border-bottom: 1px solid var(--line); }
-.wn-head h2 { margin: 0; flex: 1; font-size: 17px; font-weight: 700; }
+.wn-head h2 { margin: 0; flex: 1; font-size: 17px; font-weight: 700; letter-spacing: -.015em; }
 .wn-x { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; background: none; border: 0; border-radius: 6px; color: var(--muted); cursor: pointer; }
 .wn-x:hover { background: var(--raised-2); color: var(--text); }
 .wn-x svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
@@ -21,13 +21,15 @@
 .wn-rel { padding: 16px 0 4px; }
 .wn-rel + .wn-rel { border-top: 1px solid var(--line); }
 .wn-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
-.wn-date { font-weight: 700; font-size: 14px; }
+.wn-date { font-weight: 700; font-size: 14px; letter-spacing: -.015em; }
 .wn-ver { padding: 1px 9px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--raised); color: var(--muted); font: 600 12px var(--mono); }
 /* NEW / IMPROVED / FIXED: small upper-case grey labels over plain bulleted sentences. */
 .wn-grp { margin-bottom: 12px; }
-.wn-lab { margin-bottom: 4px; color: var(--dim); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.wn-lab { margin-bottom: 4px; color: var(--dim); font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .wn-grp ul { margin: 0; padding-left: 18px; }
-.wn-grp li { margin: 3px 0; color: var(--muted); font-size: 13.5px; line-height: 1.5; }
+/* The interface font (Segoe UI Variable Text where Geist is not installed) sets small text
+   loosely; a paragraph of it reads better pulled together a little. */
+.wn-grp li { margin: 3px 0; color: var(--muted); font-size: 13.5px; line-height: 1.5; letter-spacing: -.02em; word-spacing: -.03em; }
 .wn-grp li::marker { color: var(--dim); }
 
 /* Clip cards: the tag of a clip made by Compress for Discord, in Discord's own colour. */

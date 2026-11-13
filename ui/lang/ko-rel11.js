@@ -10,4 +10,5 @@ glintAddLanguage("ko", "한국어", {
   "A trimmed clip rendered with Blur no longer has its sound out of step with the picture.": "잘라 낸 클립을 Blur로 렌더링해도 소리와 화면이 어긋나지 않아요.",
   "Clip thumbnails always show the whole frame, also with a custom theme and for stretched, ultrawide and portrait clips.": "클립 썸네일이 항상 화면 전체를 보여 줘요. 사용자 테마를 쓸 때도, 늘린 화면·울트라와이드·세로 클립도 마찬가지예요.",
   "A trimmed clip that is exported again, compressed for Discord or joined no longer has its picture ahead of the sound. The trim now starts on the frame that was on screen, so it can begin a moment earlier than you asked.": "잘라 낸 클립을 다시 내보내거나, Discord용으로 압축하거나, 이어 붙여도 화면이 소리보다 앞서지 않아요. 이제 자르기는 그때 화면에 있던 프레임에서 시작해서, 고른 시점보다 아주 조금 일찍 시작할 수 있어요.",
+  "What's new: the text is set closer together.": "새 소식: 글자 간격을 좁혔어요.",
 });
