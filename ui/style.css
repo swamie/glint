@@ -61,11 +61,15 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .topbar .search { flex: 0 1 auto; width: min(376px, 30vw); min-width: 36px; overflow: hidden; transition: width .16s ease-out; }
 .topbar .search:not(.open) { width: 36px; padding: 0; gap: 0; justify-content: center; cursor: pointer; }
 .topbar .search:not(.open):hover { color: var(--text); border-color: color-mix(in srgb, var(--line-2) 72%, var(--text)); }
-.topbar .search:not(.open) input { flex: none; width: 0; opacity: 0; }
+/* The field is taken out of the row while closed, so nothing pushes the icon off centre. It can still take the focus (Ctrl K, a click on the label). */
+.topbar .search { position: relative; }
+.topbar .search:not(.open) input { position: absolute; left: 0; top: 0; width: 1px; height: 1px; padding: 0; opacity: 0; pointer-events: none; }
 .topbar .search:not(.open) kbd { display: none; }
 .search:focus-within { border-color: var(--accent); }
 .search input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; color: var(--text); }
 .search input::placeholder { color: var(--muted); }
+/* Number fields are typed into or driven by their slider: no browser spin arrows. */
+input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { appearance: none; margin: 0; }
 kbd { font: 600 11px var(--sans); padding: 2px 7px; border-radius: 5px; background: var(--raised-2); color: var(--text); border: 1px solid var(--line-2); white-space: nowrap; }
 .top-actions { display: flex; align-items: center; gap: clamp(6px, .75vw, 10px); flex: none; height: 100%; }
 .top-actions > .btn { padding: 0 clamp(10px, 1vw, 14px); }

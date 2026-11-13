@@ -36,7 +36,35 @@ const ED_LOAD_TIMEOUT = 15000;  // ms an audio element may take to load
 const ED_CHEV = '<svg class="e-chev" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>';
 const ED_ICON_UNFULL = '<svg viewBox="0 0 24 24"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>';
 // Shortcuts that act on the timeline's selection: sent to the timeline's run() when it has one.
-const ED_TL_CMDS = new Set(["split", "remove", "mute", "louder", "quieter", "solo", "blank", "selectAll", "clearSel", "hideCuts"]);
+const ED_TL_CMDS = new Set(["split", "remove", "mute", "louder", "quieter", "solo", "blank", "selectAll", "clearSel", "hideCuts", "mark", "markNext", "markPrev"]);
+const ED_MARKS_KEY = "glint.marks"; // localStorage: the bookmarks of each clip, see edMarksLoad
+const ED_MARKS_MAX = 300;           // clips whose bookmarks are remembered; the longest unused are forgotten first
+
+/* Bookmarks per clip, so they are there again when the clip is reopened. Stored as
+   [[clipId, [sec, ...]], ...], least recently saved first (an array, not an object:
+   an object would put number-like ids first and lose that order). */
+function edMarksAll() {
+  try {
+    const x = JSON.parse(localStorage.getItem(ED_MARKS_KEY) || "[]");
+    return Array.isArray(x) ? x.filter((e) => Array.isArray(e) && typeof e[0] === "string" && Array.isArray(e[1])) : [];
+  } catch (e) {
+    console.warn("Glint: could not read the saved bookmarks", e);
+    return [];
+  }
+}
+/** The saved bookmarks of clip `id`: source seconds (unsorted, unchecked: emSetMarks cleans them). */
+const edMarksLoad = (id) => edMarksAll().find((e) => e[0] === id)?.[1] || [];
+/** Save clip `id`'s bookmarks; an empty list drops the clip's entry. */
+function edMarksSave(id, list) {
+  const all = edMarksAll().filter((e) => e[0] !== id);
+  const keep = (Array.isArray(list) ? list : []).filter(Number.isFinite).map((x) => Math.round(x * 1000) / 1000);
+  if (keep.length) all.push([id, keep]);
+  while (all.length > ED_MARKS_MAX) all.shift();
+  try {
+    if (all.length) localStorage.setItem(ED_MARKS_KEY, JSON.stringify(all));
+    else localStorage.removeItem(ED_MARKS_KEY);
+  } catch (e) { console.warn("Glint: could not save the bookmarks", e); }
+}
 
 const edFmtVal = (key, x) => (ED_SLIDERS.find((s) => s[0] === key)[4] === "pct" ? `${Math.round(x * 100)}%` : x.toFixed(2));
 const edSameColor = (a, b) => ED_COLOR_KEYS.every((k) => Math.abs(a[k] - b[k]) < 0.005);
@@ -143,6 +171,9 @@ const ED_KEYS = [
   { group: "Timeline", what: "Zoom out", cmd: "zoomOut", keys: [edCombo("Minus NumpadSubtract", { shift: null })] },
   { group: "Timeline", what: "Fit the whole clip", cmd: "fit", once: true, keys: [edCombo("KeyF", { shift: true })] },
   { group: "Timeline", what: "Hide or show the cut parts in the timeline", cmd: "hideCuts", once: true, keys: [edCombo("KeyH")] },
+  { group: "Timeline", what: "Add or remove a bookmark at the playhead", cmd: "mark", once: true, keys: [edCombo("KeyN")] },
+  { group: "Timeline", what: "Go to the next bookmark", cmd: "markNext", keys: [edCombo("KeyN", { shift: true }), edCombo("BracketRight", { shift: true })] },
+  { group: "Timeline", what: "Go to the previous bookmark", cmd: "markPrev", keys: [edCombo("KeyP", { shift: true }), edCombo("BracketLeft", { shift: true })] },
   { group: "Timeline", what: "Select every segment", cmd: "selectAll", once: true, keys: [edCombo("KeyA", { ctrl: true })] },
   { group: "Timeline", what: "Clear the selection", cmd: "clearSel", once: true, keys: [] },
   { group: "Other", what: "Close a pop-up, clear the selection, or leave the editor", cmd: "escape", keys: [edCombo("Escape")] },
@@ -974,6 +1005,7 @@ function mountPlayer(root, c) {
       }
       if (dead) return null;
       P.model = emNew(dur(), tracks);
+      emSetMarks(P.model, edMarksLoad(c.id)); // drops any past the clip's end
       return P.model;
     })();
     return modelJob;
@@ -995,8 +1027,9 @@ function mountPlayer(root, c) {
         model: P.model,
         title: c.title,
         getTime: () => v.currentTime,
-        onSeek: (sec) => P.seek(sec),
+        onSeek: (sec, exact) => P.seek(sec, false, !!exact), // exact: onto a bookmark, even inside a cut-out part
         onChange: (what) => P.edSync(what),
+        onMarks: (list) => edMarksSave(c.id, list),
         // sel: the primary piece { row, seg } or null; sels: every selected piece (older timelines pass only sel).
         onSelect: (sel, sels) => {
           P.sel = sel || null;
@@ -1172,11 +1205,12 @@ function mountPlayer(root, c) {
     // piece, snapshots and reports the change itself. The code further down is the
     // fallback for a timeline without run() (or none at all): primary selection only.
     if (ED_TL_CMDS.has(cmd) && typeof P.tl?.run === "function") {
-      const { sel: before, sels } = P.selection();
+      const { sel: before, sels } = P.selection(), marksBefore = (m.marks || []).length;
       let ok, threw = false;
       try { ok = !!P.tl.run(cmd); } catch (e) { threw = true; console.error(`Glint: timeline run(${cmd}) failed, using the editor's own code`, e); }
       if (!threw) {
         if (ok) {
+          if (cmd === "mark") flash((m.marks || []).length > marksBefore ? t("Bookmark added") : t("Bookmark removed"));
           if (cmd === "louder" || cmd === "quieter") {
             const sel = P.selection().sel || before, row = sel && sel.row !== "video" ? emRow(P.model, sel.row) : null;
             if (row && Number.isInteger(sel.seg) && sel.seg < row.gains.length) flash(t("Level {pct}%", { pct: Math.round(row.gains[sel.seg] * 100) }));
@@ -1185,6 +1219,8 @@ function mountPlayer(root, c) {
         }
         // Nothing happened: say why when it is the usual reason.
         if (cmd === "split") return flash(t("Too close to a cut point to split here"));
+        if (cmd === "markNext") return flash(t("No bookmark after the playhead"));
+        if (cmd === "markPrev") return flash(t("No bookmark before the playhead"));
         if ((cmd === "remove" || cmd === "blank") && !sels.length) return flash(t("Select a segment on the timeline first"));
         if (cmd === "remove") return flash(t("At least one part of the clip has to stay"));
         if (["mute", "louder", "quieter", "solo"].includes(cmd) && !sels.some((s) => s.row !== "video")) return flash(t("Select an audio segment on the timeline first"));
@@ -1199,6 +1235,17 @@ function mountPlayer(root, c) {
       case "cutNext": {
         const pts = [...m.cuts, m.duration].filter((x) => x > now + 0.02);
         return P.seek(Math.min(pts.length ? pts[0] : m.duration, dur() - frame), false, true);
+      }
+      case "mark": { // without the timeline: same rule as its run("mark")
+        const i = emMarkNear(m, now, EM_MARK_GAP);
+        if (i >= 0) emRemoveMark(m, i); else emAddMark(m, now);
+        edMarksSave(c.id, m.marks);
+        return flash(i >= 0 ? t("Bookmark removed") : t("Bookmark added"));
+      }
+      case "markNext": case "markPrev": {
+        const at = cmd === "markNext" ? emNextMark(m, now) : emPrevMark(m, now);
+        if (at === null) return flash(cmd === "markNext" ? t("No bookmark after the playhead") : t("No bookmark before the playhead"));
+        return P.seek(at, false, true);
       }
       case "split": return P.edit("split", (mm) => emSplit(mm, now), t("Too close to a cut point to split here"));
       case "trimStart": return P.edit("cut", (mm) => emTrimStart(mm, now), t("Nothing would be left to keep"));
@@ -1572,7 +1619,7 @@ function mountEditor(root, c, P) {
     // Only the whole-clip target follows the playhead.
     playheadSeg: () => { if (!target().segs) colorTarget(); },
     fullChanged: renderHead,
-    keysChanged: renderHead,
+    keysChanged: () => { renderHead(); P.refreshTimeline(); }, // the timeline's tooltips show the shortcuts too
   };
 }
 

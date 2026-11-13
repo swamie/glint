@@ -21,6 +21,10 @@
   <header class="topbar" data-tauri-drag-region>
     <div class="top-left">
       <span class="top-logo" id="ver"><svg class="logo" viewBox="0 0 48 48"><path d="M21 4l4.2 13.8L39 22l-13.8 4.2L21 40l-4.2-13.8L3 22l13.8-4.2z"/><path class="spark" d="M38 3l1.8 5.2L45 10l-5.2 1.8L38 17l-1.8-5.2L31 10l5.2-1.8z"/></svg></span>
+      <!-- Filled by bugreport.js, updater.js and jobs.js. -->
+      <div id="bug-slot"></div>
+      <div id="update-slot"></div>
+      <div id="jobs-slot"></div>
       <!-- An icon until it is clicked (or Ctrl K): it opens while it has the focus or holds text. -->
       <label class="search" id="search">
         <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
@@ -29,9 +33,6 @@
       </label>
     </div>
     <div class="top-actions">
-      <div id="bug-slot"></div>
-      <div id="update-slot"></div>
-      <div id="jobs-slot"></div>
       <button id="btn-toggle" class="btn">Pause</button>
       <button id="btn-clip" class="btn primary">
         <svg viewBox="0 0 24 24"><path d="M6 4v16l14-8z" fill="currentColor" stroke="none"/></svg>
@@ -81,6 +82,7 @@
 <script src="lang/ko-timeline2.js"></script>
 <script src="lang/ko-shell.js"></script>
 <script src="lang/ko-bug.js"></script>
+<script src="lang/ko-marks.js"></script>
 <script src="lang/el-app.js"></script>
 <script src="lang/el-editor.js"></script>
 <script src="lang/el-update.js"></script>
@@ -89,6 +91,7 @@
 <script src="lang/el-timeline2.js"></script>
 <script src="lang/el-shell.js"></script>
 <script src="lang/el-bug.js"></script>
+<script src="lang/el-marks.js"></script>
 <script src="mock.js"></script>
 <script src="themes.js"></script>
 <script src="editmodel.js"></script>

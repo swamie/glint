@@ -68,6 +68,16 @@
 .tl-joint b { position: absolute; left: 0; top: 2px; width: 8px; height: 8px; border-radius: 2px; background: var(--warn); transform: rotate(45deg); box-shadow: 0 1px 3px rgba(0, 0, 0, .5); opacity: .85; }
 .tl-joint:hover b { opacity: 1; }
 
+/* Bookmarks: a small swallowtail flag on the ruler (left edge = the moment) over a thin dashed line through the rows.
+   Accent like the playhead, but a flag to the right of a 1 px dashed line, where the playhead is a centred knob on a solid 2 px line. */
+.tl-bmks { position: absolute; inset: 0; pointer-events: none; }
+.tl-bmk { position: absolute; left: 0; top: 0; width: 16px; height: 26px; margin-left: -5px; pointer-events: auto; cursor: pointer; }
+.tl-bmk::before { content: ""; position: absolute; left: 4.5px; top: 3px; bottom: 0; width: 1.5px; border-radius: 1px; background: var(--accent); }
+.tl-bmk b { position: absolute; left: 5px; top: 3px; width: 10px; height: 9px; background: var(--accent); clip-path: polygon(0 0, 100% 0, 68% 50%, 100% 100%, 0 100%); filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .45)); }
+.tl-bmk:hover b, .tl-bmk:hover::before { background: var(--accent-2); }
+.tl-bml { position: absolute; left: 0; bottom: 0; width: 1px; margin-left: -0.5px; opacity: .75; pointer-events: none;
+  background: repeating-linear-gradient(to bottom, var(--accent) 0 4px, transparent 4px 7px); }
+
 /* Rubber band selection. Position and size are set inline (translate + width / height inside .tl-lanes). */
 .tl-band { position: absolute; left: 0; top: 0; z-index: 4; border: 1px solid var(--accent); border-radius: 3px; background: color-mix(in srgb, var(--accent) 14%, transparent); pointer-events: none; }
 .tl-band[hidden] { display: none; }

@@ -80,6 +80,86 @@ const NOT_GAMES: &[&str] = &[
     "winword", "excel", "powerpnt", "outlook", "acrobat", "taskmgr", "mmc", "regedit", "systemsettings", "snippingtool",
 ];
 
+/// More programs that are never games: launchers of Minecraft clients, mod managers, VPNs and remote-desktop tools.
+const NOT_GAMES_MORE: &[&str] = &[
+    "minecraftlauncher", "minecraft launcher", "lunar client", "badlion client", "feather launcher", "prismlauncher", "multimc", "curseforge",
+    "modrinth app", "atlauncher", "gdlauncher", "tlauncher", "overwolf", "expressvpn", "expressvpn.vpn.ui", "nordvpn", "protonvpn", "surfshark",
+    "mullvad vpn", "wireguard", "openvpn-gui", "anydesk", "teamviewer", "rustdesk", "7zfm", "winrar", "qbittorrent", "everything", "sharex", "lightshot",
+];
+
+/// Names that mean "no game", wherever they come from: other clippers file their desktop
+/// captures under these, and NVIDIA names a clip after whatever app was in front.
+const NOT_GAME_NAMES: &[&str] = &[
+    "desktop", "screen recording", "screen capture", "screen", "desktop recording", "base profile", "windows", "explorer", "windows explorer",
+    "file explorer", "expressvpn", "nordvpn", "proton vpn", "protonvpn", "surfshark", "google chrome", "chrome", "microsoft edge", "edge", "firefox",
+    "mozilla firefox", "opera", "opera gx", "brave", "discord", "spotify", "steam", "epic games launcher", "battle.net", "riot client", "ea app",
+    "ubisoft connect", "xbox", "medal", "medal.tv", "obs studio", "obs", "nvidia app", "geforce experience", "nvidia geforce experience",
+    "visual studio code", "notepad", "task manager", "settings", "photos", "vlc media player", "vlc", "minecraft launcher", "lunar client launcher",
+];
+
+/// One game, several names: the name on the left (lower case) is filed under the name on the right.
+/// Minecraft's many faces come first: imports from other clippers name it after the client or after Java.
+const ALIASES: &[(&str, &str)] = &[
+    ("minecraft java edition", "Minecraft"), ("minecraft: java edition", "Minecraft"), ("minecraft java", "Minecraft"), ("minecraft bedrock", "Minecraft"),
+    ("minecraft for windows", "Minecraft"), ("minecraft windows 10 edition", "Minecraft"), ("lunar client", "Minecraft"), ("lunarclient", "Minecraft"),
+    ("badlion client", "Minecraft"), ("badlion minecraft client", "Minecraft"), ("feather client", "Minecraft"), ("labymod", "Minecraft"),
+    ("javaw", "Minecraft"), ("java", "Minecraft"), ("java(tm) platform se binary", "Minecraft"), ("openjdk platform binary", "Minecraft"),
+    ("overwatch 2", "Overwatch"), ("overwatch®", "Overwatch"), ("valorant", "Valorant"), ("cs2", "Counter-Strike 2"), ("counter-strike 2", "Counter-Strike 2"),
+    ("counter strike 2", "Counter-Strike 2"), ("league of legends (tm) client", "League of Legends"), ("lol", "League of Legends"),
+    ("tom clancy's rainbow six siege", "Rainbow Six Siege"), ("rainbow six siege x", "Rainbow Six Siege"), ("gta v", "Grand Theft Auto V"),
+    ("gta 5", "Grand Theft Auto V"), ("grand theft auto v enhanced", "Grand Theft Auto V"), ("fortnite", "Fortnite"), ("roblox", "Roblox"),
+    ("apex legends", "Apex Legends"), ("playerunknown's battlegrounds", "PUBG"), ("pubg: battlegrounds", "PUBG"), ("the finals", "THE FINALS"),
+    ("rocket league", "Rocket League"), ("osu!lazer", "osu!"), ("osu", "osu!"), ("risk of rain 2", "Risk of Rain 2"), ("deadlock", "Deadlock"),
+];
+
+/// The one name a game is filed under. Different sources call the same game different
+/// things ("Overwatch 2" from NVIDIA, "Overwatch" from the running exe), and some of
+/// their "games" are not games at all ("Screen Recording", "ExpressVPN"): those become `DESKTOP`.
+pub fn canonical(name: &str) -> String {
+    let trimmed = name.trim();
+    let lower = trimmed.to_lowercase();
+    // "Minecraft 1.8.9", "Minecraft* 1.21.4", "Lunar Client (1.8.9-abc/master)": the window title used as a name.
+    if lower.starts_with("minecraft") && !["dungeons", "legends", "story mode", "launcher"].iter().any(|k| lower.contains(k)) {
+        return "Minecraft".into();
+    }
+    if (lower.starts_with("lunar client") || lower.starts_with("badlion")) && !lower.contains("launcher") {
+        return "Minecraft".into();
+    }
+    if let Some((_, to)) = ALIASES.iter().find(|(from, _)| *from == lower) {
+        return to.to_string();
+    }
+    if trimmed.is_empty() || NOT_GAME_NAMES.contains(&lower.as_str()) || NOT_GAMES.contains(&lower.as_str()) || NOT_GAMES_MORE.contains(&lower.as_str()) {
+        return DESKTOP.into();
+    }
+    trimmed.to_string()
+}
+
+/// Window titles and install folders that give Minecraft away when it runs inside Java.
+const MC_TITLES: &[&str] = &["minecraft", "lunar client", "badlion", "feather client", "labymod", "forge", "fabric", "optifine", "hypixel"];
+const MC_PATHS: &[&str] = &[
+    "\\.minecraft\\", "\\minecraft\\", "\\minecraft launcher\\", "\\.lunarclient\\", "\\lunarclient\\", "\\badlion client\\", "\\.feather\\", "\\feather\\",
+    "\\prismlauncher\\", "\\multimc\\", "\\curseforge\\", "\\modrinthapp\\", "\\com.modrinth.theseus\\", "\\gdlauncher", "\\atlauncher\\", "\\.tlauncher\\",
+    "\\microsoft.4297127d64ec6_", "\\labymod",
+];
+
+/// A program other than the game itself whose icon stands for Minecraft: the Java
+/// runtime it runs in only has Java's coffee cup.
+fn minecraft_icon_source() -> Option<String> {
+    let env = |k: &str| std::env::var(k).unwrap_or_default();
+    let (pf86, pf, local) = (env("ProgramFiles(x86)"), env("ProgramFiles"), env("LOCALAPPDATA"));
+    [
+        format!(r"{pf86}\Minecraft Launcher\MinecraftLauncher.exe"),
+        format!(r"{pf}\Minecraft Launcher\MinecraftLauncher.exe"),
+        r"C:\XboxGames\Minecraft Launcher\Content\Minecraft.exe".to_string(),
+        format!(r"{local}\Programs\lunarclient\Lunar Client.exe"),
+        format!(r"{local}\Programs\Badlion Client\Badlion Client.exe"),
+        format!(r"{local}\Programs\feather\Feather Launcher.exe"),
+        format!(r"{local}\Programs\PrismLauncher\prismlauncher.exe"),
+    ]
+    .into_iter()
+    .find(|p| Path::new(p).is_file())
+}
+
 /// Folders that game stores install into (lower case, with surrounding backslashes).
 const GAME_DIRS: &[&str] = &[
     "\\steamapps\\common\\", "\\epic games\\", "\\riot games\\", "\\xboxgames\\", "\\ubisoft game launcher\\games\\", "\\origin games\\",
@@ -93,20 +173,27 @@ const GENERIC_NAMES: &[&str] = &["unreal engine", "unity", "java", "openjdk", "b
 pub fn identify(fg: &Foreground) -> Option<String> {
     let lower = fg.exe.to_lowercase();
     let stem = Path::new(&lower).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    if stem.is_empty() || NOT_GAMES.contains(&stem.as_str()) {
+    if stem.is_empty() || NOT_GAMES.contains(&stem.as_str()) || NOT_GAMES_MORE.contains(&stem.as_str()) {
         return None;
     }
-    // Minecraft (Java) runs inside javaw.exe: only its window title tells it apart.
+    // Minecraft (Java) runs inside javaw.exe, which is also every other Java program.
+    // Any one of these gives it away: its window title (the game's or a client's), the
+    // window class its graphics library creates, the folder the Java runtime sits in
+    // (a launcher's own), or simply a Java window that fills the screen.
     if stem == "javaw" || stem == "java" {
-        let t = fg.title.to_lowercase();
-        return ["minecraft", "lunar client", "badlion", "feather client"].iter().any(|k| t.contains(k)).then(|| "Minecraft".to_string());
+        let title = fg.title.to_lowercase();
+        let class = fg.class.to_lowercase();
+        let is_mc = MC_TITLES.iter().any(|k| title.contains(k)) || class == "glfw30" || class == "lwjgl" || MC_PATHS.iter().any(|p| lower.contains(p)) || fg.fullscreen;
+        return is_mc.then(|| "Minecraft".to_string());
     }
     let known = KNOWN.iter().find(|(exe, _)| *exe == stem).map(|(_, name)| name.to_string());
     let in_library = GAME_DIRS.iter().any(|d| lower.contains(d));
     if known.is_none() && !in_library && !fg.fullscreen {
         return None;
     }
-    Some(known.unwrap_or_else(|| display_name(&fg.exe)))
+    // One name per game, and a name that means "not a game" (a VPN's window filling the screen) is none.
+    let name = canonical(&known.unwrap_or_else(|| display_name(&fg.exe)));
+    (name != DESKTOP).then_some(name)
 }
 
 /// Best name for a game executable that is not in the table: the Steam folder
@@ -178,12 +265,29 @@ impl Games {
             g.exe = exe.to_string();
             changed = true;
         }
-        if !g.custom_icon && !exe.is_empty() && (g.icon.is_empty() || !Path::new(&g.icon).is_file()) {
-            if let Some(icon) = save_exe_icon(name, exe) {
+        // Minecraft's own program is the Java runtime (or unknown, for an imported clip):
+        // its icon comes from a launcher on this PC, if there is one.
+        let java = Path::new(&exe.to_lowercase()).file_stem().is_some_and(|s| s == "javaw" || s == "java");
+        let icon_exe = if g.name == "Minecraft" && (exe.is_empty() || java) { minecraft_icon_source().unwrap_or_default() } else { exe.to_string() };
+        if !g.custom_icon && !icon_exe.is_empty() && (g.icon.is_empty() || !Path::new(&g.icon).is_file()) {
+            if let Some(icon) = save_exe_icon(name, &icon_exe) {
                 g.icon = icon;
                 changed = true;
             }
         }
+        if changed {
+            self.save();
+        }
+        changed
+    }
+
+    /// Drop games that are filed under another name now (see `canonical`) or that no clip
+    /// uses any more, keeping ones seen running (they have an exe) and ones with an icon
+    /// the user picked. `used` = the game names the library's clips carry.
+    pub fn tidy(&mut self, used: &[String]) -> bool {
+        let before = self.list.len();
+        self.list.retain(|g| canonical(&g.name) == g.name && (g.custom_icon || !g.exe.is_empty() || used.iter().any(|u| u.eq_ignore_ascii_case(&g.name))));
+        let changed = self.list.len() != before;
         if changed {
             self.save();
         }

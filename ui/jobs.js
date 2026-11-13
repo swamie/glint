@@ -137,13 +137,17 @@ function jobsButton(slot) {
 function jobsRenderButton(rows) {
   const slot = document.getElementById("jobs-slot");
   if (!slot) return;
-  if (!rows.length) {
+  // "auto": only while something is rendering or waiting (and while its list is open, or a
+  // render failed and has not been looked at yet). "always" and "never" are what they say.
+  const mode = (typeof S !== "undefined" && S.settings && S.settings.renders_button) || "auto";
+  const active = rows.filter(jobsActive);
+  const failed = jobsUnseen && jobsList.some((j) => j.state === "error" && !jobsSeen.has(j.id));
+  if (mode === "never" || (mode !== "always" && !active.length && !failed && !jobsIsOpen())) {
     slot.hidden = true;
     return;
   }
   slot.hidden = false;
   const btn = jobsButton(slot);
-  const active = rows.filter(jobsActive);
   const overall = active.length ? Math.round(active.reduce((s, r) => s + (r.state === "queued" ? 0 : r.pct), 0) / active.length) : 0;
   const label = active.length ? t("{n} rendering", { n: active.length }) : t("Renders");
   const bad = !active.length && jobsUnseen && jobsList.some((j) => j.state === "error" && !jobsSeen.has(j.id));

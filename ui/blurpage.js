@@ -164,6 +164,8 @@ function renderBlur() {
   const group = (id, title, sum, badge, rows) => `<details class="section bp-group" data-b-group="${id}"${BP.open.has(id) ? " open" : ""}>
       <summary><h2>${title}</h2><span class="bp-sum">${sum}</span>${badge ? `<span class="bp-badge">${badge}</span>` : ""}</summary>${rows}</details>`;
   const onOff = (v) => (v ? t("On") : t("Off"));
+  // Choices for a frame rate given as a multiplier ("5x") or a number ("600"); a value set elsewhere is kept as its own choice.
+  const rateOpts = (list, cur) => [...new Set([...list, String(cur || "")])].filter(Boolean).map((v) => [v, /x$/i.test(v) ? v : `${v} fps`]);
 
   const known = BLUR_WEIGHTS.find(([v]) => v === b.weighting);
   const fpsOpts = [...new Set([24, 30, 48, 50, 60, 72, 90, 120, 144, 240, b.output_fps])].sort((x, y) => x - y).map((f) => [f, `${f} fps`]);
@@ -173,7 +175,8 @@ function renderBlur() {
   $("#view").innerHTML = `<div class="bp-page">` + pageHead(t("Blur"), t("Frame-blended motion blur for finished clips")) + `
     <div class="note${S.blur ? "" : " bad"}">${S.blur ? t("Using <b>{path}</b>. Open a clip and press <b>Render with Blur</b>; the result is added to the library.", { path: esc(S.blur) }) : t("<b>blur-cli.exe was not found.</b> Install Blur (f0e/blur) or set its path below.")}</div>
 
-    <div class="bp-preview">
+    ${BP.previewOpen ? "" : `<button class="bp-show" data-b-preview aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>${t("Show the comparison")}</button>`}
+    <div class="bp-preview"${BP.previewOpen ? "" : " hidden"}>
       <div class="bp-panes">
         <figure class="bp-pane"><figcaption>${t("Original")} <span data-b-cap="src"></span></figcaption><canvas data-b-cv="src" aria-label="${esc(t("Moving shapes as recorded"))}"></canvas></figure>
         <figure class="bp-pane"><figcaption>${t("With these settings")} <span data-b-cap="out"></span></figcaption><canvas data-b-cv="out" aria-label="${esc(t("The same shapes after Blur"))}"></canvas></figure>
@@ -182,6 +185,7 @@ function renderBlur() {
         <div class="bp-status" data-b-status aria-live="polite"></div>
         <div class="bp-weights" data-b-weights title="${esc(t("How much each blended frame counts, oldest on the left, newest on the right"))}"></div>
         <button class="btn sm bp-slow" data-b-slow aria-pressed="${BP.slow}">${t("Slow motion")}</button>
+        <button class="btn sm" data-b-preview aria-expanded="true">${t("Hide")}</button>
       </div>
     </div>
 
@@ -196,7 +200,7 @@ function renderBlur() {
       ${row(t("Weighting"), (known ? t(known[2]) : t("Your own weights, from the back of the streak to the front.")) + gaussHint, select("blur.weighting", [...BLUR_WEIGHTS.map(([v, l]) => [v, t(l)]), [known ? "1, 2, 1" : b.weighting, t("Custom weights")]]))}
       ${known ? "" : row(t("Custom weights"), t("Whole numbers separated by commas, stretched along the streak from back to front: 1, 2, 3, 2, 1 fades both ends."), text("blur.weighting", 180, "1, 2, 1"))}
       ${row(t("Interpolate"), t("Invents in-between frames before blending, so streaks are smooth instead of a few separate copies."), toggle("blur.interpolate"))}
-      ${row(t("Interpolated frame rate"), t("Frames per second to invent, as a multiplier (5x turns your {src} fps clips into {out} fps) or a number; low values leave visible copies, higher is smoother but renders slower.", { src, out: src * 5 }), text("blur.interpolated_fps", 96, "5x", ` list="bp-ifps"`) + `<datalist id="bp-ifps">${["3x", "5x", "10x", "600", "1200"].map((v) => `<option value="${v}">`).join("")}</datalist>`)}
+      ${row(t("Interpolated frame rate"), t("Frames per second to invent, as a multiplier (5x turns your {src} fps clips into {out} fps) or a number; low values leave visible copies, higher is smoother but renders slower.", { src, out: src * 5 }), select("blur.interpolated_fps", rateOpts(["2x", "3x", "4x", "5x", "8x", "10x", "480", "600", "960", "1200"], b.interpolated_fps)))}
     </div>
 
     ${group("look", t("Trail brightness and colour"), t("Gamma and colour filters"), b.filters ? t("Filters on") : "", `
@@ -209,7 +213,7 @@ function renderBlur() {
     ${group("interp", t("Interpolation quality"), t("How the in-between frames are made"), b.interpolate ? String(b.interpolation_method || "svp").toUpperCase() : t("Interpolation off"), `
       ${row(t("Method"), t("SVP is fast and suits games; RIFE is an AI model that handles tricky motion better but renders much slower."), select("blur.interpolation_method", [["svp", "SVP"], ["rife", "RIFE"]]))}
       ${row(t("Pre-interpolate"), t("Lets RIFE make the first in-between frames for cleaner shapes, then SVP the rest; slower, and only with the SVP method."), toggle("blur.pre_interpolate"))}
-      ${row(t("Pre-interpolated frame rate"), t("How far RIFE goes before SVP takes over, as a multiplier like 2x or a number like 360."), text("blur.pre_interpolated_fps", 96))}`)}
+      ${row(t("Pre-interpolated frame rate"), t("How far RIFE goes before SVP takes over, as a multiplier like 2x or a number like 360."), select("blur.pre_interpolated_fps", rateOpts(["2x", "3x", "4x", "240", "360", "480"], b.pre_interpolated_fps)))}`)}
 
     ${group("dedup", t("Stutter fix"), t("Repeated frames"), onOff(b.deduplicate), `
       ${row(t("Deduplicate"), t("Fills in repeated frames from stutters or drops, so the blur keeps flowing instead of stopping and jumping."), toggle("blur.deduplicate"))}
@@ -277,7 +281,9 @@ const BP = {
   colAt: 0,
   lastKey: "",
   lut: null, // gamma tables
+  previewOpen: true, // the comparison at the top of the page; folded away it is not drawn at all
 };
+try { BP.previewOpen = localStorage.getItem("glint.blurPreview") !== "0"; } catch {}
 
 const bpFmt = (n) => (Number.isInteger(n) ? String(n) : String(+n.toFixed(2)));
 
@@ -314,6 +320,12 @@ function bpOnClick(e) {
     if (pr) { Object.assign(S.settings.blur, pr.set); saveSettings(true); }
     return;
   }
+  if (e.target.closest("[data-b-preview]")) {
+    // Folding the comparison away also stops drawing it (see bpStart).
+    BP.previewOpen = !BP.previewOpen;
+    try { localStorage.setItem("glint.blurPreview", BP.previewOpen ? "1" : "0"); } catch {}
+    return render();
+  }
   const s = e.target.closest("[data-b-slow]");
   if (s) { BP.slow = !BP.slow; s.setAttribute("aria-pressed", String(BP.slow)); BP.lastKey = ""; }
 }
@@ -330,6 +342,8 @@ function bpStart() {
   BP.raf = 0;
   BP.live = { ...S.settings.blur };
   BP.src = S.settings.fps || 60;
+  // Folded away: no canvases, no drawing loop.
+  if (!BP.previewOpen) { BP.panes = null; return; }
   const mk = (el) => ({ el, ctx: el.getContext("2d", { alpha: false }), pw: 0, ph: 0, w: 0, h: 0 });
   BP.panes = { src: mk($('[data-b-cv="src"]')), out: mk($('[data-b-cv="out"]')) };
   // Stick to the very top of #view: sticky offsets count from inside #view's padding.
@@ -347,6 +361,7 @@ function bpKick() {
 }
 
 function bpRecalc() {
+  if (!BP.panes) return; // the comparison is folded away
   BP.model = blurModel(BP.live, BP.src);
   BP.ver++;
   BP.lastKey = "";

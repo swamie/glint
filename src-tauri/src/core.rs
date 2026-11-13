@@ -148,14 +148,27 @@ impl Core {
     pub fn new() -> Arc<Self> {
         let settings = Settings::load();
         hotkeys::set_binds(&settings.keybinds);
+        // Clips tagged by an older version or an import: one name per game, and
+        // "games" that are not games (a VPN, "Screen Recording") go to Desktop.
+        let mut lib = Library::load();
+        let retagged = lib.retag_games();
+        let mut games = games::Games::load();
+        let used: Vec<String> = lib.clips.iter().map(|c| c.game.clone()).collect();
+        games.tidy(&used);
+        for name in &used {
+            games.note(name, ""); // also finds Minecraft an icon if it has none
+        }
+        if retagged > 0 {
+            util::log(&format!("games: {retagged} clips filed under their game's one name"));
+        }
         Arc::new(Core {
             settings: Mutex::new(settings),
             rec: Recorder::new(),
-            lib: Mutex::new(Library::load()),
+            lib: Mutex::new(lib),
             app: OnceLock::new(),
             sample: Mutex::new(Sample { t: util::now_secs(), frames: 0, cpu: 0.0, fps: 0.0, cpu_pct: 0.0 }),
             last_hotkey: Mutex::new(None),
-            games: Mutex::new(games::Games::load()),
+            games: Mutex::new(games),
             playing: Mutex::new(None),
             jobs: crate::jobs::Jobs::new(),
             discord: Mutex::new("off".into()),

@@ -451,7 +451,8 @@ fn is_container(name: &str) -> bool {
 
 /// "Desktop" for the programs' names for desktop captures, else the name.
 fn desktop_map(name: &str) -> String {
-    if DESKTOP_NAMES.contains(&name.trim().to_lowercase().as_str()) { crate::games::DESKTOP.to_string() } else { name.trim().chars().take(60).collect() }
+    // One name per game ("Overwatch 2" and "Overwatch" are the same), and names that are no game at all become Desktop.
+    if DESKTOP_NAMES.contains(&name.trim().to_lowercase().as_str()) { crate::games::DESKTOP.to_string() } else { crate::games::canonical(&name.trim().chars().take(60).collect::<String>()) }
 }
 
 /// The game a folder name stands for, if any.
@@ -999,8 +1000,8 @@ fn run_self_test(r: &mut Report) {
     };
     let game = |p: &Path| found.iter().find(|f| f.path.eq_ignore_ascii_case(&p.to_string_lossy())).map(|f| f.game.clone()).unwrap_or_else(|| "(not found)".into());
     for (what, p, want) in [
-        ("ShadowPlay game folder", &nv_a, "Overwatch 2"),
-        ("ShadowPlay mkv", &nv_mkv, "Overwatch 2"),
+        ("ShadowPlay game folder", &nv_a, "Overwatch"), // "Overwatch 2" is filed under the one name (games::canonical)
+        ("ShadowPlay mkv", &nv_mkv, "Overwatch"),
         ("ShadowPlay Desktop folder", &nv_b, "Desktop"),
         ("ShadowPlay Base Profile is Desktop", &nv_c, "Desktop"),
         ("Medal game folder", &md_e, "Risk of Rain 2"),
@@ -1084,12 +1085,12 @@ fn run_self_test(r: &mut Report) {
     if let Some(c) = &entry {
         r.check("in place: kind is import", c.kind == "import", &c.kind);
         r.check("in place: created is the file's modified time", c.created == (t0 + 100) * 1000, c.created.to_string());
-        r.check("in place: game and folder", c.game == "Overwatch 2" && c.folder.is_empty(), format!("{} / {}", c.game, c.folder));
+        r.check("in place: game and folder", c.game == "Overwatch" && c.folder.is_empty(), format!("{} / {}", c.game, c.folder));
         r.check("in place: has a thumbnail and a duration", !c.thumb.is_empty() && c.duration > 0.5, format!("{} {}", c.thumb, c.duration));
     }
     r.check("in place: original untouched", fs::read(&nv_a).unwrap_or_default() == before_a && fs::metadata(&nv_a).ok().map(|m| mtime_ms(&m)) == before_mtime, "");
     r.check("in place: broken file left where it was", broken.is_file(), "");
-    r.check("in place: game recorded for its chip", core.games.lock().unwrap().list.iter().any(|g| g.name == "Overwatch 2"), "");
+    r.check("in place: game recorded for its chip", core.games.lock().unwrap().list.iter().any(|g| g.name == "Overwatch"), "");
     let again = scan_with(&core, &src.to_string_lossy(), false).unwrap_or_default();
     let is_known = |list: &[Found], p: &Path| list.iter().find(|f| f.path.eq_ignore_ascii_case(&p.to_string_lossy())).map(|f| f.known);
     r.check("known after an import", is_known(&again, &nv_a) == Some(true) && is_known(&again, &nv_b) == Some(true), "");

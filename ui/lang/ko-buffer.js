@@ -32,6 +32,13 @@ glintAddLanguage("ko", "한국어", {
   "{fps} fps out, amount {amount}": "출력 {fps} fps, 블러 강도 {amount}",
   "Fast render": "빠른 렌더링",
   "Several times quicker: no invented frames, and the graphics card encodes. Best on clips captured at 120 fps or more": "몇 배 더 빨라요. 프레임을 새로 만들지 않고 그래픽 카드로 인코딩해요. 120 fps 이상으로 캡처한 클립에 가장 좋아요",
+  "Renders button": "렌더링 버튼",
+  "The button in the top bar that lists Blur renders and their progress": "Blur 렌더링과 진행 상황을 보여 주는 위쪽 막대의 버튼이에요",
+  "While rendering": "렌더링 중일 때만",
+  "Always": "항상",
+  "Never": "표시 안 함",
+  "Show the comparison": "비교 화면 보기",
+  "Hide": "숨기기",
   "Compact": "간단히 표시",
   "Shows only the two stars in a small square, with no text. Problems, such as a clip that failed, still show the full box": "글자 없이 작은 상자에 별 두 개만 보여 줘요. 클립 저장 실패 같은 문제는 원래 상자로 알려 줘요",
 });

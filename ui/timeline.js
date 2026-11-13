@@ -18,6 +18,9 @@
 // primary. Toolbar actions, the right-click menu (a .menu element of our own, appended
 // to <body>) and handle.run() act on all of them.
 //
+// Bookmarks (m.marks): a flag on the ruler (.tl-bmks) and a thin line through the rows (.tl-bmls)
+// each. They are not part of the edit: no undo snapshot, no onChange; opts.onMarks(list) instead.
+//
 // NOTE: never name a variable `t` here: it would hide the translation function t().
 
 const tlRulerH = 26;    // px, ruler height (keep in sync with timeline.css)
@@ -61,6 +64,10 @@ const tlPaths = {
   selAll: "M4 4h16v16H4zM8 12l3 3 5-6",
   keys: "M3 6h18v12H3zM7 10h1M11 10h1M15 10h1M7 14h10",
   full: "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5",
+  mark: "M6 21V4M6 4h12l-3 4.5 3 4.5H6",
+  markOff: "M6 21V4M6 4h12l-3 4.5 3 4.5H6M3 3l18 18",
+  markNext: "M4 12h11M11 7l5 5-5 5M20 5v14",
+  markPrev: "M20 12H9M13 7l-5 5 5 5M4 5v14",
 };
 const tlSvg = (d) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
 let tlPath2d = null; // Path2D objects, made on first draw
@@ -280,6 +287,7 @@ function mountTimeline(host, opts) {
     hideCuts: false,       // "Hide cut parts": removed segments take no room
     map: null,             // view mapping (tlViewMap), rebuilt on demand after markAll
     joints: [], jointSig: "",
+    markSig: "",           // what the bookmark flags were last built for
     menu: null,            // the open right-click menu { el, close }
     thumbs: [],            // [{ img, ok }]
     waves: new Map(),      // row id -> { peaks, ps }
@@ -320,9 +328,9 @@ function mountTimeline(host, opts) {
     <div class="tl-body">
       <div class="tl-heads"><div class="tl-corner"></div><div class="tl-hrows"></div></div>
       <div class="tl-lanes">
-        <div class="tl-ruler" data-tl-ruler title="${esc(t("Click or drag to move the playhead"))}"><canvas></canvas><div class="tl-ph-k" data-tl-ph></div></div>
+        <div class="tl-ruler" data-tl-ruler title="${esc(t("Click or drag to move the playhead"))}"><canvas></canvas><div class="tl-ph-k" data-tl-ph></div><div class="tl-bmks"></div></div>
         <div class="tl-rows"></div>
-        <div class="tl-marks"><div class="tl-joints"></div><div class="tl-cuts"></div><div class="tl-ph"></div></div>
+        <div class="tl-marks"><div class="tl-bmls"></div><div class="tl-joints"></div><div class="tl-cuts"></div><div class="tl-ph"></div></div>
         <div class="tl-band" hidden></div>
         <div class="tl-tip" hidden></div>
       </div>
@@ -332,13 +340,36 @@ function mountTimeline(host, opts) {
   const el = {
     bar: q(".tl-bar"), hrows: q(".tl-hrows"), lanes: q(".tl-lanes"), rows: q(".tl-rows"),
     ruler: q(".tl-ruler canvas"), phK: q(".tl-ph-k"), ph: q(".tl-ph"), cuts: q(".tl-cuts"), joints: q(".tl-joints"), tip: q(".tl-tip"), band: q(".tl-band"),
-    bHide: q('[data-tl-act="hide-cuts"]'),
+    bHide: q('[data-tl-act="hide-cuts"]'), bFit: q('[data-tl-act="fit"]'),
+    bmFlags: q(".tl-bmks"), bmLines: q(".tl-bmls"),
     scroll: q(".tl-scroll"), spacer: q(".tl-spacer"),
     level: q("[data-tl-level]"), levelPct: q(".tl-level .tl-pct"), levelBox: q(".tl-level"),
     bSplit: q('[data-tl-act="split"]'), bRemove: q('[data-tl-act="remove"]'), bMute: q('[data-tl-act="mute"]'),
     bUndo: q('[data-tl-act="undo"]'), bRedo: q('[data-tl-act="redo"]'), bOut: q('[data-tl-act="zoom-out"]'), bIn: q('[data-tl-act="zoom-in"]'),
   };
   const rulerCtx = el.ruler.getContext("2d");
+
+  /* ----- tooltips with the current shortcuts ----- */
+  /** "Label (key)" with the current shortcut of editor command `cmd` (opts.keyText), without brackets when it has none.
+   *  Without opts.keyText: `fixed`, the label with the default key. */
+  function keyTip(label, cmd, fixed) {
+    if (typeof opts.keyText !== "function") return fixed;
+    let k = "";
+    try { k = String(opts.keyText(cmd) || ""); } catch (e) { console.warn("Glint timeline: keyText failed", cmd, e); }
+    return k ? `${label} (${k})` : label;
+  }
+  /** The fixed toolbar buttons' tooltips (remove and mute change with the selection: see updateBar). */
+  function barTips() {
+    const set = (b, title) => { if (b.title !== title) { b.title = title; b.setAttribute("aria-label", title); } };
+    set(el.bSplit, keyTip(t("Split at the playhead"), "split", t("Split at the playhead (S)")));
+    set(el.bUndo, keyTip(t("Undo"), "undo", t("Undo (Ctrl+Z)")));
+    set(el.bRedo, keyTip(t("Redo"), "redo", t("Redo (Ctrl+Y)")));
+    set(el.bOut, keyTip(t("Zoom out"), "zoomOut", t("Zoom out (-)")));
+    set(el.bIn, keyTip(t("Zoom in"), "zoomIn", t("Zoom in (+)")));
+    set(el.bFit, keyTip(t("Fit the whole clip"), "fit", t("Fit the whole clip (Shift+F)")));
+    set(el.bHide, keyTip(t("Hide cut parts"), "hideCuts", t("Hide cut parts (H)")));
+  }
+  barTips();
 
   /* ----- mapping ----- */
   // Source time <-> view time (see the file header). The map is rebuilt after every markAll, so it follows the model.
@@ -559,10 +590,11 @@ function mountTimeline(host, opts) {
   function updateBar() {
     const plan = removePlan(), removed = plan.restore;
     setBtn(el.bRemove, "remove", !plan.ok, tlSvg(removed ? tlPaths.restore : tlPaths.trash),
-      removed ? t("Restore segment (Del)") : t("Delete segment (Del)"));
+      removed ? keyTip(t("Restore segment"), "remove", t("Restore segment (Del)")) : keyTip(t("Delete segment"), "remove", t("Delete segment (Del)")));
     const ref = refAudio(), row = ref?.r || null;
     const gain = row ? row.gains[ref.seg] ?? 1 : 1;
-    setBtn(el.bMute, "mute", !row, gain === 0 ? PICON.mute : PICON.vol, row && gain === 0 ? t("Unmute segment (M)") : t("Mute segment (M)"));
+    setBtn(el.bMute, "mute", !row, gain === 0 ? PICON.mute : PICON.vol,
+      row && gain === 0 ? keyTip(t("Unmute segment"), "mute", t("Unmute segment (M)")) : keyTip(t("Mute segment"), "mute", t("Mute segment (M)")));
     el.bMute.classList.toggle("on", !!row && gain === 0);
     el.level.disabled = !row;
     el.levelBox.classList.toggle("off", !row);
@@ -717,6 +749,50 @@ function mountTimeline(host, opts) {
     if (st.laneW && !st.fitted) setScroll(tlPad + toV(st.shownT) * st.pps - x);
     closeMenu();
     updateBar();
+    return true;
+  }
+
+  /* ----- bookmarks ----- */
+  // m.marks (editmodel.js): marked moments, only there to find a spot again. Changing them takes
+  // no undo snapshot and does not call onChange (the edit is the same); onMarks gets the new list.
+  const marks = () => m.marks || [];
+  /** A bookmark is drawn (and can be picked) unless it lies inside a cut-out part while cut parts are hidden. One on the edge of a kept part stays. */
+  const markShown = (sec) => !st.hideCuts || !(m.removed[emSegmentAt(m, sec - 1e-4)] && m.removed[emSegmentAt(m, sec + 1e-4)]);
+  const shownMarks = () => marks().filter(markShown);
+  /** Index in m.marks of the shown bookmark nearest lane x `x`, within tlSnapPx; -1 if none. */
+  function markAtX(x) {
+    let best = -1, dist = tlSnapPx;
+    marks().forEach((sec, i) => {
+      if (!markShown(sec)) return;
+      const d = Math.abs(X(sec) - x);
+      if (d <= dist) { dist = d; best = i; }
+    });
+    return best;
+  }
+  function marksChanged() {
+    markAll(); // the flags are placed with the next draw
+    opts.onMarks?.(marks().slice());
+    return true;
+  }
+  const doAddMark = (sec) => emAddMark(m, sec) >= 0 && marksChanged();
+  const doRemoveMark = (i) => emRemoveMark(m, i) && marksChanged();
+  function doClearMarks() {
+    if (!marks().length) return false;
+    m.marks = [];
+    return marksChanged();
+  }
+  /** The playhead exactly onto `sec` (even inside a cut-out part): the editor's seek otherwise moves it out of one. */
+  function seekExact(sec) {
+    st.hold = { at: sec, until: performance.now() + 500 };
+    st.shownT = sec;
+    opts.onSeek?.(sec, true);
+  }
+  /** To the next (or previous) shown bookmark from the playhead. False if there is none. */
+  function doGoMark(prev) {
+    const now = +opts.getTime() || 0, vis = { marks: shownMarks() };
+    const at = prev ? emPrevMark(vis, now) : emNextMark(vis, now);
+    if (at === null) return false;
+    seekExact(at);
     return true;
   }
 
@@ -1129,6 +1205,21 @@ function mountTimeline(host, opts) {
       c.classList.toggle("drag", st.drag?.type === "cut" && st.drag.moved && st.drag.c === i);
     }
     placeJoints();
+    placeMarks();
+  }
+  /** Per shown bookmark: a flag on the ruler (.tl-bmk: click goes there, hover shows the time, in ruler time) and a thin line through the rows (.tl-bml). */
+  function placeMarks() {
+    const list = marks().map((sec, i) => ({ sec, i, at: tlFmtPrecise(toV(sec)) })).filter((b) => markShown(b.sec));
+    const sig = list.map((b) => `${b.i}:${b.at}`).join("|");
+    if (sig !== st.markSig) {
+      st.markSig = sig;
+      el.bmFlags.innerHTML = list.map((b) => `<div class="tl-bmk" data-tl-bm="${b.i}" title="${esc(t("Bookmark at {time}", { time: b.at }))}"><b></b></div>`).join("");
+      el.bmLines.innerHTML = list.map(() => `<div class="tl-bml" style="top:${tlRulerH}px"></div>`).join("");
+    }
+    list.forEach((b, k) => {
+      const x = Math.round(X(b.sec) * 2) / 2, vis = x > -16 && x < st.laneW + 16;
+      el.bmFlags.children[k].style.transform = el.bmLines.children[k].style.transform = `translateX(${vis ? x : -100}px)`;
+    });
   }
   /** One .tl-joint per removed run while cut parts are hidden: a hover target with "3.2 s cut out here", and right-click to restore. */
   function placeJoints() {
@@ -1208,7 +1299,7 @@ function mountTimeline(host, opts) {
 
   /* ----- mouse ----- */
   function snapCands(skip) {
-    const c = [0, dur(), ...m.cuts.filter((_, i) => !(skip.cut === i))];
+    const c = [0, dur(), ...m.cuts.filter((_, i) => !(skip.cut === i)), ...shownMarks()];
     if (!skip.playhead) c.push(st.shownT);
     for (const r of m.audio) if (r.kind === "file" && r.id !== skip.row) c.push(r.offset, r.offset + r.length);
     return c;
@@ -1253,10 +1344,13 @@ function mountTimeline(host, opts) {
     const rect = el.lanes.getBoundingClientRect();
     const x = e.clientX - rect.left, at = timeAtX(x);
     const d = { x0: e.clientX, y0: e.clientY, sx0: st.scrollX, rect, moved: false, snapped: false, lastE: e, ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey };
-    const cut = e.target.closest("[data-tl-cut]");
+    const cut = e.target.closest("[data-tl-cut]"), bm = e.target.closest("[data-tl-bm]");
+    const bmAt = bm ? marks()[+bm.dataset.tlBm] : undefined;
     // A joint marker is only a hover / right-click target: a press on it acts on the lane under it.
     const lane = e.target.closest("[data-tl-lane]") || (e.target.closest("[data-tl-joint]") ? laneAt(e.clientY)?.el : null);
     if (cut) Object.assign(d, { type: "cut", c: +cut.dataset.tlCut });
+    // A bookmark flag: the playhead goes exactly onto it; dragging on from there is an ordinary ruler drag.
+    else if (bmAt !== undefined) Object.assign(d, { type: "seek", at: bmAt });
     else if (e.target.closest("[data-tl-ph], [data-tl-ruler]")) Object.assign(d, { type: "seek", moved: true });
     else if (lane) {
       const id = lane.dataset.tlLane, row = id === "video" ? null : emRow(m, id);
@@ -1273,7 +1367,8 @@ function mountTimeline(host, opts) {
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     window.addEventListener("blur", onLost);
-    if (d.type === "seek") apply(d, e);
+    if (d.type === "seek" && d.moved) apply(d, e);
+    else if (d.type === "seek") { seekExact(d.at); showTip(d.at); }
   }
   // The mouse-up never arrives when the window loses the mouse mid-drag (Alt+Tab, a
   // screenshot tool): end the drag instead of leaving it, and its rubber band, hanging.
@@ -1462,8 +1557,15 @@ function mountTimeline(host, opts) {
     if (st.drag) return;
     const rect = el.lanes.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const cutEl = e.target.closest("[data-tl-cut]"), jointEl = e.target.closest("[data-tl-joint]");
-    const c = { at: timeAtX(x), cut: cutEl ? +cutEl.dataset.tlCut : -1, joint: jointEl ? st.joints[+jointEl.dataset.tlJoint] || null : null };
+    const cutEl = e.target.closest("[data-tl-cut]"), jointEl = e.target.closest("[data-tl-joint]"), bmEl = e.target.closest("[data-tl-bm]");
+    const at = timeAtX(x);
+    // The bookmark under the pointer: its flag, one within tlSnapPx, or one too close to add another (when zoomed far in).
+    let mark = bmEl ? +bmEl.dataset.tlBm : markAtX(x);
+    if (mark < 0) { const near = emMarkNear(m, at, EM_MARK_GAP); if (near >= 0 && markShown(marks()[near])) mark = near; }
+    const c = {
+      at, mark, cut: cutEl ? +cutEl.dataset.tlCut : -1, joint: jointEl ? st.joints[+jointEl.dataset.tlJoint] || null : null,
+      splitAt: e.altKey ? at : snapAt(at, shownMarks()).at, // "Split here" snaps to a bookmark (Alt: not)
+    };
     const lane = !cutEl && !jointEl ? e.target.closest("[data-tl-lane]") : null;
     if (lane) {
       const p = pieceAtX(lane.dataset.tlLane, x);
@@ -1474,12 +1576,21 @@ function mountTimeline(host, opts) {
   function menuHtml(c) {
     const item = (act, path, label, { arg = "", on = null } = {}) =>
       `<button type="button" role="${on === null ? "menuitem" : "menuitemcheckbox"}"${on === null ? "" : ` aria-checked="${on}"`} data-tl-m="${act}" data-tl-arg="${esc(String(arg))}" class="${on ? "on" : ""}">${tlSvg(path)}<span>${esc(label)}</span></button>`;
-    const out = [], top = [];
+    const out = [], top = [], mk = [];
+    // Bookmarks first: they are about the moment under the pointer, not the selection.
+    if (c.mark >= 0 && c.mark < marks().length) mk.push(item("mark-remove", tlPaths.markOff, t("Remove this bookmark")));
+    else if (c.at >= 0 && c.at <= dur()) mk.push(item("mark-add", tlPaths.mark, t("Add a bookmark here")));
+    const now = +opts.getTime() || 0, vis = { marks: shownMarks() };
+    if (emNextMark(vis, now) !== null) mk.push(item("mark-next", tlPaths.markNext, t("Go to the next bookmark")));
+    if (emPrevMark(vis, now) !== null) mk.push(item("mark-prev", tlPaths.markPrev, t("Go to the previous bookmark")));
+    if (marks().length >= 2) mk.push(item("mark-clear", tlPaths.trash, t("Remove all bookmarks")));
+    out.push(...mk);
+    if (mk.length) out.push("<hr>");
     const n = st.sels.length;
     if (n > 1) out.push(`<div class="menu-head">${esc(t("{n} selected", { n }))}</div>`);
     if (c.cut >= 0 && c.cut < m.cuts.length) top.push(item("join", tlPaths.join, t("Remove this cut point"), { arg: c.cut }));
     if (c.joint) top.push(item("restore-run", tlPaths.restore, t("Restore the part cut out here")));
-    if (canSplitAt(c.at)) top.push(item("split-at", tlPaths.split, t("Split here"), { arg: c.at }));
+    if (canSplitAt(c.splitAt)) top.push(item("split-at", tlPaths.split, t("Split here"), { arg: c.splitAt }));
     const plan = removePlan();
     if (plan.ok) top.push(item("remove", plan.restore ? tlPaths.restore : tlPaths.trash, plan.restore ? t("Restore") : t("Cut out")));
     const aud = selAudio();
@@ -1507,6 +1618,11 @@ function mountTimeline(host, opts) {
   }
   function menuAct(act, arg, c) {
     switch (act) {
+      case "mark-add": return doAddMark(c.at);
+      case "mark-remove": return doRemoveMark(c.mark);
+      case "mark-next": return doGoMark(false);
+      case "mark-prev": return doGoMark(true);
+      case "mark-clear": return doClearMarks();
       case "join": return doJoin(+arg);
       case "restore-run": return doRestoreRun(c.joint);
       case "split-at": return doSplit(+arg);
@@ -1688,6 +1804,7 @@ function mountTimeline(host, opts) {
       validateSel();
       if (st.hideCuts) relayout(); else { setPps(st.pps); setScroll(st.scrollX); }
       markAll();
+      barTips(); // the shortcuts may have been changed
       updateBar();
     },
     setThumbs(urls) {
@@ -1736,6 +1853,12 @@ function mountTimeline(host, opts) {
         case "selectAll": return selectAll();
         case "clearSel": { const had = st.sels.length > 0; setSels([], null); return had; }
         case "hideCuts": return setHideCuts(!st.hideCuts);
+        case "mark": { // on the playhead's bookmark: remove it, else add one
+          const now = +opts.getTime() || 0, i = emMarkNear(m, now, EM_MARK_GAP);
+          return i >= 0 ? doRemoveMark(i) : doAddMark(now);
+        }
+        case "markNext": return doGoMark(false);
+        case "markPrev": return doGoMark(true);
       }
       console.warn("Glint timeline: run() does not know the command", cmd);
       return false;

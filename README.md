@@ -15,7 +15,7 @@ Download **GlintSetup.exe** from the [latest release](https://github.com/swamie/
 
 It adds a Start menu shortcut and an entry under Installed apps (uninstalling keeps your clips). The installer is not code-signed, so Windows SmartScreen may show "Windows protected your PC": choose More info → Run anyway.
 
-**Updates.** The small up arrow at the top of Glint's window checks GitHub for a newer release about once a day; click it to check right away. When there is one, the arrow lights up and a click downloads it, swaps it in and restarts Glint. The download's SHA-256 is checked against the release's checksum file. Switch the daily check off under Settings → Updates.
+**Updates.** The update button in the top bar (an arrow down into a tray) checks GitHub for a newer release about once a day; click it to check right away. When there is one, the button fills with the theme colour and reads "Update x.y.z"; a click downloads it, swaps it in and restarts Glint. The download's SHA-256 is checked against the release's checksum file. Switch the daily check off under Settings → Updates.
 
 - **Stack:** Rust + Tauri 2 (WebView2 UI, plain HTML/CSS/JS, no Node build step).
 - **Capture:** one `ffmpeg` process: Windows Graphics Capture → GPU scaler → hardware H.264 (NVENC / AMF / Quick Sync, x264 fallback) → MPEG-TS on a pipe.
@@ -90,7 +90,9 @@ The overlay's opacity, size and time on screen are adjustable, and its text ("Ca
 
 ## Games
 
-Glint looks at the foreground window every two seconds. It counts as a game if its executable is in a short table of known games, sits in a game store's folder (Steam, Epic, Riot, Xbox, Ubisoft, EA, GOG, a `Games` folder), or its window covers the whole monitor; browsers, launchers, players and tools are excluded by name. Minecraft (Java) is told apart by its window title. The name comes from the table, else the Steam folder, else the executable's product name. A game stays "the game being played" after it loses focus, until its process ends. Clips are tagged with it, or with "Desktop" when no game is running. A wrong guess is fixed per clip with right-click → Game.
+Glint looks at the foreground window every two seconds. It counts as a game if its executable is in a short table of known games, sits in a game store's folder (Steam, Epic, Riot, Xbox, Ubisoft, EA, GOG, a `Games` folder), or its window covers the whole monitor; browsers, launchers, players and tools are excluded by name. Minecraft (Java) runs inside the Java runtime, so it is recognised by any of: its window title (the game's own, or a client's such as Lunar, Badlion, Feather or LabyMod), the window class its graphics library creates, the folder its Java runtime sits in (a launcher's own), or a Java window that fills the screen; its icon is taken from a Minecraft launcher on the PC, if there is one. The name comes from the table, else the Steam folder, else the executable's product name. A game stays "the game being played" after it loses focus, until its process ends. Clips are tagged with it, or with "Desktop" when no game is running. A wrong guess is fixed per clip with right-click → Game (select several clips first to fix them together).
+
+Every game is filed under one name: "Overwatch 2" (as NVIDIA names it) and "Overwatch" are the same chip, a window title such as "Minecraft 1.8.9" is Minecraft, and names that are not games at all ("Screen Recording", a VPN or a browser that happened to be in front) count as Desktop. This is applied to new clips, to imports, and once at start to the clips already in the library. Clips another clipper saved as plain screen recordings carry no trace of their game, so those stay under Desktop until you set it.
 
 Each game seen is remembered in `%APPDATA%\Glint\games.json` with its icon, taken from the game's executable into `%APPDATA%\Glint\icons`. The Library shows one chip per game with that icon; click to filter, right-click to pick your own icon image.
 
@@ -145,7 +147,7 @@ Shortcuts in edit mode (also under the Shortcuts button): Space play/pause; S sp
 
 ## Renders
 
-A Blur render is a job. Jobs run in the background whether or not the clip is open: a button appears in the top bar while there are any, showing overall progress; its list shows each render with progress, Cancel, and Open for finished ones. "At once" (1 to 4) sets how many run together; the rest wait in order. Quitting Glint stops running renders.
+A Blur render is a job. Jobs run in the background whether or not the clip is open: a button appears in the top bar while something is rendering (Settings → Appearance → Renders button can show it always or never), showing overall progress; its list shows each render with progress, Cancel, and Open for finished ones. "At once" (1 to 4) sets how many run together; the rest wait in order. Quitting Glint stops running renders.
 
 ## Import
 
@@ -167,7 +169,7 @@ For builders: the destination is not in the source. `src-tauri/bug-webhook.txt` 
 
 ## Blur
 
-The Blur page starts with a live preview: the same moving shapes drawn as the original and as Blur would render them with the current settings, following Blur's own maths (frames blended per output frame, weighting, gamma, interpolation, filters). It updates while a control is dragged, and a line under it says in plain numbers what will happen, including when a combination would do nothing. Quick presets set the common fields; less-used settings are in collapsible groups.
+The Blur page starts with a live preview, which can be folded away with its Hide button (it is then not drawn at all): the same moving shapes drawn as the original and as Blur would render them with the current settings, following Blur's own maths (frames blended per output frame, weighting, gamma, interpolation, filters). It updates while a control is dragged, and a line under it says in plain numbers what will happen, including when a combination would do nothing. Quick presets set the common fields; less-used settings are in collapsible groups.
 
 The Blur page has every setting of blur v2's config file, with blur's own names and defaults. Two are fixed: `preview` is off (Glint has no preview window) and `detailed filenames` is off (Glint names the output).
 

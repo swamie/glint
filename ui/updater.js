@@ -6,7 +6,7 @@
 // Loaded after app.js, so its globals (S, $, invoke, ask, flash, t, ...) exist.
 
 // The arrow is its own path so it can bob inside the tray while a check runs.
-const UPD_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 14.5v3a2.5 2.5 0 0 0 2.5 2.5h10a2.5 2.5 0 0 0 2.5-2.5v-3"/><path class="upd-arrow" d="M12 15V4.5M7.5 8.5 12 4l4.5 4.5"/></svg>';
+const UPD_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 14.5v3a2.5 2.5 0 0 0 2.5 2.5h10a2.5 2.5 0 0 0 2.5-2.5v-3"/><path class="upd-arrow" d="M12 4v10.500M7.500 10.500 12 15l4.500-4.500"/></svg>';
 let updInfo = { current: "", latest: "", available: false, error: "" };
 let updBusy = ""; // "" | "checking" | "installing"
 let updPct = 0;

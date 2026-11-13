@@ -303,12 +303,28 @@ pub fn diag(report_path: &str, icon_exe: Option<&str>, discord_id: Option<&str>)
     check("largest mode is the display's shape", win::native_mode(&[(2160, 1440), (2560, 1440), (1920, 1080)]) == (2560, 1440));
 
     // Game naming.
-    let fg = |exe: &str, title: &str, fullscreen: bool| Foreground { pid: 1, exe: exe.into(), title: title.into(), fullscreen };
+    let fg = |exe: &str, title: &str, fullscreen: bool| Foreground { pid: 1, exe: exe.into(), title: title.into(), class: String::new(), fullscreen };
     let id = |exe: &str, title: &str, fs: bool| crate::games::identify(&fg(exe, title, fs));
+    // Minecraft inside Java: found by a client's title, the window class, the runtime's folder, or a fullscreen Java window.
+    {
+        let java = r"C:\Program Files\Java\jre\bin\javaw.exe";
+        let with_class = |class: &str| crate::games::identify(&Foreground { pid: 1, exe: java.into(), title: "Custom Client".into(), class: class.into(), fullscreen: false });
+        let mc = Some("Minecraft");
+        check("Minecraft clients are found by their window title", id(java, "Lunar Client (1.8.9-a1b2c3/master)", false).as_deref() == mc && id(java, "Badlion Minecraft Client v4.1 (1.8.9)", false).as_deref() == mc);
+        check("Minecraft is found by its window class", with_class("GLFW30").as_deref() == mc && with_class("LWJGL").as_deref() == mc && with_class("SunAwtFrame").is_none());
+        check("Minecraft is found by its launcher's Java folder", id(r"C:\Users\me\.lunarclient\jre\zulu17\bin\javaw.exe", "", false).as_deref() == mc && id(r"C:\Users\me\AppData\Roaming\.minecraft\runtime\java-runtime-gamma\bin\javaw.exe", "Untitled", false).as_deref() == mc);
+        check("a fullscreen Java window is Minecraft, a windowed Java tool is not", id(java, "", true).as_deref() == mc && id(java, "Some Tool", false).is_none());
+        check("a Minecraft launcher is not the game", id(r"C:\XboxGames\Minecraft Launcher\Content\Minecraft Launcher.exe", "Minecraft Launcher", true).is_none() && id(r"C:\Users\me\AppData\Local\Programs\lunarclient\Lunar Client.exe", "Lunar Client", true).is_none());
+        check("a VPN filling the screen is not a game", id(r"C:\Program Files (x86)\ExpressVPN\expressvpn-ui\ExpressVPN.exe", "ExpressVPN", true).is_none());
+        let c = crate::games::canonical;
+        check("one name per game", c("Overwatch 2") == "Overwatch" && c("overwatch") == "overwatch" && c("Minecraft 1.8.9") == "Minecraft" && c("Lunar Client (1.8.9-abc/master)") == "Minecraft" && c("Java(TM) Platform SE binary") == "Minecraft" && c("Risk of Rain 2") == "Risk of Rain 2");
+        check("names that are no game become Desktop", c("ExpressVPN") == "Desktop" && c("Screen Recording") == "Desktop" && c("Google Chrome") == "Desktop" && c("  ") == "Desktop");
+        check("other Minecraft titles keep their names", c("Minecraft Dungeons") == "Minecraft Dungeons" && c("Minecraft Launcher") == "Desktop");
+    }
     check("Steam game is named after its folder", id(r"D:\SteamLibrary\steamapps\common\Risk of Rain 2\Risk of Rain 2.exe", "", false).as_deref() == Some("Risk of Rain 2"));
     check("known exe gets its proper name", id(r"C:\Riot Games\VALORANT\live\ShooterGame\Binaries\Win64\VALORANT-Win64-Shipping.exe", "", true).as_deref() == Some("Valorant"));
     check("known exe outside a game folder, windowed", id(r"C:\Program Files (x86)\Overwatch\_retail_\Overwatch.exe", "", false).as_deref() == Some("Overwatch"));
-    check("Minecraft is told from Java by its title", id(r"C:\Program Files\Java\bin\javaw.exe", "Minecraft 1.21.4", false).as_deref() == Some("Minecraft") && id(r"C:\Program Files\Java\bin\javaw.exe", "Some Tool", true).is_none());
+    check("Minecraft is told from Java by its title", id(r"C:\Program Files\Java\bin\javaw.exe", "Minecraft 1.21.4", false).as_deref() == Some("Minecraft") && id(r"C:\Program Files\Java\bin\javaw.exe", "Some Tool", false).is_none());
     check("a fullscreen browser is not a game", id(r"C:\Program Files\Google\Chrome\Application\chrome.exe", "YouTube", true).is_none());
     check("a launcher in a game folder is not a game", id(r"C:\Program Files (x86)\Steam\steamapps\common\wallpaper_engine\wallpaper64.exe", "", true).is_none());
     check("a windowed unknown app is not a game", id(r"C:\Tools\thing.exe", "", false).is_none());

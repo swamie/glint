@@ -17,6 +17,11 @@
 .bp-pane canvas { display: block; width: 100%; height: 130px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); }
 @container (max-width: 520px) { .bp-pane canvas { height: 96px; } }
 
+/* The comparison folded away: one quiet row to bring it back. */
+.bp-preview[hidden] { display: none; }
+.bp-show { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 14px; padding: 6px 12px 6px 8px; background: none; border: 1px solid var(--line-2); border-radius: var(--radius); color: var(--muted); font: inherit; font-weight: 600; cursor: pointer; }
+.bp-show:hover { color: var(--text); background: var(--raised); }
+.bp-show svg { width: 16px; height: 16px; }
 .bp-foot { display: flex; align-items: center; gap: 14px; margin-top: 10px; }
 .bp-status { flex: 1; min-width: 0; font-size: 13px; line-height: 1.4; color: var(--muted); }
 .bp-status b { color: var(--text); }

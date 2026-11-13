@@ -23,11 +23,16 @@
 //   colors     one colour correction per segment: { brightness, contrast, saturation, gamma }, 1 = unchanged
 //   blank      one flag per segment: true = the picture is black there while the audio plays on
 //   speed      export speed, 0.25..4
+//   marks      bookmarks: sorted source times, none closer than EM_MARK_GAP. Only there
+//              to find a moment again: not part of undo / redo, emChanged or the export,
+//              and cutting a part out leaves the bookmarks inside it alone.
 //   undo, redo snapshots (JSON strings) for emUndo / emRedo
 
 const EM_MIN_SEG = 0.1; // shortest segment a split or a drag may leave, seconds
 const EM_MAX_GAIN = 2;
 const EM_EPS = 1e-6;
+const EM_MARK_GAP = 0.05;  // two bookmarks are never closer than this, seconds
+const EM_MARK_BACK = 0.3;  // "previous bookmark" skips one the playhead is this close after (like a "previous track" button)
 const EM_COLOR_KEYS = ["brightness", "contrast", "saturation", "gamma"];
 const emNoColor = () => ({ brightness: 1, contrast: 1, saturation: 1, gamma: 1 });
 
@@ -48,6 +53,7 @@ function emNew(duration, tracks) {
     colors: [emNoColor()],
     blank: [false],
     speed: 1,
+    marks: [],
     undo: [],
     redo: [],
   };
@@ -273,6 +279,51 @@ function emPieces(m) {
   return out;
 }
 
+/* ---------- bookmarks ---------- */
+// m.marks is created on demand, so a model made before bookmarks existed works too.
+
+/** Add a bookmark at source time `sec` (kept inside the clip). Returns its index, or -1 if one is already within EM_MARK_GAP. */
+function emAddMark(m, sec) {
+  if (!Number.isFinite(+sec)) return -1;
+  const at = Math.min(m.duration, Math.max(0, +sec));
+  const marks = (m.marks ||= []);
+  if (marks.some((x) => Math.abs(x - at) < EM_MARK_GAP - EM_EPS)) return -1;
+  let i = 0;
+  while (i < marks.length && marks[i] < at) i++;
+  marks.splice(i, 0, at);
+  return i;
+}
+function emRemoveMark(m, i) {
+  if (!m.marks || !(i >= 0 && i < m.marks.length)) return false;
+  m.marks.splice(i, 1);
+  return true;
+}
+/** Replace every bookmark with `list` (e.g. loaded from storage): sorted, inside the clip, too-close ones dropped. */
+function emSetMarks(m, list) {
+  m.marks = [];
+  const num = (x) => (typeof x === "number" ? x : typeof x === "string" ? parseFloat(x) : NaN); // not Number(): null would be 0
+  const ok = (Array.isArray(list) ? list : []).map(num).filter((x) => Number.isFinite(x) && x >= 0 && x <= m.duration + EM_EPS).sort((a, b) => a - b);
+  for (const x of ok) if (!m.marks.length || x - m.marks[m.marks.length - 1] >= EM_MARK_GAP - EM_EPS) m.marks.push(Math.min(x, m.duration));
+  return m.marks.length;
+}
+/** Index of the bookmark nearest `sec` within `tol` seconds, or -1. */
+function emMarkNear(m, sec, tol) {
+  let best = -1, dist = tol;
+  (m.marks || []).forEach((x, i) => { const d = Math.abs(x - sec); if (d <= dist) { dist = d; best = i; } });
+  return best;
+}
+/** Time of the first bookmark after `sec` (one the playhead sits on does not count), or null. */
+function emNextMark(m, sec) {
+  for (const x of m.marks || []) if (x > sec + 0.01) return x;
+  return null;
+}
+/** Time of the last bookmark before `sec`, skipping one the playhead is on or less than EM_MARK_BACK after; or null. */
+function emPrevMark(m, sec) {
+  const list = m.marks || [];
+  for (let i = list.length - 1; i >= 0; i--) if (list[i] < sec - EM_MARK_BACK) return list[i];
+  return null;
+}
+
 /* ---------- audio ---------- */
 
 const emRow = (m, id) => m.audio.find((r) => r.id === id) || null;
@@ -420,5 +471,5 @@ function emToOpts(m) {
 
 // Lets the functions be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { EM_MIN_SEG, EM_MAX_GAIN, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, emRow, emRowCovers, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts };
+  module.exports = { EM_MIN_SEG, EM_MAX_GAIN, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts };
 }

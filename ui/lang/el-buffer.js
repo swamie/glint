@@ -32,6 +32,13 @@ glintAddLanguage("el", "Ελληνικά", {
   "{fps} fps out, amount {amount}": "Έξοδος {fps} fps, ένταση {amount}",
   "Fast render": "Γρήγορη απόδοση",
   "Several times quicker: no invented frames, and the graphics card encodes. Best on clips captured at 120 fps or more": "Αρκετές φορές πιο γρήγορα: χωρίς παρεμβολή καρέ, με κωδικοποίηση από την κάρτα γραφικών. Ιδανικό για κλιπ που καταγράφηκαν στα 120 fps ή περισσότερα",
+  "Renders button": "Κουμπί αποδόσεων",
+  "The button in the top bar that lists Blur renders and their progress": "Το κουμπί στην πάνω γραμμή που δείχνει τις αποδόσεις Blur και την πρόοδό τους",
+  "While rendering": "Κατά την απόδοση",
+  "Always": "Πάντα",
+  "Never": "Ποτέ",
+  "Show the comparison": "Εμφάνιση σύγκρισης",
+  "Hide": "Απόκρυψη",
   "Compact": "Συμπαγής",
   "Shows only the two stars in a small square, with no text. Problems, such as a clip that failed, still show the full box": "Δείχνει μόνο τα δύο αστέρια σε ένα μικρό τετράγωνο, χωρίς κείμενο. Τα προβλήματα, όπως ένα κλιπ που απέτυχε, εμφανίζονται στο πλήρες πλαίσιο",
 });

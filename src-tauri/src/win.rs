@@ -245,6 +245,8 @@ pub struct Foreground {
     /// Full path of its executable.
     pub exe: String,
     pub title: String,
+    /// The window's class name. Minecraft's Java window is "GLFW30" (or "LWJGL" in old versions).
+    pub class: String,
     /// The window covers its whole monitor (fullscreen or borderless).
     pub fullscreen: bool,
 }
@@ -275,6 +277,9 @@ pub fn foreground() -> Option<Foreground> {
         let mut tbuf = [0u16; 256];
         let tlen = GetWindowTextW(hwnd, &mut tbuf).max(0) as usize;
         let title = String::from_utf16_lossy(&tbuf[..tlen]);
+        let mut cbuf = [0u16; 128];
+        let clen = windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut cbuf).max(0) as usize;
+        let class = String::from_utf16_lossy(&cbuf[..clen]);
         let mut wr = RECT::default();
         let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
         let fullscreen = GetWindowRect(hwnd, &mut wr).is_ok()
@@ -283,7 +288,7 @@ pub fn foreground() -> Option<Foreground> {
             && wr.top <= mi.rcMonitor.top
             && wr.right >= mi.rcMonitor.right
             && wr.bottom >= mi.rcMonitor.bottom;
-        Some(Foreground { pid, exe, title, fullscreen })
+        Some(Foreground { pid, exe, title, class, fullscreen })
     }
 }
 

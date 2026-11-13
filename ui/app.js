@@ -160,6 +160,7 @@ function renderChrome() {
   for (const el of $$("[data-i18n]")) el.textContent = t(el.dataset.i18n);
   for (const el of $$("[data-i18n-ph]")) el.placeholder = t(el.dataset.i18nPh);
   if (typeof updRender === "function") updRender(); // its tooltip is text too
+  if (typeof jobsRender === "function") jobsRender(); // shown or hidden by a setting
   // The sidebar can be folded to a strip of icons, so every item carries its name as a tooltip.
   $("#app").classList.toggle("side-min", S.sideMin);
   $("#side-toggle").title = S.sideMin ? t("Show the sidebar") : t("Hide the sidebar");
@@ -952,6 +953,7 @@ function renderSettings() {
     ${S.ffmpeg ? "" : `<div class="note bad">${t("<b>ffmpeg.exe was not found.</b> Glint needs ffmpeg 8 or newer. Install it or set its path below.")}</div>`}
     <div class="section"><h2>${t("Appearance")}</h2>
       <div class="themes">${window.GLINT_THEMES.map((th) => `<button class="theme${(s.theme || "glint") === th.id ? " active" : ""}" data-theme="${th.id}" style="background:${th.vars.panel || "#0a0e16"};color:${th.vars.text || "#e8edf6"}"><i style="background:${th.vars.accent || "#62b6f7"}"></i>${esc(th.name)}</button>`).join("")}</div>
+      ${row(t("Renders button"), t("The button in the top bar that lists Blur renders and their progress"), select("renders_button", [["auto", t("While rendering")], ["always", t("Always")], ["never", t("Never")]]))}
       ${row(t("Interface size"), t("Makes everything in the window bigger or smaller, so more or less fits on screen"), select("ui_zoom", [70, 80, 90, 100, 110, 125, 150].map((z) => [z, `${z}%`]), true))}
       <details class="css-box"${S.cssOpen || s.custom_css ? " open" : ""}>
         <summary><span class="name">${t("Custom theme (CSS)")}</span><span class="hint">${s.custom_css ? t("In use") : t("Make your own look")}</span></summary>

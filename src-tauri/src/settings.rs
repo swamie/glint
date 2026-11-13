@@ -227,6 +227,9 @@ pub struct Settings {
     pub blur_parallel: u32,
     /// Size of the whole interface, in percent.
     pub ui_zoom: u32,
+    /// When the top bar's renders button shows: "auto" (while something is
+    /// rendering), "always" or "never".
+    pub renders_button: String,
     /// The user's own colour-correction presets for the editor.
     pub color_presets: Vec<ColorPreset>,
     /// Show the library's 'Main folder' chip even when no clip sits loose in the clips folder.
@@ -286,6 +289,7 @@ impl Default for Settings {
             language: "en".into(),
             blur_parallel: 2,
             ui_zoom: 100,
+            renders_button: "auto".into(),
             color_presets: Vec::new(),
             show_empty_main: false,
             editor_keys: Default::default(),

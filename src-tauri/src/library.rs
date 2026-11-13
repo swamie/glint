@@ -67,6 +67,23 @@ impl Library {
         Some(meta)
     }
 
+    /// Give every clip the one name its game is filed under (see `games::canonical`).
+    /// Returns how many clips changed.
+    pub fn retag_games(&mut self) -> usize {
+        let mut n = 0;
+        for c in &mut self.clips {
+            let to = crate::games::canonical(&c.game);
+            if to != c.game {
+                c.game = to;
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.save();
+        }
+        n
+    }
+
     pub fn update(&mut self, id: &str, f: impl FnOnce(&mut ClipMeta)) -> Option<ClipMeta> {
         let c = self.clips.iter_mut().find(|c| c.id == id)?;
         f(c);
