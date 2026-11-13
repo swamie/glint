@@ -257,16 +257,43 @@ pub fn cleanup() {
     }
 }
 
-/// Start `exe` again a moment after this process has gone. A second copy
-/// started while this one is alive would only hand over to it, hence the wait.
-pub fn relaunch_soon(exe: &Path) {
-    let path = exe.to_string_lossy().replace('\'', "''");
-    let _ = util::hidden_cmd(Path::new("powershell.exe"))
-        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &format!("Start-Sleep -Milliseconds 1800; Start-Process -FilePath '{path}'")])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+/// `Glint.exe --after-update <pid>`: start up only when process `<pid>` (the copy that was just
+/// replaced) has ended.
+pub const AFTER_UPDATE: &str = "--after-update";
+/// The longest the new copy waits for the old one to end.
+const OLD_COPY_MAX_MS: u32 = 20_000;
+
+/// The command that starts `exe` again after an update. A second copy started while this one is
+/// alive would only hand over to it, so the new copy is told this process's id and waits for it
+/// to end (`wait_for_old_copy`). Glint starts itself: no shell or script in between.
+fn relaunch_cmd(exe: &Path) -> std::process::Command {
+    let mut c = std::process::Command::new(exe);
+    c.arg(AFTER_UPDATE).arg(std::process::id().to_string());
+    if let Some(dir) = exe.parent() {
+        c.current_dir(dir);
+    }
+    c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    c
+}
+
+/// Start `exe` again; it shows its window once this process has gone.
+pub fn relaunch(exe: &Path) {
+    if let Err(e) = relaunch_cmd(exe).spawn() {
+        util::log(&format!("update: could not start {}: {e}", exe.display()));
+    }
+}
+
+/// Called first thing at start-up. With `--after-update <pid>` among `args`, wait until that
+/// process has ended (at most 20 s), then a moment more so everything it held is released.
+pub fn wait_for_old_copy(args: &[String]) {
+    let Some(pid) = args.iter().position(|a| a == AFTER_UPDATE).and_then(|i| args.get(i + 1)).and_then(|p| p.parse::<u32>().ok()) else { return };
+    if pid == 0 || pid == std::process::id() {
+        return;
+    }
+    if !crate::win::wait_for_exit(pid, OLD_COPY_MAX_MS) {
+        util::log(&format!("update: the old copy (process {pid}) did not end in {} s; starting anyway", OLD_COPY_MAX_MS / 1000));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(150));
 }
 
 /// `glint.exe --update-test <report.txt>`: headless checks. The network checks
@@ -282,6 +309,38 @@ pub fn self_test(report_path: &str) {
         let mut check = |name: &str, ok: bool| lines.push(format!("{} {name}", if ok { "PASS" } else { "FAIL" }));
         check("version order", newer("0.2.0", "0.1.9") && newer("v1.0.0", "0.9.9") && newer("0.1.10", "0.1.9") && !newer("0.1.0", "0.1.0") && !newer("0.1", "0.1.0") && !newer("", "0.1.0") && newer("1.2.3-beta", "1.2.2"));
         check("nothing is due right after a check", !due(&UpdateInfo { checked: util::unix_ms() / 1000, ..Default::default() }) && due(&UpdateInfo::default()));
+
+        // The restart after an update: Glint starts itself and the new copy waits for the old one.
+        let me = std::env::current_exe().unwrap_or_default();
+        let cmd = relaunch_cmd(&me);
+        let cmd_args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        check("the restart starts Glint.exe itself, with this process's id", cmd.get_program() == me.as_os_str() && cmd_args == [AFTER_UPDATE.to_string(), std::process::id().to_string()]);
+        check("the restart runs in Glint's folder", cmd.get_current_dir() == me.parent());
+        // A stand-in for the old copy: a hidden process that ends by itself after about 2 s.
+        let sleeper = || util::hidden_cmd(Path::new("cmd.exe")).args(["/c", "ping -n 3 127.0.0.1 >nul"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        match sleeper() {
+            Ok(mut old) => {
+                check("a running process is not reported as ended", !crate::win::wait_for_exit(old.id(), 100) && crate::win::process_alive(old.id()));
+                // The real start-up path: `--after-update <pid>` first, then a headless test that writes a report.
+                let probe = PathBuf::from(format!("{report_path}.after-update.txt"));
+                let _ = fs::remove_file(&probe);
+                let started = std::time::Instant::now();
+                let ran = std::process::Command::new(&me).arg(AFTER_UPDATE).arg(old.id().to_string()).arg("--memory-test").arg(&probe).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+                let waited = started.elapsed().as_millis();
+                let old_gone = !crate::win::process_alive(old.id());
+                check(&format!("the new copy started only after the old one ended (waited {waited} ms)"), ran && old_gone && probe.is_file() && waited >= 1000);
+                let _ = old.kill();
+                let _ = old.wait();
+                let _ = fs::remove_file(&probe);
+            }
+            Err(e) => check(&format!("a stand-in process could be started ({e})"), false),
+        }
+        let started = std::time::Instant::now();
+        wait_for_old_copy(&[AFTER_UPDATE.to_string(), "4294967290".to_string()]);
+        wait_for_old_copy(&[AFTER_UPDATE.to_string(), std::process::id().to_string()]);
+        wait_for_old_copy(&[AFTER_UPDATE.to_string()]);
+        wait_for_old_copy(&["--minimized".to_string()]);
+        check("no wait for a process that is gone, for itself, or without an id", started.elapsed().as_millis() < 2000);
     }
     let info = check();
     lines.push(format!("INFO check: current={} latest={:?} available={} url={} sha={} error={:?}", info.current, info.latest, info.available, !info.url.is_empty(), !info.sha_url.is_empty(), info.error));

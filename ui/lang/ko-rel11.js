@@ -19,4 +19,5 @@ glintAddLanguage("ko", "한국어", {
   "Settings → Components no longer stays on Installing after the window was opened again, and finds ffprobe beside an ffmpeg you chose yourself.": "설정 → 구성 요소가 창을 다시 연 뒤 설치 중에 멈춰 있지 않고, 직접 고른 ffmpeg 옆의 ffprobe를 찾아요.",
   "A clip that is waiting to be edited together can no longer be renamed or moved in the meantime.": "한 번에 편집을 기다리는 클립은 그동안 이름을 바꾸거나 옮길 수 없어요.",
   "If Blur's timing fix fails, the clip still renders.": "Blur의 타이밍 보정이 실패해도 클립은 렌더링돼요.",
+  "After an update Glint starts itself again directly, without a hidden PowerShell step in between. That step could make antivirus programs suspicious.": "업데이트 후 Glint가 숨겨진 PowerShell 단계를 거치지 않고 직접 다시 시작해요. 그 단계 때문에 백신 프로그램이 Glint를 의심할 수 있었어요.",
 });

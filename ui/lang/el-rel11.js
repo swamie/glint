@@ -19,4 +19,5 @@ glintAddLanguage("el", "Ελληνικά", {
   "Settings → Components no longer stays on Installing after the window was opened again, and finds ffprobe beside an ffmpeg you chose yourself.": "Οι Ρυθμίσεις → Στοιχεία δεν μένουν πια στην Εγκατάσταση όταν το παράθυρο ανοίξει ξανά, και βρίσκουν το ffprobe δίπλα σε ffmpeg που διαλέξατε εσείς.",
   "A clip that is waiting to be edited together can no longer be renamed or moved in the meantime.": "Ένα κλιπ που περιμένει την Επεξεργασία μαζί δεν μπορεί πια να μετονομαστεί ή να μετακινηθεί στο μεταξύ.",
   "If Blur's timing fix fails, the clip still renders.": "Αν η διόρθωση χρονισμού του Blur αποτύχει, το κλιπ αποδίδεται κανονικά.",
+  "After an update Glint starts itself again directly, without a hidden PowerShell step in between. That step could make antivirus programs suspicious.": "Μετά από μια ενημέρωση το Glint ξεκινά ξανά απευθείας, χωρίς κρυφό βήμα PowerShell ενδιάμεσα. Αυτό το βήμα μπορούσε να κάνει τα προγράμματα προστασίας από ιούς καχύποπτα.",
 });

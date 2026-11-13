@@ -476,7 +476,7 @@ fn update_install(app: AppHandle, core: St) -> Result<(), String> {
     let emitter = core.inner().clone();
     crate::update::install_into(&info, &dir, &mut |pct| emitter.emit("update-progress", serde_json::json!({ "pct": pct })))?;
     util::log(&format!("update: installed {} over {}; restarting", info.latest, info.current));
-    crate::update::relaunch_soon(&dir.join("Glint.exe"));
+    crate::update::relaunch(&dir.join("Glint.exe"));
     app.exit(0);
     Ok(())
 }

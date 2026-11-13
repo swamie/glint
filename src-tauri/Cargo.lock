@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "glint"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "chrono",
  "clipboard-win",

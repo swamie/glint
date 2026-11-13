@@ -308,6 +308,18 @@ pub fn process_alive(pid: u32) -> bool {
     }
 }
 
+/// Wait until process `pid` has ended, at most `max_ms`. True if it has gone (or was never there).
+pub fn wait_for_exit(pid: u32, max_ms: u32) -> bool {
+    use windows::Win32::Foundation::WAIT_TIMEOUT;
+    use windows::Win32::System::Threading::{WaitForSingleObject, PROCESS_SYNCHRONIZE};
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) else { return true };
+        let r = WaitForSingleObject(h, max_ms);
+        let _ = CloseHandle(h);
+        r != WAIT_TIMEOUT
+    }
+}
+
 /// An executable's icon as RGBA pixels, `size` x `size`, top row first.
 pub fn exe_icon_rgba(path: &str, size: u32) -> Option<Vec<u8>> {
     use windows::Win32::Graphics::Gdi::{CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS};

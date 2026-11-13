@@ -36,6 +36,7 @@ fn main() {
         return; // --deps-test's stand-in for an old ffmpeg (only as ffmpeg.exe with GLINT_FAKE_FFMPEG=1)
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    update::wait_for_old_copy(&args); // started by the copy an update just replaced: let it end first
     if let Some(i) = args.iter().position(|a| a == "--deps-test") {
         // glint.exe --deps-test <report.txt>: Check and repair (downloads ffmpeg once into a scratch folder).
         deps::self_test(args.get(i + 1).map(String::as_str).unwrap_or("deps.txt"));

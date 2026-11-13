@@ -14,6 +14,14 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.15", date: "2026-11-14",
+    new: [],
+    improved: [
+      t("After an update Glint starts itself again directly, without a hidden PowerShell step in between. That step could make antivirus programs suspicious."),
+    ],
+    fixed: [],
+  },
+  {
     version: "0.1.14", date: "2026-11-14",
     new: [
       t("Edit together: the clips now open in the editor as separate clips, in the order you selected them. Drag a clip in the Clips strip to move it, or right-click it to move it or cut it out. Nothing is added to your library until you export."),
