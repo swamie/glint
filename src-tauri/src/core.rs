@@ -27,6 +27,10 @@ pub struct Status {
     /// Glint's own memory without the replay buffer.
     pub ram_app: u64,
     pub ram_ffmpeg: u64,
+    /// Everything the program uses, as Task Manager adds it up: this process's
+    /// working set (replay buffer included) plus those of all its child
+    /// processes (ffmpeg and the WebView2 processes that draw the window).
+    pub ram_total: u64,
     pub max_mbps: f64,
     pub error: String,
     /// Game detected as running ("" = none).
@@ -338,6 +342,7 @@ impl Core {
             cpu_pct: s.cpu_pct,
             ram_app: ram_self.saturating_sub(buffer_bytes),
             ram_ffmpeg: ram_ff,
+            ram_total: win::tree_working_set(),
             max_mbps: st.status.maxrate as f64 / 1e6,
             error: st.status.error,
             game: self.playing.lock().unwrap().as_ref().map(|p| p.name.clone()).unwrap_or_default(),
@@ -645,6 +650,59 @@ impl Core {
             self.move_clips(&follow, &util::game_folder(&game))?;
         }
         Ok(())
+    }
+
+    /// Give a clip a new title and its file the same name: `<title>.<ext>`, in
+    /// the folder it is in, made safe for the file system (" (2)" is added if
+    /// another file has that name). A change of letter case only is renamed too.
+    /// If the file cannot be renamed, the clip is left exactly as it was.
+    pub fn rename_clip(&self, id: &str, title: &str) -> Result<ClipMeta, String> {
+        let title: String = title.trim().chars().take(200).collect();
+        if title.is_empty() {
+            return Err("Type a name for the clip".into());
+        }
+        // `sanitize_filename` turns a name of nothing usable into "Clip"; refuse it instead.
+        if title.chars().all(|c| "<>:\"/\\|?*.".contains(c) || c.is_whitespace() || c.is_control()) {
+            return Err("That name has nothing a file name can use. Use letters or digits".into());
+        }
+        let meta = self.lib.lock().unwrap().get(id).ok_or("Clip not found")?;
+        // A queued or running render holds the old path; renaming under it would break it.
+        if self.jobs.list().iter().any(|j| j.clip_id == id && (j.state == "queued" || j.state == "running")) {
+            return Err("This clip is being rendered. Rename it when the render has finished".into());
+        }
+        let src = PathBuf::from(&meta.path);
+        if !src.is_file() {
+            return Err("The clip's file is missing, so it cannot be renamed".into());
+        }
+        let dir = src.parent().map(Path::to_path_buf).unwrap_or_default();
+        let ext = src.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "mp4".into());
+        let base = util::sanitize_filename(&title);
+        // The first free name; the clip's own file counts as free (a case-only change).
+        let same_file = |p: &Path| p.to_string_lossy().to_lowercase() == src.to_string_lossy().to_lowercase();
+        let mut dest = dir.join(format!("{base}.{ext}"));
+        let mut n = 2;
+        while dest.exists() && !same_file(&dest) {
+            dest = dir.join(format!("{base} ({n}).{ext}"));
+            n += 1;
+        }
+        if dest.as_os_str() != src.as_os_str() {
+            std::fs::rename(&src, &dest).map_err(|e| match e.raw_os_error() {
+                Some(32) | Some(33) => "The clip is open in another program, so its file could not be renamed. Close the program (or the clip in the player) and try again".to_string(),
+                Some(5) => "Windows did not allow the clip's file to be renamed (access denied)".to_string(),
+                Some(2) | Some(3) => "The clip's file is missing, so it cannot be renamed".to_string(),
+                _ => format!("The clip's file could not be renamed: {e}"),
+            })?;
+            util::log(&format!("rename clip {id}: {} -> {}", src.display(), dest.display()));
+        }
+        let path = dest.to_string_lossy().into_owned();
+        self.lib
+            .lock()
+            .unwrap()
+            .update(id, |c| {
+                c.title = title;
+                c.path = path;
+            })
+            .ok_or_else(|| "Clip not found".into())
     }
 
     /// Move clip files into a library folder ("" = the clips folder itself).

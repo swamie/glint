@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="jobs.css">
 <link rel="stylesheet" href="importer.css">
 <link rel="stylesheet" href="updater.css">
+<link rel="stylesheet" href="bugreport.css">
 <link rel="stylesheet" href="lang/ko.css">
 <link rel="stylesheet" href="lang/el.css">
 <style id="custom-css"></style>
@@ -19,7 +20,6 @@
 <div id="app">
   <header class="topbar" data-tauri-drag-region>
     <div class="top-left">
-      <button class="side-toggle" id="side-toggle" data-act="side-toggle"><svg viewBox="0 0 24 24"><rect x="3" y="4.500" width="18" height="15" rx="2"/><path d="M9 4.500v15"/></svg></button>
       <span class="top-logo" id="ver"><svg class="logo" viewBox="0 0 48 48"><path d="M21 4l4.2 13.8L39 22l-13.8 4.2L21 40l-4.2-13.8L3 22l13.8-4.2z"/><path class="spark" d="M38 3l1.8 5.2L45 10l-5.2 1.8L38 17l-1.8-5.2L31 10l5.2-1.8z"/></svg></span>
       <!-- An icon until it is clicked (or Ctrl K): it opens while it has the focus or holds text. -->
       <label class="search" id="search">
@@ -29,6 +29,7 @@
       </label>
     </div>
     <div class="top-actions">
+      <div id="bug-slot"></div>
       <div id="update-slot"></div>
       <div id="jobs-slot"></div>
       <button id="btn-toggle" class="btn">Pause</button>
@@ -45,17 +46,13 @@
   </header>
 
   <aside class="side">
+    <!-- Folds the sidebar to a strip of icons; it stays the strip's top icon. -->
+    <button class="side-toggle" id="side-toggle" data-act="side-toggle"><svg viewBox="0 0 24 24"><rect x="3" y="4.500" width="18" height="15" rx="2"/><path d="M9 4.500v15"/></svg></button>
     <div class="nav-label" data-i18n="General">General</div>
     <!-- Library, Favorites, Rendered, then Folders: a row that unfolds the folder list under it. -->
     <nav id="nav-general"></nav>
     <div class="nav-label" data-i18n="Tools">Tools</div>
     <nav id="nav-tools"></nav>
-    <div class="side-foot">
-      <div class="rec-card">
-        <span class="rec-ic" id="rec-dot"><svg viewBox="0 0 24 24"><path d="M4.500 12a7.500 7.500 0 1 0 2.400-5.500"/><path d="M4.500 4.500v4.800h4.800"/></svg></span>
-        <div><div id="rec-title">Starting</div><div class="rec-sub" id="rec-sub">&nbsp;</div></div>
-      </div>
-    </div>
   </aside>
 
   <main id="view"></main>
@@ -82,12 +79,16 @@
 <script src="lang/ko-buffer.js"></script>
 <script src="lang/ko-editor2.js"></script>
 <script src="lang/ko-timeline2.js"></script>
+<script src="lang/ko-shell.js"></script>
+<script src="lang/ko-bug.js"></script>
 <script src="lang/el-app.js"></script>
 <script src="lang/el-editor.js"></script>
 <script src="lang/el-update.js"></script>
 <script src="lang/el-buffer.js"></script>
 <script src="lang/el-editor2.js"></script>
 <script src="lang/el-timeline2.js"></script>
+<script src="lang/el-shell.js"></script>
+<script src="lang/el-bug.js"></script>
 <script src="mock.js"></script>
 <script src="themes.js"></script>
 <script src="editmodel.js"></script>
@@ -98,5 +99,6 @@
 <script src="blurpage.js"></script>
 <script src="app.js"></script>
 <script src="updater.js"></script>
+<script src="bugreport.js"></script>
 </body>
 </html>

@@ -4,6 +4,7 @@ mod app;
 mod audio;
 mod bench;
 mod blur;
+mod bugreport;
 mod clip;
 mod core;
 mod denoise;
@@ -93,6 +94,16 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--buffer-test") {
         // glint.exe --buffer-test <report.txt>: the RAM / disk replay buffer on made-up data.
         recorder::self_test(args.get(i + 1).map(String::as_str).unwrap_or("buffer.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--bug-test") {
+        // glint.exe --bug-test <report.txt>: bug reports, sent to a listener on 127.0.0.1 only.
+        bugreport::self_test(args.get(i + 1).map(String::as_str).unwrap_or("bug.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--memory-test") {
+        // glint.exe --memory-test <report.txt>: the memory figure of the whole process tree.
+        win::memory_test(args.get(i + 1).map(String::as_str).unwrap_or("memory.txt"));
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--folders-test") {

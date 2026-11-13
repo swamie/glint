@@ -150,6 +150,85 @@ pub fn proc_stats(pid: u32) -> Option<(f64, u64)> {
     }
 }
 
+/// Every process started by `root`, by its children, and so on (not `root` itself).
+/// One ToolHelp snapshot of the process list; costs about a millisecond.
+pub fn descendants(root: u32) -> Vec<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
+    let mut pairs: Vec<(u32, u32)> = Vec::new(); // (pid, parent)
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return Vec::new() };
+        let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut ok = Process32FirstW(snap, &mut e).is_ok();
+        while ok {
+            pairs.push((e.th32ProcessID, e.th32ParentProcessID));
+            ok = Process32NextW(snap, &mut e).is_ok();
+        }
+        let _ = CloseHandle(snap);
+    }
+    // A parent id can outlive its process and be reused, so walk outwards from
+    // `root` and never visit a process twice.
+    let mut out: Vec<u32> = Vec::new();
+    let mut todo = vec![root];
+    while let Some(parent) = todo.pop() {
+        for &(pid, ppid) in &pairs {
+            if ppid == parent && pid != root && pid != 0 && !out.contains(&pid) {
+                out.push(pid);
+                todo.push(pid);
+            }
+        }
+    }
+    out
+}
+
+/// Working set of this process plus all of its descendants (ffmpeg, the WebView2
+/// processes that draw the window), the sum Task Manager shows for the app's group.
+/// The process list is read again at most every 3 seconds; the sizes on every call.
+pub fn tree_working_set() -> u64 {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static KIDS: Mutex<Option<(Instant, Vec<u32>)>> = Mutex::new(None);
+    let kids = {
+        let mut cache = KIDS.lock().unwrap();
+        if !cache.as_ref().is_some_and(|(at, _)| at.elapsed() < Duration::from_secs(3)) {
+            *cache = Some((Instant::now(), descendants(std::process::id())));
+        }
+        cache.as_ref().map(|(_, k)| k.clone()).unwrap_or_default()
+    };
+    let own = proc_stats(0).map(|(_, ws)| ws).unwrap_or(0);
+    own + kids.iter().filter_map(|&pid| proc_stats(pid)).map(|(_, ws)| ws).sum::<u64>()
+}
+
+/// `glint.exe --memory-test <report.txt>`: the process-tree memory figure, with a child process to find.
+pub fn memory_test(report_path: &str) {
+    let mut lines: Vec<String> = Vec::new();
+    let check = |lines: &mut Vec<String>, name: &str, ok: bool| lines.push(format!("{} {name}", if ok { "PASS" } else { "FAIL" }));
+    // A harmless child that waits a few seconds, with no window.
+    let child = crate::util::hidden_cmd(std::path::Path::new("ping.exe")).args(["-n", "6", "127.0.0.1"]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    let Ok(mut child) = child else {
+        let _ = std::fs::write(report_path, "FAIL could not start ping.exe\n");
+        return;
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let started = std::time::Instant::now();
+    let kids = descendants(std::process::id());
+    let snap_us = started.elapsed().as_micros();
+    check(&mut lines, "the child process is a descendant", kids.contains(&child.id()));
+    let own = proc_stats(0).map(|(_, ws)| ws).unwrap_or(0);
+    let child_ws = proc_stats(child.id()).map(|(_, ws)| ws).unwrap_or(0);
+    let total = tree_working_set();
+    check(&mut lines, "the total counts this process and the child", own > 0 && child_ws > 0 && total >= own + child_ws / 2);
+    let started = std::time::Instant::now();
+    for _ in 0..10 {
+        let _ = tree_working_set();
+    }
+    let per_call_us = started.elapsed().as_micros() / 10;
+    check(&mut lines, "a cached call is cheap (under 5 ms)", per_call_us < 5000);
+    lines.push(format!("INFO own={:.1} MB child={:.1} MB total={:.1} MB descendants={} snapshot={snap_us} us cached call={per_call_us} us", own as f64 / 1e6, child_ws as f64 / 1e6, total as f64 / 1e6, kids.len()));
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::write(report_path, lines.join("\n") + "\n");
+}
+
 /// Show a window without activating it, so a toast never steals focus from a game.
 pub fn show_no_activate(hwnd: isize) {
     unsafe {

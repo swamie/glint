@@ -1272,11 +1272,16 @@ function mountTimeline(host, opts) {
     host.dataset.tlDrag = d.type;
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+    window.addEventListener("blur", onLost);
     if (d.type === "seek") apply(d, e);
   }
+  // The mouse-up never arrives when the window loses the mouse mid-drag (Alt+Tab, a
+  // screenshot tool): end the drag instead of leaving it, and its rubber band, hanging.
+  function onLost() { if (st.drag) endDrag(); }
   function onMove(e) {
     const d = st.drag;
     if (!d) return;
+    if (e.buttons === 0) return onUp(e); // released while we could not see it
     d.lastE = e;
     if (!d.moved) {
       // A click may turn into a rubber band in any direction; the other drags are sideways.
@@ -1346,6 +1351,8 @@ function mountTimeline(host, opts) {
     const rowsTop = el.rows.offsetTop, rowsBot = rowsTop + el.rows.offsetHeight;
     const left = Math.max(0, Math.min(d.bx0, bx1) - st.scrollX), right = Math.min(st.laneW, Math.max(d.bx0, bx1) - st.scrollX);
     const top = Math.max(rowsTop, Math.min(d.by0, by1)), bot = Math.min(rowsBot, Math.max(d.by0, by1));
+    clearTimeout(st.bandTimer);
+    el.band.classList.remove("out");
     el.band.hidden = false;
     el.band.style.transform = `translate(${left}px, ${top}px)`;
     el.band.style.width = `${Math.max(0, right - left)}px`;
@@ -1393,11 +1400,17 @@ function mountTimeline(host, opts) {
   function endDrag() {
     window.removeEventListener("mousemove", onMove);
     window.removeEventListener("mouseup", onUp);
+    window.removeEventListener("blur", onLost);
     st.drag = null;
     host.classList.remove("tl-dragging");
     delete host.dataset.tlDrag;
     el.tip.hidden = true;
-    el.band.hidden = true;
+    // The rubber band fades and shrinks a little as it goes, then is hidden.
+    if (!el.band.hidden) {
+      el.band.classList.add("out");
+      clearTimeout(st.bandTimer);
+      st.bandTimer = setTimeout(() => { el.band.hidden = true; el.band.classList.remove("out"); }, 170);
+    }
     markAll();
   }
   function swallow(e) { e.stopPropagation(); e.preventDefault(); unswallow(); }

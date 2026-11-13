@@ -1,6 +1,6 @@
 [package]
 name = "glint"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "Offline instant-replay clipper"
 default-run = "glint"
@@ -41,6 +41,7 @@ features = [
     "Win32_Graphics_Gdi",
     "Win32_Media_Audio",
     "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_LibraryLoader",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",

@@ -261,7 +261,8 @@ window.addEventListener("keydown", (e) => {
   if (typeof askKey !== "undefined" && askKey) return; // app.js's prompt is open: it owns the keyboard
   // The timeline's right-click menu is open: it has its own keys (arrows, Enter, Esc closes it).
   // This listener was added first, so without this it would take Esc before the menu does.
-  if (document.querySelector(".tl-menu")) return;
+  // The same goes for the bug-report dialog (.bug-dlg), which can be opened over the editor.
+  if (document.querySelector(".tl-menu, .bug-dlg")) return;
   if (edPopClose && e.code === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); edPopClose(); return; }
   if (typeof S === "undefined" || !S.open || !S.player) return;
   // Escape while fullscreen only leaves fullscreen. The webview may leave it by
@@ -498,13 +499,12 @@ function blurPanel(c) {
   // "cancelled", "error", "done" or no job: not rendering.
   const b = S.settings.blur;
   const note = st === "error" ? `<div class="small e-bad">${esc(job.message)}</div>` : "";
-  const info = !S.blur ? t("blur-cli.exe not found. Set its path under Blur.")
-    : b.interpolate ? t("{fps} fps out, amount {amount}, interpolate {interp}. Change under Blur.", { fps: b.output_fps, amount: b.amount, interp: b.interpolated_fps })
-    : t("{fps} fps out, amount {amount}. Change under Blur.", { fps: b.output_fps, amount: b.amount });
-  // The page's name in that sentence (its last "Blur", in every language) is a link to the Blur page.
-  const linked = esc(info).replace(/Blur(?![\s\S]*Blur)/, () => `<button class="text-link" data-v="blur-page">Blur</button>`);
+  // Under the button: just a link to the Blur page (with the reason first, when Blur is missing).
+  // The current settings are its tooltip.
+  const now = b.interpolate ? t("{fps} fps out, amount {amount}, interpolate {interp}", { fps: b.output_fps, amount: b.amount, interp: b.interpolated_fps }) : t("{fps} fps out, amount {amount}", { fps: b.output_fps, amount: b.amount });
+  const link = `<button class="text-link" data-v="blur-page" title="${esc(now)}">${esc(t("Change Blur settings"))}</button>`;
   return `${note}<button class="btn wide" data-v="blur" ${S.blur ? "" : "disabled"}>${ICON.blur}<span>${esc(t("Render with Blur"))}</span></button>
-    <div class="small">${linked}</div>`;
+    <div class="small">${S.blur ? "" : esc(t("blur-cli.exe was not found.")) + " "}${link}</div>`;
 }
 
 function edTracksText(n) {
@@ -563,7 +563,6 @@ function openClip(id) {
           <div class="small">${L("Copies the file. Paste it into Discord or any chat.")}</div>
           <div class="v-sep"></div>
           <button class="btn wide" data-v="edit">${ICON.cut}<span>${L("Edit")}</span></button>
-          <div class="small">${L("Trim, cut, speed, colour and audio.")}</div>
           <div id="v-blur">${blurPanel(c)}</div>
           <div class="v-sep"></div>
           <button class="btn wide" data-v="fav">${ICON.star}<span>${L(c.favorite ? "Remove favorite" : "Add to favorites")}</span></button>
@@ -878,6 +877,8 @@ function mountPlayer(root, c) {
   const volUI = () => {
     el('[data-p="mute"]').innerHTML = P.muted || P.vol === 0 ? PICON.mute : PICON.vol;
     el(".p-vol").value = P.muted ? 0 : P.vol;
+    // The part of the bar left of the knob is drawn in the theme colour (see .p-vol in editor.css).
+    el(".p-vol").style.setProperty("--fill", `${Math.round((P.muted ? 0 : P.vol) * 100)}%`);
   };
   const state = () => {
     if (dead) return;

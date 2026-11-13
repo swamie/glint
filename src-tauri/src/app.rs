@@ -70,8 +70,8 @@ pub fn show_toast(app: &AppHandle, t: Toast) {
     const MARGIN: f64 = 22.0;
     let zoom = t.scale as f64 / 100.0;
     #[allow(non_snake_case)]
-    // The box plus 8 px around it: 314 x 68 normally, 52 x 52 when compact (see toast.html).
-    let (W, H) = if t.compact { (68.0 * zoom, 68.0 * zoom) } else { (330.0 * zoom, 84.0 * zoom) };
+    // The box plus 8 px around it: 314 x 68 normally, 44 x 44 when compact (see toast.html).
+    let (W, H) = if t.compact { (60.0 * zoom, 60.0 * zoom) } else { (330.0 * zoom, 84.0 * zoom) };
     let app = app.clone();
     let pos = if ["tl", "tr", "bl", "br"].contains(&t.pos.as_str()) { t.pos.clone() } else { "tr".to_string() };
     let script = format!(
@@ -199,11 +199,7 @@ fn rescan_library(core: St) -> Vec<ClipMeta> {
 
 #[tauri::command(async)]
 fn rename_clip(core: St, id: String, title: String) -> Result<ClipMeta, String> {
-    let title = title.trim().to_string();
-    if title.is_empty() {
-        return Err("Title cannot be empty".into());
-    }
-    core.lib.lock().unwrap().update(&id, |c| c.title = title).ok_or_else(|| "Clip not found".into())
+    core.rename_clip(&id, &title)
 }
 
 #[tauri::command(async)]
@@ -474,6 +470,19 @@ fn update_install(app: AppHandle, core: St) -> Result<(), String> {
     Ok(())
 }
 
+/// What a bug report would carry: whether reports can be sent, the version,
+/// the system lines and the end of the log (nothing is sent here).
+#[tauri::command(async)]
+fn bug_report_info(core: St) -> crate::bugreport::BugInfo {
+    crate::bugreport::info(&core)
+}
+
+/// Post a bug report to the developers' Discord. The error, if any, is a plain sentence to show.
+#[tauri::command(async)]
+fn send_bug_report(core: St, text: String, contact: String, include_log: bool) -> Result<(), String> {
+    crate::bugreport::send(&core, &text, &contact, include_log)
+}
+
 #[tauri::command(async)]
 fn list_jobs(core: St) -> Vec<crate::jobs::Job> {
     core.jobs.list()
@@ -634,6 +643,8 @@ pub fn run(minimized: bool) {
             update_state,
             update_check,
             update_install,
+            bug_report_info,
+            send_bug_report,
             list_jobs,
             cancel_job,
             clear_jobs,

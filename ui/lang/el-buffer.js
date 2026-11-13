@@ -26,6 +26,12 @@ glintAddLanguage("el", "Ελληνικά", {
   "Hide the sidebar": "Απόκρυψη πλαϊνής στήλης",
   "Show the sidebar": "Εμφάνιση πλαϊνής στήλης",
   "Version": "Έκδοση",
+  "Change Blur settings": "Αλλαγή ρυθμίσεων Blur",
+  "blur-cli.exe was not found.": "Το blur-cli.exe δεν βρέθηκε.",
+  "{fps} fps out, amount {amount}, interpolate {interp}": "Έξοδος {fps} fps, ένταση {amount}, παρεμβολή {interp}",
+  "{fps} fps out, amount {amount}": "Έξοδος {fps} fps, ένταση {amount}",
+  "Fast render": "Γρήγορη απόδοση",
+  "Several times quicker: no invented frames, and the graphics card encodes. Best on clips captured at 120 fps or more": "Αρκετές φορές πιο γρήγορα: χωρίς παρεμβολή καρέ, με κωδικοποίηση από την κάρτα γραφικών. Ιδανικό για κλιπ που καταγράφηκαν στα 120 fps ή περισσότερα",
   "Compact": "Συμπαγής",
   "Shows only the two stars in a small square, with no text. Problems, such as a clip that failed, still show the full box": "Δείχνει μόνο τα δύο αστέρια σε ένα μικρό τετράγωνο, χωρίς κείμενο. Τα προβλήματα, όπως ένα κλιπ που απέτυχε, εμφανίζονται στο πλήρες πλαίσιο",
 });

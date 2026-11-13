@@ -145,6 +145,8 @@ const BP_PRESETS = [
   { id: "light", label: "Light", tip: "A short smear that keeps things crisp", set: { blur: true, amount: 0.5, output_fps: 60, weighting: "equal", gamma: 1, interpolate: true, interpolated_fps: "5x" } },
   { id: "medium", label: "Medium", tip: "Blur's default: smooth, natural motion", set: { blur: true, amount: 1, output_fps: 60, weighting: "equal", gamma: 1, interpolate: true, interpolated_fps: "5x" } },
   { id: "heavy", label: "Heavy", tip: "Long, soft trails", set: { blur: true, amount: 2, output_fps: 60, weighting: "gaussian_sym", gamma: 1, interpolate: true, interpolated_fps: "5x" } },
+  // The two slow steps of a render are inventing in-between frames and encoding on the CPU: this skips the first and moves the second to the graphics card.
+  { id: "fast", label: "Fast render", tip: "Several times quicker: no invented frames, and the graphics card encodes. Best on clips captured at 120 fps or more", set: { blur: true, amount: 1, output_fps: 60, weighting: "equal", gamma: 1, interpolate: false, gpu_encoding: true } },
   { id: "cine", label: "Cinematic 30 fps", tip: "Film-like: 30 fps with a half-frame smear", set: { blur: true, amount: 0.5, output_fps: 30, weighting: "equal", gamma: 1, interpolate: true, interpolated_fps: "5x" } },
 ];
 

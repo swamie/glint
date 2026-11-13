@@ -246,6 +246,31 @@ pub fn folders_test(report_path: &str) {
     check("retag with game folders off moves nothing", core.set_game(&ids(&["c"]), "Deadlock").is_ok() && get("c").folder == "Overwatch");
     check("unknown game goes to Other", util::game_folder("  ") == "Other" && util::game_folder("Overwatch: 2?") == "Overwatch 2");
 
+    // Renaming a clip renames its file. a sits in Fortnite\a.mp4 at this point.
+    let names = |dir: &Path| std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect::<Vec<_>>();
+    let fort = root.join("Fortnite");
+    let r = core.rename_clip("a", "  My: best/clip?  ");
+    check("rename renames the file", r.as_ref().is_ok_and(|m| m.title == "My: best/clip?" && m.path == fort.join("My best clip.mp4").to_string_lossy()) && fort.join("My best clip.mp4").is_file() && !fort.join("a.mp4").exists());
+    check("rename is saved in the index", get("a").title == "My: best/clip?" && get("a").path.ends_with("My best clip.mp4") && get("a").folder == "Fortnite" && library::Library::load().get("a").is_some_and(|c| c.path.ends_with("My best clip.mp4")));
+    let r = core.rename_clip("a", "my BEST clip");
+    check("a change of letter case renames the file", r.is_ok() && names(&fort).contains(&"my BEST clip.mp4".to_string()) && !names(&fort).contains(&"My best clip.mp4".to_string()) && get("a").path.ends_with("my BEST clip.mp4"));
+    check("renaming to the same name changes nothing", core.rename_clip("a", "my BEST clip").is_ok_and(|m| m.path.ends_with("my BEST clip.mp4")) && names(&fort).iter().filter(|n| n.to_lowercase().starts_with("my best clip")).count() == 1);
+    let _ = std::fs::write(fort.join("Taken.mp4"), b"stray");
+    check("a name in use gets a number", core.rename_clip("a", "Taken").is_ok_and(|m| m.path.ends_with("Taken (2).mp4") && m.title == "Taken") && std::fs::read(fort.join("Taken.mp4")).ok().as_deref() == Some(&b"stray"[..]) && std::fs::read(fort.join("Taken (2).mp4")).ok().as_deref() == Some(&b"a"[..]));
+    let before = get("a");
+    check("a name with nothing usable is refused", core.rename_clip("a", " ?? .. ").is_err() && core.rename_clip("a", "   ").is_err() && get("a").path == before.path && get("a").title == before.title);
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let held = std::fs::OpenOptions::new().read(true).share_mode(0).open(&before.path);
+        let r = core.rename_clip("a", "Locked");
+        let why = r.as_ref().err().cloned().unwrap_or_default();
+        check(&format!("a file in use is refused and left as it was ({why})"), held.is_ok() && r.is_err_and(|e| e.contains("open in another program")) && get("a").path == before.path && get("a").title == before.title && Path::new(&before.path).is_file() && !fort.join("Locked.mp4").exists());
+    }
+    core.lib.lock().unwrap().add(library::ClipMeta { id: "gone".into(), path: fort.join("gone.mp4").to_string_lossy().into_owned(), title: "gone".into(), folder: "Fortnite".into(), ..Default::default() });
+    check("a missing file is refused and the index kept", core.rename_clip("gone", "Back").is_err_and(|e| e.contains("missing")) && get("gone").title == "gone" && get("gone").path.ends_with("gone.mp4"));
+    check("an unknown clip is refused", core.rename_clip("nope", "Name").is_err());
+    core.lib.lock().unwrap().remove("gone");
+
     let _ = std::fs::write(report_path, lines.join("\n") + "\n");
 }
 

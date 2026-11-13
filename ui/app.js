@@ -189,16 +189,12 @@ function renderChrome() {
 
   const st = S.status || {};
   const on = !!st.recording;
-  const healthy = on && !st.error;
   $("#btn-toggle").textContent = on ? t("Pause") : t("Resume");
-  $("#btn-clip span").textContent = t("Clip last {length}", { length: fmtLen(quickSecs()) });
+  // In the narrowest windows the clip button shows only its icon, so its text is also its tooltip.
+  $("#btn-clip span").textContent = $("#btn-clip").title = t("Clip last {length}", { length: fmtLen(quickSecs()) });
   $("#btn-clip").disabled = !on;
-  // Glint keeps a replay buffer and saves clips from it; it never records to disk on its own, so the word is "Clipping".
-  $("#rec-dot").className = "rec-ic" + (healthy ? " on" : on ? " err" : "");
-  $("#rec-title").textContent = !on ? t("Paused") : st.error ? t("Capture problem") : st.game ? t("Clipping {game}", { game: st.game }) : t("Clipping");
-  $("#rec-title").title = st.game ? t("Detected game: {game}", { game: st.game }) : "";
-  $("#rec-sub").textContent = on ? `${st.width}×${st.height} · ${st.fps} fps` : t("Replay buffer is off");
 
+  // Glint keeps a replay buffer and saves clips from it; it never records to disk on its own, so the word is "Clipping".
   const enc = { nvenc: "NVENC", amf: "AMF", qsv: "Quick Sync", x264: "x264 (CPU)" }[st.encoder] || st.encoder || "";
   $("#sb-state").innerHTML = !on
     ? t("Paused")
@@ -210,8 +206,10 @@ function renderChrome() {
       })();
   const bufVars = { now: fmtDur(st.buffer_secs || 0), max: fmtDur(st.buffer_max || 0), size: fmtSize(st.buffer_bytes || 0), disk: fmtSize(st.buffer_disk_bytes || 0) };
   $("#sb-buffer").innerHTML = !on ? "" : st.buffer_disk_bytes ? t("Buffer <b>{now}</b> / {max} · {size} RAM + {disk} disk", bufVars) : t("Buffer <b>{now}</b> / {max} · {size}", bufVars);
-  $("#sb-load").innerHTML = on
-    ? t("{fps} · CPU {cpu}% · RAM {ram}", { fps: (st.fps_actual || 0) < st.fps * 0.5 ? t("screen still") : (st.fps_actual || 0).toFixed(0) + " fps", cpu: (st.cpu_pct || 0).toFixed(1), ram: fmtSize((st.ram_app || 0) + (st.ram_ffmpeg || 0)) })
+  // Frames arriving now / the frame rate set. RAM is the whole program (replay buffer, ffmpeg,
+  // the WebView): ram_total, or the window plus ffmpeg from a backend that does not send it.
+  $("#sb-load").textContent = on
+    ? t("{now}/{max} FPS · CPU {cpu}% · RAM {ram}", { now: Math.round(st.fps_actual || 0), max: st.fps || 0, cpu: (st.cpu_pct || 0).toFixed(1), ram: fmtSize(st.ram_total > 0 ? st.ram_total : (st.ram_app || 0) + (st.ram_ffmpeg || 0)) })
     : "";
 }
 
@@ -229,6 +227,8 @@ function visibleClips() {
   return { base, list: [...list].sort(by) };
 }
 
+/** A card's name: its own hit area (see editTitle). The tooltip shows the full name, which the card may cut short. */
+const titleHtml = (c) => `<span class="ctitle" title="${esc(c.title + "\n" + t("Double-click to rename"))}">${esc(c.title)}</span>`;
 function cardHtml(c) {
   const job = S.jobs[c.id];
   const bg = c.thumb
@@ -243,7 +243,7 @@ function cardHtml(c) {
       <span class="dur">${fmtDur(c.duration)}</span>
       ${job && job.state === "running" ? `<div class="job"><i style="width:${job.pct}%"></i></div>` : ""}
     </div>
-    <h3>${esc(c.title)}</h3>
+    <h3>${titleHtml(c)}</h3>
     <p><span>${esc(c.game)}</span>${c.folder && S.folder === null ? `<span>${esc(c.folder)}</span>` : ""}<span>${timeAgo(c.created)}</span><span>${fmtSize(c.size)}</span></p>
   </article>`;
 }
@@ -271,16 +271,30 @@ function gameRowHtml(base) {
   </div>`;
 }
 
+/**
+ * The folder chips after "All clips", in order: { id, label, n }, id "" being the main folder.
+ * Fullest first (ties by name), the main folder included. Without other folders the main folder
+ * would only repeat "All clips", so it is left out; while empty it is left out too, unless
+ * `showEmptyMain` or it is the folder being viewed (`cur`).
+ */
+function folderChipList(folders, clips, cur, showEmptyMain, mainLabel) {
+  const counts = {};
+  for (const c of clips) counts[c.folder || ""] = (counts[c.folder || ""] || 0) + 1;
+  const list = folders.map((f) => ({ id: f, label: f, n: counts[f] || 0 }));
+  const main = { id: "", label: mainLabel, n: counts[""] || 0 };
+  if (folders.length && (main.n || showEmptyMain || cur === "")) list.push(main);
+  return list.sort((a, b) => b.n - a.n || a.label.localeCompare(b.label));
+}
+
 /** Folder chips above the grid. Each one filters the library and is a drop target for dragged clips. */
 function folderRowHtml() {
   if (S.folder && !S.folders.includes(S.folder)) S.folder = null;
-  const count = (f) => S.clips.filter((c) => (c.folder || "") === f).length;
   const cur = S.folder === null ? "*" : S.folder;
   const chip = (id, label, n, icon = "") => `<button class="chip${cur === id ? " active" : ""}" data-folder="${esc(id)}" title="${esc(label)}">${icon}<span>${esc(label)}</span><i>${n}</i></button>`;
+  const list = folderChipList(S.folders, S.clips, S.folder, !!S.settings.show_empty_main, t("Main folder"));
   return `<div class="folders">
     ${chip("*", t("All clips"), S.clips.length)}
-    ${S.folders.length ? chip("", t("Main folder"), count("")) : ""}
-    ${[...S.folders].sort((a, b) => count(b) - count(a) || a.localeCompare(b)).map((f) => chip(f, f, count(f), ICON.folder)).join("") /* fullest folder first */}
+    ${list.map((f) => chip(f.id, f.label, f.n, f.id ? ICON.folder : "")).join("")}
     <button class="chip ghost" data-act="folder-new">${ICON.plus}<span>${t("New folder")}</span></button>
     ${S.folder ? `<span class="sp"></span><button class="btn sm" data-act="folder-rename">${t("Rename")}</button><button class="btn sm danger" data-act="folder-del">${ICON.trash}${t("Delete folder")}</button>` : ""}
   </div>`;
@@ -359,6 +373,60 @@ function clickSelect(id, e) {
   }
   syncSel();
 }
+
+/**
+ * Rename a clip in place: its name on the card turns into a text box with the name selected.
+ * Enter or a click elsewhere saves, Esc (or an empty name) cancels. The backend renames the
+ * file on disk too and returns the clip as saved, whose name may differ from what was typed.
+ * While the box is open, render() waits (S.renaming), so a refresh cannot wipe the edit.
+ */
+function editTitle(id) {
+  const c = S.clips.find((k) => k.id === id);
+  const h = $$("#view .card").find((el) => el.dataset.clip === id)?.querySelector("h3");
+  if (!c || !h || S.renaming) return;
+  S.renaming = id;
+  const input = document.createElement("input");
+  Object.assign(input, { type: "text", className: "title-edit", value: c.title, spellcheck: false, autocomplete: "off", maxLength: 120 });
+  input.setAttribute("aria-label", t("Clip name"));
+  h.classList.add("editing");
+  h.replaceChildren(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    const title = input.value.trim();
+    const later = S.renderLater;
+    S.renaming = null;
+    S.renderLater = false;
+    h.classList.remove("editing");
+    h.innerHTML = titleHtml(save && title ? { title } : c); // the typed name at once; the saved one follows
+    if (!save || !title || title === c.title) return later && render();
+    try {
+      const meta = await invoke("rename_clip", { id, title });
+      // Swapped by the old id: the clip's id may follow its new file name.
+      const i = S.clips.findIndex((k) => k.id === id);
+      if (i >= 0 && meta) S.clips[i] = meta;
+      if (meta && meta.id !== id) {
+        if (S.sel.delete(id)) S.sel.add(meta.id);
+        if (S.anchor === id) S.anchor = meta.id;
+      }
+    } catch (e) { fail(e); }
+    render();
+  };
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation(); // the keys are the text box's, not the app's
+    if (e.code === "Enter" || e.code === "NumpadEnter") { e.preventDefault(); finish(true); }
+    else if (e.code === "Escape") { e.preventDefault(); finish(false); }
+  });
+  // Leaving the window (Alt+Tab) also takes the focus away; the edit stays open for the return.
+  input.addEventListener("blur", () => { if (document.hasFocus()) finish(true); });
+}
+document.addEventListener("dblclick", (e) => {
+  const name = e.target.closest("#view .card .ctitle");
+  if (name && isLib() && !S.open) editTitle(name.closest(".card").dataset.clip);
+});
 
 /* One pop-up menu, used by the selection bar's "Move to" and by right-click.
    Items are <button data-m="action" data-arg="…">; menuIds are the clips it acts on. */
@@ -461,12 +529,7 @@ async function menuAction(m, arg) {
       for (const k of clips) k.favorite = favorite;
       return render();
     }
-    case "rename": {
-      const title = await askText(t("Rename the clip"), c.title, t("Rename"));
-      if (!title || title === c.title) return;
-      replaceClip(await invoke("rename_clip", { id, title }));
-      return render();
-    }
+    case "rename": return editTitle(id);
     case "game": return setGame(arg);
     case "game-new": { const game = await askText(t("Game name"), c?.game || "", t("Set game")); if (game) await setGame(game); return; }
     case "move": return moveIds(ids, arg);
@@ -555,6 +618,7 @@ const view = $("#view");
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 view.addEventListener("mousedown", (e) => {
+  endDrag(false); // a drag whose release was missed must not linger under the new one
   if (e.button !== 0 || !isLib() || S.open || !$(".grid", view)) return;
   if (e.target.closest("button, select, input, .check")) return;
   const vr = view.getBoundingClientRect();
@@ -562,11 +626,43 @@ view.addEventListener("mousedown", (e) => {
   drag = { x: e.clientX, y: e.clientY, cx: e.clientX, cy: e.clientY, card: e.target.closest(".card")?.dataset.clip || null, add: e.ctrlKey || e.shiftKey, mode: null };
 });
 
+/**
+ * Finish the drag in progress, if any, and clear away everything it put on screen.
+ * `drop` is a real release: a box drag fades its box out, a clip drag returns its drop target.
+ * Otherwise (the release was missed: Alt+Tab, a screenshot tool, a lost pointer) the drag is
+ * dropped without moving anything. Returns the drag for the caller.
+ */
+function endDrag(drop) {
+  const d = drag;
+  if (!d) return null;
+  drag = null;
+  clearInterval(d.timer);
+  document.body.classList.remove("selecting", "moving-clips");
+  d.ghost?.remove();
+  d.target?.classList.remove("drop");
+  if (d.box) {
+    const box = d.box;
+    box.classList.add("out"); // style.css: fade out and shrink a little toward the centre (150 ms)
+    setTimeout(() => box.remove(), 170);
+  }
+  if (d.mode === "box") S.anchor = null;
+  return drop ? d : null;
+}
+// Every way the release can go missing ends the drag: the window losing focus or being hidden,
+// the pointer being taken away, or the mouse coming back with no button held.
+window.addEventListener("blur", () => endDrag(false));
+document.addEventListener("visibilitychange", () => { if (document.hidden) endDrag(false); });
+window.addEventListener("pointercancel", () => endDrag(false));
+// Fired around a normal release too, so it waits a moment: by then a real mouseup has run.
+window.addEventListener("lostpointercapture", () => { const d = drag; if (d) setTimeout(() => { if (drag === d) endDrag(false); }, 0); });
+document.documentElement.addEventListener("mouseleave", (e) => { if (e.buttons === 0) endDrag(false); });
+
 function boxUpdate() {
   const vr = view.getBoundingClientRect();
   const x = clamp(drag.cx - vr.left, 0, view.clientWidth);
   const y = clamp(drag.cy - vr.top + view.scrollTop, 0, drag.maxY);
   const l = Math.min(x, drag.ox), r = Math.max(x, drag.ox), tp = Math.min(y, drag.oy), b = Math.max(y, drag.oy);
+  if (!drag.box.isConnected) view.append(drag.box); // the page was re-rendered under the drag
   Object.assign(drag.box.style, { left: `${l}px`, top: `${tp}px`, width: `${r - l}px`, height: `${b - tp}px` });
   const next = new Set(drag.base);
   for (const c of drag.cards) if (c.l < r && c.r > l && c.t < b && c.b > tp) next.add(c.id);
@@ -576,10 +672,12 @@ function boxUpdate() {
 
 window.addEventListener("mousemove", (e) => {
   if (!drag) return;
+  if (e.buttons === 0) return endDrag(false); // the button was let go where Glint could not see it
   drag.cx = e.clientX;
   drag.cy = e.clientY;
   if (!drag.mode) {
     if (Math.hypot(drag.cx - drag.x, drag.cy - drag.y) < 6) return;
+    for (const el of $$(".marquee, .drag-ghost")) el.remove(); // leftovers of an earlier drag
     if (drag.card && S.sel.has(drag.card)) {
       drag.mode = "move";
       drag.ghost = document.createElement("div");
@@ -621,9 +719,8 @@ window.addEventListener("mousemove", (e) => {
 });
 
 window.addEventListener("mouseup", async () => {
-  if (!drag) return;
-  const d = drag;
-  drag = null;
+  const d = endDrag(true);
+  if (!d) return;
   if (!d.mode) {
     // A plain click on empty space drops the selection.
     if (!d.card && !d.add) clearSel();
@@ -631,17 +728,7 @@ window.addEventListener("mouseup", async () => {
   }
   suppressClick = true;
   setTimeout(() => (suppressClick = false), 0);
-  if (d.mode === "box") {
-    clearInterval(d.timer);
-    d.box.remove();
-    document.body.classList.remove("selecting");
-    S.anchor = null;
-    return;
-  }
-  d.ghost.remove();
-  d.target?.classList.remove("drop");
-  document.body.classList.remove("moving-clips");
-  if (!d.target) return;
+  if (d.mode === "box" || !d.target) return;
   try {
     if ("folder" in d.target.dataset) return await moveSel(d.target.dataset.folder);
     const name = await newFolder();
@@ -885,6 +972,7 @@ function renderSettings() {
     <div class="section"><h2>${t("Storage")}</h2>
       ${row(t("Clips folder"), `<span class="path" title="${esc(S.settings.clips_dir)}">${esc(S.settings.clips_dir)}</span>`, `<button class="btn sm" data-act="pick-dir">${t("Change")}</button><button class="btn sm" data-act="open-dir">${t("Open")}</button>`)}
       ${row(t("Game folders"), t("Save each new clip into a subfolder named after its game, such as Overwatch or Risk of Rain 2"), toggle("game_folders"))}
+      ${row(t("Show the main folder when it is empty"), t("Otherwise its chip above the library is hidden while no clip sits loose in the clips folder"), toggle("show_empty_main"))}
       ${row(t("Sort existing clips"), t("Move the clips that sit loose in the clips folder into their game's folder. Clips you already filed stay put"), `<button class="btn sm" data-act="sort-games">${t("Sort by game")}</button>`)}
     </div>
     <div class="section"><h2>${t("Startup")}</h2>
@@ -961,6 +1049,7 @@ function applySettingsFilter() {
 function render() {
   renderChrome();
   if (!S.settings) return;
+  if (S.renaming) { S.renderLater = true; return; } // a clip name is being edited in place: redraw once it is done
   const keep = $("#view").scrollTop;
   ({ library: renderLibrary, favorites: renderLibrary, rendered: renderLibrary, keybinds: renderKeybinds, recording: renderRecording, blur: renderBlur, settings: renderSettings })[S.page]();
   $("#view").scrollTop = keep;
@@ -978,6 +1067,7 @@ setInterval(() => { if (S.capturing !== null) invoke("suspend_hotkeys", { on: tr
 
 document.addEventListener("click", async (e) => {
   if (suppressClick) { suppressClick = false; return; }
+  if (e.target.closest(".title-edit")) return; // clicks in a clip's name box stay there
   const el = e.target.closest("[data-page],[data-tab],[data-size],[data-clip],[data-act],[data-v],[data-win],[data-folder],[data-m],[data-corner],[data-theme]");
   if (e.target.id === "modal") return closeClip();
   if (!$("#menu").hidden && el?.dataset.act !== "sel-move" && !(e.target.closest(".has-sub") && !el?.dataset.m)) setTimeout(closeMenu, 0);
@@ -993,6 +1083,9 @@ document.addEventListener("click", async (e) => {
     if (d.corner) { S.settings.toast_pos = d.corner; saveSettings(true); setTimeout(() => invoke("preview_toast"), 350); return; }
     if (d.theme) { S.settings.theme = d.theme; window.applyGlintTheme(d.theme, S.settings.custom_css); return saveSettings(true); }
     if (d.clip) {
+      // The name is its own hit area (a double click renames): a plain click on it does nothing,
+      // Ctrl / Shift still select.
+      if (e.target.closest(".ctitle")) return e.ctrlKey || e.shiftKey ? clickSelect(d.clip, e) : undefined;
       // With a selection going, or Ctrl / Shift / the tick box, a click selects. Otherwise it opens the clip.
       if (S.sel.size || e.ctrlKey || e.shiftKey || e.target.closest(".check")) return clickSelect(d.clip, e);
       return openClip(d.clip);
@@ -1125,6 +1218,9 @@ window.addEventListener("keydown", (e) => {
     endCapture();
     return saveSettings(true);
   }
+  // A clip's name being edited in place, or the bug report dialog being typed in: every key is
+  // the text box's (its own keydown handles Enter and Esc), so no shortcut or keybind fires.
+  if (e.target.closest?.(".title-edit, .bug-dlg")) return;
   // Windows does not pass keys to Glint's global hook while this window has
   // focus, so the window matches its own keybinds (same rule: most modifiers wins).
   const typing = e.target.matches?.("input, textarea") && !e.ctrlKey && !e.altKey && !e.metaKey && !/^F\d+$/.test(e.code);
@@ -1138,9 +1234,9 @@ window.addEventListener("keydown", (e) => {
     }
     if (best) { e.preventDefault(); invoke("fire_keybind", { id: best.id }).catch(() => {}); return; }
   }
-  // The editor timeline's right-click menu is open: the keyboard is its own (arrows, Enter,
-  // Esc closes it). This listener runs before the menu's, so it has to stand aside.
-  if (document.querySelector(".tl-menu")) return;
+  // The editor timeline's right-click menu or the bug report dialog is open: the keyboard is its
+  // own (arrows, Enter, Esc closes it). This listener runs before theirs, so it has to stand aside.
+  if (document.querySelector(".tl-menu, .bug-dlg")) return;
   const inField = e.target.matches?.("input, select, textarea");
   if (e.ctrlKey && e.code === "KeyK") { e.preventDefault(); $("#search").classList.add("open"); $("#q").focus(); $("#q").select(); }
   else if (isLib() && !S.open && !inField && e.ctrlKey && e.code === "KeyA") { e.preventDefault(); S.sel = new Set(visibleClips().list.map((c) => c.id)); syncSel(); }

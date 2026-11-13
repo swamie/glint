@@ -9,7 +9,9 @@
 .v-side .btn.wide { height: auto; min-height: 36px; padding-top: 6px; padding-bottom: 6px; white-space: normal; text-align: center; overflow-wrap: anywhere; }
 .v-side .small { overflow-wrap: anywhere; }
 .e-bad { color: var(--danger); }
-/* A link inside a sentence, such as "Change under Blur". */
+/* Player volume: the bar is filled in the theme colour up to the knob (--fill is set by the player). */
+.p-vol { background: linear-gradient(to right, var(--accent) var(--fill, 0%), rgba(255, 255, 255, .28) var(--fill, 0%)); }
+/* A link inside a sentence, such as "Change Blur settings". */
 .text-link { padding: 0; background: none; border: 0; font: inherit; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .text-link:hover { color: var(--accent-2); }
 

@@ -11,3 +11,6 @@
 
 # Private working notes
 /HANDOFF.md
+
+# The bug-report webhook (a credential): read at build time, never committed
+/src-tauri/bug-webhook.txt

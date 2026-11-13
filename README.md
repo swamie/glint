@@ -1,6 +1,6 @@
 # Glint
 
-Offline instant-replay clipper for Windows. Glint keeps the last few minutes of your screen in a replay buffer (in RAM, in temporary files, or both) and saves a clip only when you press a key. No account, no upload. Your clips never leave your PC; the only thing Glint does online is ask GitHub once a day whether a newer version exists (it can be switched off).
+Offline instant-replay clipper for Windows. Glint keeps the last few minutes of your screen in a replay buffer (in RAM, in temporary files, or both) and saves a clip only when you press a key. No account, no upload. Your clips never leave your PC; the only things Glint does online are asking GitHub once a day whether a newer version exists (it can be switched off) and, only when you press Send in the bug-report dialog, sending that report to the developers.
 
 ## Install
 
@@ -110,6 +110,8 @@ Settings → Appearance has twelve colour themes. Custom CSS, applied after the 
 
 The sidebar folds to a strip of icons with the button at the left of the top bar. Folders sit under one "Folders" row there, closed until you open it (it opens by itself while clips are being dragged); the folder chips above the grid run from the fullest folder to the emptiest. Search is an icon in the top bar that opens when clicked or with Ctrl K.
 
+Double-click a clip's name to rename it in place (Enter saves, Esc cancels). Renaming also renames the file on disk; characters Windows does not allow are dropped and a name already in use gets " (2)". The status bar's right side reads `current/max FPS`, CPU, and the memory of the whole program (Glint, the replay buffer in RAM, ffmpeg and the window's WebView).
+
 Right-click a clip for its menu: open, copy file, favorite, rename, set the game, move to a folder, open in the editor (trim), render with Blur, open file location, select, delete. On a selection of several clips the menu acts on all of them. Right-click a folder to rename or delete it. Folders are also listed in the sidebar; drop dragged clips on one to move them.
 
 Drag across the grid to draw a selection box. `Ctrl` or `Shift` while dragging adds to the selection. `Ctrl`+click or the tick box on a card toggles one clip, `Shift`+click selects a range, `Ctrl`+`A` selects everything in view, `Esc` clears. While clips are selected a plain click selects instead of opening.
@@ -148,6 +150,12 @@ A Blur render is a job. Jobs run in the background whether or not the clip is op
 ## Import
 
 Library → Import brings in clips recorded by NVIDIA ShadowPlay / NVIDIA app, Medal, Outplayed and SteelSeries GG Moments, or from any folder. Glint finds each program's clips folder, lists what is there grouped by game (from the folder layout, the file name, or Medal's own index), and adds what you tick. By default files stay where they are and are only listed; "Copy them into Glint's folder" copies them (into game folders if that setting is on). The originals are never moved, changed or deleted.
+
+## Reporting a bug
+
+The bug button in the top bar opens a dialog: what happened, optionally how to reach you, and whether to include the end of Glint's log. "What will be sent" shows everything first: your text, a few lines about this PC and Glint (version, Windows build, graphics card, capture setup) and the log's last 150 lines, with your Windows user folder replaced by `~`. Nothing is sent until you press Send; it then goes to the developers' Discord. One report per 30 seconds.
+
+For builders: the destination is not in the source. `src-tauri/bug-webhook.txt` (git-ignored; line 1 a Discord webhook URL, line 2 comma-separated user ids to mention) is read by `build.rs` and stored obfuscated in the program. Without the file the build works and the dialog points to GitHub issues instead. Obfuscation is not secrecy: anyone determined can recover a webhook from a program that uses it.
 
 ## Recommended settings, interface size, language
 

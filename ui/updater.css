@@ -1,13 +1,31 @@
-/* The update button in the top bar: a small up arrow. Loaded after style.css. */
-.upd-btn { position: relative; width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: var(--radius); background: none; color: var(--dim); cursor: pointer; }
-.upd-btn svg { width: 17px; height: 17px; stroke-width: 2.2; }
-.upd-btn:hover { background: var(--raised-2); color: var(--text); }
-.upd-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.upd-dot { display: none; position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
-/* A newer version exists: the arrow takes the accent colour and gets a dot. */
-.upd-btn.upd-new { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
-.upd-btn.upd-new .upd-dot { display: block; }
-/* Checking or downloading: the arrow drifts upwards; a download also fills the button from the bottom. */
-.upd-btn.upd-busy { color: var(--accent); cursor: default; background: linear-gradient(to top, color-mix(in srgb, var(--accent) 28%, transparent) var(--upd-pct, 0%), transparent var(--upd-pct, 0%)); }
-.upd-btn.upd-busy svg { animation: upd-rise .9s ease-in-out infinite; }
-@keyframes upd-rise { 0% { transform: translateY(3px); opacity: .3; } 50% { opacity: 1; } 100% { transform: translateY(-3px); opacity: .3; } }
+/* The update button in the top bar. It is a .btn (same height and border as Pause and Clip). Loaded after style.css. */
+.upd-btn { position: relative; justify-content: center; gap: 7px; min-width: 36px; padding: 0; color: var(--muted); overflow: hidden; }
+.upd-btn.upd-has-label { padding: 0 13px 0 10px; }
+.upd-btn svg { width: 17px; height: 17px; stroke-width: 2; }
+.upd-btn:hover { color: var(--text); }
+.upd-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.upd-label { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.upd-label:empty { display: none; }
+
+/* A newer version exists: filled with the accent colour and labelled, like the Clip button. */
+.upd-btn.upd-new { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.upd-btn.upd-new:hover { background: var(--accent-2); border-color: var(--accent-2); }
+.upd-btn.upd-new svg { stroke-width: 2.3; }
+
+/* Checking: the arrow bobs in its tray. Downloading: the percentage, and a bar along the bottom edge. */
+.upd-btn.upd-checking, .upd-btn.upd-installing { color: var(--text); cursor: default; }
+.upd-btn.upd-checking .upd-arrow, .upd-btn.upd-installing .upd-arrow { animation: upd-rise 1s ease-in-out infinite; }
+@keyframes upd-rise { 0%, 100% { transform: translateY(2px); opacity: .45; } 50% { transform: translateY(-2px); opacity: 1; } }
+.upd-btn.upd-installing { border-color: color-mix(in srgb, var(--accent) 55%, var(--line-2)); }
+.upd-btn.upd-installing::after { content: ""; position: absolute; left: 0; bottom: 0; height: 3px; width: var(--upd-pct, 0%); background: var(--accent); transition: width .25s; }
+
+/* The last check failed: a small warning mark in the corner; the tooltip says why. */
+.upd-warn { display: none; position: absolute; top: 3px; right: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--warn); color: #1a1200; font: 800 9px/12px var(--sans); font-style: normal; text-align: center; pointer-events: none; }
+.upd-btn.upd-error .upd-warn { display: block; }
+.upd-btn.upd-error { color: var(--muted); }
+
+/* A narrow window: the "Update 0.2.0" label goes, the accent fill stays. The download percentage stays (it is short). */
+@media (max-width: 1100px) {
+  .upd-btn.upd-new .upd-label { display: none; }
+  .upd-btn.upd-new.upd-has-label { padding: 0; width: 36px; }
+}

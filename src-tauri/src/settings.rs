@@ -229,6 +229,8 @@ pub struct Settings {
     pub ui_zoom: u32,
     /// The user's own colour-correction presets for the editor.
     pub color_presets: Vec<ColorPreset>,
+    /// Show the library's 'Main folder' chip even when no clip sits loose in the clips folder.
+    pub show_empty_main: bool,
     /// Editor shortcuts the user changed: command -> key combinations such as
     /// "Ctrl+Shift+KeyZ" (see `ED_KEYS` in ui/editor.js). A command that is
     /// not listed keeps its default keys; an empty list means no shortcut.
@@ -285,6 +287,7 @@ impl Default for Settings {
             blur_parallel: 2,
             ui_zoom: 100,
             color_presets: Vec::new(),
+            show_empty_main: false,
             editor_keys: Default::default(),
             autostart: false,
             close_to_tray: true,

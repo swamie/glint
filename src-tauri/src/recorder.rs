@@ -556,9 +556,9 @@ fn resolve_method(ffmpeg: &Path, wanted: &str) -> String {
 pub fn capture_args(cfg: &CaptureCfg, enc: &str, method: &str) -> Vec<String> {
     let (w, h) = (cfg.width, cfg.height);
     // Encoders spend bits per frame at the stream's nominal frame rate. The
-    // Graphics Capture chain declares its capture rate (hz/k) and then thins it
-    // to the target, so a rate of R given to the encoder would come out as
-    // R * fps / (hz/k). Measured: 50 Mbps asked at 140 -> 60 fps gave 23 Mbps.
+    // Graphics Capture chain declares its capture rate (the `max_framerate` it is
+    // given) and then thins it to the target, so a rate of R given to the encoder
+    // would come out as R * fps / (declared rate). Measured: 50 Mbps asked at 140 -> 60 fps gave 23 Mbps.
     // Scale the rates handed to the encoder by the inverse.
     let mut rate_scale = 1.0f64;
     let mut src = if method == "wgc" {
@@ -573,8 +573,15 @@ pub fn capture_args(cfg: &CaptureCfg, enc: &str, method: &str) -> Vec<String> {
         // minute of stillness with thousands of frames in one burst.
         let hz = cfg.hz.max(cfg.fps).max(1);
         let k = (1..=hz).take_while(|k| hz / k >= cfg.fps * 2).last().unwrap_or(1);
-        rate_scale = (hz as f64 / k as f64 / cfg.fps.max(1) as f64).max(1.0);
-        let mut s = format!("gfxcapture=monitor_idx={}:max_framerate={}/{}:capture_cursor={}", cfg.monitor, hz, k, cfg.cursor as u8);
+        // The limit is set 5 % above the rate wanted from the display (hz / k), never
+        // exactly on it: frames arrive on refreshes with a little jitter, and a limit of
+        // exactly one refresh interval throws away every frame that comes a hair early
+        // (a 280 fps capture then lands well under 280). Frames only ever arrive on a
+        // refresh, so the headroom cannot add any. Measured on an ~80 fps screen: a
+        // limit of 280 delivered 4 % fewer frames than limits of 294 or 1000.
+        let (cap_num, cap_den) = (hz as u64 * 21, k as u64 * 20);
+        rate_scale = (cap_num as f64 / cap_den as f64 / cfg.fps.max(1) as f64).max(1.0);
+        let mut s = format!("gfxcapture=monitor_idx={}:max_framerate={}/{}:capture_cursor={}", cfg.monitor, cap_num, cap_den, cfg.cursor as u8);
         if cfg.scaled {
             s += &format!(":width={w}:height={h}:resize_mode=scale:scale_mode=bicubic");
         }

@@ -32,6 +32,9 @@ body {
 }
 button, input, select { font: inherit; color: inherit; }
 svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+/* Selected text takes the theme's accent instead of the system blue. A third of it over the dark
+   page keeps the text readable whether the accent is a colour or white (the Mono theme). */
+::selection { background: color-mix(in srgb, var(--accent) 32%, transparent); color: var(--text); }
 ::-webkit-scrollbar { width: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 6px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--line-2) 72%, var(--text)); }
@@ -45,15 +48,17 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 }
 
 /* ---------- top bar ---------- */
-.topbar { grid-area: top; display: flex; align-items: center; justify-content: space-between; padding: 0 0 0 12px; border-bottom: 1px solid var(--line); }
-.top-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.side-toggle { width: 36px; height: 36px; flex: none; display: grid; place-items: center; background: none; border: 1px solid transparent; border-radius: var(--radius); color: var(--muted); cursor: pointer; }
-.side-toggle:hover { background: var(--raised-2); color: var(--text); }
-.top-logo { display: grid; place-items: center; flex: none; margin: 0 4px 0 2px; }
+/* Gaps and buttons scale with the window width (vw), so the bar still fits on one line at the
+   smallest window, also at a large Interface size (980 px at 150% is about 650 CSS px). */
+.topbar { grid-area: top; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 0 0 12px; border-bottom: 1px solid var(--line); }
+.top-left { display: flex; align-items: center; gap: clamp(6px, .8vw, 10px); min-width: 0; }
+/* The logo sits over the sidebar's icon column (its centre 33 px from the left, like the icons). */
+.top-logo { display: grid; place-items: center; flex: none; margin: 0 2px 0 8px; }
 .top-logo .logo { width: 26px; height: 26px; }
 .search { display: flex; align-items: center; gap: 10px; width: 376px; height: 36px; padding: 0 10px 0 12px; background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--radius); color: var(--muted); }
-/* In the top bar the search box is only its icon until it is clicked or holds text (.open). */
-.topbar .search { flex: none; overflow: hidden; transition: width .16s ease-out; }
+/* In the top bar the search box is only its icon until it is clicked or holds text (.open).
+   Open, it takes at most 30% of the window and gives way first when the bar runs short. */
+.topbar .search { flex: 0 1 auto; width: min(376px, 30vw); min-width: 36px; overflow: hidden; transition: width .16s ease-out; }
 .topbar .search:not(.open) { width: 36px; padding: 0; gap: 0; justify-content: center; cursor: pointer; }
 .topbar .search:not(.open):hover { color: var(--text); border-color: color-mix(in srgb, var(--line-2) 72%, var(--text)); }
 .topbar .search:not(.open) input { flex: none; width: 0; opacity: 0; }
@@ -62,12 +67,17 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .search input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; color: var(--text); }
 .search input::placeholder { color: var(--muted); }
 kbd { font: 600 11px var(--sans); padding: 2px 7px; border-radius: 5px; background: var(--raised-2); color: var(--text); border: 1px solid var(--line-2); white-space: nowrap; }
-.top-actions { display: flex; align-items: center; gap: 10px; height: 100%; }
-.winctl { display: flex; height: 100%; margin-left: 14px; }
-.winctl button { width: 56px; height: 100%; background: none; border: 0; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
+.top-actions { display: flex; align-items: center; gap: clamp(6px, .75vw, 10px); flex: none; height: 100%; }
+.top-actions > .btn { padding: 0 clamp(10px, 1vw, 14px); }
+.winctl { display: flex; height: 100%; margin-left: clamp(2px, .7vw, 10px); }
+.winctl button { width: clamp(34px, 3.2vw, 46px); height: 100%; background: none; border: 0; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
 .winctl button:hover { background: var(--raised-2); color: var(--text); }
 .winctl button[data-win="close"]:hover { background: #c4313a; color: #fff; }
-.winctl svg { width: 15px; height: 15px; }
+.winctl svg { width: 14px; height: 14px; }
+/* Narrowest windows: the clip button keeps only its icon (its text is its tooltip). */
+@media (max-width: 860px) {
+  #btn-clip span { display: none; }
+}
 
 .btn { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; background: var(--raised); border: 1px solid var(--line-2); border-radius: var(--radius); font-weight: 600; cursor: pointer; white-space: nowrap; }
 .btn:hover { background: var(--raised-2); border-color: color-mix(in srgb, var(--line-2) 72%, var(--text)); }
@@ -98,26 +108,23 @@ nav { display: flex; flex-direction: column; gap: 3px; margin-bottom: 14px; }
 .nav-sub[hidden] { display: none; }
 /* Clips are being dragged: show the folders so they can be dropped on one. */
 body.moving-clips #app:not(.side-min) .nav-sub[hidden] { display: flex; }
-.side-foot { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--line); }
-/* Sidebar folded to a strip of icons (the button at the left of the top bar). */
+/* The sidebar's own fold button, at its top. 42 px wide from the sidebar's 12 px padding puts its
+   icon on the same centre line as the nav icons (12 + 12 + 18 / 2 = 33 px). */
+.side-toggle { width: 42px; height: 38px; flex: none; display: grid; place-items: center; margin-bottom: 2px; background: none; border: 0; border-radius: var(--radius); color: var(--muted); cursor: pointer; }
+.side-toggle:hover { background: var(--raised-2); color: var(--text); }
+/* Sidebar folded to a strip of icons (the button at the top of the sidebar). */
 #app.side-min { grid-template-columns: 68px 1fr; }
 #app.side-min .side { padding: 10px 10px 14px; }
-#app.side-min .nav-label, #app.side-min .nav-item .label, #app.side-min .nav-item .badge, #app.side-min .nav-chev, #app.side-min .nav-sub, #app.side-min .rec-card > div { display: none; }
+#app.side-min .side-toggle { width: 100%; margin-bottom: 10px; }
+#app.side-min .nav-label, #app.side-min .nav-item .label, #app.side-min .nav-item .badge, #app.side-min .nav-chev, #app.side-min .nav-sub { display: none; }
 #app.side-min .nav-item { justify-content: center; padding: 0; gap: 0; }
 #app.side-min nav { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
-#app.side-min .rec-card { justify-content: center; padding: 8px 0; }
-.rec-card { display: flex; align-items: center; gap: 12px; padding: 8px 12px; }
-.rec-card #rec-title { font-weight: 600; }
-.rec-sub { color: var(--muted); font-size: 12.5px; }
-.rec-ic { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 50%; color: var(--dim); background: var(--raised); }
-.rec-ic svg { width: 17px; height: 17px; stroke-width: 2.1; }
-.rec-ic.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
-.rec-ic.err { color: var(--danger); background: color-mix(in srgb, var(--danger) 15%, transparent); }
 
 /* ---------- status bar ---------- */
-.statusbar { grid-area: status; display: flex; align-items: center; gap: 12px; padding: 0 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; letter-spacing: .02em; }
+.statusbar { grid-area: status; display: flex; align-items: center; gap: 12px; padding: 0 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; letter-spacing: .02em; white-space: nowrap; }
 .statusbar .sb-sep { width: 1px; height: 12px; background: var(--line-2); }
-.statusbar .sb-right { margin-left: auto; text-transform: uppercase; letter-spacing: .1em; font-size: 11.5px; }
+/* Same type as the left side; even-width digits so the numbers do not jitter every second. */
+.statusbar .sb-right { margin-left: auto; font-variant-numeric: tabular-nums; }
 .statusbar b { color: var(--text); font-weight: 600; }
 
 /* ---------- main ---------- */
@@ -158,6 +165,10 @@ select.field option { background: var(--raised); }
 .thumb .job { position: absolute; inset: auto 0 0 0; height: 4px; background: rgba(255, 255, 255, .12); }
 .thumb .job i { display: block; height: 100%; background: var(--accent); }
 .card h3 { margin: 12px 0 2px; font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The name is its own hit area: a click on it does not open the clip, a double click renames it in place. */
+.card .ctitle { cursor: default; }
+.card h3.editing { overflow: visible; }
+.title-edit { display: block; width: calc(100% + 10px); height: 1.45em; margin: 0 -5px; padding: 0 4px; border: 0; border-radius: 4px; outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--text); font: inherit; user-select: text; }
 .card p { margin: 0; color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card p span + span::before { content: "•"; margin: 0 7px; color: var(--dim); }
 
@@ -290,6 +301,8 @@ body.moving-clips, body.moving-clips * { cursor: grabbing !important; }
 .card.sel h3 { color: var(--accent); }
 body.selecting .card:hover .thumb, body.moving-clips .card:hover .thumb { transform: none; }
 .marquee { position: absolute; z-index: 5; border: 1px solid var(--accent); border-radius: 3px; background: color-mix(in srgb, var(--accent) 14%, transparent); pointer-events: none; }
+/* Released: it fades out while shrinking a little toward its centre, then app.js removes it. */
+.marquee.out { opacity: 0; transform: scale(.95); transition: opacity .15s ease-out, transform .15s ease-out; }
 
 .selbar { position: fixed; left: 50%; bottom: 50px; transform: translateX(-50%); z-index: 15; display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 18px; background: var(--raised); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 14px 40px rgba(0, 0, 0, .6); white-space: nowrap; }
 .selbar[hidden] { display: none; }

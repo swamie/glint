@@ -26,6 +26,12 @@ glintAddLanguage("ko", "한국어", {
   "Hide the sidebar": "사이드바 숨기기",
   "Show the sidebar": "사이드바 보이기",
   "Version": "버전",
+  "Change Blur settings": "Blur 설정 바꾸기",
+  "blur-cli.exe was not found.": "blur-cli.exe를 찾을 수 없어요.",
+  "{fps} fps out, amount {amount}, interpolate {interp}": "출력 {fps} fps, 블러 강도 {amount}, 보간 {interp}",
+  "{fps} fps out, amount {amount}": "출력 {fps} fps, 블러 강도 {amount}",
+  "Fast render": "빠른 렌더링",
+  "Several times quicker: no invented frames, and the graphics card encodes. Best on clips captured at 120 fps or more": "몇 배 더 빨라요. 프레임을 새로 만들지 않고 그래픽 카드로 인코딩해요. 120 fps 이상으로 캡처한 클립에 가장 좋아요",
   "Compact": "간단히 표시",
   "Shows only the two stars in a small square, with no text. Problems, such as a clip that failed, still show the full box": "글자 없이 작은 상자에 별 두 개만 보여 줘요. 클립 저장 실패 같은 문제는 원래 상자로 알려 줘요",
 });

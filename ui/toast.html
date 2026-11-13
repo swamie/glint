@@ -19,8 +19,8 @@
   .mic { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 50%; background: color-mix(in srgb, var(--accent) 16%, transparent); }
   .mic svg { width: 16px; height: 16px; fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .mic[hidden] { display: none; }
-  /* Compact: only the mark, in a small square. The window is 68 x 68 for it. */
-  .compact .toast { width: 52px; height: 52px; padding: 0; gap: 0; justify-content: center; box-shadow: none; }
+  /* Compact: only the mark, in a small square. The window is 60 x 60 for it (times the size setting, like the full box). */
+  .compact .toast { width: 44px; height: 44px; padding: 0; gap: 0; justify-content: center; box-shadow: none; border-radius: 9px; }
   .compact .txt, .compact .mic { display: none; }
   @keyframes in { from { opacity: 0; transform: translateX(calc(var(--dx) * 24px)); } }
   @keyframes out { to { opacity: 0; transform: translateX(calc(var(--dx) * 24px)); } }
@@ -45,10 +45,10 @@
   if ((d.pos || "tr").endsWith("l")) document.body.classList.add("left");
   if (d.compact) {
     document.body.classList.add("compact");
-    // The mark is drawn off-centre in its 48 x 48 box (it spans x 3..45, y 3..40, and the
-    // big star sits left of the middle). Alone in a square that shows, so frame it on
-    // the point between the drawing's middle and the big star's.
-    document.querySelector(".glint").setAttribute("viewBox", "0 -1.5 46 46");
+    // Alone in a square, the big star has to sit exactly in the middle, with the small
+    // one up and to its right. The big star's centre is (21, 22) in the drawing, so the
+    // frame is a 48 x 48 square around that point; it still holds the small star (x up to 45).
+    document.querySelector(".glint").setAttribute("viewBox", "-3 -2 48 48");
   }
   const box = document.querySelector(".toast");
   box.style.zoom = d.zoom || 1;

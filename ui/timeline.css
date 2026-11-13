@@ -71,6 +71,8 @@
 /* Rubber band selection. Position and size are set inline (translate + width / height inside .tl-lanes). */
 .tl-band { position: absolute; left: 0; top: 0; z-index: 4; border: 1px solid var(--accent); border-radius: 3px; background: color-mix(in srgb, var(--accent) 14%, transparent); pointer-events: none; }
 .tl-band[hidden] { display: none; }
+/* Released: it fades and shrinks toward its middle before it is hidden (`scale` leaves the positioning transform alone). */
+.tl-band.out { opacity: 0; scale: .94; transition: opacity .15s ease-out, scale .15s ease-out; }
 
 .tl.tl-dragging, .tl.tl-dragging * { cursor: grabbing !important; }
 .tl.tl-dragging[data-tl-drag="cut"], .tl.tl-dragging[data-tl-drag="cut"] *,
