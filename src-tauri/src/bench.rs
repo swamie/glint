@@ -327,6 +327,30 @@ pub fn folders_test(report_path: &str) {
     check("an unknown clip is refused", core.rename_clip("nope", "Name").is_err());
     core.lib.lock().unwrap().remove("gone");
 
+    // A keybind that switches the capture monitor: to the next one, or to a named one.
+    {
+        use crate::settings::Keybind;
+        let monitors = crate::win::monitors().len();
+        let mut s = core.settings();
+        s.monitor = 0;
+        s.keybinds = vec![
+            Keybind { id: "swap-next".into(), key: "F13".into(), action: "monitor".into(), monitor: -1, ..Default::default() },
+            Keybind { id: "swap-first".into(), key: "F14".into(), action: "monitor".into(), monitor: 0, ..Default::default() },
+        ];
+        core.apply_settings(s);
+        core.on_hotkey("swap-next");
+        let after_next = core.settings().monitor;
+        core.on_hotkey("swap-first");
+        let after_first = core.settings().monitor;
+        if monitors >= 2 {
+            check("a keybind switches the capture monitor to the next one", after_next == 1);
+            check("a keybind switches the capture monitor to a named one", after_first == 0);
+        } else {
+            check("with one monitor the switch keybind changes nothing", after_next == 0 && after_first == 0);
+        }
+        check("the new capture monitor is saved", crate::settings::Settings::load().monitor == after_first);
+    }
+
     let _ = std::fs::write(report_path, lines.join("\n") + "\n");
 }
 

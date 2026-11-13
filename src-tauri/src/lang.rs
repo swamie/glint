@@ -21,6 +21,7 @@ const KO: &[(&str, &str)] = &[
     ("Captured {game}", "{game}"),
     ("the desktop", "데스크톱"),
     // Tray menu
+    ("Capture monitor", "캡처 모니터"),
     ("Open Glint", "Glint 열기"),
     ("Save clip now", "지금 클립 저장"),
     ("Pause / resume clipping", "클리핑 일시 정지/재개"),
@@ -44,6 +45,7 @@ const EL: &[(&str, &str)] = &[
     ("Captured {game}", "{game}"),
     ("the desktop", "Επιφάνεια εργασίας"),
     // Tray menu
+    ("Capture monitor", "Οθόνη καταγραφής"),
     ("Open Glint", "Άνοιγμα Glint"),
     ("Save clip now", "Αποθήκευση κλιπ τώρα"),
     ("Pause / resume clipping", "Παύση / συνέχιση καταγραφής"),

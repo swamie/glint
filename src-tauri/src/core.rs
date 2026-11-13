@@ -599,6 +599,29 @@ impl Core {
                     crate::app::show_main(app);
                 }
             }
+            // Switch the capture monitor: to the keybind's own monitor, or with -1 to
+            // the next one in Windows' list. Clip keybinds set to "capture monitor",
+            // the tray and the top bar's Clip button all follow it. A monitor that was
+            // not being buffered starts with an empty buffer.
+            "monitor" => {
+                let mons = win::monitors();
+                if mons.len() < 2 {
+                    return;
+                }
+                let mut s = self.settings();
+                let cur = capture_monitor(&s, mons.len());
+                let to = if b.monitor >= 0 && (b.monitor as usize) < mons.len() { b.monitor as u32 } else { (cur + 1) % mons.len() as u32 };
+                if to != cur {
+                    s.monitor = to;
+                    self.apply_settings(s);
+                    util::log(&format!("capture monitor: {cur} -> {to}"));
+                }
+                let m = &mons[to as usize];
+                self.toast_on("Capture monitor", &format!("{} · {}×{}", m.name, m.width, m.height), to);
+                // The window re-reads the settings: its Monitor dropdown and keybind labels show the capture monitor.
+                self.emit("settings-changed", ());
+                self.emit("status-changed", ());
+            }
             _ => {}
         }
     }

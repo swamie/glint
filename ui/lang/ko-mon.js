@@ -11,4 +11,8 @@ glintAddLanguage("ko", "한국어", {
   "+1 monitor": "+모니터 1개",
   "+{n} monitors": "+모니터 {n}개",
   "Two keys for two monitors: in Keybinds, each clip keybind can pick its own monitor. Glint keeps a replay buffer for every monitor a keybind uses.": "모니터 두 개에 단축키 두 개: 단축키 화면에서 클립 단축키마다 모니터를 따로 고를 수 있어요. Glint는 단축키가 쓰는 모니터마다 리플레이 버퍼를 유지해요.",
+  "Switch the capture monitor": "캡처 모니터 바꾸기",
+  "Next monitor": "다음 모니터",
+  "Which monitor this keybind switches to": "이 단축키로 바꿀 모니터",
+  "A keybind can switch the capture monitor: to the next monitor, or straight to one you pick. Your \"capture monitor\" clip keys, the tray and the Clip button follow it.": "단축키로 캡처 모니터를 바꿀 수 있어요. 다음 모니터로, 또는 고른 모니터로 바로 바꿔요. \"캡처 모니터\"로 설정한 클립 단축키와 트레이, 클립 버튼이 따라가요.",
 });

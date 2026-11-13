@@ -910,21 +910,22 @@ function renderKeybinds() {
     if (combo) seen[combo] = i;
     const listening = S.capturing === i;
     const clip = k.action === "clip";
+    const swap = k.action === "monitor"; // switches the capture monitor: to its own monitor, or to the next one (-1)
     const durs = DURATIONS.includes(k.seconds) ? DURATIONS : [...DURATIONS, k.seconds].sort((a, b) => a - b);
     const mon = kbMon(k);
     const lost = multi && clip && kbNamed(k) && mon < 0; // names a monitor that is not connected (the setting is kept for when it is back)
-    const monSel = `<select class="field kb-mon" data-kb="${i}" data-kbf="monitor" title="${esc(t("Which monitor this keybind clips"))}">
-        <option value="-1"${mon < 0 ? " selected" : ""}>${t("Capture monitor ({name})", { name: esc(cap.name) })}</option>
+    const monSel = `<select class="field kb-mon" data-kb="${i}" data-kbf="monitor" title="${esc(swap ? t("Which monitor this keybind switches to") : t("Which monitor this keybind clips"))}">
+        <option value="-1"${mon < 0 ? " selected" : ""}>${swap ? t("Next monitor") : t("Capture monitor ({name})", { name: esc(cap.name) })}</option>
         ${S.monitors.map((m) => `<option value="${m.index}"${mon === m.index ? " selected" : ""}>${esc(monShort(m))}</option>`).join("")}
       </select>`;
     // Each cell has its own grid area (style.css), so the row can wrap in narrow windows.
-    return `<div class="kb-row${clip ? "" : " kb-other"}">
+    return `<div class="kb-row${clip || (swap && multi) ? "" : " kb-other"}">
       <button class="kb-keys${listening ? " listening" : ""}${k.key ? "" : " unset"}" data-kb="${i}" data-act="capture">${listening ? t("Press a key combination…") : k.key ? comboHtml(k) : t("Click to set key")}</button>
       <select class="field kb-act" data-kb="${i}" data-kbf="action">
-        ${[["clip", t("Save a clip")], ["toggle", t("Pause / resume clipping")], ["show", t("Open Glint")]].map(([v, l]) => `<option value="${v}"${k.action === v ? " selected" : ""}>${l}</option>`).join("")}
+        ${[["clip", t("Save a clip")], ["toggle", t("Pause / resume clipping")], ["show", t("Open Glint")], ...(multi || swap ? [["monitor", t("Switch the capture monitor")]] : [])].map(([v, l]) => `<option value="${v}"${k.action === v ? " selected" : ""}>${l}</option>`).join("")}
       </select>
       ${clip ? `<select class="field kb-len" data-kb="${i}" data-kbf="seconds">${durs.map((d) => `<option value="${d}"${k.seconds === d ? " selected" : ""}>${t("Last {length}", { length: fmtLen(d) })}</option>`).join("")}</select>` : ""}
-      ${clip && multi ? monSel : ""}
+      ${(clip || swap) && multi ? monSel : ""}
       <button class="icon-btn kb-del" data-kb="${i}" data-act="kb-del" aria-label="${esc(t("Remove keybind"))}">${ICON.trash}</button>
       ${dup ? `<div class="kb-warn">${t("{combo} is already used above. Only the first binding will fire.", { combo: esc(combo) })}</div>` : ""}
       ${lost ? `<div class="kb-warn">${t("Its monitor is not connected, so this keybind clips the capture monitor until it is back.")}</div>` : ""}
@@ -1413,6 +1414,8 @@ async function pollStatus() {
     flash(p.copied ? t("Compressed to {size} and copied. Paste it into Discord.", { size }) : t("Compressed to {size}. The new clip is in your library.", { size }));
   });
   T.event.listen("status-changed", pollStatus);
+  // A keybind changed a setting behind the window's back (it switched the capture monitor): read them again.
+  T.event.listen("settings-changed", () => refreshState().catch((e) => console.warn("Glint: could not refresh the settings", e)));
   // A game was seen for the first time, or its icon was just taken from its exe.
   T.event.listen("games-changed", async () => { S.games = (await invoke("list_games")) || []; if (isLib() && !S.open && !S.sel.size) render(); });
   T.event.listen("blur-progress", ({ payload: p }) => {

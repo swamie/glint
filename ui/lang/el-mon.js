@@ -11,4 +11,8 @@ glintAddLanguage("el", "Ελληνικά", {
   "+1 monitor": "+1 οθόνη",
   "+{n} monitors": "+{n} οθόνες",
   "Two keys for two monitors: in Keybinds, each clip keybind can pick its own monitor. Glint keeps a replay buffer for every monitor a keybind uses.": "Δύο πλήκτρα για δύο οθόνες: στις Συντομεύσεις, κάθε συντόμευση κλιπ μπορεί να έχει τη δική της οθόνη. Το Glint κρατά buffer επανάληψης για κάθε οθόνη που χρησιμοποιεί μια συντόμευση.",
+  "Switch the capture monitor": "Αλλαγή οθόνης καταγραφής",
+  "Next monitor": "Επόμενη οθόνη",
+  "Which monitor this keybind switches to": "Σε ποια οθόνη αλλάζει αυτή η συντόμευση",
+  "A keybind can switch the capture monitor: to the next monitor, or straight to one you pick. Your \"capture monitor\" clip keys, the tray and the Clip button follow it.": "Μια συντόμευση μπορεί να αλλάζει την οθόνη καταγραφής: στην επόμενη οθόνη ή απευθείας σε όποια επιλέξετε. Οι συντομεύσεις κλιπ με «οθόνη καταγραφής», η περιοχή ειδοποιήσεων και το κουμπί Κλιπ την ακολουθούν.",
 });

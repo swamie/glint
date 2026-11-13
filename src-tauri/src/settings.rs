@@ -13,7 +13,7 @@ pub struct Keybind {
     pub win: bool,
     /// KeyboardEvent.code of the main key, e.g. "F8", "KeyG", "Numpad5".
     pub key: String,
-    /// "clip" | "toggle" | "show"
+    /// "clip" | "toggle" | "show" | "monitor" (switch the capture monitor: to `monitor`, or to the next one when that is -1)
     pub action: String,
     /// Clip length for the "clip" action.
     pub seconds: u32,

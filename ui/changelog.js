@@ -14,6 +14,14 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.10", date: "2026-11-13",
+    new: [
+      t("A keybind can switch the capture monitor: to the next monitor, or straight to one you pick. Your \"capture monitor\" clip keys, the tray and the Clip button follow it."),
+    ],
+    improved: [],
+    fixed: [],
+  },
+  {
     version: "0.1.9", date: "2026-11-13",
     new: [
       t("Two keys for two monitors: in Keybinds, each clip keybind can pick its own monitor. Glint keeps a replay buffer for every monitor a keybind uses."),
