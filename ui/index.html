@@ -12,6 +12,7 @@
 <link rel="stylesheet" href="importer.css">
 <link rel="stylesheet" href="updater.css">
 <link rel="stylesheet" href="bugreport.css">
+<link rel="stylesheet" href="changelog.css">
 <link rel="stylesheet" href="lang/ko.css">
 <link rel="stylesheet" href="lang/el.css">
 <style id="custom-css"></style>
@@ -20,7 +21,8 @@
 <div id="app">
   <header class="topbar" data-tauri-drag-region>
     <div class="top-left">
-      <span class="top-logo" id="ver"><svg class="logo" viewBox="0 0 48 48"><path d="M21 4l4.2 13.8L39 22l-13.8 4.2L21 40l-4.2-13.8L3 22l13.8-4.2z"/><path class="spark" d="M38 3l1.8 5.2L45 10l-5.2 1.8L38 17l-1.8-5.2L31 10l5.2-1.8z"/></svg></span>
+      <!-- The logo opens What's new (changelog.js); its tooltip is the version. -->
+      <span class="top-logo" id="ver" data-act="whats-new" data-sfx="open" role="button" tabindex="0"><svg class="logo" viewBox="0 0 48 48"><path d="M21 4l4.2 13.8L39 22l-13.8 4.2L21 40l-4.2-13.8L3 22l13.8-4.2z"/><path class="spark" d="M38 3l1.8 5.2L45 10l-5.2 1.8L38 17l-1.8-5.2L31 10l5.2-1.8z"/></svg></span>
       <!-- Filled by bugreport.js, updater.js and jobs.js. -->
       <div id="bug-slot"></div>
       <div id="update-slot"></div>
@@ -28,17 +30,18 @@
       <!-- An icon until it is clicked (or Ctrl K): it opens while it has the focus or holds text. -->
       <label class="search" id="search">
         <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-        <input id="q" type="text" placeholder="Search clips and games" data-i18n-ph="Search clips and games" spellcheck="false" autocomplete="off">
+        <input id="q" data-sfx="none" type="text" placeholder="Search clips and games" data-i18n-ph="Search clips and games" spellcheck="false" autocomplete="off">
         <kbd>Ctrl K</kbd>
       </label>
     </div>
     <div class="top-actions">
-      <button id="btn-toggle" class="btn">Pause</button>
-      <button id="btn-clip" class="btn primary">
+      <button id="btn-toggle" class="btn" data-hover>Pause</button>
+      <button id="btn-clip" class="btn primary" data-hover>
         <svg viewBox="0 0 24 24"><path d="M6 4v16l14-8z" fill="currentColor" stroke="none"/></svg>
         <span>Clip last 30s</span>
       </button>
-      <div class="winctl">
+      <!-- Window buttons make no interface sound. -->
+      <div class="winctl" data-sfx="none">
         <button data-win="min" aria-label="Minimize"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
         <button data-win="max" aria-label="Maximize"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
         <button data-win="close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
@@ -83,6 +86,8 @@
 <script src="lang/ko-shell.js"></script>
 <script src="lang/ko-bug.js"></script>
 <script src="lang/ko-marks.js"></script>
+<script src="lang/ko-ui3.js"></script>
+<script src="lang/ko-trim.js"></script>
 <script src="lang/el-app.js"></script>
 <script src="lang/el-editor.js"></script>
 <script src="lang/el-update.js"></script>
@@ -92,6 +97,8 @@
 <script src="lang/el-shell.js"></script>
 <script src="lang/el-bug.js"></script>
 <script src="lang/el-marks.js"></script>
+<script src="lang/el-ui3.js"></script>
+<script src="lang/el-trim.js"></script>
 <script src="mock.js"></script>
 <script src="themes.js"></script>
 <script src="editmodel.js"></script>
@@ -103,5 +110,7 @@
 <script src="app.js"></script>
 <script src="updater.js"></script>
 <script src="bugreport.js"></script>
+<script src="sfx.js"></script>
+<script src="changelog.js"></script>
 </body>
 </html>

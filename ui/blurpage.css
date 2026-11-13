@@ -5,47 +5,49 @@
 /* Live preview: sticks to the top of #view (top is set from JS to cancel #view's padding). */
 .bp-preview {
   position: sticky; top: 0; z-index: 5;
-  max-width: 860px; margin-bottom: 14px; padding: 12px 14px 10px;
+  max-width: 860px; margin-bottom: 12px; padding: 10px 12px 8px;
   background: var(--panel); border: 1px solid var(--line-2); border-radius: 10px;
   box-shadow: 0 12px 20px -14px rgba(0, 0, 0, .7);
   container-type: inline-size;
 }
-.bp-panes { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.bp-panes { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
 .bp-pane { margin: 0; min-width: 0; }
-.bp-pane figcaption { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 6px 2px; }
+.bp-pane figcaption { font-size: 11.5px; font-weight: 600; color: var(--muted); margin: 0 0 5px 2px; }
 .bp-pane figcaption span { font-weight: 400; color: var(--dim); margin-left: 4px; font-family: var(--mono); }
-.bp-pane canvas { display: block; width: 100%; height: 130px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); }
-@container (max-width: 520px) { .bp-pane canvas { height: 96px; } }
+/* blurpage.js sizes the drawing from the canvas's CSS size (clientWidth / clientHeight). */
+.bp-pane canvas { display: block; width: 100%; height: 112px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); }
+@container (max-width: 480px) { .bp-pane canvas { height: 84px; } }
 
 /* The comparison folded away: one quiet row to bring it back. */
 .bp-preview[hidden] { display: none; }
-.bp-show { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 14px; padding: 6px 12px 6px 8px; background: none; border: 1px solid var(--line-2); border-radius: var(--radius); color: var(--muted); font: inherit; font-weight: 600; cursor: pointer; }
+.bp-show { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 12px; padding: 5px 11px 5px 7px; background: none; border: 1px solid var(--line-2); border-radius: var(--radius); color: var(--muted); font: inherit; font-weight: 600; cursor: pointer; }
 .bp-show:hover { color: var(--text); background: var(--raised); }
-.bp-show svg { width: 16px; height: 16px; }
-.bp-foot { display: flex; align-items: center; gap: 14px; margin-top: 10px; }
-.bp-status { flex: 1; min-width: 0; font-size: 13px; line-height: 1.4; color: var(--muted); }
+.bp-show svg { width: 15px; height: 15px; }
+.bp-foot { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.bp-status { flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.4; color: var(--muted); }
 .bp-status b { color: var(--text); }
 .bp-status.warn { color: var(--warn, var(--danger)); }
-.bp-weights { flex: none; display: flex; align-items: flex-end; gap: 1px; width: 96px; height: 24px; padding-bottom: 1px; border-bottom: 1px solid var(--line-2); }
+.bp-weights { flex: none; display: flex; align-items: flex-end; gap: 1px; width: 88px; height: 22px; padding-bottom: 1px; border-bottom: 1px solid var(--line-2); }
 .bp-weights[hidden] { display: none; }
 .bp-weights i { flex: 1; min-width: 1px; background: var(--accent); border-radius: 1px 1px 0 0; opacity: .85; }
 .bp-slow { flex: none; }
 .bp-slow[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 
 /* Presets */
-.bp-presets { max-width: 860px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 20px; }
-.bp-presets-label { font-size: 13px; color: var(--muted); margin-right: 4px; }
-.bp-preset { height: 32px; padding: 0 14px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line-2); color: var(--text); font: 600 13px var(--sans); cursor: pointer; }
+.bp-presets { max-width: 860px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 16px; }
+.bp-presets-label { font-size: 12.5px; color: var(--muted); margin-right: 4px; }
+/* Same size as the library's folder chips. */
+.bp-preset { height: 28px; padding: 0 12px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line-2); color: var(--text); font: 600 12.5px var(--sans); cursor: pointer; }
 .bp-preset:hover { background: var(--raised-2); }
 .bp-preset.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 
 /* Slider with a number readout */
-.bp-slider { display: flex; align-items: center; gap: 10px; }
-.bp-slider .range { width: 170px; }
-.row .bp-slider input[type="number"].bp-num { width: 76px; }
+.bp-slider { display: flex; align-items: center; gap: 8px; }
+.bp-slider .range { width: 150px; }
+.row .bp-slider input[type="number"].bp-num { width: 70px; }
 
 /* Collapsible groups */
-.bp-group > summary { display: flex; align-items: center; gap: 12px; padding: 14px 20px; cursor: pointer; list-style: none; user-select: none; }
+.bp-group > summary { display: flex; align-items: center; gap: 10px; padding: 11px 18px; cursor: pointer; list-style: none; user-select: none; }
 .bp-group > summary::-webkit-details-marker { display: none; }
 .bp-group > summary::before {
   content: ""; flex: none; width: 7px; height: 7px; margin: 0 2px 0 1px;
@@ -53,9 +55,9 @@
   transform: rotate(-45deg); transition: transform .12s;
 }
 .bp-group[open] > summary::before { transform: rotate(45deg); }
-.bp-group > summary h2 { margin: 0; font: 600 17px var(--sans); color: var(--text); }
-.bp-group > summary .bp-sum { flex: 1; min-width: 0; color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bp-group > summary .bp-badge { flex: none; font-size: 12px; color: var(--muted); padding: 2px 8px; border: 1px solid var(--line-2); border-radius: 999px; }
+.bp-group > summary h2 { margin: 0; font: 600 15.5px var(--sans); color: var(--text); }
+.bp-group > summary .bp-sum { flex: 1; min-width: 0; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bp-group > summary .bp-badge { flex: none; font-size: 11.5px; color: var(--muted); padding: 1px 7px; border: 1px solid var(--line-2); border-radius: 999px; }
 .bp-group > summary:hover h2 { color: var(--accent-2); }
 .bp-group > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 10px; }
 .bp-group[open] > summary { border-bottom: 1px solid var(--line); }

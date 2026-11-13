@@ -238,6 +238,15 @@ pub struct Settings {
     /// "Ctrl+Shift+KeyZ" (see `ED_KEYS` in ui/editor.js). A command that is
     /// not listed keeps its default keys; an empty list means no shortcut.
     pub editor_keys: std::collections::BTreeMap<String, Vec<String>>,
+    /// The size last picked for "Compress for Discord", in MB (1 MB = 1,000,000
+    /// bytes): the menu lists it first. 5..=1000; the menu offers 10, 20, 50 and 500.
+    pub compress_mb: u32,
+    /// Soft sounds for clicks, switches and results in Glint's window.
+    pub ui_sounds: bool,
+    /// Also a very quiet tick when the pointer moves onto a button (needs `ui_sounds`).
+    pub ui_sounds_hover: bool,
+    /// Volume of the interface sounds, in percent (0..=100).
+    pub ui_sounds_volume: u32,
     pub autostart: bool,
     pub close_to_tray: bool,
     pub ffmpeg_path: String,
@@ -293,6 +302,10 @@ impl Default for Settings {
             color_presets: Vec::new(),
             show_empty_main: false,
             editor_keys: Default::default(),
+            compress_mb: 10,
+            ui_sounds: false,
+            ui_sounds_hover: false,
+            ui_sounds_volume: 50,
             autostart: false,
             close_to_tray: true,
             ffmpeg_path: String::new(),

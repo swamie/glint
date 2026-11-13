@@ -21,6 +21,13 @@
 // Bookmarks (m.marks): a flag on the ruler (.tl-bmks) and a thin line through the rows (.tl-bmls)
 // each. They are not part of the edit: no undo snapshot, no onChange; opts.onMarks(list) instead.
 //
+// Trim brackets (.tl-trims): [ where the kept span starts and ] where it ends (emTrimBounds). Dragging one
+// re-applies emSetTrimStart / emSetTrimEnd to the segments as they were when the drag began (emSegCopy),
+// so a drag never piles up cut points and a part cut out in the middle comes back cut out if the bracket
+// is dragged past it and back. The cut point under a bracket has no handle of its own (the bracket is it).
+// With cut parts hidden there is no footage outside the brackets to drag into, so they only move inward;
+// the view mapping is held as it was for the drag (st.mapHold) and catches up on release.
+//
 // NOTE: never name a variable `t` here: it would hide the translation function t().
 
 const tlRulerH = 26;    // px, ruler height (keep in sync with timeline.css)
@@ -68,6 +75,8 @@ const tlPaths = {
   markOff: "M6 21V4M6 4h12l-3 4.5 3 4.5H6M3 3l18 18",
   markNext: "M4 12h11M11 7l5 5-5 5M20 5v14",
   markPrev: "M20 12H9M13 7l-5 5 5 5M4 5v14",
+  trimStart: "M9 4H5v16h4M10 12h10M16 8l4 4-4 4",   // [ ->
+  trimEnd: "M15 4h4v16h-4M14 12H4M8 8l-4 4 4 4",    // <- ]
 };
 const tlSvg = (d) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
 let tlPath2d = null; // Path2D objects, made on first draw
@@ -286,6 +295,7 @@ function mountTimeline(host, opts) {
     selNotify: false,      // the selection's indexes were shifted: tell the editor on the next setSels
     hideCuts: false,       // "Hide cut parts": removed segments take no room
     map: null,             // view mapping (tlViewMap), rebuilt on demand after markAll
+    mapHold: null,         // the mapping a trim drag with cut parts hidden measures and draws with (see the file header)
     joints: [], jointSig: "",
     markSig: "",           // what the bookmark flags were last built for
     menu: null,            // the open right-click menu { el, close }
@@ -330,7 +340,7 @@ function mountTimeline(host, opts) {
       <div class="tl-lanes">
         <div class="tl-ruler" data-tl-ruler title="${esc(t("Click or drag to move the playhead"))}"><canvas></canvas><div class="tl-ph-k" data-tl-ph></div><div class="tl-bmks"></div></div>
         <div class="tl-rows"></div>
-        <div class="tl-marks"><div class="tl-bmls"></div><div class="tl-joints"></div><div class="tl-cuts"></div><div class="tl-ph"></div></div>
+        <div class="tl-marks"><div class="tl-bmls"></div><div class="tl-joints"></div><div class="tl-trims"><div class="tl-trim s" data-tl-trim="start" style="top:${tlRulerH}px"><b></b></div><div class="tl-trim e" data-tl-trim="end" style="top:${tlRulerH}px"><b></b></div></div><div class="tl-cuts"></div><div class="tl-ph"></div></div>
         <div class="tl-band" hidden></div>
         <div class="tl-tip" hidden></div>
       </div>
@@ -342,6 +352,7 @@ function mountTimeline(host, opts) {
     ruler: q(".tl-ruler canvas"), phK: q(".tl-ph-k"), ph: q(".tl-ph"), cuts: q(".tl-cuts"), joints: q(".tl-joints"), tip: q(".tl-tip"), band: q(".tl-band"),
     bHide: q('[data-tl-act="hide-cuts"]'), bFit: q('[data-tl-act="fit"]'),
     bmFlags: q(".tl-bmks"), bmLines: q(".tl-bmls"),
+    trimS: q('[data-tl-trim="start"]'), trimE: q('[data-tl-trim="end"]'),
     scroll: q(".tl-scroll"), spacer: q(".tl-spacer"),
     level: q("[data-tl-level]"), levelPct: q(".tl-level .tl-pct"), levelBox: q(".tl-level"),
     bSplit: q('[data-tl-act="split"]'), bRemove: q('[data-tl-act="remove"]'), bMute: q('[data-tl-act="mute"]'),
@@ -353,10 +364,25 @@ function mountTimeline(host, opts) {
   /** "Label (key)" with the current shortcut of editor command `cmd` (opts.keyText), without brackets when it has none.
    *  Without opts.keyText: `fixed`, the label with the default key. */
   function keyTip(label, cmd, fixed) {
-    if (typeof opts.keyText !== "function") return fixed;
-    let k = "";
-    try { k = String(opts.keyText(cmd) || ""); } catch (e) { console.warn("Glint timeline: keyText failed", cmd, e); }
+    const k = keyName(cmd);
+    if (k === null) return fixed;
     return k ? `${label} (${k})` : label;
+  }
+  /** The current shortcut of editor command `cmd` as text ("" if none), or null without opts.keyText. */
+  function keyName(cmd) {
+    if (typeof opts.keyText !== "function") return null;
+    try { return String(opts.keyText(cmd) || ""); } catch (e) { console.warn("Glint timeline: keyText failed", cmd, e); return ""; }
+  }
+  /** The trim brackets' tooltips: what a drag does, the key that trims to the playhead, and with cut parts hidden, why they do not move outward. */
+  function trimTips() {
+    for (const [b, side] of [[el.trimS, "start"], [el.trimE, "end"]]) {
+      const k = keyName(side === "start" ? "trimStart" : "trimEnd") ?? (side === "start" ? "I" : "O");
+      const lines = [side === "start" ? t("Drag to trim the start") : t("Drag to trim the end")];
+      if (k) lines.push(t("To the playhead: {key}", { key: k }));
+      if (st.hideCuts) lines.push(t("Only inward while cut parts are hidden. Show them to drag it back out."));
+      const title = lines.join("\n");
+      if (b.title !== title) b.title = title;
+    }
   }
   /** The fixed toolbar buttons' tooltips (remove and mute change with the selection: see updateBar). */
   function barTips() {
@@ -368,13 +394,14 @@ function mountTimeline(host, opts) {
     set(el.bIn, keyTip(t("Zoom in"), "zoomIn", t("Zoom in (+)")));
     set(el.bFit, keyTip(t("Fit the whole clip"), "fit", t("Fit the whole clip (Shift+F)")));
     set(el.bHide, keyTip(t("Hide cut parts"), "hideCuts", t("Hide cut parts (H)")));
+    trimTips();
   }
   barTips();
 
   /* ----- mapping ----- */
   // Source time <-> view time (see the file header). The map is rebuilt after every markAll, so it follows the model.
   const mapSig = () => (st.hideCuts ? `${m.duration}|${m.cuts.join(",")}|${m.removed.join(",")}` : "");
-  const vmap = () => (st.map ||= Object.assign(tlViewMap(st.hideCuts ? emKept(m) : null, st.hideCuts, dur()), { sig: mapSig() }));
+  const vmap = () => st.mapHold || (st.map ||= Object.assign(tlViewMap(st.hideCuts ? emKept(m) : null, st.hideCuts, dur()), { sig: mapSig() }));
   const toV = (sec) => tlSrcToView(vmap(), sec);
   const toS = (v) => tlViewToSrc(vmap(), v);
   const vdur = () => vmap().total;
@@ -665,6 +692,37 @@ function mountTimeline(host, opts) {
     changed("restore");
     return true;
   }
+  /* Trimming splits and merges segments anywhere before (or after) the edge, so the selection is kept as
+     times (the middle of each piece's segment) and found again afterwards. */
+  function selTimes() {
+    const segs = emSegments(m), mid = (s) => (segs[s.seg] ? (segs[s.seg].start + segs[s.seg].end) / 2 : -1);
+    return { list: st.sels.map((s) => ({ row: s.row, at: mid(s) })).filter((s) => s.at >= 0), prim: st.sel && mid(st.sel) >= 0 ? { row: st.sel.row, at: mid(st.sel) } : null };
+  }
+  function remapSels(T) {
+    const back = (s) => ({ row: s.row, seg: emSegmentAt(m, s.at) });
+    st.sels = tlSelMerge([], T.list.map(back));
+    st.sel = T.prim ? back(T.prim) : null;
+    st.selNotify = true; // changed() tells the editor
+  }
+  /** Apply a trim of `side` ("start" | "end") to `sec`, refused (null) when it would leave less than EM_MIN_SEG. */
+  const trimTo = (side, sec) => (side === "start" ? emSetTrimStart(m, sec, true) : emSetTrimEnd(m, sec, true));
+  /** True if trimming `side` to `sec` would change anything (for the menu: tried, then put back). */
+  function trimWould(side, sec) {
+    const base = emSegCopy(m), before = emState(m);
+    const ok = trimTo(side, sec) !== null && emState(m) !== before;
+    emSegPaste(m, base);
+    return ok;
+  }
+  /** Trim the start (or end) to source time `sec`: I and O, and the menu. One undo step. */
+  function doTrimAt(side, sec) {
+    if (!Number.isFinite(sec) || !trimWould(side, sec)) return false;
+    const T = selTimes();
+    emSnapshot(m);
+    trimTo(side, sec);
+    remapSels(T);
+    changed("trim");
+    return true;
+  }
   /** Set the level of every selected audio piece: `gain(oldGain)` -> new gain. */
   function setGains(what, gain) {
     const list = selAudio().map((s) => ({ ...s, g: gain(s.r.gains[s.seg]) }));
@@ -748,6 +806,7 @@ function mountTimeline(host, opts) {
     relayout();
     if (st.laneW && !st.fitted) setScroll(tlPad + toV(st.shownT) * st.pps - x);
     closeMenu();
+    trimTips();
     updateBar();
     return true;
   }
@@ -902,8 +961,8 @@ function mountTimeline(host, opts) {
     ctx.fillStyle = C.line;
     ctx.fillRect(0, h - 1, w, 1);
   }
-  /** The removed runs (tlJoints) of the model as it is now. */
-  const joints = () => tlJoints(m.removed, [0, ...m.cuts, dur()]);
+  /** The removed runs (tlJoints) of the model as it is now, but for the leading and trailing ones: those are the trim, shown by the brackets. */
+  const joints = () => tlJoints(m.removed, [0, ...m.cuts, dur()]).filter((j) => j.first > 0 && j.last < m.removed.length - 1);
 
   /** Screen range of [a, b] clipped near the lane, or null when off screen. */
   function span(a, b, margin = 12) {
@@ -1197,15 +1256,27 @@ function mountTimeline(host, opts) {
       const title = esc(t("Drag to move this cut, double-click to join the two segments"));
       el.cuts.innerHTML = m.cuts.map((_, i) => `<div class="tl-cut" data-tl-cut="${i}" title="${title}" style="top:${tlRulerH}px"><b></b></div>`).join("");
     }
+    // The cuts where the kept span starts and ends are the trim brackets: no handle of their own.
+    const f = m.removed.indexOf(false), l = m.removed.lastIndexOf(false);
     for (let i = 0; i < n; i++) {
       const c = el.cuts.children[i], x = X(m.cuts[i]);
       // With cut parts hidden, a cut next to a removed part sits on a joint: the joint is shown instead (and cannot be dragged).
-      const vis = x > -8 && x < st.laneW + 8 && !(st.hideCuts && (m.removed[i] || m.removed[i + 1]));
+      const vis = x > -8 && x < st.laneW + 8 && !(st.hideCuts && (m.removed[i] || m.removed[i + 1])) && i !== f - 1 && i !== l;
       c.style.transform = `translateX(${vis ? x : -100}px)`;
       c.classList.toggle("drag", st.drag?.type === "cut" && st.drag.moved && st.drag.c === i);
     }
     placeJoints();
+    placeTrims();
     placeMarks();
+  }
+  /** The two trim brackets, at the ends of the kept span (with cut parts hidden: the ends of what is shown). */
+  function placeTrims() {
+    const b = emTrimBounds(m);
+    for (const [node, sec, side] of [[el.trimS, b.start, "start"], [el.trimE, b.end, "end"]]) {
+      const x = Math.round(X(sec) * 2) / 2, vis = x > -12 && x < st.laneW + 12;
+      node.style.transform = `translateX(${vis ? x : -100}px)`;
+      node.classList.toggle("drag", st.drag?.type === "trim" && st.drag.moved && st.drag.side === side);
+    }
   }
   /** Per shown bookmark: a flag on the ruler (.tl-bmk: click goes there, hover shows the time, in ruler time) and a thin line through the rows (.tl-bml). */
   function placeMarks() {
@@ -1280,7 +1351,7 @@ function mountTimeline(host, opts) {
     if (window.devicePixelRatio !== st.dpr) { st.dpr = window.devicePixelRatio || 1; st.needSize = true; }
     if (st.needSize && st.laneW) applySize();
     // The editor changed what is cut out without calling refresh(): rebuild the view mapping.
-    if (st.hideCuts && st.map && st.map.sig !== mapSig()) { markAll(); relayout(); }
+    if (st.hideCuts && st.map && !st.mapHold && st.map.sig !== mapSig()) { markAll(); relayout(); }
     const real = +opts.getTime() || 0;
     let now = real;
     if (st.drag?.type === "seek" && st.drag.at !== undefined) now = st.drag.at;
@@ -1348,7 +1419,14 @@ function mountTimeline(host, opts) {
     const bmAt = bm ? marks()[+bm.dataset.tlBm] : undefined;
     // A joint marker is only a hover / right-click target: a press on it acts on the lane under it.
     const lane = e.target.closest("[data-tl-lane]") || (e.target.closest("[data-tl-joint]") ? laneAt(e.clientY)?.el : null);
+    const trim = cut ? null : e.target.closest("[data-tl-trim]");
     if (cut) Object.assign(d, { type: "cut", c: +cut.dataset.tlCut });
+    // A trim bracket: the drag works from the segments as they are now (see the file header); it snaps to
+    // what is there now, so not to the cut it makes itself.
+    else if (trim) {
+      Object.assign(d, { type: "trim", side: trim.dataset.tlTrim === "end" ? "end" : "start", base: emSegCopy(m), b0: emTrimBounds(m), cands: snapCands({}), selT: selTimes() });
+      if (st.hideCuts) st.mapHold = vmap();
+    }
     // A bookmark flag: the playhead goes exactly onto it; dragging on from there is an ordinary ruler drag.
     else if (bmAt !== undefined) Object.assign(d, { type: "seek", at: bmAt });
     else if (e.target.closest("[data-tl-ph], [data-tl-ruler]")) Object.assign(d, { type: "seek", moved: true });
@@ -1405,6 +1483,18 @@ function mountTimeline(host, opts) {
       const used = emMoveCut(m, d.c, snap(raw, { cut: d.c }));
       showTip(used);
       changed("cut", false);
+      return;
+    }
+    if (d.type === "trim") {
+      if (!d.snapped) { emSnapshot(m); d.snapped = true; }
+      let sec = free ? raw : snapAt(raw, d.cands).at;
+      // Cut parts hidden: nothing outside the brackets to drag into, so inward only.
+      if (st.hideCuts) sec = d.side === "start" ? Math.max(sec, d.b0.start) : Math.min(sec, d.b0.end);
+      emSegPaste(m, d.base);
+      const used = d.side === "start" ? emSetTrimStart(m, sec) : emSetTrimEnd(m, sec);
+      remapSels(d.selT);
+      showTip(used, t("{time} · clip {len}", { time: tlFmtPrecise(toV(used)), len: tlFmtTick(emOutDuration(m), 0.5) }));
+      changed("trim", false);
       return;
     }
     const row = emRow(m, d.rowId);
@@ -1496,7 +1586,15 @@ function mountTimeline(host, opts) {
     window.removeEventListener("mousemove", onMove);
     window.removeEventListener("mouseup", onUp);
     window.removeEventListener("blur", onLost);
+    const d = st.drag;
     st.drag = null;
+    if (d?.type === "trim") {
+      // Dragged out and back to where it began: no empty undo step.
+      if (d.snapped && m.undo[m.undo.length - 1] === emState(m)) m.undo.pop();
+      // Cut parts hidden: the view catches up with what is cut out now.
+      if (st.mapHold) { st.mapHold = null; markAll(); if (st.hideCuts) relayout(); }
+      updateBar();
+    }
     host.classList.remove("tl-dragging");
     delete host.dataset.tlDrag;
     el.tip.hidden = true;
@@ -1558,15 +1656,17 @@ function mountTimeline(host, opts) {
     const rect = el.lanes.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const cutEl = e.target.closest("[data-tl-cut]"), jointEl = e.target.closest("[data-tl-joint]"), bmEl = e.target.closest("[data-tl-bm]");
+    const trimEl = cutEl ? null : e.target.closest("[data-tl-trim]");
     const at = timeAtX(x);
     // The bookmark under the pointer: its flag, one within tlSnapPx, or one too close to add another (when zoomed far in).
     let mark = bmEl ? +bmEl.dataset.tlBm : markAtX(x);
     if (mark < 0) { const near = emMarkNear(m, at, EM_MARK_GAP); if (near >= 0 && markShown(marks()[near])) mark = near; }
     const c = {
       at, mark, cut: cutEl ? +cutEl.dataset.tlCut : -1, joint: jointEl ? st.joints[+jointEl.dataset.tlJoint] || null : null,
+      trim: trimEl ? (trimEl.dataset.tlTrim === "end" ? "end" : "start") : null,
       splitAt: e.altKey ? at : snapAt(at, shownMarks()).at, // "Split here" snaps to a bookmark (Alt: not)
     };
-    const lane = !cutEl && !jointEl ? e.target.closest("[data-tl-lane]") : null;
+    const lane = !cutEl && !jointEl && !trimEl ? e.target.closest("[data-tl-lane]") : null;
     if (lane) {
       const p = pieceAtX(lane.dataset.tlLane, x);
       if (p && !tlSelHas(st.sels, p)) setSel(p); // the piece under the pointer becomes the selection
@@ -1588,11 +1688,17 @@ function mountTimeline(host, opts) {
     if (mk.length) out.push("<hr>");
     const n = st.sels.length;
     if (n > 1) out.push(`<div class="menu-head">${esc(t("{n} selected", { n }))}</div>`);
+    // On a bracket: give back all the footage on its side (only when there is some).
+    if (c.trim === "start" && trimWould("start", 0)) top.push(item("trim-reset", tlPaths.restore, t("Reset the start"), { arg: "start" }));
+    if (c.trim === "end" && trimWould("end", dur())) top.push(item("trim-reset", tlPaths.restore, t("Reset the end"), { arg: "end" }));
     if (c.cut >= 0 && c.cut < m.cuts.length) top.push(item("join", tlPaths.join, t("Remove this cut point"), { arg: c.cut }));
     if (c.joint) top.push(item("restore-run", tlPaths.restore, t("Restore the part cut out here")));
     if (canSplitAt(c.splitAt)) top.push(item("split-at", tlPaths.split, t("Split here"), { arg: c.splitAt }));
     const plan = removePlan();
     if (plan.ok) top.push(item("remove", plan.restore ? tlPaths.restore : tlPaths.trash, plan.restore ? t("Restore") : t("Cut out")));
+    // The mouse's I and O: at the pointer (snapped to a bookmark like "Split here"). Not on a bracket, where it would hardly move it.
+    if (!c.trim && trimWould("start", c.splitAt)) top.push(item("trim-start", tlPaths.trimStart, t("Trim the start to here"), { arg: c.splitAt }));
+    if (!c.trim && trimWould("end", c.splitAt)) top.push(item("trim-end", tlPaths.trimEnd, t("Trim the end to here"), { arg: c.splitAt }));
     const aud = selAudio();
     if (aud.length) {
       const ref = refAudio(), g = ref.r.gains[ref.seg], many = aud.length > 1;
@@ -1626,6 +1732,9 @@ function mountTimeline(host, opts) {
       case "join": return doJoin(+arg);
       case "restore-run": return doRestoreRun(c.joint);
       case "split-at": return doSplit(+arg);
+      case "trim-reset": return arg === "end" ? doTrimAt("end", dur()) : doTrimAt("start", 0);
+      case "trim-start": return doTrimAt("start", +arg);
+      case "trim-end": return doTrimAt("end", +arg);
       case "remove": return doRemove();
       case "mute": return doMuteSeg();
       case "level": return doLevel(+arg);
@@ -1859,6 +1968,8 @@ function mountTimeline(host, opts) {
         }
         case "markNext": return doGoMark(false);
         case "markPrev": return doGoMark(true);
+        case "trimStart": return doTrimAt("start", +opts.getTime() || 0); // I: cut out everything before the playhead (or give it back up to there)
+        case "trimEnd": return doTrimAt("end", +opts.getTime() || 0);     // O: the same from the playhead on
       }
       console.warn("Glint timeline: run() does not know the command", cmd);
       return false;

@@ -1,56 +1,56 @@
 /* The bug report button in the top bar and its dialog. Loaded after style.css. */
 
 /* Button: an icon-only .btn, the same size and quiet look as the idle update button next to it. */
-.bug-btn { justify-content: center; min-width: 36px; width: 36px; padding: 0; color: var(--muted); }
-.bug-btn svg { width: 17px; height: 17px; stroke-width: 1.8; }
+.bug-btn { justify-content: center; min-width: 30px; width: 30px; padding: 0; color: var(--muted); }
+.bug-btn svg { width: 15px; height: 15px; stroke-width: 1.8; }
 .bug-btn:hover, .bug-btn[aria-expanded="true"] { color: var(--text); }
 .bug-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* Dialog: a dimmed full-window layer with a centred box (above #confirm, below the flash message). */
 .bug-dlg { position: fixed; inset: 0; z-index: 35; display: grid; place-items: center; padding: 24px 16px; background: rgba(3, 5, 9, .68); }
-.bug-box { display: flex; flex-direction: column; width: min(560px, 100%); max-height: 100%; padding: 20px 22px 18px; background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 24px 60px rgba(0, 0, 0, .6); color: var(--text); overflow: hidden; }
-.bug-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; color: var(--muted); }
-.bug-head svg { width: 20px; height: 20px; }
-.bug-head h2 { margin: 0; color: var(--text); font-size: 17px; font-weight: 700; }
+.bug-box { display: flex; flex-direction: column; width: min(520px, 100%); max-height: 100%; padding: 17px 18px 16px; background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 24px 60px rgba(0, 0, 0, .6); color: var(--text); overflow: hidden; }
+.bug-head { display: flex; align-items: center; gap: 9px; margin-bottom: 5px; color: var(--muted); }
+.bug-head svg { width: 18px; height: 18px; }
+.bug-head h2 { margin: 0; color: var(--text); font-size: 15.5px; font-weight: 700; }
 .bug-main { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; margin: 0 -6px; padding: 0 6px; }
-.bug-sub { margin: 0 0 14px; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; }
-.bug-lab { margin: 0 0 6px; font-weight: 600; font-size: 13px; }
+.bug-sub { margin: 0 0 12px; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; }
+.bug-lab { margin: 0 0 5px; font-weight: 600; font-size: 12.5px; }
 .bug-dlg .field { width: 100%; min-width: 0; }
-.bug-text { flex: none; height: auto; min-height: 120px; padding: 9px 12px; resize: vertical; line-height: 1.45; }
-.bug-contact { margin-bottom: 12px; }
+.bug-text { flex: none; height: auto; min-height: 110px; padding: 8px 11px; resize: vertical; line-height: 1.45; }
+.bug-contact { margin-bottom: 10px; }
 .bug-text, .bug-contact, .bug-link, .bug-pre { user-select: text; }
 .bug-dlg .field:read-only:not(.bug-link) { opacity: .7; }
-.bug-meta { display: flex; justify-content: space-between; gap: 10px; margin: 5px 0 12px; color: var(--dim); font-size: 12px; }
+.bug-meta { display: flex; justify-content: space-between; gap: 10px; margin: 4px 0 10px; color: var(--dim); font-size: 11.5px; }
 .bug-count { margin-left: auto; font-variant-numeric: tabular-nums; }
 .bug-count.bug-near { color: var(--warn); }
-.bug-check { align-self: flex-start; margin-bottom: 12px; }
+.bug-check { align-self: flex-start; margin-bottom: 10px; }
 
 /* "What will be sent": everything the backend adds, shown read-only before it leaves the PC. */
-.bug-sent { margin-bottom: 14px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--raised); }
-.bug-sent summary { padding: 8px 12px; color: var(--muted); font-weight: 600; font-size: 13px; cursor: pointer; border-radius: var(--radius); }
+.bug-sent { margin-bottom: 12px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--raised); }
+.bug-sent summary { padding: 7px 11px; color: var(--muted); font-weight: 600; font-size: 12.5px; cursor: pointer; border-radius: var(--radius); }
 .bug-sent summary:hover { color: var(--text); }
 .bug-sent[open] summary { border-bottom: 1px solid var(--line); border-radius: var(--radius) var(--radius) 0 0; }
-.bug-sent > :not(summary) { margin-left: 12px; margin-right: 12px; }
-.bug-sent-note { margin-top: 10px; margin-bottom: 8px; color: var(--muted); font-size: 12.5px; }
-.bug-pre-lab { margin: 0 0 4px; color: var(--dim); font-size: 12px; font-weight: 600; }
-.bug-pre { max-height: 130px; margin: 0 0 10px; padding: 8px 10px; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
+.bug-sent > :not(summary) { margin-left: 11px; margin-right: 11px; }
+.bug-sent-note { margin-top: 9px; margin-bottom: 7px; color: var(--muted); font-size: 12px; }
+.bug-pre-lab { margin: 0 0 4px; color: var(--dim); font-size: 11.5px; font-weight: 600; }
+.bug-pre { max-height: 130px; margin: 0 0 10px; padding: 8px 10px; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font: 11.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
 .bug-log { max-height: 170px; }
 .bug-log-part[hidden] { display: none; }
-.bug-main > .bug-pre { margin-bottom: 14px; }
-.bug-link { margin-bottom: 14px; font-family: var(--mono); font-size: 13px; color: var(--text); }
+.bug-main > .bug-pre { margin-bottom: 12px; }
+.bug-link { margin-bottom: 12px; font-family: var(--mono); font-size: 12.5px; color: var(--text); }
 
-.bug-err { margin-bottom: 12px; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line-2)); border-left: 3px solid var(--danger); border-radius: var(--radius); background: color-mix(in srgb, var(--danger) 8%, var(--panel)); color: var(--danger); overflow-wrap: anywhere; user-select: text; }
+.bug-err { margin-bottom: 10px; padding: 8px 11px; border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line-2)); border-left: 3px solid var(--danger); border-radius: var(--radius); background: color-mix(in srgb, var(--danger) 8%, var(--panel)); color: var(--danger); overflow-wrap: anywhere; user-select: text; }
 .bug-err[hidden] { display: none; }
 
-.bug-row { display: flex; justify-content: flex-end; gap: 10px; margin-top: 2px; }
-.bug-send { min-width: 92px; justify-content: center; }
+.bug-row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+.bug-send { min-width: 86px; justify-content: center; }
 .bug-send:disabled:has(.bug-spin) { opacity: .8; } /* sending: busy, not unavailable */
 .bug-spin { width: 13px; height: 13px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: bug-spin .8s linear infinite; }
 @keyframes bug-spin { to { transform: rotate(360deg); } }
 
-.bug-done { display: flex; align-items: center; gap: 12px; margin: 10px 0 18px; }
-.bug-done svg { width: 28px; height: 28px; color: var(--ok); }
-.bug-done p { margin: 0; font-size: 15px; line-height: 1.5; }
+.bug-done { display: flex; align-items: center; gap: 10px; margin: 8px 0 16px; }
+.bug-done svg { width: 24px; height: 24px; color: var(--ok); }
+.bug-done p { margin: 0; font-size: 14px; line-height: 1.5; }
 
 .bug-dlg button:focus-visible, .bug-sent summary:focus-visible, .bug-pre:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .bug-check input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

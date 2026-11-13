@@ -42,7 +42,9 @@ const ICON = {
   monitor: '<svg viewBox="0 0 24 24"><rect x="3" y="4.500" width="18" height="12" rx="2"/><path d="M9 20h6M12 16.500V20"/></svg>',
   image: '<svg viewBox="0 0 24 24"><rect x="3.500" y="4.500" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.600"/><path d="m5 18 5-5 3 3 2.500-2.500L20 18"/></svg>',
   game: '<svg viewBox="0 0 24 24"><rect x="2.500" y="7" width="19" height="10" rx="5"/><path d="M7 10.500v3M5.500 12h3M15.500 11h.01M18 13h.01"/></svg>',
+  compress: '<svg viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l6.500-6.500M3.500 20.500 10 14"/></svg>',
 };
+const COMPRESS_MB = [10, 20, 50, 500]; // "Compress for Discord" sizes; Discord's upload limits are 10 MB free, 50 MB Nitro Basic, 500 MB Nitro
 
 const PICON = {
   play: '<svg viewBox="0 0 24 24"><path d="M7 4.5v15l12.5-7.5z" fill="currentColor" stroke="none"/></svg>',
@@ -92,7 +94,9 @@ function flash(msg, bad = false) {
   el.hidden = false;
   clearTimeout(flashTimer);
   flashTimer = setTimeout(() => (el.hidden = true), bad ? 5000 : 2200);
+  if (bad && typeof sfxPlay === "function") sfxPlay("error"); // every failure, fail() included
 }
+const sfx = (name) => { if (typeof sfxPlay === "function") sfxPlay(name); }; // sfx.js loads after this file
 const fail = (e) => flash(t(String(e?.message ?? e)), true);
 
 /** Glint's own yes/no prompt. Enter confirms, Escape or a click outside cancels. */
@@ -161,26 +165,27 @@ function renderChrome() {
   for (const el of $$("[data-i18n-ph]")) el.placeholder = t(el.dataset.i18nPh);
   if (typeof updRender === "function") updRender(); // its tooltip is text too
   if (typeof jobsRender === "function") jobsRender(); // shown or hidden by a setting
+  if (typeof sfxFromSettings === "function") sfxFromSettings(S.settings); // a sound setting applies at once
   // The sidebar can be folded to a strip of icons, so every item carries its name as a tooltip.
   $("#app").classList.toggle("side-min", S.sideMin);
   $("#side-toggle").title = S.sideMin ? t("Show the sidebar") : t("Hide the sidebar");
   $("#side-toggle").setAttribute("aria-label", $("#side-toggle").title);
   $("#search").title = t("Search clips and games");
   const navItem = (id, label, icon, count) =>
-    `<button class="nav-item${S.page === id ? " active" : ""}" data-page="${id}" title="${esc(label)}">${ICON[icon]}<span class="label">${label}</span>${count ? `<span class="badge">${count}</span>` : ""}</button>`;
+    `<button class="nav-item${S.page === id ? " active" : ""}" data-page="${id}" data-hover title="${esc(label)}">${ICON[icon]}<span class="label">${label}</span>${count ? `<span class="badge">${count}</span>` : ""}</button>`;
   // Folders: one row that unfolds the list (closed to begin with). In the list: click to open,
   // right-click to rename or delete, drop dragged clips on one to move them.
   const inFolder = S.page === "library" && !!S.folder;
   const folderList = S.folders.map((f) => {
     const n = S.clips.filter((c) => c.folder === f).length;
-    return `<button class="nav-item small${inFolder && S.folder === f ? " active" : ""}" data-folder="${esc(f)}" title="${esc(f)}">${ICON.folder}<span class="label">${esc(f)}</span>${n ? `<span class="badge">${n}</span>` : ""}</button>`;
-  }).join("") + `<button class="nav-item small ghost" data-act="folder-new">${ICON.plus}<span class="label">${t("New folder")}</span></button>`;
+    return `<button class="nav-item small${inFolder && S.folder === f ? " active" : ""}" data-folder="${esc(f)}" data-hover title="${esc(f)}">${ICON.folder}<span class="label">${esc(f)}</span>${n ? `<span class="badge">${n}</span>` : ""}</button>`;
+  }).join("") + `<button class="nav-item small ghost" data-act="folder-new" data-hover>${ICON.plus}<span class="label">${t("New folder")}</span></button>`;
   $("#nav-general").innerHTML =
     navItem("library", t("Library"), "library", S.clips.length).replace(' active"', S.folder ? '"' : ' active"') +
     navItem("favorites", t("Favorites"), "star", S.clips.filter((c) => c.favorite).length) +
     navItem("rendered", t("Rendered"), "blur", S.clips.filter((c) => c.kind === "blur").length) +
     // While closed, the row itself is lit when the folder being viewed is hidden inside it.
-    `<button class="nav-item nav-fold${inFolder && (!S.foldersOpen || S.sideMin) ? " active" : ""}" data-act="folders-toggle" aria-expanded="${S.foldersOpen}" title="${esc(t("Folders"))}">${ICON.folder}<span class="label">${t("Folders")}</span>${S.folders.length ? `<span class="badge">${S.folders.length}</span>` : ""}<svg class="nav-chev" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></svg></button>` +
+    `<button class="nav-item nav-fold${inFolder && (!S.foldersOpen || S.sideMin) ? " active" : ""}" data-act="folders-toggle" data-sfx="tap" data-hover aria-expanded="${S.foldersOpen}" title="${esc(t("Folders"))}">${ICON.folder}<span class="label">${t("Folders")}</span>${S.folders.length ? `<span class="badge">${S.folders.length}</span>` : ""}<svg class="nav-chev" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></svg></button>` +
     `<div class="nav-sub" id="nav-folders"${S.foldersOpen ? "" : " hidden"}>${folderList}</div>`;
   $("#nav-tools").innerHTML =
     navItem("keybinds", t("Keybinds"), "keys", S.settings.keybinds.length) +
@@ -235,12 +240,13 @@ function cardHtml(c) {
   const bg = c.thumb
     ? `style="background-image:url('${fileSrc(c.thumb)}')"`
     : `style="background:linear-gradient(135deg,hsl(${hue(c.game)} 45% 22%),hsl(${(hue(c.game) + 50) % 360} 50% 12%))"`;
-  return `<article class="card${S.sel.has(c.id) ? " sel" : ""}" data-clip="${c.id}">
+  // The tag names what made the clip; a Discord copy's is the brand name, so it is not translated.
+  return `<article class="card${S.sel.has(c.id) ? " sel" : ""}" data-clip="${c.id}" data-hover>
     <div class="thumb" ${bg}>
       ${c.thumb ? "" : `<div class="ph">${esc(c.game.slice(0, 1).toUpperCase())}</div>`}
       <span class="check" title="${esc(t("Select"))}">${ICON.check}</span>
       ${c.favorite ? `<span class="star">${ICON.star}</span>` : ""}
-      ${c.kind !== "clip" ? `<span class="tag">${esc({ trim: t("trim"), edit: t("edit"), import: t("import") }[c.kind] || c.kind)}</span>` : ""}
+      ${c.kind !== "clip" ? `<span class="tag tag-${esc(c.kind)}">${esc({ trim: t("trim"), edit: t("edit"), import: t("import"), discord: "Discord" }[c.kind] || c.kind)}</span>` : ""}
       <span class="dur">${fmtDur(c.duration)}</span>
       ${job && job.state === "running" ? `<div class="job"><i style="width:${job.pct}%"></i></div>` : ""}
     </div>
@@ -264,11 +270,11 @@ function gameRowHtml(base) {
   const counts = Object.entries(base.reduce((m, c) => ((m[c.game] = (m[c.game] || 0) + 1), m), {})).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   if (S.tab !== "all" && !counts.some(([g]) => g === S.tab)) S.tab = "all";
   const shown = S.gamesOpen || counts.length <= GAMES_SHOWN ? counts : counts.filter(([g], i) => i < GAMES_SHOWN - 1 || g === S.tab);
-  const chip = (id, label, n, icon, cls = "") => `<button class="chip game${cls}${S.tab === id ? " active" : ""}" data-tab="${esc(id)}" title="${esc(label)}">${icon}<span>${esc(label)}</span><i>${n}</i></button>`;
+  const chip = (id, label, n, icon, cls = "") => `<button class="chip game${cls}${S.tab === id ? " active" : ""}" data-tab="${esc(id)}" data-hover title="${esc(label)}">${icon}<span>${esc(label)}</span><i>${n}</i></button>`;
   return `<div class="games">
     ${chip("all", t("All"), base.length, ICON.game, " all")}
     ${shown.map(([g, n]) => chip(g, g, n, gameIcon(g))).join("")}
-    ${counts.length > GAMES_SHOWN ? `<button class="chip game more" data-act="games-more"><span>${S.gamesOpen ? t("Show fewer") : t("{n} more", { n: counts.length - shown.length })}</span></button>` : ""}
+    ${counts.length > GAMES_SHOWN ? `<button class="chip game more" data-act="games-more" data-sfx="tap" data-hover><span>${S.gamesOpen ? t("Show fewer") : t("{n} more", { n: counts.length - shown.length })}</span></button>` : ""}
   </div>`;
 }
 
@@ -291,12 +297,12 @@ function folderChipList(folders, clips, cur, showEmptyMain, mainLabel) {
 function folderRowHtml() {
   if (S.folder && !S.folders.includes(S.folder)) S.folder = null;
   const cur = S.folder === null ? "*" : S.folder;
-  const chip = (id, label, n, icon = "") => `<button class="chip${cur === id ? " active" : ""}" data-folder="${esc(id)}" title="${esc(label)}">${icon}<span>${esc(label)}</span><i>${n}</i></button>`;
+  const chip = (id, label, n, icon = "") => `<button class="chip${cur === id ? " active" : ""}" data-folder="${esc(id)}" data-hover title="${esc(label)}">${icon}<span>${esc(label)}</span><i>${n}</i></button>`;
   const list = folderChipList(S.folders, S.clips, S.folder, !!S.settings.show_empty_main, t("Main folder"));
   return `<div class="folders">
     ${chip("*", t("All clips"), S.clips.length)}
     ${list.map((f) => chip(f.id, f.label, f.n, f.id ? ICON.folder : "")).join("")}
-    <button class="chip ghost" data-act="folder-new">${ICON.plus}<span>${t("New folder")}</span></button>
+    <button class="chip ghost" data-act="folder-new" data-hover>${ICON.plus}<span>${t("New folder")}</span></button>
     ${S.folder ? `<span class="sp"></span><button class="btn sm" data-act="folder-rename">${t("Rename")}</button><button class="btn sm danger" data-act="folder-del">${ICON.trash}${t("Delete folder")}</button>` : ""}
   </div>`;
 }
@@ -345,7 +351,7 @@ function renderSelBar() {
   const allFav = sel.every((c) => c.favorite);
   el.innerHTML = `<b>${t("{n} selected", { n: sel.length })}</b><span class="muted">${fmtSize(sel.reduce((n, c) => n + c.size, 0))}</span>
     <button class="btn sm" data-act="sel-move">${ICON.folder}${t("Move to")}</button>
-    <button class="btn sm" data-act="sel-fav">${ICON.star}${allFav ? t("Unfavorite") : t("Favorite")}</button>
+    <button class="btn sm" data-act="sel-fav" data-sfx="none">${ICON.star}${allFav ? t("Unfavorite") : t("Favorite")}</button>
     <button class="btn sm" data-act="sel-copy">${ICON.copy}${t("Copy")}</button>
     <button class="btn sm danger" data-act="sel-del">${ICON.trash}${t("Delete")}</button>
     <button class="icon-btn" data-act="sel-clear" aria-label="${esc(t("Clear selection"))}" title="${esc(t("Clear selection (Esc)"))}">${ICON.x}</button>`;
@@ -432,7 +438,8 @@ document.addEventListener("dblclick", (e) => {
 /* One pop-up menu, used by the selection bar's "Move to" and by right-click.
    Items are <button data-m="action" data-arg="…">; menuIds are the clips it acts on. */
 let menuIds = [];
-const mItem = (m, label, icon = "", arg = "", cls = "") => `<button data-m="${m}" data-arg="${esc(arg)}" class="${cls}">${icon || "<svg></svg>"}<span>${esc(label)}</span></button>`;
+// `sfx`: the item's own sound instead of the click (sfx.js), e.g. "none" where the action plays one.
+const mItem = (m, label, icon = "", arg = "", cls = "", sfx = "") => `<button data-m="${m}" data-arg="${esc(arg)}" class="${cls}"${sfx ? ` data-sfx="${sfx}"` : ""}>${icon || "<svg></svg>"}<span>${esc(label)}</span></button>`;
 const mSub = (label, icon, inner) => `<div class="has-sub"><button tabindex="-1">${icon}<span>${esc(label)}</span><b class="chev">›</b></button><div class="submenu">${inner}</div></div>`;
 function closeMenu() { const m = $("#menu"); m.hidden = true; m.innerHTML = ""; m.className = "menu"; m.style.cssText = ""; }
 /** Folder choices for `ids`: the main folder, every folder, and "New folder…". */
@@ -473,12 +480,17 @@ function openClipMenu(id, x, y) {
   const counts = S.clips.reduce((map, k) => ((map[k.game] = (map[k.game] || 0) + 1), map), {});
   const games = Object.keys(counts).sort((a, b) => counts[b] - counts[a]).slice(0, 14);
   const gameItems = games.map((g) => mItem("game", g, "", g, clips.every((k) => k.game === g) ? "on" : "")).join("") + "<hr>" + mItem("game-new", t("New game…"), ICON.plus);
+  // Compress for Discord: the size used last comes first and is ticked. With several clips, one job each.
+  const lastMb = COMPRESS_MB.includes(+S.settings.compress_mb) ? +S.settings.compress_mb : 10;
+  const compressItems = [lastMb, ...COMPRESS_MB.filter((n) => n !== lastMb)].map((n) => mItem("compress", t("{n} MB", { n }), "", String(n), n === lastMb ? "on" : "", "launch")).join("")
+    + `<div class="menu-hint">${esc(t("10 MB: free · 50 MB: Nitro Basic · 500 MB: Nitro"))}</div>`;
   $("#menu").innerHTML = (many ? `<div class="menu-head">${t("{n} selected", { n: menuIds.length })}</div>` : mItem("open", t("Open"), PICON.play))
     + mItem("copy", many ? t("Copy files") : t("Copy file"), ICON.copy)
-    + mItem("fav", allFav ? t("Remove favorite") : t("Favorite"), ICON.star)
+    + mItem("fav", allFav ? t("Remove favorite") : t("Favorite"), ICON.star, "", "", "none")
     + (many ? "" : mItem("rename", t("Rename…"), ICON.edit))
     + "<hr>" + mSub(t("Game"), ICON.game, gameItems) + mSub(t("Folder"), ICON.folder, folderItems(menuIds)) + "<hr>"
-    + (many ? "" : mItem("edit", t("Open in editor"), ICON.cut) + (S.blur ? mItem("blur", t("Render with Blur"), ICON.blur) : "") + mItem("reveal", t("Open file location"), ICON.folder) + "<hr>")
+    + (many ? mSub(t("Compress for Discord"), ICON.compress, compressItems) + "<hr>"
+      : mItem("edit", t("Open in editor"), ICON.cut) + (S.blur ? mItem("blur", t("Render with Blur"), ICON.blur, "", "", "launch") : "") + mSub(t("Compress for Discord"), ICON.compress, compressItems) + mItem("reveal", t("Open file location"), ICON.folder) + "<hr>")
     + (many ? mItem("deselect", t("Clear selection"), ICON.x) : mItem("select", S.sel.has(id) ? t("Deselect") : t("Select"), ICON.check))
     + mItem("delete", t("Delete"), ICON.trash, "", "danger");
   placeMenu(x, y);
@@ -528,9 +540,11 @@ async function menuAction(m, arg) {
       const favorite = !clips.every((k) => k.favorite);
       await invoke("set_favorites", { ids, favorite });
       for (const k of clips) k.favorite = favorite;
+      sfx(favorite ? "star" : "off");
       return render();
     }
     case "rename": return editTitle(id);
+    case "compress": return compressIds(ids, +arg || 10);
     case "game": return setGame(arg);
     case "game-new": { const game = await askText(t("Game name"), c?.game || "", t("Set game")); if (game) await setGame(game); return; }
     case "move": return moveIds(ids, arg);
@@ -553,7 +567,7 @@ async function menuAction(m, arg) {
     case "deselect": return clearSel();
     case "delete": {
       if (!(await ask(ids.length === 1 ? t('Move "{title}" to the Recycle Bin?', { title: c.title }) : t("Move {clips} to the Recycle Bin?", { clips: plural(ids.length) }), t("Move to Recycle Bin")))) return;
-      try { await invoke("delete_clips", { ids }); flash(t("{clips} moved to the Recycle Bin", { clips: plural(ids.length) })); } finally { await refreshClips(); }
+      try { await invoke("delete_clips", { ids }); sfx("close"); flash(t("{clips} moved to the Recycle Bin", { clips: plural(ids.length) })); } finally { await refreshClips(); }
       return;
     }
     case "game-filter": S.tab = arg; S.sel.clear(); return render();
@@ -580,6 +594,26 @@ async function moveIds(ids, folder) {
 }
 const moveSel = (folder) => moveIds([...S.sel], folder);
 
+/**
+ * Compress each clip in `ids` for Discord, aiming under `mb` megabytes. Each one is its own job in
+ * the background queue (the renders button lists it); "clip-compressed" reports each result.
+ * The size picked is remembered as the one to list first.
+ */
+async function compressIds(ids, mb) {
+  S.settings.compress_mb = mb;
+  const errors = [];
+  for (const id of ids) {
+    try {
+      const job = await invoke("compress_clip", { id, mb });
+      // Shown at once; the backend's "jobs-changed" brings the real list right after.
+      if (job && job.id && typeof jobsSet === "function" && !jobsList.some((j) => j.id === job.id)) jobsSet([...jobsList, job]);
+    } catch (e) { errors.push(t(String(e?.message ?? e))); }
+  }
+  if (errors.length && ids.length === 1) return flash(errors[0], true);
+  if (errors.length) return flash(errors.length === ids.length ? errors[0] : t("{n} of the clips were not compressed: {reason}", { n: errors.length, reason: errors[0] }), true);
+  flash(ids.length === 1 ? t("Compressing for Discord…") : t("Compressing {clips} for Discord…", { clips: plural(ids.length) }));
+}
+
 document.addEventListener("contextmenu", (e) => {
   if (e.target.closest("input, textarea")) return; // typing fields keep the cut / copy / paste menu
   e.preventDefault();
@@ -604,6 +638,7 @@ async function bulkDelete() {
   if (!ids.length || !(await ask(t("Move {clips} to the Recycle Bin?", { clips: plural(ids.length) }), t("Move to Recycle Bin")))) return;
   try {
     const n = await invoke("delete_clips", { ids });
+    sfx("close");
     S.sel.clear();
     await refreshClips();
     flash(t("{clips} moved to the Recycle Bin", { clips: plural(n ?? ids.length) }));
@@ -987,6 +1022,12 @@ function renderSettings() {
       ${S.settings.sound_name !== "custom" ? row(t("Volume"), "", `<input class="range" type="range" min="5" max="100" step="5" data-set="sound_volume" data-num value="${S.settings.sound_volume}"><span class="range-val">${S.settings.sound_volume}%</span>`)
         : row(t("Sound file"), S.settings.sound_file ? `<span class="path" title="${esc(S.settings.sound_file)}">${esc(S.settings.sound_file)}</span>` : t("A .wav file. It plays at its own loudness"), `<button class="btn sm" data-act="sound-pick">${t("Choose file")}</button>`)}
     </div>
+    <div class="section"><h2>${t("Interface sounds")}</h2>
+      ${row(t("Interface sounds"), t("Soft sounds when you click, switch, open and close things in this window"), toggle("ui_sounds"))}
+      ${row(t("Sounds when the pointer moves over things"), t("A very quiet tick over the sidebar, clips, chips and top bar buttons"), toggle("ui_sounds_hover"))}
+      ${row(t("Volume"), "", `<input class="range" type="range" min="0" max="100" step="5" data-set="ui_sounds_volume" data-num value="${s.ui_sounds_volume ?? 50}"><span class="range-val">${s.ui_sounds_volume ?? 50}%</span>`)}
+      ${row(t("Hear them"), t("Each button plays its sound, even while interface sounds are off"), `<div class="sfx-try">${sfxTryButtons()}</div>`)}
+    </div>
     <div class="section"><h2>${t("Clip overlay")}</h2>
       ${row(t("Clip overlay"), t("A small box on the captured monitor when a clip is saved. It never takes focus or clicks"), toggle("toast"))}
       ${row(t("Compact"), t("Shows only the two stars in a small square, with no text. Problems, such as a clip that failed, still show the full box"), toggle("toast_compact"))}
@@ -1003,7 +1044,7 @@ function renderSettings() {
       ${row(t("Application ID"), t("Discord only shows a presence from an app registered with it. Create one named Glint at discord.com/developers/applications (free, about a minute) and paste its Application ID here"), `<input class="field" type="text" inputmode="numeric" data-set="discord_app_id" value="${esc(s.discord_app_id || "")}" placeholder="${esc(t("18 or 19 digits"))}" spellcheck="false" style="width:210px">`)}
     </div>
     <div class="section"><h2>${t("Updates")}</h2>
-      ${row(t("Version"), "", `<span class="path">Glint ${esc(S.version || "")}</span>`)}
+      ${row(t("Version"), "", `<span class="path">Glint ${esc(S.version || "")}</span><button class="btn sm" data-act="whats-new" data-sfx="open">${t("What's new")}</button>`)}
       ${row(t("Check for updates daily"), t("Asks GitHub once a day whether a newer Glint has been released. Nothing about you or this PC is sent"), toggle("update_check"))}
     </div>
     <div class="section"><h2>${t("Program")}</h2>
@@ -1022,6 +1063,14 @@ function renderSettings() {
   $("#view").innerHTML = own + capture + `<div class="note" id="set-none" hidden></div>`;
   markRecommended(["encoder", "method", "aspect", "bitrate", "height"]);
   applySettingsFilter();
+}
+
+/** The "Hear them" buttons of Settings → Interface sounds: one per sound in sfx.js. */
+function sfxTryButtons() {
+  const names = { click: t("Click"), tap: t("Tap"), hover: t("Hover"), on: t("On"), off: t("Off"), open: t("Open"), close: t("Close"), star: t("Star"), launch: t("Launch"), success: t("Success"), error: t("Error") };
+  const list = typeof SFX_NAMES !== "undefined" ? SFX_NAMES : Object.keys(names);
+  // data-sfx="none": the button's own sound is the one it plays, not a click on top.
+  return list.map((n) => `<button class="btn sm" data-act="sfx-try" data-name="${esc(n)}" data-sfx="none">${esc(names[n] || n)}</button>`).join("");
 }
 
 /** Show only the settings that match the search box on the Settings page. */
@@ -1124,6 +1173,8 @@ document.addEventListener("click", async (e) => {
       case "sound-play": return await invoke("preview_sound");
       case "sound-pick": { const file = await invoke("pick_sound_file"); if (file) { S.settings.sound_file = file; saveSettings(true); setTimeout(() => invoke("preview_sound"), 350); } return; }
       case "toast-show": return await invoke("preview_toast");
+      case "sfx-try": return typeof sfxPlay === "function" && sfxPlay(d.name, true); // heard even while sounds are off
+      case "whats-new": return typeof wnOpen === "function" && wnOpen();
       case "sel-copy": {
         const n = await invoke("copy_clips", { ids: [...S.sel] });
         return flash(t("{clips} copied. Paste them anywhere.", { clips: plural(n ?? S.sel.size) }));
@@ -1133,6 +1184,7 @@ document.addEventListener("click", async (e) => {
         const favorite = !sel.every((c) => c.favorite);
         await invoke("set_favorites", { ids: sel.map((c) => c.id), favorite });
         for (const c of sel) c.favorite = favorite;
+        sfx(favorite ? "star" : "off");
         return render();
       }
       case "folder-new": { const name = await newFolder(); if (name) { S.page = "library"; S.folder = name; S.tab = "all"; render(); } return; }
@@ -1200,7 +1252,8 @@ document.addEventListener("change", (e) => {
     saveSettings(el.tagName === "SELECT" || el.type === "checkbox");
     if (el.dataset.set.endsWith("_path")) setTimeout(refreshState, 500);
     if (el.dataset.set === "bitrate" || el.dataset.set === "buffer" || el.dataset.set === "buffer_ram_secs") render();
-    if (el.type === "range") render(); // refresh the number shown beside the slider
+    if (el.type === "range") render(); // refresh the number shown beside the slider (and apply a sound setting)
+    if (el.dataset.set === "ui_sounds_volume" && typeof sfxPlay === "function") sfxPlay("click", true); // the new loudness
     // Let the user hear a sound choice, or see an overlay change, once the setting has been saved.
     if (el.dataset.set === "sound_name" || el.dataset.set === "sound_volume") { if (S.settings.sound_name !== "custom" || S.settings.sound_file) setTimeout(() => invoke("preview_sound"), 350); }
     if (/^toast_(opacity|scale|secs|compact|length|game|mic)$/.test(el.dataset.set)) setTimeout(() => invoke("preview_toast"), 350);
@@ -1236,9 +1289,9 @@ window.addEventListener("keydown", (e) => {
     }
     if (best) { e.preventDefault(); invoke("fire_keybind", { id: best.id }).catch(() => {}); return; }
   }
-  // The editor timeline's right-click menu or the bug report dialog is open: the keyboard is its
-  // own (arrows, Enter, Esc closes it). This listener runs before theirs, so it has to stand aside.
-  if (document.querySelector(".tl-menu, .bug-dlg")) return;
+  // The editor timeline's right-click menu, the bug report dialog or What's new is open: the keyboard
+  // is its own (arrows, Enter, Esc closes it). This listener runs before theirs, so it has to stand aside.
+  if (document.querySelector(".tl-menu, .bug-dlg, .wn-dlg")) return;
   const inField = e.target.matches?.("input, select, textarea");
   if (e.ctrlKey && e.code === "KeyK") { e.preventDefault(); $("#search").classList.add("open"); $("#q").focus(); $("#q").select(); }
   else if (isLib() && !S.open && !inField && e.ctrlKey && e.code === "KeyA") { e.preventDefault(); S.sel = new Set(visibleClips().list.map((c) => c.id)); syncSel(); }
@@ -1302,14 +1355,31 @@ async function pollStatus() {
   await refreshState();
   await refreshClips();
   if (typeof jobsInit === "function") jobsInit();
+  if (typeof wnStartup === "function") wnStartup(); // What's new, once after an update
   setInterval(pollStatus, 1000);
-  T.event.listen("clips-changed", refreshClips);
+  // The payload is the id of a clip that was added or changed ("" for many). A new plain clip is one
+  // just saved from the buffer: its sound is "success" (renders and compressions have their own).
+  T.event.listen("clips-changed", async ({ payload: id } = {}) => {
+    const fresh = !!id && !S.clips.some((c) => c.id === id);
+    try { await refreshClips(); } catch (e) { return console.error("Glint: list_clips failed", e); }
+    if (fresh && S.clips.find((c) => c.id === id)?.kind === "clip") sfx("success");
+  });
+  // A "Compress for Discord" job finished: { clip, mb, size, copied, secs }. The clip is new (kind "discord").
+  T.event.listen("clip-compressed", ({ payload: p }) => {
+    if (!p || !p.clip) return;
+    const i = S.clips.findIndex((c) => c.id === p.clip.id);
+    if (i >= 0) S.clips[i] = p.clip; else S.clips.push(p.clip);
+    render();
+    sfx("success");
+    const size = fmtSize(p.size || p.clip.size || 0);
+    flash(p.copied ? t("Compressed to {size} and copied. Paste it into Discord.", { size }) : t("Compressed to {size}. The new clip is in your library.", { size }));
+  });
   T.event.listen("status-changed", pollStatus);
   // A game was seen for the first time, or its icon was just taken from its exe.
   T.event.listen("games-changed", async () => { S.games = (await invoke("list_games")) || []; if (isLib() && !S.open && !S.sel.size) render(); });
   T.event.listen("blur-progress", ({ payload: p }) => {
     S.jobs[p.id] = { pct: p.pct, state: p.state, message: p.message };
-    if (p.state === "done") { delete S.jobs[p.id]; flash(t("Blur render finished")); }
+    if (p.state === "done") { delete S.jobs[p.id]; sfx("success"); flash(t("Blur render finished")); }
     if (p.state === "cancelled") delete S.jobs[p.id];
     if (p.state === "error") flash(p.message, true);
     const c = S.clips.find((x) => x.id === p.id);

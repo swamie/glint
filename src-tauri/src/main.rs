@@ -6,6 +6,7 @@ mod bench;
 mod blur;
 mod bugreport;
 mod clip;
+mod compress;
 mod core;
 mod denoise;
 mod discord;
@@ -104,6 +105,11 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--memory-test") {
         // glint.exe --memory-test <report.txt>: the memory figure of the whole process tree.
         win::memory_test(args.get(i + 1).map(String::as_str).unwrap_or("memory.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--compress-test") {
+        // glint.exe --compress-test <report.txt>: Compress for Discord on made-up clips (never the clipboard).
+        compress::self_test(args.get(i + 1).map(String::as_str).unwrap_or("compress.txt"));
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--folders-test") {

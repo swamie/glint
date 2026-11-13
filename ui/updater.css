@@ -1,7 +1,7 @@
-/* The update button in the top bar. It is a .btn (same height and border as Pause and Clip). Loaded after style.css. */
-.upd-btn { position: relative; justify-content: center; gap: 7px; min-width: 36px; padding: 0; color: var(--muted); overflow: hidden; }
-.upd-btn.upd-has-label { padding: 0 13px 0 10px; }
-.upd-btn svg { width: 17px; height: 17px; stroke-width: 2; }
+/* The update button in the top bar. It is a .btn (same height and border as Pause and Clip: 30 px in the top bar). Loaded after style.css. */
+.upd-btn { position: relative; justify-content: center; gap: 6px; min-width: 30px; padding: 0; color: var(--muted); overflow: hidden; }
+.upd-btn.upd-has-label { padding: 0 11px 0 9px; }
+.upd-btn svg { width: 15px; height: 15px; stroke-width: 2; }
 .upd-btn:hover { color: var(--text); }
 .upd-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .upd-label { white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -20,12 +20,13 @@
 .upd-btn.upd-installing::after { content: ""; position: absolute; left: 0; bottom: 0; height: 3px; width: var(--upd-pct, 0%); background: var(--accent); transition: width .25s; }
 
 /* The last check failed: a small warning mark in the corner; the tooltip says why. */
-.upd-warn { display: none; position: absolute; top: 3px; right: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--warn); color: #1a1200; font: 800 9px/12px var(--sans); font-style: normal; text-align: center; pointer-events: none; }
+.upd-warn { display: none; position: absolute; top: 2px; right: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--warn); color: #1a1200; font: 800 8.5px/11px var(--sans); font-style: normal; text-align: center; pointer-events: none; }
 .upd-btn.upd-error .upd-warn { display: block; }
 .upd-btn.upd-error { color: var(--muted); }
 
-/* A narrow window: the "Update 0.2.0" label goes, the accent fill stays. The download percentage stays (it is short). */
+/* A narrow window: the "Update 0.2.0" label goes, the accent fill stays, and the button is a 30 px square again.
+   The download percentage stays (it is short). */
 @media (max-width: 1100px) {
   .upd-btn.upd-new .upd-label { display: none; }
-  .upd-btn.upd-new.upd-has-label { padding: 0; width: 36px; }
+  .upd-btn.upd-new.upd-has-label { padding: 0; width: 30px; }
 }

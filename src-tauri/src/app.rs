@@ -224,13 +224,19 @@ fn delete_clip(core: St, id: String) -> Result<(), String> {
 /// Put the clip file on the clipboard, ready to paste into Discord, Explorer or any chat.
 #[tauri::command(async)]
 fn copy_clip(core: St, id: String) -> Result<(), String> {
-    use clipboard_win::{formats, Clipboard, Setter};
     let meta = core.lib.lock().unwrap().get(&id).ok_or("Clip not found")?;
     if !Path::new(&meta.path).is_file() {
         return Err("The clip file no longer exists".into());
     }
+    files_to_clipboard(&[meta.path.as_str()])
+}
+
+/// Put files on the clipboard as a file list (what Explorer's Copy does), ready
+/// to paste into Discord, Explorer or any chat.
+pub fn files_to_clipboard(paths: &[&str]) -> Result<(), String> {
+    use clipboard_win::{formats, Clipboard, Setter};
     let _clip = Clipboard::new_attempts(10).map_err(|e| format!("Clipboard is busy: {e}"))?;
-    formats::FileList.write_clipboard(&[meta.path.as_str()][..]).map_err(|e| format!("Could not copy: {e}"))
+    formats::FileList.write_clipboard(paths).map_err(|e| format!("Could not copy: {e}"))
 }
 
 /// Send several clips to the Recycle Bin. Returns how many went.
@@ -523,6 +529,23 @@ fn blur_clip(core: St, id: String) -> Result<(), String> {
     core.inner().blur_clip(id)
 }
 
+/// Queue "Compress for Discord" of a clip to fit `mb` megabytes (5..=1000).
+/// The size is remembered as `settings.compress_mb` so the menu lists it first.
+/// The finished copy is saved beside the original, put on the clipboard and
+/// announced with "clip-compressed" (see compress.rs).
+#[tauri::command(async)]
+fn compress_clip(core: St, id: String, mb: u32) -> Result<crate::jobs::Job, String> {
+    if (crate::compress::MIN_MB..=crate::compress::MAX_MB).contains(&mb) {
+        let s = {
+            let mut s = core.settings.lock().unwrap();
+            s.compress_mb = mb;
+            s.clone()
+        };
+        s.save();
+    }
+    crate::compress::enqueue(core.inner(), id, mb)
+}
+
 #[tauri::command]
 fn suspend_hotkeys(on: bool) {
     hotkeys::suspend(on);
@@ -654,6 +677,7 @@ pub fn run(minimized: bool) {
             pick_import_folder,
             export_clip,
             blur_clip,
+            compress_clip,
             suspend_hotkeys,
             fire_keybind,
             win_action

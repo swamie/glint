@@ -553,7 +553,14 @@ fn resolve_method(ffmpeg: &Path, wanted: &str) -> String {
     if has_wgc { "wgc".into() } else { "dda".into() }
 }
 
-pub fn capture_args(cfg: &CaptureCfg, enc: &str, method: &str) -> Vec<String> {
+/// The ffmpeg command line of the capture.
+///
+/// `sw`: hand the frames to a hardware encoder through system memory instead of
+/// straight from the GPU. Slower (one copy and a colour conversion on the CPU per
+/// frame), but it is the form every encoder accepts: some cannot take the capture's
+/// GPU frames at all (seen with AMD's AMF on a Radeon 680M, which stops with an
+/// "unknown error" on the first frame).
+pub fn capture_args(cfg: &CaptureCfg, enc: &str, method: &str, sw: bool) -> Vec<String> {
     let (w, h) = (cfg.width, cfg.height);
     // Encoders spend bits per frame at the stream's nominal frame rate. The
     // Graphics Capture chain declares its capture rate (the `max_framerate` it is
@@ -600,6 +607,11 @@ pub fn capture_args(cfg: &CaptureCfg, enc: &str, method: &str) -> Vec<String> {
     }
     if enc == "x264" && !on_cpu {
         src += ",hwdownload,format=bgra";
+    } else if sw {
+        if !on_cpu {
+            src += ",hwdownload,format=bgra";
+        }
+        src += ",format=nv12"; // what every hardware encoder takes from system memory
     } else if enc == "qsv" && !on_cpu {
         src += ",hwmap=derive_device=qsv,format=qsv";
     }
@@ -787,7 +799,17 @@ fn supervise(inner: Arc<Inner>, cfg: CaptureCfg, gen: u64) {
         set_error(&inner, "ffmpeg.exe was not found. Install ffmpeg or set its path in Settings.");
         return;
     };
-    let enc = resolve_encoder(&ffmpeg, &cfg.encoder);
+    let wanted = resolve_encoder(&ffmpeg, &cfg.encoder);
+    // An encoder can pass its two-frame test and still fail on the real capture.
+    // Each time it fails twice in a row without delivering a frame, step down:
+    // the same encoder fed through system memory, then x264 on the CPU, which
+    // always works. What worked is remembered until Glint is closed, so a
+    // restart of the capture does not go through the failures again.
+    static STEP: Mutex<Option<(String, String, bool)>> = Mutex::new(None); // (encoder asked for, encoder used, sw)
+    let (mut enc, mut sw) = match STEP.lock().unwrap().as_ref() {
+        Some((from, to, sw)) if *from == wanted => (to.clone(), *sw),
+        _ => (wanted.clone(), false),
+    };
     let mut method = resolve_method(&ffmpeg, &cfg.method);
     let mut backoff = 1u64;
     let mut quick_fails = 0u32;
@@ -798,7 +820,8 @@ fn supervise(inner: Arc<Inner>, cfg: CaptureCfg, gen: u64) {
             st.encoder = enc.clone();
             st.method = method.clone();
         }
-        let args = capture_args(&cfg, &enc, &method);
+        let args = capture_args(&cfg, &enc, &method, sw);
+        let frames_before = inner.ring.lock().unwrap().frames;
         let spawned = util::hidden_cmd_prio(&ffmpeg).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
         let started = Instant::now();
         let mut got_data = false;
@@ -853,15 +876,34 @@ fn supervise(inner: Arc<Inner>, cfg: CaptureCfg, gen: u64) {
                 inner.status.lock().unwrap().pid = 0;
             }
         }
-        if started.elapsed() > Duration::from_secs(15) {
+        let no_frames = !got_data || inner.ring.lock().unwrap().frames == frames_before;
+        if started.elapsed() > Duration::from_secs(15) && !no_frames {
             backoff = 1;
             quick_fails = 0;
-        } else if !got_data {
+        } else if no_frames {
             quick_fails += 1;
-            // Graphics Capture refused twice in a row: fall back to Desktop Duplication.
-            if quick_fails >= 2 && method == "wgc" && cfg.method == "auto" {
-                method = "dda".into();
+            if quick_fails >= 2 {
+                // ffmpeg's last words say which part gave up: the capture filter or the encoder.
+                let err = inner.status.lock().unwrap().error.to_lowercase();
+                // Only step down when the message names the encoder ("[vost#0:0/h264_amf …]"):
+                // a locked screen or a sleeping monitor also stops the frames, and must not
+                // leave the PC encoding on the CPU for the rest of the session.
+                let codec = match enc.as_str() { "nvenc" => "h264_nvenc", "amf" => "h264_amf", "qsv" => "h264_qsv", _ => "libx264" };
+                let capture_fault = err.contains("gfxcapture") || err.contains("ddagrab") || !(err.contains(codec) || err.contains("vost#") || err.contains("encoder"));
+                if !capture_fault && enc != "x264" && !sw {
+                    sw = true;
+                    util::log(&format!("capture: the {enc} encoder delivered no frames from the GPU ({err}); sending frames through system memory instead"));
+                } else if !capture_fault && enc != "x264" {
+                    util::log(&format!("capture: the {enc} encoder delivered no frames ({err}); using x264 on the CPU instead"));
+                    enc = "x264".into();
+                    sw = false;
+                } else if method == "wgc" && cfg.method == "auto" {
+                    // Graphics Capture refused: fall back to Desktop Duplication.
+                    method = "dda".into();
+                }
                 quick_fails = 0;
+                backoff = 1;
+                *STEP.lock().unwrap() = Some((wanted.clone(), enc.clone(), sw));
             }
         }
         let wait_until = Instant::now() + Duration::from_secs(backoff);

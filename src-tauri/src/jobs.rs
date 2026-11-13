@@ -1,22 +1,31 @@
-//! Background renders (Blur). A render is a job: it is queued, runs, and ends
-//! as done, failed or cancelled. The UI lists jobs behind a button in the top
-//! bar, so a render keeps going after its clip is closed.
+//! Background renders: Blur renders ("blur") and Compress for Discord
+//! ("compress", see compress.rs). A render is a job: it is queued, runs, and
+//! ends as done, failed or cancelled. The UI lists jobs behind a button in the
+//! top bar, so a render keeps going after its clip is closed.
 //!
 //! Contract with the UI (`ui/jobs.js`): the `list_jobs`, `cancel_job` and
 //! `clear_jobs` commands in `app.rs`, a "jobs-changed" event carrying the whole
-//! list whenever anything changes, and the older "blur-progress" event
+//! list (each job with its `kind`) whenever anything changes, and the older
+//! "blur-progress" event
 //! ({ id: <source clip id>, pct, state: "queued" | "running" | "done" | "error" | "cancelled", message })
-//! that the library cards and the clip viewer already listen to.
+//! that the library cards and the clip viewer already listen to. "blur-progress"
+//! is sent for Blur jobs only, so a compress job never shows as a Blur render
+//! on its clip's card; compress jobs are followed through "jobs-changed" and
+//! their own "clip-compressed" event.
 //!
 //! How the queue works: every job is pushed to one list (oldest first) as
 //! "queued", together with its `Runner`, the function that does the work.
-//! `pump` starts queued jobs in list order while fewer than the limit
-//! (`settings.blur_parallel`, clamped 1..=4, read on every pump) are running;
-//! each started job gets its own thread, and when its runner returns the job
-//! ends and `pump` runs again. While jobs wait, a small waiter thread pumps
+//! Jobs run in lanes by kind: Blur jobs while fewer than the limit
+//! (`settings.blur_parallel`, clamped 1..=4, read on every pump) Blur jobs are
+//! running; compress jobs one at a time (`COMPRESS_PARALLEL`), next to the
+//! Blur renders. So a compress never waits behind a long Blur queue, and two
+//! x264 encodes never fight over the CPU (Blur works mostly on the GPU).
+//! `pump` walks the list in order and starts each queued job whose lane has
+//! room; each started job gets its own thread, and when its runner returns the
+//! job ends and `pump` runs again. While jobs wait, a small waiter thread pumps
 //! twice a second so a raised limit applies without waiting for a render to
-//! end. Cancel sets the job's flag; the Blur runner polls it and kills
-//! blur-cli's process tree.
+//! end. Cancel sets the job's flag; the runners poll it and kill their
+//! process (blur-cli's tree, or ffmpeg).
 use crate::core::Core;
 use crate::{blur, library, util};
 use serde::Serialize;
@@ -35,7 +44,8 @@ pub struct Job {
     pub clip_id: String,
     /// That clip's title, for the list.
     pub title: String,
-    /// "blur" (the only kind so far).
+    /// "blur" (a Blur render, result kind "blur") or "compress" (Compress for
+    /// Discord, result kind "discord"). Decides the job's lane in the queue.
     pub kind: String,
     /// "queued" | "running" | "done" | "error" | "cancelled"
     pub state: String,
@@ -66,6 +76,13 @@ const KEEP_ENDED: usize = 30;
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 /// How long `shutdown` waits for running renders to stop.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
+/// Compress jobs running at once (their own lane, not counted against `blur_parallel`).
+const COMPRESS_PARALLEL: usize = 1;
+
+/// True for jobs of the compress lane; every other kind is a Blur render.
+fn is_compress(kind: &str) -> bool {
+    kind == "compress"
+}
 
 struct Hooks {
     limit: Box<dyn Fn() -> u32 + Send + Sync>,
@@ -112,7 +129,7 @@ impl Jobs {
 
     /// Wire the queue to the app: the limit from the settings, events to the UI.
     /// Holds the core weakly, so the core and its job list do not keep each other alive.
-    fn connect(&self, core: &Arc<Core>) {
+    pub(crate) fn connect(&self, core: &Arc<Core>) {
         if self.inner.hooks.get().is_some() {
             return;
         }
@@ -132,15 +149,16 @@ impl Jobs {
         self.inner.state.lock().unwrap().list.clone()
     }
 
-    /// Queue a job. Refused when the same clip is already queued or running.
+    /// Queue a job. Refused when the same clip already has a job of the same
+    /// kind queued or running (a clip being blurred can still be compressed).
     pub fn enqueue(&self, clip_id: &str, title: &str, kind: &str, run: Runner) -> Result<Job, String> {
         let job = {
             let mut st = self.inner.state.lock().unwrap();
             if st.closed {
                 return Err("Glint is closing".into());
             }
-            if st.list.iter().any(|j| j.clip_id == clip_id && !j.ended()) {
-                return Err("That clip is already rendering".into());
+            if st.list.iter().any(|j| j.clip_id == clip_id && j.kind == kind && !j.ended()) {
+                return Err(if is_compress(kind) { "That clip is already being compressed".into() } else { "That clip is already rendering".into() });
             }
             let job = Job { id: util::new_id(), clip_id: clip_id.into(), title: title.into(), kind: kind.into(), state: "queued".into(), queued: util::unix_ms(), ..Default::default() };
             st.tasks.insert(job.id.clone(), Task { cancel: Arc::new(AtomicBool::new(false)), run: Some(run), last_emit: None });
@@ -279,14 +297,17 @@ impl Inner {
         self.emit("jobs-changed", serde_json::to_value(&list).unwrap_or(Value::Null));
     }
 
-    /// The older per-clip event the library cards and the viewer use.
+    /// The older per-clip event the library cards and the viewer use (Blur jobs only).
     fn blur_progress(&self, j: &Job) {
+        if is_compress(&j.kind) {
+            return;
+        }
         let message = if j.state == "done" { &j.result_id } else { &j.message };
         let _order = self.emit_lock.lock().unwrap();
         self.emit("blur-progress", json!({ "id": j.clip_id, "pct": j.pct, "state": j.state, "message": message }));
     }
 
-    /// Start queued jobs, oldest first, while there is room.
+    /// Start queued jobs, oldest first, while their lane has room.
     fn pump(self: &Arc<Self>) {
         let mut started: Vec<(Job, Runner, Arc<AtomicBool>)> = Vec::new();
         let mut failed: Vec<Job> = Vec::new();
@@ -296,20 +317,31 @@ impl Inner {
                 return;
             }
             let limit = self.limit();
-            let mut running = st.list.iter().filter(|j| j.state == "running").count();
-            while running < limit {
-                let Some(i) = st.list.iter().position(|j| j.state == "queued") else { break };
+            // Running jobs per lane: [blur, compress].
+            let mut running = [0usize; 2];
+            for j in st.list.iter().filter(|j| j.state == "running") {
+                running[is_compress(&j.kind) as usize] += 1;
+            }
+            let caps = [limit, COMPRESS_PARALLEL];
+            for i in 0..st.list.len() {
+                if st.list[i].state != "queued" {
+                    continue;
+                }
+                let lane = is_compress(&st.list[i].kind) as usize;
+                if running[lane] >= caps[lane] {
+                    continue;
+                }
                 let id = st.list[i].id.clone();
                 match st.tasks.get_mut(&id).and_then(|t| t.run.take().map(|r| (r, t.cancel.clone()))) {
                     Some((run, cancel)) => {
                         st.list[i].state = "running".into();
                         st.list[i].pct = 0.0;
                         started.push((st.list[i].clone(), run, cancel));
-                        running += 1;
+                        running[lane] += 1;
                     }
                     None => {
                         st.list[i].state = "error".into();
-                        st.list[i].message = "The render was lost".into();
+                        st.list[i].message = "The job was lost".into();
                         st.tasks.remove(&id);
                         failed.push(st.list[i].clone());
                     }
@@ -751,5 +783,29 @@ fn run_self_test(r: &mut Report) {
         let list = g.jobs.list();
         r.check("ended jobs are capped at 30", list.len() == 30, &list.len().to_string());
         r.check("the cap keeps the most recent", list.first().map(|j| j.clip_id.as_str()) == Some("k05") && list.last().map(|j| j.clip_id.as_str()) == Some("k34"), "");
+    }
+
+    // 9. Lanes: compress jobs do not wait behind the Blur limit, run one at a time,
+    //    may share a clip with a Blur render and send no "blur-progress".
+    {
+        let g = rig(1);
+        let _ = g.jobs.enqueue("L1", "L1", "blur", fake(&g.track, "L1", 60, 20, None, None));
+        let _ = g.jobs.enqueue("L2", "L2", "blur", fake(&g.track, "L2", 2, 20, None, None));
+        let c1 = g.jobs.enqueue("L1", "L1", "compress", fake(&g.track, "C1", 30, 20, None, None));
+        r.check("lanes: a clip being blurred can still be compressed", c1.is_ok(), &format!("{c1:?}"));
+        let dup = g.jobs.enqueue("L1", "L1", "compress", fake(&g.track, "C1b", 1, 1, None, None));
+        r.check("lanes: a second compress of the same clip is refused", dup.as_ref().err().map(String::as_str) == Some("That clip is already being compressed"), &format!("{dup:?}"));
+        let _ = g.jobs.enqueue("C2", "C2", "compress", fake(&g.track, "C2", 2, 20, None, None));
+        let kind_state = |kind: &str, clip: &str| g.jobs.list().iter().rev().find(|j| j.clip_id == clip && j.kind == kind).map(|j| j.state.clone()).unwrap_or_default();
+        let ok = wait_until(2.0, || kind_state("compress", "L1") == "running");
+        r.check("lanes: a compress starts while the Blur slot is full and Blur jobs wait", ok && kind_state("blur", "L2") == "queued", &format!("compress {} / blur L2 {}", kind_state("compress", "L1"), kind_state("blur", "L2")));
+        r.check("lanes: only one compress runs at a time", kind_state("compress", "C2") == "queued", &kind_state("compress", "C2"));
+        let ok = wait_until(10.0, || all_ended(&g.jobs));
+        r.check("lanes: every job ends", ok, "");
+        let at = g.track.lock().unwrap().at_start.get("C2").copied();
+        r.check("lanes: the second compress started after the first ended (only the Blur render beside it)", at.is_some_and(|n| n <= 1), &format!("{at:?} running at its start"));
+        r.check("lanes: no blur-progress for a compress job", !progress_events(&g.events, "C2").iter().any(|_| true), "");
+        let done = g.jobs.list().iter().filter(|j| j.state == "done").count();
+        r.check("lanes: all four done", done == 4, &done.to_string());
     }
 }

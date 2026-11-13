@@ -25,7 +25,7 @@ It adds a Start menu shortcut and an entry under Installed apps (uninstalling ke
 ## Requirements
 
 - Windows 10/11 with WebView2 (preinstalled on Windows 11).
-- `ffmpeg` 8.0 or newer on `PATH`, or next to `Glint.exe`, or set in Settings. Older builds lack `gfxcapture`; Glint then falls back to Desktop Duplication.
+- `ffmpeg` 8.0 or newer on `PATH`, or next to `Glint.exe`, or set in Settings. Older builds lack `gfxcapture`; Glint then falls back to Desktop Duplication. If the graphics card's encoder accepts no frames from the capture (seen with AMD's AMF on integrated Radeon graphics), Glint feeds it through system memory instead, and if that fails too it encodes with x264 on the CPU; the log says which.
 - Optional: [blur](https://github.com/f0e/blur) v2 for the "Render with Blur" button. Glint looks for `blur-cli.exe` in `%LOCALAPPDATA%\Glint\blur`, then in a `blur` folder beside `Glint.exe`, then on `PATH`.
 
 ## Use
@@ -132,6 +132,7 @@ Open a clip and press **Edit** (or right-click → Open in editor). Under the vi
 - **Audio per piece.** Each piece of each audio row can be muted or set from 0 to 200 %. Each row also has its own mute and volume.
 - **Add audio.** Drop audio files on the window, or press Add audio: each becomes a new row that can be moved and trimmed.
 - **Speed** 0.25x to 4x (pitch kept) and **Colour** (presets, four sliders, your own presets) in the side column.
+- **Trim brackets.** A bracket stands at each end of the part that is kept. Drag one inward to crop the start or the end, back out to give footage back; `I` and `O` do the same to the playhead. Right-click a bracket to reset that side.
 - **Select.** Click a piece, Ctrl+click to add or remove one, Shift+click for a block, or drag across the lanes to draw a selection box. The toolbar buttons and shortcuts act on everything selected.
 - **Right-click** a piece for its menu: split here, cut out or restore, and per piece of one track: mute, level (25 to 200 %), solo (silence the other tracks there), or on the video row hide the picture (black, the audio plays on).
 - **Hide cut parts** (the menu, the toolbar toggle or `H`) closes the cut-out parts up, so the timeline shows the clip as it will be saved. A thin mark stays where something was cut; right-click it to restore that part.
@@ -152,6 +153,16 @@ A Blur render is a job. Jobs run in the background whether or not the clip is op
 ## Import
 
 Library → Import brings in clips recorded by NVIDIA ShadowPlay / NVIDIA app, Medal, Outplayed and SteelSeries GG Moments, or from any folder. Glint finds each program's clips folder, lists what is there grouped by game (from the folder layout, the file name, or Medal's own index), and adds what you tick. By default files stay where they are and are only listed; "Copy them into Glint's folder" copies them (into game folders if that setting is on). The originals are never moved, changed or deleted.
+
+## Compress for Discord
+
+Right-click a clip → Compress for Discord → 10, 20, 50 or 500 MB (the size used last is listed first). Glint re-encodes a copy with ffmpeg (x264, two passes, so the size is hit rather than guessed), shrinking the picture and frame rate only as far as the size needs: a short clip keeps 1440p60, a long one may come down to 720p30. The copy is saved beside the original as "… (Discord 10MB).mp4", tagged Discord in the library, and put on the clipboard ready to paste. It runs in the background queue with the Blur renders, one compression at a time; a clip already under the size is refused, and one too long for the size is refused with the length that would fit.
+
+## Interface sounds, What's new
+
+Settings → Interface sounds switches on soft sounds for clicks, switches, menus and results (off by default; a separate switch for the faint tick when the pointer moves over things, a volume slider, and a button to hear each sound). They are made in code, not audio files. They come out of the speakers like any other sound, so they are recorded into the replay buffer.
+
+Clicking the logo, or Settings → Updates → What's new, lists what each release added, improved and fixed. It opens by itself once after an update.
 
 ## Reporting a bug
 

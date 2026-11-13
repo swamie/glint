@@ -18,11 +18,11 @@ html[lang="ko"] .page-head { flex-wrap: wrap; }
 
 /* Keybinds: in the smallest window "클리핑 일시 정지/재개" was cut off in its select. The length
    column only ever holds "최근 30초"-sized texts and the key column still fits Ctrl Shift Alt F12,
-   so both give a little width to the action column. */
-html[lang="ko"] .kb-row { grid-template-columns: 185px 1fr 110px 40px; }
+   so both give a little width to the action column. (English: 188px 1fr 144px 34px in style.css.) */
+html[lang="ko"] .kb-row { grid-template-columns: 175px 1fr 104px 34px; }
 
 /* Top bar renders button: "2개 렌더링 중" was cut to "2개 렌…" in narrow windows. The clip
    button's Korean text is shorter than before ("최근 30초 저장"), which pays for this. */
 @media (max-width: 1180px) {
-  html[lang="ko"] .jobs-btn { max-width: 132px; }
+  html[lang="ko"] .jobs-btn { max-width: 130px; }
 }

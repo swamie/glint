@@ -15,6 +15,7 @@ if (!window.__TAURI__) {
       cursor: true, desktop_audio: true, mic: true, mic_denoise: false, record_on_start: true, sound: true, sound_name: "chirp", sound_volume: 40, sound_file: "",
       toast: true, toast_pos: "tr", toast_opacity: 96, toast_scale: 100, toast_secs: 3.5, toast_length: true, toast_game: true, toast_mic: true,
       ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", discord_rpc: false, discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true,
+      compress_mb: 10, ui_sounds: false, ui_sounds_hover: false, ui_sounds_volume: 50,
       ffmpeg_path: "", blur_path: "",
       keybinds: [
         { id: "a", ctrl: false, shift: false, alt: false, win: false, key: "F8", action: "clip", seconds: 30 },
@@ -32,7 +33,8 @@ if (!window.__TAURI__) {
     },
     monitors: [{ index: 0, name: "DISPLAY1", width: 2160, height: 1440, hz: 280, primary: true, x: 0, y: 0, native_width: 2560, native_height: 1440 }],
     status: { recording: true, encoder: "nvenc", method: "wgc", width: 2560, height: 1440, fps: 60, fps_actual: 59.9, buffer_secs: 412, buffer_max: 600, buffer_bytes: 3.1e7, buffer_disk_bytes: 2.8e8, ram_total: 2.4e8, cpu_pct: 0.9, ram_app: 3.4e7, ram_ffmpeg: 1.4e8, max_mbps: 15, error: "", game: "Overwatch", discord: "off" },
-    ffmpeg: "C:\\tools\\ffmpeg\\bin\\ffmpeg.exe", blur: "C:\\tools\\blur\\blur-cli.exe", version: "0.1.0",
+    // What's new opens by itself after an update: localStorage["glint.seenVersion"] = "0.1.7", then reload.
+    ffmpeg: "C:\\tools\\ffmpeg\\bin\\ffmpeg.exe", blur: "C:\\tools\\blur\\blur-cli.exe", version: "0.1.8",
     hardware: { gpus: [{ name: "NVIDIA GeForce RTX 5060 Ti", vendor: "nvidia" }], cpu: "11th Gen Intel(R) Core(TM) i5-11600", gpu: { name: "NVIDIA GeForce RTX 5060 Ti", vendor: "nvidia" }, encoder: "nvenc" },
   };
   let clips = [
@@ -46,14 +48,17 @@ if (!window.__TAURI__) {
     clip(7, "osu! 2026-11-08 22-10-40 (trim)", "osu!", 5800, 14, { kind: "trim" }),
     clip(8, "Minecraft 2026-11-07 20-11-02", "Minecraft", 7200, 60),
     clip(9, "Valorant 2026-11-06 21-40-55", "Valorant", 8700, 30),
+    clip(10, "Valorant 2026-11-06 21-40-55 (discord)", "Valorant", 8690, 30, { kind: "discord", size: 9.4e6 }),
   ];
-  // A pretend render queue: each job takes about 4 s, at most settings.blur_parallel at once.
+  // A pretend render queue: each job takes about 4 s. Blur jobs run at most settings.blur_parallel
+  // at once; compress jobs ("Compress for Discord") one at a time in their own lane, as in jobs.rs.
   let jobs = [];
   const pumpJobs = () => {
     const limit = state.settings.blur_parallel || 2;
     for (const j of jobs) {
-      if (jobs.filter((x) => x.state === "running").length >= limit) break;
       if (j.state !== "queued") continue;
+      const squeeze = j.kind === "compress";
+      if (jobs.filter((x) => x.state === "running" && (x.kind === "compress") === squeeze).length >= (squeeze ? 1 : limit)) continue;
       j.state = "running";
       const tick = setInterval(() => {
         if (j.state !== "running") { clearInterval(tick); return; }
@@ -61,14 +66,25 @@ if (!window.__TAURI__) {
         if (j.pct >= 100) {
           clearInterval(tick);
           const src = clips.find((x) => x.id === j.clip_id);
-          const made = { ...(src || clips[0]), id: "b" + Date.now(), title: j.title + " (blur)", kind: "blur", created: Date.now() };
-          clips.push(made);
-          j.state = "done";
-          j.result_id = made.id;
-          window.__mockEmit("blur-progress", { id: j.clip_id, pct: 100, state: "done", message: made.id });
-          window.__mockEmit("clips-changed", made.id);
+          if (squeeze) {
+            // The copy aims a little under the size asked for; window.__mockCopyFails = true: the clipboard refuses.
+            const size = Math.round(j.mb * 0.94e6);
+            const made = { ...(src || clips[0]), id: "d" + Date.now(), title: j.title + " (discord)", kind: "discord", size, created: Date.now() };
+            clips.push(made);
+            j.state = "done";
+            j.result_id = made.id;
+            window.__mockEmit("clips-changed", made.id);
+            window.__mockEmit("clip-compressed", { clip: made, mb: j.mb, size, copied: !window.__mockCopyFails, secs: 4.1 });
+          } else {
+            const made = { ...(src || clips[0]), id: "b" + Date.now(), title: j.title + " (blur)", kind: "blur", created: Date.now() };
+            clips.push(made);
+            j.state = "done";
+            j.result_id = made.id;
+            window.__mockEmit("blur-progress", { id: j.clip_id, pct: 100, state: "done", message: made.id });
+            window.__mockEmit("clips-changed", made.id);
+          }
           pumpJobs();
-        } else {
+        } else if (!squeeze) {
           window.__mockEmit("blur-progress", { id: j.clip_id, pct: j.pct, state: "running", message: "" });
         }
         window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
@@ -123,12 +139,12 @@ if (!window.__TAURI__) {
             return n - 1;
           }
           // Updates: the first manual check finds nothing new, the second finds 0.2.0 (window.__mockUpdate = true skips ahead).
-          case "update_state": return { current: "0.1.0", latest: "0.1.0", available: false, error: "", checked: 0 };
+          case "update_state": return { current: "0.1.8", latest: "0.1.8", available: false, error: "", checked: 0 };
           case "update_check": {
             await new Promise((r) => setTimeout(r, 700));
             window.__mockUpdateChecks = (window.__mockUpdateChecks || 0) + 1;
             const found = window.__mockUpdate || window.__mockUpdateChecks > 1;
-            return { current: "0.1.0", latest: found ? "0.2.0" : "0.1.0", available: !!found, error: "", checked: Date.now() / 1000 };
+            return { current: "0.1.8", latest: found ? "0.2.0" : "0.1.8", available: !!found, error: "", checked: Date.now() / 1000 };
           }
           case "update_install": {
             for (const pct of [10, 35, 60, 85, 100]) { await new Promise((r) => setTimeout(r, 300)); window.__mockEmit("update-progress", { pct }); }
@@ -140,13 +156,26 @@ if (!window.__TAURI__) {
             if (!j || !["queued", "running"].includes(j.state)) return false;
             j.state = "cancelled";
             window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
-            window.__mockEmit("blur-progress", { id: j.clip_id, pct: 0, state: "cancelled", message: "" });
+            if (j.kind !== "compress") window.__mockEmit("blur-progress", { id: j.clip_id, pct: 0, state: "cancelled", message: "" });
             pumpJobs();
             return true;
           }
           case "clear_jobs": jobs = jobs.filter((j) => j.state === "queued" || j.state === "running"); window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x }))); return null;
+          case "compress_clip": {
+            // Refused like the backend: a clip already being compressed, or one already small enough.
+            const src = clips.find((x) => x.id === args.id);
+            if (!src) throw "Clip not found";
+            if (jobs.some((j) => j.clip_id === args.id && j.kind === "compress" && ["queued", "running"].includes(j.state))) throw "That clip is already being compressed";
+            if (src.size <= args.mb * 1e6) throw `This clip is already under ${args.mb} MB, so you can send it to Discord as it is`;
+            state.settings.compress_mb = args.mb;
+            const job = { id: "j" + Date.now() + jobs.length, clip_id: args.id, title: src.title, kind: "compress", state: "queued", pct: 0, message: "", result_id: "", queued: Date.now(), mb: args.mb };
+            jobs.push(job);
+            const answer = { ...job }; // as queued, like the backend's answer
+            pumpJobs();
+            return answer;
+          }
           case "blur_clip": {
-            if (jobs.some((j) => j.clip_id === args.id && ["queued", "running"].includes(j.state))) throw "That clip is already rendering";
+            if (jobs.some((j) => j.clip_id === args.id && j.kind !== "compress" && ["queued", "running"].includes(j.state))) throw "That clip is already rendering";
             const src = clips.find((x) => x.id === args.id);
             jobs.push({ id: "j" + Date.now() + jobs.length, clip_id: args.id, title: src?.title || "Clip", kind: "blur", state: "queued", pct: 0, message: "", result_id: "", queued: Date.now() });
             window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));

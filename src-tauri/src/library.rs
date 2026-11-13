@@ -20,7 +20,7 @@ pub struct ClipMeta {
     pub height: u32,
     pub fps: u32,
     pub favorite: bool,
-    /// "clip" | "trim" | "edit" | "blur" | "import"
+    /// "clip" | "trim" | "edit" | "blur" | "import" | "discord" (a copy compressed for Discord)
     pub kind: String,
     pub thumb: String,
     /// 3 = mix + desktop + mic, 1 = single track, 0 = silent.

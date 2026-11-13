@@ -68,6 +68,21 @@
 .tl-joint b { position: absolute; left: 0; top: 2px; width: 8px; height: 8px; border-radius: 2px; background: var(--warn); transform: rotate(45deg); box-shadow: 0 1px 3px rgba(0, 0, 0, .5); opacity: .85; }
 .tl-joint:hover b { opacity: 1; }
 
+/* Trim brackets: [ where the kept part starts, ] where it ends (left: 0 + translateX = that moment). A 4 px bar the
+   height of the rows with 10 px arms pointing inward. The 16 px hit area is centred on the moment (more with the arms);
+   the cut handles come later in .tl-marks, so a cut point just inside a bracket stays on top and grabbable. */
+.tl-trim { position: absolute; left: 0; bottom: 0; width: 16px; margin-left: -8px; pointer-events: auto; cursor: ew-resize; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .55)); }
+.tl-trim b, .tl-trim::before, .tl-trim::after { position: absolute; background: var(--accent); border-radius: 2px; }
+.tl-trim b { top: 1px; bottom: 1px; width: 4px; }
+.tl-trim::before, .tl-trim::after { content: ""; width: 10px; height: 4px; }
+.tl-trim::before { top: 1px; }
+.tl-trim::after { bottom: 1px; }
+.tl-trim.s b, .tl-trim.s::before, .tl-trim.s::after { left: 8px; }   /* bar and arms on the kept side, right of the moment */
+.tl-trim.e b { left: 4px; }                                          /* bar left of the moment */
+.tl-trim.e::before, .tl-trim.e::after { left: -2px; }                /* arms reaching 10 px left of it */
+.tl-trim:hover b, .tl-trim:hover::before, .tl-trim:hover::after,
+.tl-trim.drag b, .tl-trim.drag::before, .tl-trim.drag::after { background: var(--accent-2); }
+
 /* Bookmarks: a small swallowtail flag on the ruler (left edge = the moment) over a thin dashed line through the rows.
    Accent like the playhead, but a flag to the right of a 1 px dashed line, where the playhead is a centred knob on a solid 2 px line. */
 .tl-bmks { position: absolute; inset: 0; pointer-events: none; }
@@ -88,7 +103,8 @@
 .tl.tl-dragging[data-tl-drag="cut"], .tl.tl-dragging[data-tl-drag="cut"] *,
 .tl.tl-dragging[data-tl-drag="left"], .tl.tl-dragging[data-tl-drag="left"] *,
 .tl.tl-dragging[data-tl-drag="right"], .tl.tl-dragging[data-tl-drag="right"] * { cursor: col-resize !important; }
-.tl.tl-dragging[data-tl-drag="seek"], .tl.tl-dragging[data-tl-drag="seek"] * { cursor: ew-resize !important; }
+.tl.tl-dragging[data-tl-drag="seek"], .tl.tl-dragging[data-tl-drag="seek"] *,
+.tl.tl-dragging[data-tl-drag="trim"], .tl.tl-dragging[data-tl-drag="trim"] * { cursor: ew-resize !important; }
 .tl.tl-dragging[data-tl-drag="click"], .tl.tl-dragging[data-tl-drag="click"] *,
 .tl.tl-dragging[data-tl-drag="band"], .tl.tl-dragging[data-tl-drag="band"] * { cursor: default !important; }
 

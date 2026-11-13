@@ -116,6 +116,10 @@ function emSplit(m, t) {
   const i = emSegmentAt(m, t);
   const seg = emSegments(m)[i];
   if (t - seg.start < EM_MIN_SEG || seg.end - t < EM_MIN_SEG) return -1;
+  return emSplitIn(m, i, t);
+}
+/** emSplit without the length check: split segment `i` at `t` (the caller has made sure both halves are long enough). */
+function emSplitIn(m, i, t) {
   m.cuts.splice(i, 0, t);
   m.removed.splice(i, 0, m.removed[i]);
   m.colors.splice(i, 0, { ...m.colors[i] });
@@ -168,6 +172,114 @@ function emTrimEnd(m, t) {
   if (first === 0 || m.removed.slice(0, first).every((r) => r)) return false;
   for (let i = first; i < m.removed.length; i++) m.removed[i] = true;
   return true;
+}
+
+/* ---------- trim brackets ---------- */
+// The trim is the leading (and the trailing) run of removed segments: the start bracket sits where
+// the first kept segment begins, the end bracket where the last kept one ends. emSetTrimStart /
+// emSetTrimEnd move the inner edge of that run to a time:
+//   inward   everything the edge passes is cut out and joins the run: kept segments (split at the
+//            new edge) and segments already cut out in the middle alike;
+//   outward  the run's segments come back in order, each with the state it had (levels, colour,
+//            hidden video); the segment under the new edge is split, its outer part stays cut out.
+// So a part cut out in the middle stays cut out until the edge passes it; once a released drag has
+// swallowed it, it is part of the trim and dragging back out gives it back (undo restores it as it was).
+// No stray cut points are left: inside the trimmed run, neighbours that look the same are merged,
+// and the cut at the old edge is joined when the edge moves outward past it and both sides look the same.
+
+/** The kept span: { start, end } = start of the first kept segment, end of the last one. */
+function emTrimBounds(m) {
+  const edges = [0, ...m.cuts, m.duration];
+  const f = m.removed.indexOf(false), l = m.removed.lastIndexOf(false);
+  if (f < 0) return { start: 0, end: m.duration };
+  return { start: edges[f], end: edges[l + 1] };
+}
+
+/** True if segments `a` and `b` look the same everywhere: cut out or not, colour, hidden video, level on every row. */
+function emSameSeg(m, a, b) {
+  return !!m.removed[a] === !!m.removed[b] && !!m.blank[a] === !!m.blank[b] && emSameColor(m.colors[a], m.colors[b]) &&
+    m.audio.every((r) => Math.abs((r.gains[a] ?? 1) - (r.gains[b] ?? 1)) < 1e-9);
+}
+
+/** Move the inner edge of the leading removed run to `sec` (see above). Returns the new trim start. */
+function emTrimLead(m, sec) {
+  const edges = () => [0, ...m.cuts, m.duration];
+  let f = m.removed.indexOf(false);
+  if (f < 0) return 0; // nothing kept: not a valid model, leave it alone
+  const E = edges()[m.removed.lastIndexOf(false) + 1];
+  // At least EM_MIN_SEG of the last kept segment stays; no piece shorter than EM_MIN_SEG is made.
+  sec = Math.min(E - EM_MIN_SEG, Math.max(0, sec));
+  const j = emSegmentAt(m, sec), e0 = edges();
+  if (sec - e0[j] < EM_MIN_SEG - EM_EPS) sec = e0[j];
+  else if (e0[j + 1] - sec < EM_MIN_SEG - EM_EPS) sec = e0[j + 1];
+  const B = e0[f];
+  if (Math.abs(sec - B) < EM_EPS) return B;
+  if (sec > B) {
+    // Inward: split the kept segment under the edge, cut out everything before it.
+    let k = emSegmentAt(m, sec);
+    if (sec > edges()[k] + EM_EPS && !m.removed[k]) emSplitIn(m, k++, sec);
+    for (let i = 0; i < k; i++) m.removed[i] = true;
+  } else {
+    // Outward: the outer part of the segment under the edge stays cut out, the rest of the run comes back.
+    let from = emSegmentAt(m, sec);
+    if (sec > edges()[from] + EM_EPS) { emSplitIn(m, from++, sec); f++; }
+    for (let i = from; i < f; i++) m.removed[i] = false;
+    if (f - 1 >= 0 && emSameSeg(m, f - 1, f)) emJoin(m, f - 1); // the old edge, if nothing tells the two sides apart
+  }
+  // Merge look-alike neighbours inside the trimmed run (from the right, so the indexes stay valid).
+  const f2 = m.removed.indexOf(false);
+  for (let c = f2 - 2; c >= 0; c--) if (emSameSeg(m, c, c + 1)) emJoin(m, c);
+  return emTrimBounds(m).start;
+}
+
+/** The model seen from its end (cuts and per-segment state reversed), for the end bracket; emUnmirror writes it back. */
+function emMirror(m) {
+  const D = m.duration;
+  return { duration: D, cuts: m.cuts.map((c) => D - c).reverse(), removed: m.removed.slice().reverse(), colors: m.colors.slice().reverse(), blank: m.blank.slice().reverse(), audio: m.audio.map((r) => ({ gains: r.gains.slice().reverse() })) };
+}
+function emUnmirror(m, mm, sec) {
+  const D = m.duration;
+  // D - (D - x) need not be exactly x: put back the exact value of an old cut, or of `sec` for the new one.
+  const exact = (x) => m.cuts.find((c) => Math.abs(c - x) < 1e-7) ?? (Math.abs(x - sec) < 1e-7 ? sec : x);
+  m.cuts = mm.cuts.map((c) => exact(D - c)).reverse();
+  m.removed = mm.removed.slice().reverse();
+  m.colors = mm.colors.slice().reverse();
+  m.blank = mm.blank.slice().reverse();
+  m.audio.forEach((r, i) => { r.gains = mm.audio[i].gains.slice().reverse(); });
+}
+
+/**
+ * Start bracket: make the kept span begin at source time `sec` (see "trim brackets" above).
+ * `sec` is kept inside what is possible (0 .. end of the kept span - EM_MIN_SEG); with `strict`,
+ * a time outside that changes nothing and gives null. Returns the new start. Does not snapshot.
+ */
+function emSetTrimStart(m, sec, strict) {
+  sec = +sec;
+  if (!Number.isFinite(sec)) return null;
+  if (strict && !(sec >= -EM_EPS && sec <= emTrimBounds(m).end - EM_MIN_SEG + EM_EPS)) return null;
+  return emTrimLead(m, sec);
+}
+
+/** End bracket: make the kept span end at `sec`; the mirror image of emSetTrimStart. Returns the new end. */
+function emSetTrimEnd(m, sec, strict) {
+  sec = +sec;
+  if (!Number.isFinite(sec)) return null;
+  if (strict && !(sec <= m.duration + EM_EPS && sec >= emTrimBounds(m).start + EM_MIN_SEG - EM_EPS)) return null;
+  const mm = emMirror(m);
+  emTrimLead(mm, m.duration - sec);
+  emUnmirror(m, mm, sec);
+  return emTrimBounds(m).end;
+}
+
+/** The segment layout and per-segment state, to put back with emSegPaste (a drag re-applies its change to the state it started from). */
+const emSegCopy = (m) => ({ cuts: m.cuts.slice(), removed: m.removed.slice(), colors: m.colors.map((c) => ({ ...c })), blank: m.blank.slice(), gains: m.audio.map((r) => [r.id, r.gains.slice()]) });
+function emSegPaste(m, s) {
+  m.cuts = s.cuts.slice();
+  m.removed = s.removed.slice();
+  m.colors = s.colors.map((c) => ({ ...c }));
+  m.blank = s.blank.slice();
+  const g = new Map(s.gains);
+  for (const r of m.audio) r.gains = g.has(r.id) ? g.get(r.id).slice() : m.removed.map(() => 1);
 }
 
 /** Back to one whole, kept segment. Row levels and files stay; the first segment's colour becomes the clip's. */
@@ -471,5 +583,5 @@ function emToOpts(m) {
 
 // Lets the functions be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { EM_MIN_SEG, EM_MAX_GAIN, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts };
+  module.exports = { EM_MIN_SEG, EM_MAX_GAIN, EM_EPS, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emTrimBounds, emSameSeg, emSetTrimStart, emSetTrimEnd, emSegCopy, emSegPaste, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts };
 }

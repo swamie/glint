@@ -1,7 +1,8 @@
 "use strict";
 // The renders button in the top bar and its list. Loaded before app.js: nothing here may touch its globals at load time.
 //
-// Data: Blur jobs come from the backend ("jobs-changed" carries the whole list,
+// Data: background jobs come from the backend: Blur renders (kind "blur") and Compress for
+// Discord (kind "compress"), both in one queue ("jobs-changed" carries the whole list,
 // `list_jobs` loads it); editor exports are followed read-only from
 // "export-progress" events. Nothing polls: the only timer is the one that drops
 // finished or stalled export rows, and it runs only while such rows exist.
@@ -93,7 +94,7 @@ function jobsClipTitle(clipId, fallback) {
 
 /** Every row, newest first: { key, kind, title, state, pct, message, job }. */
 function jobsRows() {
-  const rows = jobsList.map((j) => ({ key: j.id, kind: "blur", title: jobsClipTitle(j.clip_id, j.title), state: j.state, pct: +j.pct || 0, message: j.message || "", start: +j.queued || 0, job: j }));
+  const rows = jobsList.map((j) => ({ key: j.id, kind: j.kind === "compress" ? "compress" : "blur", title: jobsClipTitle(j.clip_id, j.title), state: j.state, pct: +j.pct || 0, message: j.message || "", start: +j.queued || 0, job: j }));
   for (const [id, x] of jobsExports) rows.push({ key: "export:" + id, kind: "export", title: jobsClipTitle(id, ""), state: x.pct >= 100 ? "exported" : "exporting", pct: x.pct, message: "", start: x.start, job: null });
   return rows.sort((a, b) => b.start - a.start);
 }
@@ -149,10 +150,13 @@ function jobsRenderButton(rows) {
   slot.hidden = false;
   const btn = jobsButton(slot);
   const overall = active.length ? Math.round(active.reduce((s, r) => s + (r.state === "queued" ? 0 : r.pct), 0) / active.length) : 0;
-  const label = active.length ? t("{n} rendering", { n: active.length }) : t("Renders");
+  // "rendering" while only renders and exports run; "working" once a compression is among them.
+  const rendering = active.every((r) => r.kind !== "compress");
+  const label = !active.length ? t("Renders") : rendering ? t("{n} rendering", { n: active.length }) : t("{n} working", { n: active.length });
   const bad = !active.length && jobsUnseen && jobsList.some((j) => j.state === "error" && !jobsSeen.has(j.id));
   const fresh = !active.length && jobsUnseen;
-  const tip = fresh ? t("Renders (new results)") : active.length ? t("{n} rendering, {pct} % overall", { n: active.length, pct: overall }) : label;
+  const tip = fresh ? t("Renders (new results)") : !active.length ? label
+    : rendering ? t("{n} rendering, {pct} % overall", { n: active.length, pct: overall }) : t("{n} working, {pct} % overall", { n: active.length, pct: overall });
   const open = jobsIsOpen();
   const key = [label, tip, overall, !!active.length, fresh, bad, open].join("|");
   if (key === jobsBtnKey) return;
@@ -169,10 +173,11 @@ function jobsRenderButton(rows) {
 
 function jobsStateLine(r) {
   const pct = Math.floor(r.pct);
+  const squeeze = r.kind === "compress";
   switch (r.state) {
-    case "queued": return t("Waiting");
-    case "running": return t("Rendering {pct} %", { pct });
-    case "done": return t("Finished");
+    case "queued": return squeeze ? t("Waiting to compress for Discord") : t("Waiting");
+    case "running": return squeeze ? t("Compressing for Discord {pct} %", { pct }) : t("Rendering {pct} %", { pct });
+    case "done": return squeeze ? t("Compressed for Discord") : t("Finished");
     case "error": return r.message ? t("Failed: {message}", { message: r.message }) : t("Failed");
     case "cancelled": return t("Cancelled");
     case "exporting": return t("Exporting {pct} %", { pct });
@@ -190,8 +195,9 @@ function jobsRowEl(r) {
   const line = jobsStateLine(r);
   const bar = jobsHasBar(r) ? `<div class="progress jobs-bar"><i style="width:${r.pct.toFixed(1)}%"></i></div>` : "";
   let act = "";
-  if (r.kind === "blur" && (r.state === "queued" || r.state === "running")) act = `<button type="button" class="btn sm jobs-act" data-j-cancel="${esc(r.job.id)}">${esc(t("Cancel"))}</button>`;
-  else if (r.kind === "blur" && r.state === "done" && r.job.result_id) act = `<button type="button" class="btn sm jobs-act" data-j-open="${esc(r.job.result_id)}">${esc(t("Open"))}</button>`;
+  // Backend jobs (Blur and compress) can be cancelled and their result opened; export rows only follow along.
+  if (r.job && (r.state === "queued" || r.state === "running")) act = `<button type="button" class="btn sm jobs-act" data-j-cancel="${esc(r.job.id)}">${esc(t("Cancel"))}</button>`;
+  else if (r.job && r.state === "done" && r.job.result_id) act = `<button type="button" class="btn sm jobs-act" data-j-open="${esc(r.job.result_id)}">${esc(t("Open"))}</button>`;
   const el = document.createElement("div");
   el.className = `jobs-row jobs-st-${r.state}`;
   el.innerHTML = `<div class="jobs-main">

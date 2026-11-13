@@ -1,0 +1,40 @@
+/* What's new (changelog.js), plus the small pieces of the 0.1.8 features that need CSS:
+   the logo as a button, the Discord tag on clip cards, the hint in the Compress for Discord
+   submenu and the "Hear them" buttons of Settings → Interface sounds. Loaded after style.css. */
+
+/* The logo at the left of the top bar opens What's new. */
+#ver { cursor: pointer; border-radius: 6px; }
+#ver:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Dialog: a dimmed full-window layer with a centred box (the same layer as the bug report dialog). */
+.wn-dlg { position: fixed; inset: 0; z-index: 35; display: grid; place-items: center; padding: 24px 16px; background: rgba(3, 5, 9, .68); }
+.wn-box { display: flex; flex-direction: column; width: min(540px, 100%); max-height: min(640px, 100%); background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 24px 60px rgba(0, 0, 0, .6); color: var(--text); overflow: hidden; }
+.wn-head { display: flex; align-items: center; gap: 10px; padding: 16px 14px 12px 22px; border-bottom: 1px solid var(--line); }
+.wn-head h2 { margin: 0; flex: 1; font-size: 17px; font-weight: 700; }
+.wn-x { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; background: none; border: 0; border-radius: 6px; color: var(--muted); cursor: pointer; }
+.wn-x:hover { background: var(--raised-2); color: var(--text); }
+.wn-x svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.wn-x:focus-visible, .wn-main:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.wn-main { overflow-y: auto; padding: 4px 22px 18px; user-select: text; }
+
+/* One release: the date on the left, the version in a small pill on the right, then its groups. */
+.wn-rel { padding: 16px 0 4px; }
+.wn-rel + .wn-rel { border-top: 1px solid var(--line); }
+.wn-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.wn-date { font-weight: 700; font-size: 14px; }
+.wn-ver { padding: 1px 9px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--raised); color: var(--muted); font: 600 12px var(--mono); }
+/* NEW / IMPROVED / FIXED: small upper-case grey labels over plain bulleted sentences. */
+.wn-grp { margin-bottom: 12px; }
+.wn-lab { margin-bottom: 4px; color: var(--dim); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.wn-grp ul { margin: 0; padding-left: 18px; }
+.wn-grp li { margin: 3px 0; color: var(--muted); font-size: 13.5px; line-height: 1.5; }
+.wn-grp li::marker { color: var(--dim); }
+
+/* Clip cards: the tag of a clip made by Compress for Discord, in Discord's own colour. */
+.thumb .tag.tag-discord { background: #5865f2; color: #fff; }
+
+/* The clip menu's Compress for Discord submenu: the hint under the sizes. */
+.menu .menu-hint { max-width: 240px; padding: 6px 10px 4px; color: var(--dim); font-size: 11.5px; line-height: 1.4; white-space: normal; }
+
+/* Settings → Interface sounds → Hear them: a wrapping row of small buttons. */
+.sfx-try { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 420px; }

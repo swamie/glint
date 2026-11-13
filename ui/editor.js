@@ -36,7 +36,12 @@ const ED_LOAD_TIMEOUT = 15000;  // ms an audio element may take to load
 const ED_CHEV = '<svg class="e-chev" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>';
 const ED_ICON_UNFULL = '<svg viewBox="0 0 24 24"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>';
 // Shortcuts that act on the timeline's selection: sent to the timeline's run() when it has one.
-const ED_TL_CMDS = new Set(["split", "remove", "mute", "louder", "quieter", "solo", "blank", "selectAll", "clearSel", "hideCuts", "mark", "markNext", "markPrev"]);
+const ED_TL_CMDS = new Set(["split", "remove", "mute", "louder", "quieter", "solo", "blank", "selectAll", "clearSel", "hideCuts", "mark", "markNext", "markPrev", "trimStart", "trimEnd"]);
+/** True if trimming (cmd "trimStart" / "trimEnd") to source time `sec` would leave less than EM_MIN_SEG of the kept span. */
+function edTrimRefused(m, cmd, sec) {
+  const b = emTrimBounds(m);
+  return cmd === "trimStart" ? sec > b.end - EM_MIN_SEG + 1e-6 : sec < b.start + EM_MIN_SEG - 1e-6;
+}
 const ED_MARKS_KEY = "glint.marks"; // localStorage: the bookmarks of each clip, see edMarksLoad
 const ED_MARKS_MAX = 300;           // clips whose bookmarks are remembered; the longest unused are forgotten first
 
@@ -293,7 +298,7 @@ window.addEventListener("keydown", (e) => {
   // The timeline's right-click menu is open: it has its own keys (arrows, Enter, Esc closes it).
   // This listener was added first, so without this it would take Esc before the menu does.
   // The same goes for the bug-report dialog (.bug-dlg), which can be opened over the editor.
-  if (document.querySelector(".tl-menu, .bug-dlg")) return;
+  if (document.querySelector(".tl-menu, .bug-dlg, .wn-dlg")) return;
   if (edPopClose && e.code === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); edPopClose(); return; }
   if (typeof S === "undefined" || !S.open || !S.player) return;
   // Escape while fullscreen only leaves fullscreen. The webview may leave it by
@@ -1219,6 +1224,7 @@ function mountPlayer(root, c) {
         }
         // Nothing happened: say why when it is the usual reason.
         if (cmd === "split") return flash(t("Too close to a cut point to split here"));
+        if (cmd === "trimStart" || cmd === "trimEnd") return edTrimRefused(m, cmd, now) ? flash(t("Nothing would be left to keep")) : undefined;
         if (cmd === "markNext") return flash(t("No bookmark after the playhead"));
         if (cmd === "markPrev") return flash(t("No bookmark before the playhead"));
         if ((cmd === "remove" || cmd === "blank") && !sels.length) return flash(t("Select a segment on the timeline first"));
@@ -1248,8 +1254,10 @@ function mountPlayer(root, c) {
         return P.seek(at, false, true);
       }
       case "split": return P.edit("split", (mm) => emSplit(mm, now), t("Too close to a cut point to split here"));
-      case "trimStart": return P.edit("cut", (mm) => emTrimStart(mm, now), t("Nothing would be left to keep"));
-      case "trimEnd": return P.edit("cut", (mm) => emTrimEnd(mm, now), t("Nothing would be left to keep"));
+      // Without the timeline's run(): the same model functions as its trim brackets.
+      case "trimStart": case "trimEnd":
+        if (edTrimRefused(m, cmd, now)) return flash(t("Nothing would be left to keep"));
+        return P.edit("trim", (mm) => (cmd === "trimStart" ? emSetTrimStart(mm, now, true) : emSetTrimEnd(mm, now, true)));
       case "undo": if (emUndo(m)) { tl((h) => h.refresh()); P.edSync("undo"); } else flash(t("Nothing to undo")); return;
       case "redo": if (emRedo(m)) { tl((h) => h.refresh()); P.edSync("redo"); } else flash(t("Nothing to redo")); return;
     }
