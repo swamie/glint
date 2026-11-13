@@ -247,6 +247,29 @@ pub fn restore_titles(ffmpeg: &Path, src: &Path, out: &Path) {
     let _ = fs::remove_file(&tmp);
 }
 
+/// A cut may start this long before the asked time to land on a frame.
+const TRIM_SNAP_SECS: f64 = 1.5;
+
+/// Where a lossless cut asked for at `start` begins, as ffmpeg's `-ss` value:
+/// the time of the video frame on screen at `start` (the last one at or
+/// before it), so the cut starts exactly on a frame.
+///
+/// Clips from the buffer have a variable frame rate: on a still screen the
+/// frame on screen can be a second old. A cut that starts between two frames
+/// is right in a player (the MP4 edit list says where it starts), but ffmpeg
+/// reads such a file with the video starting at the first frame AFTER the cut,
+/// so every re-encode of the trim (editor export, Compress for Discord, a
+/// join) had its picture early by that gap: 5 ms in motion, up to 1.3 s on a
+/// still screen. The price is a cut that starts up to that gap early, with
+/// the same picture. Further back than `TRIM_SNAP_SECS` the asked time is kept.
+/// Six decimals: three could round up past the frame and drop it.
+fn trim_start(ffmpeg: &Path, file: &Path, start: f64) -> String {
+    match crate::editor::frames_on_screen(ffmpeg, file, &[start]).first().copied().flatten() {
+        Some(f) if f >= 0.0 && f <= start + 1e-4 && start - f <= TRIM_SNAP_SECS => format!("{f:.6}"),
+        _ => format!("{start:.3}"),
+    }
+}
+
 /// Cut `[start, end]` out of a clip without re-encoding (snaps to keyframes, 1 s apart).
 /// With `include_mic == false` on a 3-track clip, only the desktop track is kept
 /// (on a 4-track clip, desktop and game: Mix, Desktop, Microphone, Game).
@@ -260,7 +283,7 @@ pub fn trim(s: &Settings, src: &ClipMeta, start: f64, end: f64, include_mic: boo
     let title = format!("{} (trim)", src.title);
     let out = util::unique_path(&dir, &util::sanitize_filename(&title), "mp4");
     let mut cmd = util::hidden_cmd(&ffmpeg);
-    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{start:.3}"), "-to", &format!("{end:.3}"), "-i"]).arg(&src_path);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &trim_start(&ffmpeg, &src_path, start), "-to", &format!("{end:.3}"), "-i"]).arg(&src_path);
     let names = audio_titles(&ffmpeg, &src_path);
     let kept: Vec<usize> = if !include_mic && src.audio_tracks >= 3 {
         cmd.args(["-map", "0:v:0", "-map", "0:a:1", "-disposition:a:0", "default"]);

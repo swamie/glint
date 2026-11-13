@@ -1,5 +1,5 @@
 "use strict";
-// Greek: the 0.1.11 changelog.
+// Greek: the 0.1.11 and 0.1.12 changelogs.
 glintAddLanguage("el", "Ελληνικά", {
   "Settings → Components checks for ffmpeg and Blur and installs anything missing. If ffmpeg is missing, the status bar has an Install ffmpeg button.": "Ρυθμίσεις → Στοιχεία: ελέγχει αν υπάρχουν το ffmpeg και το Blur και εγκαθιστά ό,τι λείπει. Αν λείπει το ffmpeg, η γραμμή κατάστασης έχει κουμπί εγκατάστασης του ffmpeg.",
   "Edit together: select several clips, right-click, and they are joined, oldest first, into one new clip that opens in the editor with a split where each clip starts. Your original clips stay as they are.": "Επεξεργασία μαζί: επιλέξτε πολλά κλιπ, κάντε δεξί κλικ και ενώνονται, από το παλαιότερο, σε ένα νέο κλιπ που ανοίγει στον επεξεργαστή με διαχωρισμό εκεί όπου αρχίζει κάθε κλιπ. Τα αρχικά κλιπ μένουν όπως είναι.",
@@ -9,4 +9,5 @@ glintAddLanguage("el", "Ελληνικά", {
   "Clip cards: more room around the text, and the folder is shown only when it differs from the game.": "Κάρτες κλιπ: περισσότερος χώρος γύρω από το κείμενο, και ο φάκελος φαίνεται μόνο όταν διαφέρει από το παιχνίδι.",
   "A trimmed clip rendered with Blur no longer has its sound out of step with the picture.": "Ένα κομμένο κλιπ που αποδίδεται με το Blur δεν έχει πια τον ήχο εκτός συγχρονισμού με την εικόνα.",
   "Clip thumbnails always show the whole frame, also with a custom theme and for stretched, ultrawide and portrait clips.": "Οι μικρογραφίες των κλιπ δείχνουν πάντα ολόκληρο το καρέ, και με προσαρμοσμένο θέμα και για τεντωμένα, υπερευρεία και κατακόρυφα κλιπ.",
+  "A trimmed clip that is exported again, compressed for Discord or joined no longer has its picture ahead of the sound. The trim now starts on the frame that was on screen, so it can begin a moment earlier than you asked.": "Ένα κομμένο κλιπ που εξάγεται ξανά, συμπιέζεται για το Discord ή ενώνεται δεν έχει πια την εικόνα μπροστά από τον ήχο. Η κοπή αρχίζει τώρα στο καρέ που ήταν στην οθόνη, οπότε μπορεί να ξεκινά λίγο νωρίτερα από ό,τι ζητήσατε.",
 });

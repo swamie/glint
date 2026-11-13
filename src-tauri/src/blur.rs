@@ -750,6 +750,9 @@ fn run_sync_test(r: &mut Report, dir: &Path) {
     // re-encoding paths see) starts the video at the first frame after the cut.
     let (in_trim, _) = av_offsets(&ffmpeg, &tpath, 0).unwrap_or_default();
     r.line(&format!("INFO the trim as ffmpeg reads it, video minus audio in ms: {}", show(&in_trim)));
+    // The cut starts on the frame on screen (`clip::trim_start`), so ffmpeg's
+    // reading is in step too; it was 985 ms early here when it started between frames.
+    r.check("a trim read by ffmpeg (re-encodes of it) is in sync", !in_trim.is_empty() && worst(&in_trim) < 40.0, &show(&in_trim));
 
     // What Blur is handed instead.
     let staged = dir.join("staged.mp4");

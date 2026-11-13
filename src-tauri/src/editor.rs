@@ -784,7 +784,7 @@ fn video_packets(ffprobe: &Path, file: &Path, start: f64, intervals: &str) -> Op
 /// For each of `times` (seconds from the start of `file`), the time of the
 /// video frame on screen at that moment: the last frame at or before it. None
 /// where none was found (the caller then takes the first frame after).
-fn frames_on_screen(ffmpeg: &Path, file: &Path, times: &[f64]) -> Vec<Option<f64>> {
+pub(crate) fn frames_on_screen(ffmpeg: &Path, file: &Path, times: &[f64]) -> Vec<Option<f64>> {
     let Some(ffprobe) = library::ffprobe_for(ffmpeg) else { return vec![None; times.len()] };
     if times.is_empty() {
         return Vec::new();

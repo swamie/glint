@@ -795,7 +795,9 @@ fn test_live(r: &mut Report) {
     for (pid, peak) in &sessions {
         r.line(&format!("INFO session pid {pid} ({}) peak {peak:.3}", name(*pid)));
     }
-    let loud = sessions.iter().filter(|s| s.1 > 0.001).max_by(|a, b| a.1.total_cmp(&b.1)).copied();
+    // Not a running Glint: its loopback capture shows as a session with a level,
+    // but that process plays nothing (seen twice: 0 samples above silence).
+    let loud = sessions.iter().filter(|s| s.1 > 0.001 && !name(s.0).eq_ignore_ascii_case("glint.exe")).max_by(|a, b| a.1.total_cmp(&b.1)).copied();
     let (pid, playing) = match loud {
         Some((p, _)) => (p, true),
         None => (std::process::id(), false),

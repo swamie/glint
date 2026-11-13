@@ -14,6 +14,14 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.12", date: "2026-11-14",
+    new: [],
+    improved: [],
+    fixed: [
+      t("A trimmed clip that is exported again, compressed for Discord or joined no longer has its picture ahead of the sound. The trim now starts on the frame that was on screen, so it can begin a moment earlier than you asked."),
+    ],
+  },
+  {
     version: "0.1.11", date: "2026-11-14",
     new: [
       t("Settings → Components checks for ffmpeg and Blur and installs anything missing. If ffmpeg is missing, the status bar has an Install ffmpeg button."),
