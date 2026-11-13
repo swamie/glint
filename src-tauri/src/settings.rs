@@ -17,11 +17,14 @@ pub struct Keybind {
     pub action: String,
     /// Clip length for the "clip" action.
     pub seconds: u32,
+    /// Monitor the "clip" action saves: -1 = the capture monitor (`Settings::monitor`),
+    /// 0.. = an index into `win::monitors()`. An index that no longer exists counts as -1.
+    pub monitor: i32,
 }
 
 impl Default for Keybind {
     fn default() -> Self {
-        Keybind { id: util::new_id(), ctrl: false, shift: false, alt: false, win: false, key: String::new(), action: "clip".into(), seconds: 30 }
+        Keybind { id: util::new_id(), ctrl: false, shift: false, alt: false, win: false, key: String::new(), action: "clip".into(), seconds: 30, monitor: -1 }
     }
 }
 

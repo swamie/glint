@@ -165,6 +165,8 @@ pub struct VideoRing {
     /// Seconds kept in RAM before a GOP goes to disk. None = RAM only, Some(0) = disk only.
     window: Option<f64>,
     dir: PathBuf,
+    /// Names this ring's buffer files ("v0", "v1": one per monitor), see `spill::Seg`.
+    tag: String,
     /// The file being filled, and how much of it is used.
     seg: Option<(Arc<Seg>, u64)>,
     /// A new file is started once the current one reaches this size, so disk
@@ -182,8 +184,9 @@ pub struct VideoRing {
 const MIN_FREE: u64 = 1 << 30;
 
 impl VideoRing {
-    fn new() -> Self {
+    fn new(tag: &str) -> Self {
         VideoRing {
+            tag: tag.to_string(),
             gops: VecDeque::new(),
             ram_start: 0,
             cur: None,
@@ -235,7 +238,7 @@ impl VideoRing {
             if spill::free_space(&self.dir).is_some_and(|free| free < MIN_FREE) {
                 return Err(io::Error::other("less than 1 GB free"));
             }
-            self.seg = Some((Arc::new(Seg::create(&self.dir, "v")?), 0));
+            self.seg = Some((Arc::new(Seg::create(&self.dir, &self.tag)?), 0));
         }
         let (seg, used) = self.seg.as_mut().unwrap();
         seg.write_at(data, *used)?;
@@ -463,30 +466,129 @@ pub struct RecStatus {
     pub maxrate: u64,
 }
 
-pub struct RecStats {
+/// One monitor's buffer, as `stats` reports it.
+#[derive(Clone, Debug)]
+pub struct CapStats {
+    /// Unique per pipeline: a restarted capture gets a new one (frame counts start again).
+    pub id: u64,
+    pub monitor: u32,
+    /// It is the capture monitor (`Settings::monitor`).
+    pub primary: bool,
     pub status: RecStatus,
-    pub running: bool,
     pub frames: u64,
-    /// Buffer held in RAM.
     pub video_bytes: u64,
-    pub audio_bytes: u64,
-    /// Buffer held in files.
     pub video_disk_bytes: u64,
-    pub audio_disk_bytes: u64,
     pub buffer_secs: f64,
     pub max_secs: f64,
 }
 
-struct Inner {
+/// Fields other than `captures` describe the capture monitor; the byte counts are totals.
+pub struct RecStats {
+    pub status: RecStatus,
+    pub running: bool,
+    /// Buffer held in RAM (all monitors).
+    pub video_bytes: u64,
+    pub audio_bytes: u64,
+    /// Buffer held in files (all monitors).
+    pub video_disk_bytes: u64,
+    pub audio_disk_bytes: u64,
+    pub buffer_secs: f64,
+    pub max_secs: f64,
+    /// One per buffered monitor, the capture monitor first.
+    pub captures: Vec<CapStats>,
+}
+
+/// The capture of one monitor: its ffmpeg, its supervisor thread and its video
+/// buffer. A pipeline never changes its settings: a new configuration gets a
+/// new pipeline, so `alive` going false is final.
+struct Pipe {
+    id: u64,
+    cfg: CaptureCfg,
     ring: Mutex<VideoRing>,
-    desk: Arc<Mutex<AudioRing>>,
-    mic: Arc<Mutex<AudioRing>>,
-    gen: AtomicU64,
-    running: AtomicBool,
+    alive: AtomicBool,
     child: Mutex<Option<Child>>,
     status: Mutex<RecStatus>,
-    audio_stop: Mutex<Option<Arc<AtomicBool>>>,
-    cfg: Mutex<Option<CaptureCfg>>,
+}
+
+impl Pipe {
+    fn new(cfg: CaptureCfg) -> Arc<Pipe> {
+        static IDS: AtomicU64 = AtomicU64::new(1);
+        let mut ring = VideoRing::new(&spill_tag(cfg.monitor));
+        ring.max_secs = cfg.max_secs;
+        ring.set_spill(spill::window(&cfg.buffer, cfg.buffer_ram_secs, cfg.max_secs), cfg.buffer_dir.clone());
+        let status = RecStatus { width: cfg.width, height: cfg.height, fps: cfg.fps, maxrate: cfg.maxrate(), ..Default::default() };
+        Arc::new(Pipe {
+            id: IDS.fetch_add(1, Ordering::Relaxed),
+            ring: Mutex::new(ring),
+            alive: AtomicBool::new(true),
+            child: Mutex::new(None),
+            status: Mutex::new(status),
+            cfg,
+        })
+    }
+
+    fn alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
+    }
+
+    fn set_error(&self, msg: &str) {
+        self.status.lock().unwrap().error = msg.to_string();
+    }
+
+    /// Stop its ffmpeg for good and free the buffer. The supervisor thread sees
+    /// `alive` false and exits; the files go with the last GOP that points into them.
+    fn halt(&self) {
+        self.alive.store(false, Ordering::SeqCst);
+        if let Some(mut c) = self.child.lock().unwrap().take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        self.status.lock().unwrap().pid = 0;
+        self.ring.lock().unwrap().clear();
+    }
+
+    fn stats(&self, primary: bool, now: f64) -> CapStats {
+        let ring = self.ring.lock().unwrap();
+        let mut status = self.status.lock().unwrap().clone();
+        if status.error.is_empty() {
+            status.error = ring.spill_error.clone();
+        }
+        CapStats {
+            id: self.id,
+            monitor: self.cfg.monitor,
+            primary,
+            status,
+            frames: ring.frames,
+            video_bytes: ring.bytes as u64,
+            video_disk_bytes: ring.disk_bytes as u64,
+            buffer_secs: ring.buffered_secs(now),
+            max_secs: ring.max_secs,
+        }
+    }
+}
+
+/// Buffer-file tag of a monitor's video: "v0", "v1", ...
+pub fn spill_tag(monitor: u32) -> String {
+    format!("v{monitor}")
+}
+
+/// What the shared audio capture depends on: a change restarts it.
+#[derive(Clone, PartialEq)]
+struct AudioKey {
+    desk: bool,
+    mic: bool,
+    max_secs: f64,
+    window: Option<f64>,
+    dir: PathBuf,
+}
+
+struct Inner {
+    /// The capture monitor's pipeline first.
+    pipes: Mutex<Vec<Arc<Pipe>>>,
+    desk: Arc<Mutex<AudioRing>>,
+    mic: Arc<Mutex<AudioRing>>,
+    running: AtomicBool,
+    audio: Mutex<Option<(AudioKey, Arc<AtomicBool>)>>,
 }
 
 #[derive(Clone)]
@@ -676,15 +778,11 @@ impl Recorder {
     pub fn new() -> Self {
         Recorder {
             inner: Arc::new(Inner {
-                ring: Mutex::new(VideoRing::new()),
+                pipes: Mutex::new(Vec::new()),
                 desk: Arc::new(Mutex::new(AudioRing::new())),
                 mic: Arc::new(Mutex::new(AudioRing::new())),
-                gen: AtomicU64::new(0),
                 running: AtomicBool::new(false),
-                child: Mutex::new(None),
-                status: Mutex::new(RecStatus::default()),
-                audio_stop: Mutex::new(None),
-                cfg: Mutex::new(None),
+                audio: Mutex::new(None),
             }),
         }
     }
@@ -693,64 +791,96 @@ impl Recorder {
         self.inner.running.load(Ordering::Relaxed)
     }
 
-    pub fn current_cfg(&self) -> Option<CaptureCfg> {
-        self.inner.cfg.lock().unwrap().clone()
+    /// Every buffered monitor's configuration, the capture monitor's first.
+    pub fn current_cfgs(&self) -> Vec<CaptureCfg> {
+        self.inner.pipes.lock().unwrap().iter().map(|p| p.cfg.clone()).collect()
     }
 
-    /// Start (or restart) capture with `cfg`. The buffer is cleared.
-    pub fn start(&self, cfg: CaptureCfg) {
-        self.halt();
-        let inner = self.inner.clone();
-        let gen = inner.gen.load(Ordering::SeqCst);
-        inner.running.store(true, Ordering::SeqCst);
-        let window = spill::window(&cfg.buffer, cfg.buffer_ram_secs, cfg.max_secs);
-        // Whatever the mode is now: a crashed Glint may have left files from an earlier one.
-        spill::clean(&cfg.buffer_dir);
-        {
-            let mut ring = inner.ring.lock().unwrap();
-            ring.clear();
-            ring.max_secs = cfg.max_secs;
-            ring.set_spill(window, cfg.buffer_dir.clone());
+    /// Capture the monitors in `cfgs` (the capture monitor first; one entry per
+    /// monitor). A monitor whose configuration is unchanged keeps capturing
+    /// with its buffer intact; a changed one is restarted with an empty buffer;
+    /// one no longer listed is stopped. The shared audio capture is restarted
+    /// only when what it depends on changed.
+    pub fn start(&self, cfgs: Vec<CaptureCfg>) {
+        if cfgs.is_empty() {
+            return self.stop();
         }
-        inner.desk.lock().unwrap().set_spill(window, cfg.buffer_dir.clone(), "d");
-        inner.mic.lock().unwrap().set_spill(window, cfg.buffer_dir.clone(), "m");
-        {
-            let mut st = inner.status.lock().unwrap();
-            *st = RecStatus { width: cfg.width, height: cfg.height, fps: cfg.fps, maxrate: cfg.maxrate(), ..Default::default() };
+        let mut pipes = self.inner.pipes.lock().unwrap();
+        self.inner.running.store(true, Ordering::SeqCst);
+        let old = std::mem::take(&mut *pipes);
+        let (keep, stale): (Vec<_>, Vec<_>) = old.into_iter().partition(|p| p.alive() && cfgs.contains(&p.cfg));
+        // Old captures go first, so a monitor never has two ffmpegs at once.
+        for p in &stale {
+            p.halt();
         }
-        *inner.cfg.lock().unwrap() = Some(cfg.clone());
+        if keep.len() < cfgs.len() {
+            // Whatever the mode is now: a crashed Glint may have left files from an earlier one.
+            spill::clean(&cfgs[0].buffer_dir);
+        }
+        for cfg in &cfgs {
+            match keep.iter().find(|p| p.cfg == *cfg) {
+                Some(p) => pipes.push(p.clone()),
+                None => {
+                    let p = Pipe::new(cfg.clone());
+                    pipes.push(p.clone());
+                    let name = format!("capture-{}", cfg.monitor);
+                    thread::Builder::new().name(name).spawn(move || supervise(p)).ok();
+                }
+            }
+        }
+        drop(pipes);
 
-        let stop = Arc::new(AtomicBool::new(false));
-        *inner.audio_stop.lock().unwrap() = Some(stop.clone());
-        audio::spawn(inner.desk.clone(), inner.mic.clone(), cfg.desktop_audio, cfg.mic, cfg.max_secs + 5.0, stop);
-
-        thread::Builder::new().name("capture".into()).spawn(move || supervise(inner, cfg, gen)).ok();
+        // Audio is shared: it must cover the longest buffer.
+        let first = &cfgs[0];
+        let max_secs = cfgs.iter().map(|c| c.max_secs).fold(0.0, f64::max);
+        let window = spill::window(&first.buffer, first.buffer_ram_secs, max_secs);
+        let key = AudioKey { desk: first.desktop_audio, mic: first.mic, max_secs, window, dir: first.buffer_dir.clone() };
+        let mut audio = self.inner.audio.lock().unwrap();
+        if audio.as_ref().map(|(k, _)| k) != Some(&key) {
+            if let Some((_, stop)) = audio.take() {
+                stop.store(true, Ordering::Relaxed);
+            }
+            self.inner.desk.lock().unwrap().set_spill(window, key.dir.clone(), "d");
+            self.inner.mic.lock().unwrap().set_spill(window, key.dir.clone(), "m");
+            let stop = Arc::new(AtomicBool::new(false));
+            audio::spawn(self.inner.desk.clone(), self.inner.mic.clone(), key.desk, key.mic, max_secs + 5.0, stop.clone());
+            *audio = Some((key, stop));
+        }
     }
 
-    /// Stop capture and free the buffer.
+    /// Stop every capture and free the buffers.
     pub fn stop(&self) {
-        self.halt();
-        self.inner.ring.lock().unwrap().clear();
+        let mut pipes = self.inner.pipes.lock().unwrap();
+        self.inner.running.store(false, Ordering::SeqCst);
+        for p in pipes.drain(..) {
+            p.halt();
+        }
+        drop(pipes);
+        if let Some((_, stop)) = self.inner.audio.lock().unwrap().take() {
+            stop.store(true, Ordering::Relaxed);
+        }
         self.inner.desk.lock().unwrap().clear();
         self.inner.mic.lock().unwrap().clear();
     }
 
-    fn halt(&self) {
-        self.inner.running.store(false, Ordering::SeqCst);
-        self.inner.gen.fetch_add(1, Ordering::SeqCst);
-        if let Some(stop) = self.inner.audio_stop.lock().unwrap().take() {
-            stop.store(true, Ordering::Relaxed);
-        }
-        if let Some(mut c) = self.inner.child.lock().unwrap().take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-        self.inner.status.lock().unwrap().pid = 0;
-    }
-
-    pub fn snapshot(&self, secs: f64) -> Result<(Snapshot, Option<Pcm>, Option<Pcm>), String> {
+    /// The last `secs` seconds of `monitor` (None = the capture monitor), with
+    /// the audio of the same time and the configuration it was captured with.
+    pub fn snapshot(&self, secs: f64, monitor: Option<u32>) -> Result<(Snapshot, Option<Pcm>, Option<Pcm>, CaptureCfg), String> {
+        let pipe = {
+            let pipes = self.inner.pipes.lock().unwrap();
+            match monitor {
+                None => pipes.first().cloned(),
+                Some(m) => pipes.iter().find(|p| p.cfg.monitor == m).cloned(),
+            }
+        };
+        let Some(pipe) = pipe else {
+            return Err(match monitor {
+                Some(m) => format!("Monitor {} is not being buffered", m + 1),
+                None => "Clipping is paused".into(),
+            });
+        };
         let now = now_secs();
-        let snap = self.inner.ring.lock().unwrap().snapshot(secs, now)?;
+        let snap = pipe.ring.lock().unwrap().snapshot(secs, now)?;
         if snap.segments.is_empty() || snap.duration < 0.2 {
             return Err("The replay buffer is still filling".into());
         }
@@ -758,45 +888,36 @@ impl Recorder {
         // back afterwards, so the capture callback is never kept waiting.
         let desk = self.inner.desk.lock().unwrap().plan(&snap.segments);
         let mic = self.inner.mic.lock().unwrap().plan(&snap.segments);
-        Ok((snap, desk.map(Plan::read), mic.map(Plan::read)))
+        Ok((snap, desk.map(Plan::read), mic.map(Plan::read), pipe.cfg.clone()))
     }
 
     pub fn stats(&self) -> RecStats {
         let now = now_secs();
-        let ring = self.inner.ring.lock().unwrap();
+        let pipes: Vec<Arc<Pipe>> = self.inner.pipes.lock().unwrap().clone();
+        let captures: Vec<CapStats> = pipes.iter().enumerate().map(|(i, p)| p.stats(i == 0, now)).collect();
         let (desk_ram, desk_disk) = self.inner.desk.lock().unwrap().bytes();
         let (mic_ram, mic_disk) = self.inner.mic.lock().unwrap().bytes();
-        let mut status = self.inner.status.lock().unwrap().clone();
-        if status.error.is_empty() {
-            status.error = ring.spill_error.clone();
-        }
+        let first = captures.first();
         RecStats {
-            status,
+            status: first.map(|c| c.status.clone()).unwrap_or_default(),
             running: self.is_running(),
-            frames: ring.frames,
-            video_bytes: ring.bytes as u64,
+            video_bytes: captures.iter().map(|c| c.video_bytes).sum(),
             audio_bytes: (desk_ram + mic_ram) as u64,
-            video_disk_bytes: ring.disk_bytes as u64,
+            video_disk_bytes: captures.iter().map(|c| c.video_disk_bytes).sum(),
             audio_disk_bytes: (desk_disk + mic_disk) as u64,
-            buffer_secs: ring.buffered_secs(now),
-            max_secs: ring.max_secs,
+            buffer_secs: first.map_or(0.0, |c| c.buffer_secs),
+            max_secs: first.map_or(0.0, |c| c.max_secs),
+            captures,
         }
     }
 }
 
-fn alive(inner: &Inner, gen: u64) -> bool {
-    inner.gen.load(Ordering::SeqCst) == gen
-}
-
-fn set_error(inner: &Inner, msg: &str) {
-    inner.status.lock().unwrap().error = msg.to_string();
-}
-
-/// Keep ffmpeg running. It exits on resolution changes, secure-desktop prompts
-/// and sleep; each restart begins a new epoch in the same buffer.
-fn supervise(inner: Arc<Inner>, cfg: CaptureCfg, gen: u64) {
+/// Keep ffmpeg running for one monitor. It exits on resolution changes,
+/// secure-desktop prompts and sleep; each restart begins a new epoch in the same buffer.
+fn supervise(pipe: Arc<Pipe>) {
+    let cfg = pipe.cfg.clone();
     let Some(ffmpeg) = cfg.ffmpeg.clone() else {
-        set_error(&inner, "ffmpeg.exe was not found. Install ffmpeg or set its path in Settings.");
+        pipe.set_error("ffmpeg.exe was not found. Install ffmpeg or set its path in Settings.");
         return;
     };
     let wanted = resolve_encoder(&ffmpeg, &cfg.encoder);
@@ -811,39 +932,40 @@ fn supervise(inner: Arc<Inner>, cfg: CaptureCfg, gen: u64) {
         _ => (wanted.clone(), false),
     };
     let mut method = resolve_method(&ffmpeg, &cfg.method);
+    let mon = cfg.monitor;
     let mut backoff = 1u64;
     let mut quick_fails = 0u32;
 
-    while alive(&inner, gen) {
+    while pipe.alive() {
         {
-            let mut st = inner.status.lock().unwrap();
+            let mut st = pipe.status.lock().unwrap();
             st.encoder = enc.clone();
             st.method = method.clone();
         }
         let args = capture_args(&cfg, &enc, &method, sw);
-        let frames_before = inner.ring.lock().unwrap().frames;
+        let frames_before = pipe.ring.lock().unwrap().frames;
         let spawned = util::hidden_cmd_prio(&ffmpeg).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
         let started = Instant::now();
         let mut got_data = false;
         match spawned {
-            Err(e) => set_error(&inner, &format!("Could not start ffmpeg: {e}")),
+            Err(e) => pipe.set_error(&format!("Could not start ffmpeg: {e}")),
             Ok(mut child) => {
                 let mut out = child.stdout.take().unwrap();
                 if let Some(err) = child.stderr.take() {
-                    let inner2 = inner.clone();
+                    let pipe2 = pipe.clone();
                     thread::spawn(move || {
                         for line in BufReader::new(err).lines().map_while(Result::ok) {
-                            if !line.trim().is_empty() && alive(&inner2, gen) {
-                                set_error(&inner2, line.trim());
+                            if !line.trim().is_empty() && pipe2.alive() {
+                                pipe2.set_error(line.trim());
                             }
                         }
                     });
                 }
-                inner.status.lock().unwrap().pid = child.id();
+                pipe.status.lock().unwrap().pid = child.id();
                 {
-                    // Checked under the lock: halt() bumps `gen` before taking the child.
-                    let mut slot = inner.child.lock().unwrap();
-                    if alive(&inner, gen) {
+                    // Checked under the lock: halt() clears `alive` before taking the child.
+                    let mut slot = pipe.child.lock().unwrap();
+                    if pipe.alive() {
                         *slot = Some(child);
                     } else {
                         let _ = child.kill();
@@ -851,7 +973,7 @@ fn supervise(inner: Arc<Inner>, cfg: CaptureCfg, gen: u64) {
                         return;
                     }
                 }
-                inner.ring.lock().unwrap().begin_epoch(now_secs());
+                pipe.ring.lock().unwrap().begin_epoch(now_secs());
                 let mut buf = vec![0u8; 256 * 1024];
                 loop {
                     match out.read(&mut buf) {
@@ -859,24 +981,29 @@ fn supervise(inner: Arc<Inner>, cfg: CaptureCfg, gen: u64) {
                         Ok(n) => {
                             if !got_data {
                                 got_data = true;
-                                set_error(&inner, "");
+                                pipe.set_error("");
                             }
-                            inner.ring.lock().unwrap().feed(&buf[..n], now_secs());
+                            // Checked under the lock: halt() clears `alive` before it empties the ring.
+                            let mut ring = pipe.ring.lock().unwrap();
+                            if !pipe.alive() {
+                                break;
+                            }
+                            ring.feed(&buf[..n], now_secs());
                         }
                     }
                 }
-                if !alive(&inner, gen) {
+                if !pipe.alive() {
                     return; // start()/stop() owns the buffer and the child now
                 }
-                inner.ring.lock().unwrap().end_epoch();
-                if let Some(mut c) = inner.child.lock().unwrap().take() {
+                pipe.ring.lock().unwrap().end_epoch();
+                if let Some(mut c) = pipe.child.lock().unwrap().take() {
                     let _ = c.kill();
                     let _ = c.wait();
                 }
-                inner.status.lock().unwrap().pid = 0;
+                pipe.status.lock().unwrap().pid = 0;
             }
         }
-        let no_frames = !got_data || inner.ring.lock().unwrap().frames == frames_before;
+        let no_frames = !got_data || pipe.ring.lock().unwrap().frames == frames_before;
         if started.elapsed() > Duration::from_secs(15) && !no_frames {
             backoff = 1;
             quick_fails = 0;
@@ -884,7 +1011,7 @@ fn supervise(inner: Arc<Inner>, cfg: CaptureCfg, gen: u64) {
             quick_fails += 1;
             if quick_fails >= 2 {
                 // ffmpeg's last words say which part gave up: the capture filter or the encoder.
-                let err = inner.status.lock().unwrap().error.to_lowercase();
+                let err = pipe.status.lock().unwrap().error.to_lowercase();
                 // Only step down when the message names the encoder ("[vost#0:0/h264_amf …]"):
                 // a locked screen or a sleeping monitor also stops the frames, and must not
                 // leave the PC encoding on the CPU for the rest of the session.
@@ -892,9 +1019,9 @@ fn supervise(inner: Arc<Inner>, cfg: CaptureCfg, gen: u64) {
                 let capture_fault = err.contains("gfxcapture") || err.contains("ddagrab") || !(err.contains(codec) || err.contains("vost#") || err.contains("encoder"));
                 if !capture_fault && enc != "x264" && !sw {
                     sw = true;
-                    util::log(&format!("capture: the {enc} encoder delivered no frames from the GPU ({err}); sending frames through system memory instead"));
+                    util::log(&format!("capture {mon}: the {enc} encoder delivered no frames from the GPU ({err}); sending frames through system memory instead"));
                 } else if !capture_fault && enc != "x264" {
-                    util::log(&format!("capture: the {enc} encoder delivered no frames ({err}); using x264 on the CPU instead"));
+                    util::log(&format!("capture {mon}: the {enc} encoder delivered no frames ({err}); using x264 on the CPU instead"));
                     enc = "x264".into();
                     sw = false;
                 } else if method == "wgc" && cfg.method == "auto" {
@@ -908,7 +1035,7 @@ fn supervise(inner: Arc<Inner>, cfg: CaptureCfg, gen: u64) {
         }
         let wait_until = Instant::now() + Duration::from_secs(backoff);
         while Instant::now() < wait_until {
-            if !alive(&inner, gen) {
+            if !pipe.alive() {
                 return;
             }
             thread::sleep(Duration::from_millis(100));
@@ -993,7 +1120,7 @@ pub fn self_test(report_path: &str) {
         }
     };
     let ring_with = |window: Option<f64>, dir: &Path, max_secs: f64| {
-        let mut r = VideoRing::new();
+        let mut r = VideoRing::new("v");
         r.max_secs = max_secs;
         r.set_spill(window, dir.to_path_buf());
         r.seg_limit = (glen * 2 + 10) as u64; // two GOPs per file
@@ -1072,6 +1199,76 @@ pub fn self_test(report_path: &str) {
         check("unwritable folder: the reason is reported", !r.spill_error.is_empty(), r.spill_error.clone());
         let snap = r.snapshot(5.0, 9.0).unwrap();
         check("unwritable folder: a clip is still byte-exact", bytes_of(&snap) == expect(4, 9), String::new());
+    }
+
+    // --- two monitors' buffers in one folder: their own files, each cleared on its own
+    {
+        let dir = root.join("two");
+        check("spill tags differ per monitor", spill_tag(0) == "v0" && spill_tag(1) == "v1" && spill_tag(0) != spill_tag(1), format!("{} {}", spill_tag(0), spill_tag(1)));
+        let mk = |tag: &str| {
+            let mut r = VideoRing::new(tag);
+            r.max_secs = 60.0;
+            r.set_spill(Some(0.0), dir.clone());
+            r.seg_limit = (glen * 2 + 10) as u64;
+            r.begin_epoch(0.0);
+            r
+        };
+        let (mut a, mut b) = (mk(&spill_tag(0)), mk(&spill_tag(1)));
+        feed(&mut a, 0, 9);
+        feed(&mut b, 100, 109);
+        let (fa, fb) = (test_files(&dir, "v0"), test_files(&dir, "v1"));
+        check("two monitors: each writes its own buffer files", fa == 5 && fb == 5, format!("v0 {fa}, v1 {fb}"));
+        let (sa, sb) = (a.snapshot(5.0, 9.0).unwrap(), b.snapshot(5.0, 109.0).unwrap());
+        check("two monitors: clips from each are byte-exact", bytes_of(&sa) == expect(4, 9) && bytes_of(&sb) == expect(104, 109), String::new());
+        drop((sa, sb));
+        a.clear();
+        check("two monitors: clearing one leaves the other's files", test_files(&dir, "v0") == 0 && test_files(&dir, "v1") == fb && bytes_of(&b.snapshot(5.0, 109.0).unwrap()) == expect(104, 109), format!("v0 {}, v1 {}", test_files(&dir, "v0"), test_files(&dir, "v1")));
+        drop(b);
+        check("two monitors: dropping a buffer deletes its files", test_files(&dir, "v1") == 0, String::new());
+    }
+
+    // --- the recorder restarts only the monitors whose capture changed. No ffmpeg
+    // and no audio: each pipeline's supervisor stops at once with an error.
+    {
+        let cfg = |monitor: u32, max_secs: f64| CaptureCfg {
+            ffmpeg: None,
+            monitor,
+            width: 1920,
+            height: 1080,
+            scaled: false,
+            fps: 60,
+            hz: 60,
+            quality: "high".into(),
+            bitrate: 0,
+            encoder: "x264".into(),
+            method: "dda".into(),
+            cursor: true,
+            desktop_audio: false,
+            mic: false,
+            max_secs,
+            buffer: "ram".into(),
+            buffer_ram_secs: 30.0,
+            buffer_dir: root.join("rec"),
+        };
+        let rec = Recorder::new();
+        let ids = |rec: &Recorder| rec.stats().captures.iter().map(|c| (c.monitor, c.id, c.primary)).collect::<Vec<_>>();
+        rec.start(vec![cfg(0, 35.0), cfg(1, 65.0)]);
+        let a = ids(&rec);
+        check("recorder: one pipeline per monitor, the capture monitor first", rec.is_running() && a.len() == 2 && a[0].0 == 0 && a[0].2 && a[1].0 == 1 && !a[1].2, format!("{a:?}"));
+        check("recorder: each pipeline has its own buffer length", rec.stats().captures.iter().map(|c| c.max_secs).collect::<Vec<_>>() == vec![35.0, 65.0], String::new());
+        rec.start(vec![cfg(0, 35.0), cfg(1, 95.0)]);
+        let b = ids(&rec);
+        check("recorder: a change to one monitor restarts only that one", b.len() == 2 && b[0].1 == a[0].1 && b[1].1 != a[1].1, format!("{a:?} -> {b:?}"));
+        rec.start(vec![cfg(0, 35.0)]);
+        let c = ids(&rec);
+        check("recorder: a monitor no longer wanted is stopped", c.len() == 1 && c[0].1 == a[0].1 && rec.current_cfgs() == vec![cfg(0, 35.0)], format!("{c:?}"));
+        let snap_err = rec.snapshot(5.0, Some(1)).err().unwrap_or_default();
+        check("recorder: a clip of a monitor that is not buffered is refused", snap_err.contains("not being buffered"), snap_err);
+        rec.start(vec![cfg(1, 35.0), cfg(0, 35.0)]);
+        let d = ids(&rec);
+        check("recorder: changing the capture monitor reorders and keeps the unchanged one", d.len() == 2 && d[0].0 == 1 && d[0].2 && d[1].1 == a[0].1 && !d[1].2, format!("{d:?}"));
+        rec.stop();
+        check("recorder: stop ends every pipeline", !rec.is_running() && rec.stats().captures.is_empty() && rec.current_cfgs().is_empty(), String::new());
     }
 
     // --- leftovers of a dead Glint are cleaned, a live one's files are not

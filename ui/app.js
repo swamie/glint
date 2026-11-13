@@ -43,6 +43,7 @@ const ICON = {
   image: '<svg viewBox="0 0 24 24"><rect x="3.500" y="4.500" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.600"/><path d="m5 18 5-5 3 3 2.500-2.500L20 18"/></svg>',
   game: '<svg viewBox="0 0 24 24"><rect x="2.500" y="7" width="19" height="10" rx="5"/><path d="M7 10.500v3M5.500 12h3M15.500 11h.01M18 13h.01"/></svg>',
   compress: '<svg viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l6.500-6.500M3.500 20.500 10 14"/></svg>',
+  warn: '<svg viewBox="0 0 24 24"><path d="M12 3.500 2.500 20h19z"/><path d="M12 9.500v5M12 17.500h.01"/></svg>',
 };
 const COMPRESS_MB = [10, 20, 50, 500]; // "Compress for Discord" sizes; Discord's upload limits are 10 MB free, 50 MB Nitro Basic, 500 MB Nitro
 
@@ -151,6 +152,19 @@ const getPath = (obj, path) => path.split(".").reduce((o, p) => o?.[p], obj);
 const clipBinds = () => S.settings.keybinds.filter((k) => k.action === "clip");
 const quickSecs = () => Math.min(...clipBinds().map((k) => k.seconds), 3600) || 30;
 const maxSecs = () => Math.max(30, ...clipBinds().map((k) => k.seconds));
+// Monitors. A clip keybind's `monitor` is an index into S.monitors; -1, a missing field or a
+// monitor that is not connected all mean the capture monitor (Capture → Monitor).
+const monLabel = (m) => `${m.name}  ${m.width}×${m.height} @ ${m.hz} Hz${m.primary ? "  " + t("(primary)") : ""}`; // the Capture page's dropdown
+const monShort = (m) => `${m.name} · ${m.width}×${m.height}`; // the same monitor in a keybind row, where there is less room
+const capMon = () => S.monitors.find((m) => m.index === S.settings.monitor) || S.monitors[0] || { index: 0, name: "", width: 0, height: 0 };
+const kbNamed = (k) => Number.isInteger(k.monitor) && k.monitor >= 0; // names a monitor, connected or not (null >= 0 is true, hence the integer test)
+const kbMon = (k) => (kbNamed(k) && S.monitors.some((m) => m.index === k.monitor) ? k.monitor : -1);
+/** Monitors buffered besides the capture monitor because a clip keybind names them: each is its own capture in the backend. */
+const kbExtraMons = () => {
+  const cap = capMon().index;
+  const idx = new Set(clipBinds().map(kbMon).filter((i) => i >= 0 && i !== cap));
+  return S.monitors.filter((m) => idx.has(m.index));
+};
 
 // Layout choices that belong to this window, not to the settings file: remembered in localStorage.
 const uiPref = (key, def) => { try { const v = localStorage.getItem(key); return v === null ? def : v === "1"; } catch { return def; } };
@@ -210,6 +224,16 @@ function renderChrome() {
         const info = `${st.width}×${st.height} @ ${st.fps} fps${enc ? " · " + enc : ""}`;
         return st.game ? t("<b>Clipping</b> {game} · {info}", { game: esc(st.game), info }) : t("<b>Clipping</b> {info}", { info });
       })();
+  // More than one monitor buffered (clip keybinds that name another monitor): the text above stays
+  // the capture monitor's; a short "+1 monitor" lists them all in its tooltip, and turns yellow
+  // with a warning mark when one of the others fails while the capture monitor is fine.
+  const caps = Array.isArray(st.captures) ? [...st.captures].sort((a, b) => !!b.primary - !!a.primary) : [];
+  if (on && caps.length > 1) {
+    const n = caps.length - 1;
+    const bad = !st.error && caps.some((c) => !c.primary && c.error);
+    const tip = [t("Buffered monitors:"), ...caps.map((c) => `${c.name}  ${c.width}×${c.height} · ${Math.round(c.fps_actual || 0)}/${c.fps || 0} fps${c.primary ? "  " + t("(capture monitor)") : ""}${c.error ? "\n    " + t("Capture problem:") + " " + c.error : ""}`)].join("\n");
+    $("#sb-state").insertAdjacentHTML("beforeend", ` · <span class="sb-more${bad ? " bad" : ""}" title="${esc(tip)}">${bad ? ICON.warn : ""}${n === 1 ? t("+1 monitor") : t("+{n} monitors", { n })}</span>`);
+  }
   const bufVars = { now: fmtDur(st.buffer_secs || 0), max: fmtDur(st.buffer_max || 0), size: fmtSize(st.buffer_bytes || 0), disk: fmtSize(st.buffer_disk_bytes || 0) };
   $("#sb-buffer").innerHTML = !on ? "" : st.buffer_disk_bytes ? t("Buffer <b>{now}</b> / {max} · {size} RAM + {disk} disk", bufVars) : t("Buffer <b>{now}</b> / {max} · {size}", bufVars);
   // Frames arriving now / the frame rate set. RAM is the whole program (replay buffer, ffmpeg,
@@ -877,32 +901,45 @@ const DURATIONS = [15, 30, 60, 120, 180, 300, 600, 900, 1800];
 function renderKeybinds() {
   const s = S.settings;
   const seen = {};
+  // With more than one monitor, a clip keybind also picks the monitor it saves (data-kbf="monitor").
+  const multi = S.monitors.length > 1;
+  const cap = capMon();
   const rows = s.keybinds.map((k, i) => {
-    const combo = comboText(k);
+    const combo = comboText(k); // the keys alone: the same keys on two monitors are still a duplicate
     const dup = combo && seen[combo] !== undefined;
     if (combo) seen[combo] = i;
     const listening = S.capturing === i;
+    const clip = k.action === "clip";
     const durs = DURATIONS.includes(k.seconds) ? DURATIONS : [...DURATIONS, k.seconds].sort((a, b) => a - b);
-    return `<div class="kb-row">
+    const mon = kbMon(k);
+    const lost = multi && clip && kbNamed(k) && mon < 0; // names a monitor that is not connected (the setting is kept for when it is back)
+    const monSel = `<select class="field kb-mon" data-kb="${i}" data-kbf="monitor" title="${esc(t("Which monitor this keybind clips"))}">
+        <option value="-1"${mon < 0 ? " selected" : ""}>${t("Capture monitor ({name})", { name: esc(cap.name) })}</option>
+        ${S.monitors.map((m) => `<option value="${m.index}"${mon === m.index ? " selected" : ""}>${esc(monShort(m))}</option>`).join("")}
+      </select>`;
+    // Each cell has its own grid area (style.css), so the row can wrap in narrow windows.
+    return `<div class="kb-row${clip ? "" : " kb-other"}">
       <button class="kb-keys${listening ? " listening" : ""}${k.key ? "" : " unset"}" data-kb="${i}" data-act="capture">${listening ? t("Press a key combination…") : k.key ? comboHtml(k) : t("Click to set key")}</button>
-      <select class="field" data-kb="${i}" data-kbf="action">
+      <select class="field kb-act" data-kb="${i}" data-kbf="action">
         ${[["clip", t("Save a clip")], ["toggle", t("Pause / resume clipping")], ["show", t("Open Glint")]].map(([v, l]) => `<option value="${v}"${k.action === v ? " selected" : ""}>${l}</option>`).join("")}
       </select>
-      ${k.action === "clip"
-        ? `<select class="field" data-kb="${i}" data-kbf="seconds">${durs.map((d) => `<option value="${d}"${k.seconds === d ? " selected" : ""}>${t("Last {length}", { length: fmtLen(d) })}</option>`).join("")}</select>`
-        : "<span></span>"}
-      <button class="icon-btn" data-kb="${i}" data-act="kb-del" aria-label="${esc(t("Remove keybind"))}">${ICON.trash}</button>
+      ${clip ? `<select class="field kb-len" data-kb="${i}" data-kbf="seconds">${durs.map((d) => `<option value="${d}"${k.seconds === d ? " selected" : ""}>${t("Last {length}", { length: fmtLen(d) })}</option>`).join("")}</select>` : ""}
+      ${clip && multi ? monSel : ""}
+      <button class="icon-btn kb-del" data-kb="${i}" data-act="kb-del" aria-label="${esc(t("Remove keybind"))}">${ICON.trash}</button>
       ${dup ? `<div class="kb-warn">${t("{combo} is already used above. Only the first binding will fire.", { combo: esc(combo) })}</div>` : ""}
+      ${lost ? `<div class="kb-warn">${t("Its monitor is not connected, so this keybind clips the capture monitor until it is back.")}</div>` : ""}
     </div>`;
   });
+  const extra = kbExtraMons();
+  const bold = (m) => `<b style="color:var(--text)">${esc(m.name)}</b>`;
   const mbps = S.status.max_mbps || 0;
   const worst = (mbps * maxSecs()) / 8 * 1e6;
   const longest = `<b style="color:var(--text)">${fmtLen(maxSecs())}</b>`;
   $("#view").innerHTML = pageHead(t("Keybinds"), t("Any number of keys, each with its own action and clip length")) + `
     <div class="note">${t("The same key can carry several bindings. <b>F8</b> and <b>Shift + F8</b> are separate: the binding with the most matching modifiers wins, and keys are never blocked from reaching your game.")}</div>
     <div class="section"><h2>${t("Bindings")}</h2>
-      ${rows.join("") || `<div class="row"><div class="txt hint">${t("No keybinds yet.")}</div></div>`}
-      <div class="kb-foot"><span>${!mbps ? t("Buffer length follows the longest clip: {length}", { length: longest }) : bufferPlan().disk ? t("Buffer length follows the longest clip: {length} · at most {size}, usually far less", { length: longest, size: fmtSize(worst) }) : t("Buffer length follows the longest clip: {length} · at most {size} of RAM, usually far less", { length: longest, size: fmtSize(worst) })}</span>
+      ${rows.length ? `<div class="kb-list${multi ? " multi" : ""}">${rows.join("")}</div>` : `<div class="row"><div class="txt hint">${t("No keybinds yet.")}</div></div>`}
+      <div class="kb-foot"><span>${!mbps ? t("Buffer length follows the longest clip: {length}", { length: longest }) : bufferPlan().disk ? t("Buffer length follows the longest clip: {length} · at most {size}, usually far less", { length: longest, size: fmtSize(worst) }) : t("Buffer length follows the longest clip: {length} · at most {size} of RAM, usually far less", { length: longest, size: fmtSize(worst) })}${extra.length ? `<span class="kb-multi">${t("Buffered at once: {list}. Each monitor is its own capture, so each one uses the graphics card's encoder, memory and disk space again.", { list: [cap, ...extra].map(bold).join(", ") })}</span>` : ""}</span>
       <button class="btn sm" data-act="kb-add">${ICON.plus}${t("Add keybind")}</button></div>
     </div>`;
 }
@@ -945,10 +982,11 @@ function renderRecording() {
     : plan.allRam ? t("Your longest clip is short enough to stay in RAM, so nothing is written to disk. Up to {ram} of RAM", sizes)
     : t("The newest {secs} stay in RAM and the rest is kept in files. Up to {ram} of RAM and {disk} on disk", sizes);
   const bufferDir = s.buffer_dir || "%LOCALAPPDATA%\\Glint\\buffer";
+  const extra = kbExtraMons(); // these keep their own capture whatever the Monitor dropdown says
   $("#view").innerHTML = pageHead(t("Capture"), t("What the replay buffer captures")) + `
     ${st.error && st.recording ? `<div class="note bad"><b>${t("Capture problem:")}</b> ${esc(st.error)}</div>` : ""}
     <div class="section"><h2>${t("Video")}</h2>
-      ${row(t("Monitor"), t("The screen that is captured"), select("monitor", S.monitors.map((m) => [m.index, `${m.name}  ${m.width}×${m.height} @ ${m.hz} Hz${m.primary ? "  " + t("(primary)") : ""}`]), true))}
+      ${row(t("Monitor"), t("The screen that is captured") + (extra.length ? `<br>${t("Also buffered for a keybind: {list}", { list: extra.map((m) => esc(m.name)).join(", ") })}` : ""), select("monitor", S.monitors.map((m) => [m.index, monLabel(m)]), true))}
       ${row(t("Resolution"), t("Scaled on the GPU. Lower is lighter and smaller"), select("height", resOpts, true))}
       ${row(t("Aspect ratio"), aspectHint, select("aspect", [["auto", t("Auto (fix stretched res)")], ["16:9", "16:9"], ["16:10", "16:10"], ["21:9", "21:9"], ["32:9", "32:9"], ["4:3", "4:3"], ["source", t("As captured (no fix)")]]))}
       ${row(t("Frame rate"), t("Up to your monitor's {hz} Hz. High rates suit Blur renders", { hz: mon.hz }), select("fps", fpsList.map((f) => [f, `${f} fps`]), true))}
@@ -1202,7 +1240,7 @@ document.addEventListener("click", async (e) => {
       }
       case "reset-buffer-dir": S.settings.buffer_dir = ""; return saveSettings(true);
       case "kb-add":
-        S.settings.keybinds.push({ id: "kb-" + Date.now().toString(36), ctrl: false, shift: false, alt: false, win: false, key: "", action: "clip", seconds: 60 });
+        S.settings.keybinds.push({ id: "kb-" + Date.now().toString(36), ctrl: false, shift: false, alt: false, win: false, key: "", action: "clip", seconds: 60, monitor: -1 });
         return saveSettings(true);
       case "kb-del":
         endCapture();
@@ -1233,7 +1271,7 @@ document.addEventListener("change", (e) => {
   if ("lang" in el.dataset) { S.settings.language = glintSetLanguage(el.value); return saveSettings(true); }
   if (el.dataset.kbf) {
     const k = S.settings.keybinds[+el.dataset.kb];
-    k[el.dataset.kbf] = el.dataset.kbf === "seconds" ? +el.value : el.value;
+    k[el.dataset.kbf] = el.dataset.kbf === "seconds" || el.dataset.kbf === "monitor" ? +el.value : el.value; // monitor: -1 or an S.monitors index
     return saveSettings(true);
   }
   if (el.dataset.set) {

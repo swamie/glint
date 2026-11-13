@@ -66,22 +66,34 @@ pub fn run(args: &[String]) {
         }
         // One binding sized to the benchmark so the buffer is exactly as large as needed.
         s.keybinds = vec![crate::settings::Keybind { id: "bench".into(), key: "F13".into(), seconds: clip_secs.max(secs as u32), ..Default::default() }];
+        // --monitor N: the capture monitor. --also-monitor N: a second clip keybind
+        // for monitor N, so both monitors are buffered at once and one clip is saved from each.
+        if let Some(m) = arg::<u32>(args, "--monitor") {
+            s.monitor = m;
+        }
+        if let Some(m) = arg::<i32>(args, "--also-monitor") {
+            s.keybinds.push(crate::settings::Keybind { id: "bench2".into(), key: "F14".into(), seconds: clip_secs.max(secs as u32), monitor: m, ..Default::default() });
+        }
         crate::hotkeys::set_binds(&s.keybinds);
     }
+    let cfgs = crate::core::capture_cfgs(&core.settings());
     let cfg = capture_cfg(&core.settings());
     core.start_recording();
 
+    // Every ffmpeg of the recorder, for CPU and RAM.
+    let ff_stats = |pids: &[u32]| pids.iter().filter_map(|p| win::proc_stats(*p)).fold((0.0, 0u64), |(c, r), (c2, r2)| (c + c2, r + r2));
     // Warm-up: encoder session, first keyframe, audio streams.
     thread::sleep(Duration::from_secs(4));
     let warm = core.rec.stats();
-    let pid = warm.status.pid;
+    let pids: Vec<u32> = warm.captures.iter().map(|c| c.status.pid).collect();
     let (cpu_self0, _) = win::proc_stats(0).unwrap_or((0.0, 0));
-    let (cpu_ff0, _) = win::proc_stats(pid).unwrap_or((0.0, 0));
+    let (cpu_ff0, _) = ff_stats(&pids);
     let t0 = Instant::now();
-    let frames0 = warm.frames;
+    let _ = core.status(); // starts the per-capture frame-rate sample
 
     let mut gpu: Vec<(f64, f64)> = Vec::new();
     let mut ram_ff_peak = 0u64;
+    let mut ram_total_peak = 0u64;
     for i in 0..secs {
         thread::sleep(Duration::from_secs(1));
         if i % 3 == 1 {
@@ -89,55 +101,94 @@ pub fn run(args: &[String]) {
                 gpu.push(g);
             }
         }
-        if let Some((_, ram)) = win::proc_stats(pid) {
-            ram_ff_peak = ram_ff_peak.max(ram);
-        }
+        ram_ff_peak = ram_ff_peak.max(ff_stats(&pids).1);
+        ram_total_peak = ram_total_peak.max(win::tree_working_set());
     }
 
     let dt = t0.elapsed().as_secs_f64();
     let st = core.rec.stats();
+    let status = core.status();
     let (cpu_self1, ram_self) = win::proc_stats(0).unwrap_or((0.0, 0));
-    let (cpu_ff1, _) = win::proc_stats(pid).unwrap_or((0.0, 0));
+    let (cpu_ff1, _) = ff_stats(&pids);
     let cores = thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f64;
-    let fps_actual = (st.frames - frames0) as f64 / dt;
-    let restarted = st.status.pid != pid;
-
-    // Save a clip and time it.
-    let t_clip = Instant::now();
-    let clip = if use_keys {
-        let (tx, rx) = std::sync::mpsc::channel::<String>();
-        crate::hotkeys::start(tx);
-        thread::sleep(Duration::from_millis(300));
-        crate::keys::tap(0x7C, &[]); // F13
-        match rx.recv_timeout(Duration::from_secs(3)) {
-            Ok(id) if id == "bench" => core.clip_blocking(clip_secs),
-            Ok(id) => Err(format!("unexpected hotkey id {id}")),
-            Err(_) => Err("hotkey was not received".into()),
-        }
-    } else {
-        core.clip_blocking(clip_secs)
+    // Frames per monitor over the measured stretch.
+    let fps_of = |id: u64| {
+        let before = warm.captures.iter().find(|c| c.id == id).map_or(0, |c| c.frames);
+        st.captures.iter().find(|c| c.id == id).map_or(0.0, |c| c.frames.saturating_sub(before) as f64 / dt)
     };
-    let clip_ms = t_clip.elapsed().as_millis() as u64;
-    core.rec.stop();
+    let fps_actual = st.captures.first().map_or(0.0, |c| fps_of(c.id));
+    let restarted = st.captures.iter().map(|c| c.status.pid).collect::<Vec<_>>() != pids;
+    let captures_json: Vec<serde_json::Value> = st
+        .captures
+        .iter()
+        .map(|c| {
+            json!({
+                "monitor": c.monitor,
+                "primary": c.primary,
+                "width": c.status.width,
+                "height": c.status.height,
+                "fps": c.status.fps,
+                "fps_actual": fps_of(c.id),
+                "fps_ratio": fps_of(c.id) / c.status.fps.max(1) as f64,
+                "encoder": c.status.encoder,
+                "method": c.status.method,
+                "error": c.status.error,
+                "buffer_secs": c.buffer_secs,
+                "buffer_max": c.max_secs - 5.0,
+                "video_mb": c.video_bytes as f64 / 1e6,
+                "video_disk_mb": c.video_disk_bytes as f64 / 1e6,
+                "video_mbps": if c.buffer_secs > 0.0 { (c.video_bytes + c.video_disk_bytes) as f64 * 8.0 / 1e6 / c.buffer_secs } else { 0.0 },
+            })
+        })
+        .collect();
 
-    let mut clip_json = json!({ "ok": false });
-    match clip {
-        Ok(meta) => {
-            let probe = cfg.ffmpeg.as_ref().and_then(|f| library::probe(f, std::path::Path::new(&meta.path), true));
-            clip_json = json!({
-                "ok": true,
-                "requested_secs": clip_secs,
-                "duration_meta": meta.duration,
-                "save_ms": clip_ms,
-                "size_mb": meta.size as f64 / 1e6,
-                "audio_tracks": meta.audio_tracks,
-                "thumb": !meta.thumb.is_empty(),
-                "probe": probe,
-                "path": meta.path,
-            });
+    // Save a clip of each buffered monitor and time it.
+    let mut clips_json: Vec<serde_json::Value> = Vec::new();
+    for (n, c) in cfgs.iter().enumerate() {
+        let monitor = if n == 0 { -1 } else { c.monitor as i32 };
+        let t_clip = Instant::now();
+        let clip = if use_keys && n == 0 {
+            let (tx, rx) = std::sync::mpsc::channel::<String>();
+            crate::hotkeys::start(tx);
+            thread::sleep(Duration::from_millis(300));
+            crate::keys::tap(0x7C, &[]); // F13
+            match rx.recv_timeout(Duration::from_secs(3)) {
+                Ok(id) if id == "bench" => core.clip_blocking(clip_secs, -1),
+                Ok(id) => Err(format!("unexpected hotkey id {id}")),
+                Err(_) => Err("hotkey was not received".into()),
+            }
+        } else {
+            core.clip_blocking(clip_secs, monitor)
+        };
+        let clip_ms = t_clip.elapsed().as_millis() as u64;
+        let mut clip_json = json!({ "ok": false, "monitor": c.monitor, "expected_width": c.width, "expected_height": c.height });
+        match clip {
+            Ok(meta) => {
+                let probe = c.ffmpeg.as_ref().and_then(|f| library::probe(f, std::path::Path::new(&meta.path), true));
+                let size_ok = probe.as_ref().is_some_and(|p| p.width == c.width && p.height == c.height);
+                clip_json = json!({
+                    "ok": true,
+                    "monitor": c.monitor,
+                    "expected_width": c.width,
+                    "expected_height": c.height,
+                    "size_matches": size_ok,
+                    "meta_size": format!("{}x{} @ {}", meta.width, meta.height, meta.fps),
+                    "requested_secs": clip_secs,
+                    "duration_meta": meta.duration,
+                    "save_ms": clip_ms,
+                    "size_mb": meta.size as f64 / 1e6,
+                    "audio_tracks": meta.audio_tracks,
+                    "thumb": !meta.thumb.is_empty(),
+                    "probe": probe,
+                    "path": meta.path,
+                });
+            }
+            Err(e) => clip_json["error"] = json!(e),
         }
-        Err(e) => clip_json["error"] = json!(e),
+        clips_json.push(clip_json);
     }
+    core.rec.stop();
+    let clip_json = clips_json.first().cloned().unwrap_or(json!({ "ok": false }));
 
     let avg = |f: fn(&(f64, f64)) -> f64| if gpu.is_empty() { None } else { Some(gpu.iter().map(f).sum::<f64>() / gpu.len() as f64) };
     let report = json!({
@@ -167,7 +218,12 @@ pub fn run(args: &[String]) {
         "video_mbps": if st.buffer_secs > 0.0 { (st.video_bytes + st.video_disk_bytes) as f64 * 8.0 / 1e6 / st.buffer_secs } else { 0.0 },
         "gpu_encoder_pct": avg(|g| g.0),
         "gpu_util_pct": avg(|g| g.1),
+        "ram_total_mb": status.ram_total as f64 / 1e6,
+        "ram_total_peak_mb": ram_total_peak as f64 / 1e6,
+        "captures": captures_json,
+        "status_captures": status.captures,
         "clip": clip_json,
+        "clips": clips_json,
     });
     let _ = std::fs::write(&report_path, serde_json::to_string_pretty(&report).unwrap_or_default());
 }
@@ -338,6 +394,33 @@ pub fn diag(report_path: &str, icon_exe: Option<&str>, discord_id: Option<&str>)
     check("overlay text: length only", captured_text(&s, 30.0, "Overwatch") == "Captured last 30s");
     s.toast_length = false;
     check("overlay text: nothing", captured_text(&s, 30.0, "Overwatch").is_empty());
+
+    // Which monitors are buffered, and for how long: (settings, monitor count) -> [(monitor, longest clip)].
+    {
+        use crate::core::capture_plan;
+        use crate::settings::{Keybind, Settings};
+        let bind = |monitor: i32, seconds: u32| Keybind { monitor, seconds, ..Default::default() };
+        let with = |monitor: u32, binds: Vec<Keybind>| Settings { monitor, keybinds: binds, ..Default::default() };
+        check("monitors: default settings buffer the capture monitor only", capture_plan(&Settings::default(), 2) == vec![(0, 600)]);
+        check("monitors: a bind for monitor 2 adds its buffer", capture_plan(&with(0, vec![bind(-1, 30), bind(1, 60)]), 2) == vec![(0, 30), (1, 60)]);
+        check("monitors: each monitor is buffered once", capture_plan(&with(0, vec![bind(1, 30), bind(1, 45), bind(-1, 20), bind(0, 10)]), 2) == vec![(0, 20), (1, 45)]);
+        check("monitors: a bind for a monitor that is gone counts as the capture monitor", capture_plan(&with(1, vec![bind(5, 90), bind(-1, 30)]), 2) == vec![(1, 90)]);
+        check("monitors: a gone capture monitor falls back to the first", capture_plan(&with(3, vec![bind(-1, 30), bind(1, 40)]), 2) == vec![(0, 30), (1, 40)]);
+        check("monitors: -1 follows the capture monitor", capture_plan(&with(1, vec![bind(-1, 30), bind(0, 40)]), 2) == vec![(1, 30), (0, 40)]);
+        check("monitors: a 10-minute bind on one monitor does not lengthen the other", capture_plan(&with(0, vec![bind(0, 600), bind(1, 30)]), 2) == vec![(0, 600), (1, 30)]);
+        let mut other = with(0, vec![bind(1, 120), bind(1, 30)]);
+        check("monitors: a capture monitor with no bind of its own keeps the shortest clip length", capture_plan(&other, 2) == vec![(0, 30), (1, 120)]);
+        other.keybinds.push(Keybind { action: "toggle".into(), monitor: 0, seconds: 900, ..Default::default() });
+        check("monitors: only clip binds count", capture_plan(&other, 2) == vec![(0, 30), (1, 120)]);
+        check("monitors: lengths are clamped", capture_plan(&with(0, vec![bind(-1, 1), bind(1, 99_999)]), 2) == vec![(0, 5), (1, 3600)]);
+        let old: Keybind = serde_json::from_str(r#"{"id":"kb-30s","key":"F8","action":"clip","seconds":30}"#).unwrap_or_default();
+        let new: Keybind = serde_json::from_str(r#"{"id":"kb-m2","key":"F9","action":"clip","seconds":30,"monitor":1}"#).unwrap_or_default();
+        check("a keybind saved without a monitor clips the capture monitor (-1)", old.monitor == -1 && old.id == "kb-30s" && Keybind::default().monitor == -1);
+        check("a keybind's monitor is read back", new.monitor == 1 && serde_json::to_value(&new).ok().and_then(|v| v["monitor"].as_i64()) == Some(1));
+        let mons = win::monitors();
+        let cfgs = crate::core::capture_cfgs(&with(0, vec![bind(-1, 30), bind((mons.len() as i32) - 1, 45)]));
+        check("each buffered monitor gets its own capture size and buffer length", cfgs.len() == mons.len().min(2) && cfgs.iter().all(|c| { let m = &mons[c.monitor as usize]; c.hz == m.hz && c.height == m.height }) && cfgs.last().is_some_and(|c| c.max_secs == 50.0));
+    }
 
     // What this machine reports.
     for m in win::monitors() {

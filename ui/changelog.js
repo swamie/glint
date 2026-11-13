@@ -14,6 +14,14 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.9", date: "2026-11-13",
+    new: [
+      t("Two keys for two monitors: in Keybinds, each clip keybind can pick its own monitor. Glint keeps a replay buffer for every monitor a keybind uses."),
+    ],
+    improved: [],
+    fixed: [],
+  },
+  {
     version: "0.1.8", date: "2026-11-13",
     new: [
       t("Compress for Discord: right-click a clip and pick 10, 20, 50 or 500 MB. The smaller copy is saved next to it and put on the clipboard, ready to paste."),

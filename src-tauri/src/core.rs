@@ -1,9 +1,10 @@
 //! App state shared by the UI, the tray, hotkeys and the benchmark.
 use crate::library::{self, ClipMeta, Library};
 use crate::recorder::{CaptureCfg, Recorder};
-use crate::settings::Settings;
+use crate::settings::{Keybind, Settings};
 use crate::{clip, discord, games, hotkeys, util, win};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -37,6 +38,27 @@ pub struct Status {
     pub game: String,
     /// Discord Rich Presence state: "off", "connected", or the reason it is not.
     pub discord: String,
+    /// One per buffered monitor, the capture monitor first. The fields above
+    /// describe the capture monitor; `buffer_bytes`, `buffer_disk_bytes` and
+    /// `ram_total` count all of them.
+    pub captures: Vec<CaptureStatus>,
+}
+
+/// One monitor's replay buffer.
+#[derive(Serialize, Clone, Default, Debug)]
+pub struct CaptureStatus {
+    /// Index into `win::monitors()`.
+    pub monitor: u32,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub fps_actual: f64,
+    pub buffer_secs: f64,
+    pub buffer_max: f64,
+    pub error: String,
+    /// It is the capture monitor (`Settings::monitor`).
+    pub primary: bool,
 }
 
 /// The game being played: found in the foreground, kept while its process lives.
@@ -50,9 +72,9 @@ struct Playing {
 
 struct Sample {
     t: f64,
-    frames: u64,
+    /// Per capture pipeline (`CapStats::id`): frames counted at `t`, and the rate since the sample before.
+    frames: HashMap<u64, (u64, f64)>,
     cpu: f64,
-    fps: f64,
     cpu_pct: f64,
 }
 
@@ -62,7 +84,8 @@ pub struct Core {
     pub lib: Mutex<Library>,
     pub app: OnceLock<tauri::AppHandle>,
     sample: Mutex<Sample>,
-    last_hotkey: Mutex<Option<(String, std::time::Instant)>>,
+    /// When each keybind last fired, to drop the second copy of one press.
+    last_hotkey: Mutex<HashMap<String, std::time::Instant>>,
     pub games: Mutex<games::Games>,
     playing: Mutex<Option<Playing>>,
     pub jobs: crate::jobs::Jobs,
@@ -102,10 +125,58 @@ pub fn output_size(mode: (u32, u32), native: (u32, u32), height: u32, aspect: &s
     (even(w.round() as u32), even(h))
 }
 
-/// Resolve user settings against the real monitor into concrete capture parameters.
+/// The capture monitor (`Settings::monitor`), or the first one if that is gone.
+pub fn capture_monitor(s: &Settings, count: usize) -> u32 {
+    if (s.monitor as usize) < count { s.monitor } else { 0 }
+}
+
+/// The monitor a keybind's clip is taken from: its own, or the capture monitor
+/// for -1 and for a monitor that no longer exists.
+pub fn bind_monitor(s: &Settings, k: &Keybind, count: usize) -> u32 {
+    resolve_monitor(s, k.monitor, count)
+}
+
+/// A keybind-style monitor number (-1 = the capture monitor) as a real index.
+pub fn resolve_monitor(s: &Settings, monitor: i32, count: usize) -> u32 {
+    if monitor >= 0 && (monitor as usize) < count { monitor as u32 } else { capture_monitor(s, count) }
+}
+
+/// Which monitors to buffer, and how long a clip each must be able to give:
+/// the capture monitor first, then every other monitor a clip keybind names,
+/// each once. A monitor's length is that of the longest clip keybind that can
+/// ask for it; the capture monitor with none of its own keeps the length the
+/// tray and the top bar ask for.
+pub fn capture_plan(s: &Settings, count: usize) -> Vec<(u32, u32)> {
+    let count = count.max(1);
+    let primary = capture_monitor(s, count);
+    let mut plan: Vec<(u32, Option<u32>)> = vec![(primary, None)];
+    for k in s.keybinds.iter().filter(|k| k.action == "clip") {
+        let m = bind_monitor(s, k, count);
+        let secs = k.seconds.clamp(5, 3600);
+        match plan.iter_mut().find(|(pm, _)| *pm == m) {
+            Some((_, len)) => *len = Some(len.map_or(secs, |l| l.max(secs))),
+            None => plan.push((m, Some(secs))),
+        }
+    }
+    plan.into_iter().map(|(m, len)| (m, len.unwrap_or_else(|| s.default_clip_secs().clamp(5, 3600)))).collect()
+}
+
+/// Capture parameters of every monitor to buffer, the capture monitor first.
+pub fn capture_cfgs(s: &Settings) -> Vec<CaptureCfg> {
+    let mons = win::monitors();
+    capture_plan(s, mons.len()).into_iter().filter_map(|(m, secs)| mons.get(m as usize).map(|mon| capture_cfg_for(s, mon, secs))).collect()
+}
+
+/// The capture monitor's parameters.
 pub fn capture_cfg(s: &Settings) -> CaptureCfg {
     let mons = win::monitors();
-    let m = mons.get(s.monitor as usize).or(mons.first()).cloned().unwrap();
+    let plan = capture_plan(s, mons.len());
+    capture_cfg_for(s, &mons[plan[0].0 as usize], plan[0].1)
+}
+
+/// Resolve user settings against one real monitor into concrete capture
+/// parameters, with a buffer for clips of up to `clip_secs`.
+pub fn capture_cfg_for(s: &Settings, m: &win::Monitor, clip_secs: u32) -> CaptureCfg {
     let (width, height) = output_size((m.width, m.height), (m.native_width, m.native_height), s.height, &s.aspect);
     CaptureCfg {
         ffmpeg: util::find_exe(&s.ffmpeg_path, "ffmpeg"),
@@ -122,7 +193,7 @@ pub fn capture_cfg(s: &Settings) -> CaptureCfg {
         cursor: s.cursor,
         desktop_audio: s.desktop_audio,
         mic: s.mic,
-        max_secs: s.max_clip_secs() as f64 + 5.0,
+        max_secs: clip_secs as f64 + 5.0,
         buffer: s.buffer.clone(),
         buffer_ram_secs: s.buffer_ram_secs.clamp(5, 600) as f64,
         buffer_dir: crate::spill::dir(&s.buffer_dir),
@@ -166,8 +237,8 @@ impl Core {
             rec: Recorder::new(),
             lib: Mutex::new(lib),
             app: OnceLock::new(),
-            sample: Mutex::new(Sample { t: util::now_secs(), frames: 0, cpu: 0.0, fps: 0.0, cpu_pct: 0.0 }),
-            last_hotkey: Mutex::new(None),
+            sample: Mutex::new(Sample { t: util::now_secs(), frames: HashMap::new(), cpu: 0.0, cpu_pct: 0.0 }),
+            last_hotkey: Mutex::new(HashMap::new()),
             games: Mutex::new(games),
             playing: Mutex::new(None),
             jobs: crate::jobs::Jobs::new(),
@@ -230,10 +301,11 @@ impl Core {
                 if now != seen {
                     seen = now;
                     if core.rec.is_running() {
-                        let cfg = capture_cfg(&core.settings());
-                        if core.rec.current_cfg().as_ref() != Some(&cfg) {
-                            util::log(&format!("display mode changed: capturing {}x{} @ {} fps", cfg.width, cfg.height, cfg.fps));
-                            core.rec.start(cfg);
+                        let cfgs = capture_cfgs(&core.settings());
+                        if core.rec.current_cfgs() != cfgs {
+                            let what: Vec<String> = cfgs.iter().map(|c| format!("monitor {} {}x{} @ {} fps", c.monitor, c.width, c.height, c.fps)).collect();
+                            util::log(&format!("display mode changed: capturing {}", what.join(", ")));
+                            core.rec.start(cfgs);
                             core.emit("status-changed", ());
                         }
                     }
@@ -312,7 +384,7 @@ impl Core {
     }
 
     pub fn start_recording(&self) {
-        self.rec.start(capture_cfg(&self.settings()));
+        self.rec.start(capture_cfgs(&self.settings()));
     }
 
     pub fn toggle_recording(&self) {
@@ -326,19 +398,44 @@ impl Core {
     pub fn status(&self) -> Status {
         let st = self.rec.stats();
         let (cpu_self, ram_self) = win::proc_stats(0).unwrap_or((0.0, 0));
-        let (cpu_ff, ram_ff) = if st.status.pid != 0 { win::proc_stats(st.status.pid).unwrap_or((0.0, 0)) } else { (0.0, 0) };
+        // Every buffered monitor has its own ffmpeg.
+        let (cpu_ff, ram_ff) = st
+            .captures
+            .iter()
+            .filter(|c| c.status.pid != 0)
+            .filter_map(|c| win::proc_stats(c.status.pid))
+            .fold((0.0, 0u64), |(c, r), (c2, r2)| (c + c2, r + r2));
         let now = util::now_secs();
         let cpu = cpu_self + cpu_ff;
         let mut s = self.sample.lock().unwrap();
         let dt = now - s.t;
         if dt >= 0.5 {
             let cores = thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f64;
-            s.fps = (st.frames.saturating_sub(s.frames)) as f64 / dt;
+            // A pipeline seen for the first time has no rate until the next sample.
+            let frames = st.captures.iter().map(|c| (c.id, (c.frames, s.frames.get(&c.id).map_or(0.0, |(f, _)| c.frames.saturating_sub(*f) as f64 / dt)))).collect();
+            s.frames = frames;
             s.cpu_pct = ((cpu - s.cpu).max(0.0) / dt / cores * 100.0).min(100.0);
             s.t = now;
-            s.frames = st.frames;
             s.cpu = cpu;
         }
+        let fps_of = |id: u64| if st.running { s.frames.get(&id).map_or(0.0, |(_, fps)| *fps) } else { 0.0 };
+        let mons = win::monitors();
+        let captures: Vec<CaptureStatus> = st
+            .captures
+            .iter()
+            .map(|c| CaptureStatus {
+                monitor: c.monitor,
+                name: mons.get(c.monitor as usize).map(|m| m.name.clone()).unwrap_or_default(),
+                width: c.status.width,
+                height: c.status.height,
+                fps: c.status.fps,
+                fps_actual: fps_of(c.id),
+                buffer_secs: c.buffer_secs,
+                buffer_max: (c.max_secs - 5.0).max(0.0),
+                error: c.status.error.clone(),
+                primary: c.primary,
+            })
+            .collect();
         let buffer_bytes = st.video_bytes + st.audio_bytes;
         Status {
             recording: st.running,
@@ -347,7 +444,7 @@ impl Core {
             width: st.status.width,
             height: st.status.height,
             fps: st.status.fps,
-            fps_actual: if st.running { s.fps } else { 0.0 },
+            fps_actual: st.captures.first().map_or(0.0, |c| fps_of(c.id)),
             buffer_secs: st.buffer_secs,
             buffer_max: (st.max_secs - 5.0).max(0.0),
             buffer_bytes,
@@ -360,6 +457,7 @@ impl Core {
             error: st.status.error,
             game: self.playing.lock().unwrap().as_ref().map(|p| p.name.clone()).unwrap_or_default(),
             discord: self.discord.lock().unwrap().clone(),
+            captures,
         }
     }
 
@@ -373,17 +471,29 @@ impl Core {
     /// Show the overlay if it is switched on. `title` and `sub` are English; both are translated here
     /// (a `sub` that is not a fixed text, such as an error or an already built sentence, passes through unchanged).
     fn toast(&self, title: &str, sub: &str) {
+        let monitor = self.settings.lock().unwrap().monitor;
+        self.toast_on(title, sub, monitor);
+    }
+
+    /// `toast` on a given monitor (index into `win::monitors()`).
+    fn toast_on(&self, title: &str, sub: &str, monitor: u32) {
         let (on, lang) = {
             let s = self.settings.lock().unwrap();
             (s.toast, s.language.clone())
         };
         if on {
-            self.show_toast(crate::lang::tr(&lang, title), crate::lang::tr(&lang, sub));
+            self.show_toast_on(crate::lang::tr(&lang, title), crate::lang::tr(&lang, sub), monitor);
         }
     }
 
-    /// Show the clip overlay with the current position and microphone state.
+    /// Show the clip overlay on the capture monitor with the current position and microphone state.
     pub fn show_toast(&self, title: &str, sub: &str) {
+        let monitor = self.settings.lock().unwrap().monitor;
+        self.show_toast_on(title, sub, monitor);
+    }
+
+    /// `show_toast` on a given monitor: the one a clip was taken from.
+    pub fn show_toast_on(&self, title: &str, sub: &str, monitor: u32) {
         let Some(app) = self.app.get() else { return };
         let s = self.settings();
         // Compact is for the plain "Clip saved" only: a failure, a pause or an
@@ -397,7 +507,7 @@ impl Core {
                 compact,
                 mic: s.toast_mic && s.mic && self.rec.is_running(),
                 pos: s.toast_pos,
-                monitor: s.monitor,
+                monitor,
                 opacity: s.toast_opacity.clamp(20, 100),
                 scale: s.toast_scale.clamp(70, 160),
                 secs: s.toast_secs.clamp(1.0, 15.0),
@@ -407,55 +517,55 @@ impl Core {
         );
     }
 
-    /// Save the last `seconds` seconds. Returns immediately; the mux runs on its own thread.
-    pub fn clip(self: &Arc<Self>, seconds: u32) {
+    /// Save the last `seconds` seconds of `monitor` (-1 = the capture monitor).
+    /// Returns immediately; the mux runs on its own thread.
+    pub fn clip(self: &Arc<Self>, seconds: u32, monitor: i32) {
         let core = self.clone();
         thread::spawn(move || {
-            let _ = core.clip_blocking(seconds);
+            let _ = core.clip_blocking(seconds, monitor);
         });
     }
 
-    pub fn clip_blocking(&self, seconds: u32) -> Result<ClipMeta, String> {
+    /// Save the last `seconds` seconds of `monitor`: an index into
+    /// `win::monitors()`, or -1 (or a monitor that no longer exists) for the capture monitor.
+    pub fn clip_blocking(&self, seconds: u32, monitor: i32) -> Result<ClipMeta, String> {
         let s = self.settings();
+        let count = win::monitors().len();
+        let mon = resolve_monitor(&s, monitor, count);
+        let primary = mon == capture_monitor(&s, count);
         let game = self.game_now();
         if !self.rec.is_running() {
-            self.toast("Clipping is paused", "Resume clipping to save clips");
+            self.toast_on("Clipping is paused", "Resume clipping to save clips", mon);
             return Err("Clipping is paused".into());
         }
-        let (snap, desk, mic) = match self.rec.snapshot(seconds as f64) {
+        let (snap, desk, mic, cfg) = match self.rec.snapshot(seconds as f64, if primary { None } else { Some(mon) }) {
             Ok(v) => v,
             Err(e) => {
-                util::log(&format!("clip {seconds}s: nothing to save: {e}"));
-                self.toast("Nothing to clip yet", &e);
+                util::log(&format!("clip {seconds}s of monitor {mon}: nothing to save: {e}"));
+                self.toast_on("Nothing to clip yet", &e, mon);
                 return Err(e);
             }
         };
         if s.sound {
             crate::sound::play(&s.sound_name, s.sound_volume, &s.sound_file);
         }
-        let cfg = self.rec.current_cfg();
-        let cap = clip::Capture {
-            snap,
-            desk,
-            mic,
-            width: cfg.as_ref().map(|c| c.width).unwrap_or(0),
-            height: cfg.as_ref().map(|c| c.height).unwrap_or(0),
-            fps: cfg.as_ref().map(|c| c.fps).unwrap_or(0),
-        };
+        // The overlay goes where the picture came from.
+        let mon = cfg.monitor;
+        let cap = clip::Capture { snap, desk, mic, width: cfg.width, height: cfg.height, fps: cfg.fps };
         let started = std::time::Instant::now();
         match clip::write(&s, cap, &game) {
             Ok(meta) => {
-                util::log(&format!("clip {seconds}s: saved {:.1}s, {:.1} MB in {} ms -> {}", meta.duration, meta.size as f64 / 1e6, started.elapsed().as_millis(), meta.path));
+                util::log(&format!("clip {seconds}s of monitor {mon}: saved {:.1}s, {:.1} MB in {} ms -> {}", meta.duration, meta.size as f64 / 1e6, started.elapsed().as_millis(), meta.path));
                 self.lib.lock().unwrap().add(meta.clone());
                 self.emit("clips-changed", meta.id.clone());
                 // "last 30s" when the clip is as long as asked; its real length when the buffer held less.
                 let len = if (meta.duration - seconds as f64).abs() < 2.0 { seconds as f64 } else { meta.duration };
-                self.toast("Clip saved", &captured_text(&s, len, &meta.game));
+                self.toast_on("Clip saved", &captured_text(&s, len, &meta.game), mon);
                 Ok(meta)
             }
             Err(e) => {
-                util::log(&format!("clip {seconds}s: failed: {e}"));
-                self.toast("Clip failed", &e);
+                util::log(&format!("clip {seconds}s of monitor {mon}: failed: {e}"));
+                self.toast_on("Clip failed", &e, mon);
                 Err(e)
             }
         }
@@ -467,15 +577,17 @@ impl Core {
         {
             // The same press can arrive twice: from the global hook and from the
             // focused window (the hook is not fed while Glint itself has focus).
+            // Kept per keybind, so two binds pressed close together both fire.
             let mut last = self.last_hotkey.lock().unwrap();
-            if last.as_ref().is_some_and(|(prev, at)| prev == id && at.elapsed() < std::time::Duration::from_millis(600)) {
+            let now = std::time::Instant::now();
+            if last.get(id).is_some_and(|at| now.duration_since(*at) < std::time::Duration::from_millis(600)) {
                 return;
             }
-            *last = Some((id.to_string(), std::time::Instant::now()));
+            last.insert(id.to_string(), now);
         }
-        util::log(&format!("hotkey {} -> {} {}s", id, b.action, b.seconds));
+        util::log(&format!("hotkey {} -> {} {}s (monitor {})", id, b.action, b.seconds, b.monitor));
         match b.action.as_str() {
-            "clip" => self.clip(b.seconds),
+            "clip" => self.clip(b.seconds, b.monitor),
             "toggle" => {
                 self.toggle_recording();
                 let on = self.rec.is_running();
@@ -508,9 +620,10 @@ impl Core {
             set_autostart(new.autostart);
         }
         if self.rec.is_running() {
-            let cfg = capture_cfg(&new);
-            if self.rec.current_cfg().as_ref() != Some(&cfg) {
-                self.rec.start(cfg);
+            // Only the monitors whose capture changed are restarted (see `Recorder::start`).
+            let cfgs = capture_cfgs(&new);
+            if self.rec.current_cfgs() != cfgs {
+                self.rec.start(cfgs);
             }
         }
     }

@@ -81,14 +81,17 @@ pub fn show_toast(app: &AppHandle, t: Toast) {
     let stay = Duration::from_millis((t.secs * 1000.0) as u64);
     thread::spawn(move || {
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        for (label, w) in app.webview_windows() {
-            if label.starts_with("toast") {
-                let _ = w.destroy();
-            }
-        }
         // The recorded monitor, matched to Tauri's list by its position to learn its scale.
         let mons = win::monitors();
         let want = mons.get(t.monitor as usize).or(mons.first()).cloned();
+        // A new overlay replaces the one on the same monitor; clips of two
+        // monitors saved close together each keep their own.
+        let prefix = format!("toast{}-", want.as_ref().map_or(0, |m| m.index));
+        for (label, w) in app.webview_windows() {
+            if label.starts_with(&prefix) {
+                let _ = w.destroy();
+            }
+        }
         let on = app.available_monitors().ok().and_then(|list| list.into_iter().find(|m| want.as_ref().is_some_and(|w| m.position().x == w.x && m.position().y == w.y)));
         let on = on.or_else(|| app.primary_monitor().ok().flatten());
         let (mut x, mut y) = (40.0, 40.0);
@@ -100,7 +103,7 @@ pub fn show_toast(app: &AppHandle, t: Toast) {
             // Bottom corners sit clear of the taskbar.
             y = if pos.starts_with('t') { top + MARGIN } else { top + height - H - MARGIN - 48.0 };
         }
-        let built = WebviewWindowBuilder::new(&app, format!("toast{n}"), WebviewUrl::App("toast.html".into()))
+        let built = WebviewWindowBuilder::new(&app, format!("{prefix}{n}"), WebviewUrl::App("toast.html".into()))
             .title("Glint")
             .initialization_script(&script)
             .inner_size(W, H)
@@ -183,7 +186,7 @@ fn toggle_recording(core: St) -> Status {
 
 #[tauri::command(async)]
 fn clip_now(core: St, seconds: u32) -> Result<ClipMeta, String> {
-    core.clip_blocking(seconds.clamp(5, 3600))
+    core.clip_blocking(seconds.clamp(5, 3600), -1)
 }
 
 #[tauri::command(async)]
@@ -585,7 +588,7 @@ fn build_tray(app: &AppHandle, core: Arc<Core>) -> tauri::Result<()> {
     }
     tray.on_menu_event(move |app, event| match event.id.as_ref() {
         "open" => show_main(app),
-        "clip" => core.clip(core.settings().default_clip_secs()),
+        "clip" => core.clip(core.settings().default_clip_secs(), -1),
         "toggle" => {
             core.toggle_recording();
             core.emit("status-changed", ());
@@ -618,7 +621,7 @@ pub fn run(minimized: bool) {
             let core = app.state::<Arc<Core>>().inner().clone();
             if args.iter().any(|a| a == "--clip") {
                 util::log("command line: --clip");
-                core.clip(core.settings().default_clip_secs());
+                core.clip(core.settings().default_clip_secs(), -1);
             } else if args.iter().any(|a| a == "--show-overlay") {
                 preview_overlay(&core);
             } else {

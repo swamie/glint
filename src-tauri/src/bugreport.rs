@@ -150,7 +150,13 @@ fn system_text(core: &Core) -> String {
     lines.push(format!("Graphics: {}", if gpus.is_empty() { "none found".to_string() } else { gpus.join(", ") }));
     lines.push(format!("CPU: {}", if hw.cpu.is_empty() { "unknown" } else { &hw.cpu }));
     if st.recording {
-        lines.push(format!("Capture: {}x{} at {} fps, encoder {}, method {}", st.width, st.height, st.fps, st.encoder, st.method));
+        // Every buffered monitor: "monitor 1 2560x1440 at 60 fps (clips up to 30 s), monitor 2 ...".
+        let mons: Vec<String> = st
+            .captures
+            .iter()
+            .map(|c| format!("monitor {}{} {}x{} at {} fps (clips up to {} s{})", c.monitor + 1, if c.primary && st.captures.len() > 1 { " (main)" } else { "" }, c.width, c.height, c.fps, c.buffer_max.round(), if c.error.is_empty() { String::new() } else { format!(", error: {}", c.error) }))
+            .collect();
+        lines.push(format!("Capture: {}, encoder {}, method {}", mons.join("; "), st.encoder, st.method));
     } else {
         let height = if s.height == 0 { "native".to_string() } else { format!("{}p", s.height) };
         lines.push(format!("Capture: paused (settings: {height} at {} fps, encoder {}, method {})", s.fps, s.encoder, s.method));

@@ -24,6 +24,19 @@ fn write_pcm(path: &Path, pcm: &Pcm) -> std::io::Result<()> {
     fs::write(path, bytes)
 }
 
+/// The first free `<base>.<ext>` / `<base> (n).<ext>` in `dir`, created empty
+/// on the spot: two clips saved in the same second (one per monitor) must not
+/// both pick the same name before either file exists. ffmpeg overwrites it (`-y`).
+fn reserve_path(dir: &Path, base: &str, ext: &str) -> PathBuf {
+    loop {
+        let p = util::unique_path(dir, base, ext);
+        match fs::OpenOptions::new().write(true).create_new(true).open(&p) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            _ => return p,
+        }
+    }
+}
+
 /// Mux the snapshot into `<clips_dir>/<game> <timestamp>.mp4`.
 ///
 /// Audio layout: with both sources, track 1 is the mix (what players and chat
@@ -43,7 +56,6 @@ pub fn write(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, Str
     fs::create_dir_all(&dir).map_err(|e| format!("Cannot create clips folder: {e}"))?;
     let stamp = chrono::Local::now().format("%Y-%m-%d %H-%M-%S").to_string();
     let title = format!("{} {}", util::sanitize_filename(game), stamp);
-    let out = util::unique_path(&dir, &title, "mp4");
     let id = util::new_id();
     let tmp = util::tmp_dir();
 
@@ -57,6 +69,7 @@ pub fn write(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, Str
             }
         }
     }
+    let out = reserve_path(&dir, &title, "mp4");
 
     let mut cmd = util::hidden_cmd(&ffmpeg);
     // A still screen leaves long gaps between video timestamps. Keep them: by default
@@ -94,6 +107,7 @@ pub fn write(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, Str
         Ok(c) => c,
         Err(e) => {
             cleanup(&inputs);
+            let _ = fs::remove_file(&out);
             return Err(format!("Could not start ffmpeg: {e}"));
         }
     };

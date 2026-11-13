@@ -39,6 +39,8 @@ Run `dist\Glint.exe`. Keep `WebView2Loader.dll` beside it; the exe will not star
 
 Add, remove and rebind under **Keybinds**. One key can carry several bindings; the one with the most matching modifiers wins, an unbound extra modifier (for example `Ctrl` held to crouch) falls back to the plain key, and key presses are never swallowed from the game. The buffer length follows the longest clip binding.
 
+**Two monitors.** On a PC with more than one monitor, each clip keybind has a monitor choice: the capture monitor (the one picked under Capture, the default) or a particular monitor. Glint keeps a replay buffer for every monitor a keybind uses, all at once, so one key can save the left screen and another the right. Each buffered monitor is its own capture (its own ffmpeg, its own share of the graphics card's encoder, memory and disk), sized to the longest keybind that points at it; the status bar shows "+1 monitor". The saved-clip overlay appears on the monitor that was clipped. Measured with a second monitor buffered: about 120 MB more memory, CPU under 1 %.
+
 Keys are read by a global keyboard hook. Windows does not feed that hook while Glint's own window has focus, so the window matches the same keybinds itself in that case; a press that arrives both ways is counted once. If Medal is still running it also reacts to `F8`: quit it or rebind one of the two.
 
 Every key press that fires, and every clip saved or failed, is written to `%APPDATA%\Glint\glint.log`. Start Glint with the environment variable `GLINT_DEBUG_KEYS=1` to log every key event the hook sees.

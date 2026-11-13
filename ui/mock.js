@@ -18,9 +18,9 @@ if (!window.__TAURI__) {
       compress_mb: 10, ui_sounds: false, ui_sounds_hover: false, ui_sounds_volume: 50,
       ffmpeg_path: "", blur_path: "",
       keybinds: [
-        { id: "a", ctrl: false, shift: false, alt: false, win: false, key: "F8", action: "clip", seconds: 30 },
-        { id: "b", ctrl: false, shift: true, alt: false, win: false, key: "F8", action: "clip", seconds: 600 },
-        { id: "c", ctrl: true, shift: false, alt: true, win: false, key: "KeyR", action: "toggle", seconds: 30 },
+        { id: "a", ctrl: false, shift: false, alt: false, win: false, key: "F8", action: "clip", seconds: 30, monitor: -1 },
+        { id: "b", ctrl: false, shift: true, alt: false, win: false, key: "F8", action: "clip", seconds: 600, monitor: -1 },
+        { id: "c", ctrl: true, shift: false, alt: true, win: false, key: "KeyR", action: "toggle", seconds: 30, monitor: -1 },
       ],
       blur: {
         blur: true, amount: 1, output_fps: 60, weighting: "equal", gamma: 1, interpolate: true, interpolated_fps: "5x", interpolation_method: "svp",
@@ -31,11 +31,29 @@ if (!window.__TAURI__) {
         gaussian_std_dev: 1, gaussian_mean: 2, gaussian_bound: "[0,2]", svp_preset: "weak", svp_algorithm: 13, block_size: 8, mask_area: 0, rife_model: "rife-v4.26_ensembleFalse",
       },
     },
-    monitors: [{ index: 0, name: "DISPLAY1", width: 2160, height: 1440, hz: 280, primary: true, x: 0, y: 0, native_width: 2560, native_height: 1440 }],
+    monitors: [
+      { index: 0, name: "DISPLAY1", width: 2160, height: 1440, hz: 280, primary: true, x: 0, y: 0, native_width: 2560, native_height: 1440 },
+      { index: 1, name: "DISPLAY2", width: 1680, height: 1050, hz: 60, primary: false, x: 2160, y: 0, native_width: 1680, native_height: 1050 },
+    ],
     status: { recording: true, encoder: "nvenc", method: "wgc", width: 2560, height: 1440, fps: 60, fps_actual: 59.9, buffer_secs: 412, buffer_max: 600, buffer_bytes: 3.1e7, buffer_disk_bytes: 2.8e8, ram_total: 2.4e8, cpu_pct: 0.9, ram_app: 3.4e7, ram_ffmpeg: 1.4e8, max_mbps: 15, error: "", game: "Overwatch", discord: "off" },
     // What's new opens by itself after an update: localStorage["glint.seenVersion"] = "0.1.7", then reload.
     ffmpeg: "C:\\tools\\ffmpeg\\bin\\ffmpeg.exe", blur: "C:\\tools\\blur\\blur-cli.exe", version: "0.1.8",
     hardware: { gpus: [{ name: "NVIDIA GeForce RTX 5060 Ti", vendor: "nvidia" }], cpu: "11th Gen Intel(R) Core(TM) i5-11600", gpu: { name: "NVIDIA GeForce RTX 5060 Ti", vendor: "nvidia" }, encoder: "nvenc" },
+  };
+  // status.captures: one entry per monitor buffered, the capture monitor first (primary), then every
+  // other monitor a clip keybind names, as the backend does. window.__mockCapError = "text": the
+  // other monitors' captures fail with it (the status bar's warning mark).
+  const syncCaptures = () => {
+    const st = state.status, set = state.settings;
+    const cap = state.monitors.find((m) => m.index === set.monitor) || state.monitors[0];
+    const named = set.keybinds.filter((k) => k.action === "clip" && k.monitor >= 0 && k.monitor !== cap.index).map((k) => k.monitor);
+    const others = state.monitors.filter((m) => named.includes(m.index));
+    st.captures = [cap, ...others].map((m) => {
+      const primary = m === cap;
+      const fps = Math.min(set.fps, m.hz);
+      return { monitor: m.index, name: m.name, width: primary ? st.width : m.width, height: primary ? st.height : m.height, fps: primary ? st.fps : fps, fps_actual: primary ? st.fps_actual : fps - 0.1, buffer_secs: st.buffer_secs, buffer_max: st.buffer_max, error: primary ? st.error : window.__mockCapError || "", primary };
+    });
+    return st;
   };
   let clips = [
     clip(1, "osu! 2026-11-12 21-14-03", "osu!", 12, 31, { favorite: true, folder: "Best of" }),
@@ -194,9 +212,9 @@ if (!window.__TAURI__) {
           case "delete_clips": { const n = clips.length; clips = clips.filter((c) => !args.ids.includes(c.id)); return n - clips.length; }
           case "copy_clips": return args.ids.length;
           case "set_favorites": clips.forEach((c) => { if (args.ids.includes(c.id)) c.favorite = args.favorite; }); return null;
-          case "get_state": return state;
-          case "get_status": case "toggle_recording": return state.status;
-          case "save_settings": state.settings = args.settings; return state.status;
+          case "get_state": syncCaptures(); return state;
+          case "get_status": case "toggle_recording": return syncCaptures();
+          case "save_settings": state.settings = args.settings; return syncCaptures();
           case "list_clips": case "rescan_library": return clips;
           case "set_favorite": { const c = clips.find((x) => x.id === args.id); c.favorite = args.favorite; return c; }
           case "rename_clip": { const c = clips.find((x) => x.id === args.id); c.title = args.title; return c; }
