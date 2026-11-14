@@ -80,7 +80,7 @@ const edFmtVal = (key, x) => (ED_SLIDERS.find((s) => s[0] === key)[4] === "pct" 
 const edSameColor = (a, b) => ED_COLOR_KEYS.every((k) => Math.abs(a[k] - b[k]) < 0.005);
 const edBaseName = (path) => String(path).split(/[\\/]/).pop() || String(path);
 /** Used to tell whether an edit changed the model (so a no-op leaves no undo step). */
-const edState = (m) => JSON.stringify([m.cuts, m.removed, m.audio, m.speed, m.colors, m.blank, ...(m.parts ? [m.parts] : []), ...(emHasLayers(m) ? [m.overlays, m.fadeIn, m.fadeOut] : [])]); // the part order only when there are parts; overlays and fades (overlays.js) only when there are any
+const edState = (m) => JSON.stringify([m.cuts, m.removed, m.audio, m.speed, m.colors, m.blank, ...(m.parts ? [m.parts] : []), ...(emHasLayers(m) ? [m.overlays, m.fadeIn, m.fadeOut] : []), ...(m.canvas ? [m.canvas] : [])]); // the part order only when there are parts; overlays and fades (overlays.js) only when there are any
 
 /**
  * What the Color pane edits. `sels`: the timeline's selected pieces ({ row, seg }),
@@ -678,6 +678,8 @@ function openClip(id) {
   S.player.ed = mountEditor(root, c, S.player);
   // Text, shapes, drawing, blur boxes and fades on the picture (overlays.js).
   if (typeof ovMount === "function") { try { S.player.ov = ovMount(root, c, S.player); } catch (e) { console.error("Glint: the overlay tools did not load", e); } }
+  // The canvas: another shape for the result (vertical for TikTok / Shorts), with pieces of the picture placed on it (canvas.js).
+  if (typeof cvMount === "function") { try { S.player.cv = cvMount(root, c, S.player); } catch (e) { console.error("Glint: the canvas tools did not load", e); } }
   // A project: the library's clips beside the editor, to add more (projects.js).
   if (draft && typeof projMountPanel === "function") projMountPanel(root, id);
   if (draft) {
@@ -969,6 +971,7 @@ function mountPlayer(root, c) {
     if (blank !== shownBlank) { shownBlank = blank; box.classList.toggle("e-blank", blank); }
     const seg = m ? emSegmentAt(m, now) : -1;
     if (seg !== shownSeg) { shownSeg = seg; P.ed?.playheadSeg?.(); } // the Color pane may show the playhead's segment
+    P.cv?.paint(now); // the canvas preview (canvas.js)
     P.ov?.paint(now); // overlays shown at the playhead, the fade cover
   }
   P.applyColor = applyColor;
@@ -1250,6 +1253,7 @@ function mountPlayer(root, c) {
     output(["load", "undo", "redo", "file", "order"].includes(what));
     paint();
     P.ed?.sync(what);
+    P.cv?.sync(what); // before the overlays: they are placed on the canvas
     P.ov?.sync(what);
     if (P.draft && typeof projDirty === "function") projDirty(P, what); // a project saves its edit (debounced)
   };
@@ -1296,6 +1300,7 @@ function mountPlayer(root, c) {
       if (on) v.pause();
       else { edPopClose?.(); dropTimeline(); }
       if (document.fullscreenElement) leaveFull(); // video-only or editor fullscreen does not fit the other mode
+      P.cv?.setEdit(on);
       P.ov?.setEdit(on);
       applyRate();
       applyColor();
@@ -1324,7 +1329,7 @@ function mountPlayer(root, c) {
   P.command = (cmd) => {
     const now = tlNow();
     // Delete and Esc first go to the overlays (a selected text or shape, a drawing tool, a text being typed).
-    if ((cmd === "remove" || cmd === "escape") && !edPopClose && P.ov?.command(cmd)) return;
+    if ((cmd === "remove" || cmd === "escape") && !edPopClose && (P.cv?.command(cmd) || P.ov?.command(cmd))) return;
     switch (cmd) {
       case "play": return P.toggle();
       case "back5": return P.seek(now - edSeekStep(), true);
@@ -1433,7 +1438,7 @@ function mountPlayer(root, c) {
   P.destroy = () => {
     dead = true;
     edPopClose?.();
-    try { P.ov?.destroy(); } catch (e) { console.error("Glint: overlay destroy failed", e); }
+    try { P.cv?.destroy(); } catch (e) { console.error("Glint: canvas destroy failed", e); }
     cancelAnimationFrame(raf);
     raf = 0;
     clearTimeout(idle);
@@ -1701,6 +1706,7 @@ function mountEditor(root, c, P) {
       lines.push(edReplaceOn() && !c.draft ? t("The clip will be {len} long.", { len: fmtDurMs(emOutDuration(m)) }) : t("New clip, {len} long.", { len: fmtDurMs(emOutDuration(m)) }));
       lines.push(emIsPlainCut(m) ? t("Quick cut, no quality loss.") : t("Re-encodes the video."));
       if (emToOpts(m).audio.length && m.audio.length > 1) lines.push(t("The audio is mixed into one track."));
+      if (m.canvas) lines.push(t("The picture is {w} × {h}.", { w: m.canvas.width, h: m.canvas.height }));
     }
     // Replace instead of saving beside the original. A project asks which of its clips go when it is exported.
     const rep = edReplaceOn();

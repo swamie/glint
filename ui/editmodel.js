@@ -70,6 +70,7 @@ function emNew(duration, tracks) {
     overlays: [],
     fadeIn: 0,
     fadeOut: 0,
+    canvas: null, // null = the clip's own picture; else { width, height, background, pieces } (ui/canvas.js)
     undo: [],
     redo: [],
   };
@@ -93,12 +94,13 @@ function emSegmentAt(m, t) {
 // The part order is in the snapshot only when there are parts, so a normal clip's snapshots are as before.
 // Overlays and fades likewise, only when there are any.
 const emHasLayers = (m) => !!((m.overlays && m.overlays.length) || m.fadeIn > 0 || m.fadeOut > 0);
-const emState = (m) => JSON.stringify({ cuts: m.cuts, removed: m.removed, audio: m.audio, speed: m.speed, colors: m.colors, blank: m.blank, ...(m.parts ? { parts: m.parts } : {}), ...(emHasLayers(m) ? { ov: m.overlays || [], fi: m.fadeIn || 0, fo: m.fadeOut || 0 } : {}) });
+const emState = (m) => JSON.stringify({ cuts: m.cuts, removed: m.removed, audio: m.audio, speed: m.speed, colors: m.colors, blank: m.blank, ...(m.parts ? { parts: m.parts } : {}), ...(emHasLayers(m) ? { ov: m.overlays || [], fi: m.fadeIn || 0, fo: m.fadeOut || 0 } : {}), ...(m.canvas ? { cv: m.canvas } : {}) });
 function emRestore(m, json) {
   const s = JSON.parse(json);
   m.overlays = Array.isArray(s.ov) ? s.ov : [];
   m.fadeIn = +s.fi || 0;
   m.fadeOut = +s.fo || 0;
+  m.canvas = emCanvasOk(s.cv) ? s.cv : null;
   if (m.parts && Array.isArray(s.parts)) {
     // The bookmarks are not in the snapshot but move with their part: keep each at its place in its part.
     const P0 = emParts(m);
@@ -560,6 +562,7 @@ function emStateSave(m, joins, undo) {
     audio: m.audio.map((r) => (r.kind === "track" ? { id: r.id, kind: "track", index: r.index, title: r.title, volume: r.volume, muted: r.muted, gains: r.gains } : r)),
     parts: m.parts, marks: m.marks || [],
     overlays: m.overlays || [], fadeIn: m.fadeIn || 0, fadeOut: m.fadeOut || 0,
+    canvas: m.canvas || null,
   };
   if (undo) { s.undo = m.undo.slice(); s.redo = m.redo.slice(); }
   return JSON.parse(JSON.stringify(s));
@@ -585,7 +588,20 @@ function emStateOk(s) {
   // Overlays and fades (0.1.25) are optional: a state saved before them has none.
   if (s.overlays != null && !(Array.isArray(s.overlays) && s.overlays.every(emOverlayOk))) return false;
   if ((s.fadeIn != null && !(num(s.fadeIn) && s.fadeIn >= 0)) || (s.fadeOut != null && !(num(s.fadeOut) && s.fadeOut >= 0))) return false;
+  // The canvas (0.1.26) is optional too.
+  if (s.canvas != null && !emCanvasOk(s.canvas)) return false;
   return true;
+}
+/** A canvas as saved or sent: a size, a background and pieces whose eight numbers are finite. */
+function emCanvasOk(c) {
+  const num = (x) => typeof x === "number" && Number.isFinite(x);
+  return !!c && typeof c === "object" && num(c.width) && num(c.height) && c.width >= 16 && c.height >= 16 && c.width <= 4096 && c.height <= 4096 && typeof c.background === "string"
+    && Array.isArray(c.pieces) && c.pieces.every((p) => p && typeof p === "object" && ["sx", "sy", "sw", "sh", "x", "y", "w", "h"].every((k) => num(p[k])) && p.sw > 0 && p.sh > 0 && p.w > 0 && p.h > 0);
+}
+/** The canvas for export_clip: the size, the background and each piece's two boxes. */
+function emCanvasOpts(c) {
+  const r5 = (x) => Math.round(x * 100000) / 100000;
+  return { width: Math.round(c.width), height: Math.round(c.height), background: c.background, pieces: c.pieces.map((p) => ({ sx: r5(p.sx), sy: r5(p.sy), sw: r5(p.sw), sh: r5(p.sh), x: r5(p.x), y: r5(p.y), w: r5(p.w), h: r5(p.h) })) };
 }
 /** An overlay as saved: an object with a known kind and a finite time range (its own fields are checked by overlays.js). */
 const EM_OVERLAY_KINDS = ["text", "rect", "ellipse", "line", "arrow", "pen", "blur"];
@@ -627,6 +643,7 @@ function emStateLoad(m, s) {
   m.overlays = Array.isArray(s.overlays) ? JSON.parse(JSON.stringify(s.overlays)) : [];
   m.fadeIn = +s.fadeIn || 0;
   m.fadeOut = +s.fadeOut || 0;
+  m.canvas = s.canvas ? JSON.parse(JSON.stringify(s.canvas)) : null;
   emSetMarks(m, s.marks);
   // The undo history only when the rows are the same ones (their paths are refreshed).
   const keep = (list) => (sameTracks && Array.isArray(list) ? list.filter((x) => typeof x === "string").map((json) => {
@@ -908,7 +925,7 @@ function emPlaceFile(m, id, change) {
 /** True if no audio row differs from the clip as recorded (so the export can keep the original tracks). */
 const emAudioUntouched = (m) => m.audio.every((r) => r.kind === "track" && !r.muted && Math.abs(r.volume - 1) < 0.005 && r.gains.every((g, i) => m.removed[i] || Math.abs(g - 1) < 0.005));
 /** True if the edit is nothing but one kept range (one in the source too): the export can cut it without re-encoding. */
-const emIsPlainCut = (m) => !emHasLayers(m) && emKept(m).length === 1 &&(!m.parts || emSrcSpans(m, emKept(m)[0].start, emKept(m)[0].end).length === 1) && Math.abs(m.speed - 1) < 0.005 && emPieces(m).every((p) => !p.blank && emSameColor(p.color)) && emAudioUntouched(m);
+const emIsPlainCut = (m) => !emHasLayers(m) && !m.canvas && emKept(m).length === 1 &&(!m.parts || emSrcSpans(m, emKept(m)[0].start, emKept(m)[0].end).length === 1) && Math.abs(m.speed - 1) < 0.005 && emPieces(m).every((p) => !p.blank && emSameColor(p.color)) && emAudioUntouched(m);
 /** True if the result would differ from the source at all. */
 const emChanged = (m) => !(emIsPlainCut(m) && m.removed.every((r) => !r));
 
@@ -982,6 +999,7 @@ function emToOpts(m) {
     ...(ordered ? { ordered: true } : {}),
     audio,
     ...emLayerOpts(m),
+    ...(m.canvas ? { canvas: emCanvasOpts(m.canvas) } : {}),
   };
 }
 
@@ -1014,5 +1032,5 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = { EM_MIN_SEG, EM_MAX_GAIN, EM_EPS, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emTrimBounds, emSameSeg, emSetTrimStart, emSetTrimEnd, emSegCopy, emSegPaste, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emTrackRow, emGameHidden, emRowHint, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts,
     emSetParts, emParts, emPartAt, emToSrc, emFromSrc, emSrcSpans, emMovePart, emCutLocked, emLockedTimes, emPartSegs, emPartRemoved, emSetPartRemoved, emReordered, emState, emRestore,
     emAddParts, emNewParts, emStateSave, emStateOk, emStateLoad, EM_STATE_V,
-    emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS };
+    emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS, emCanvasOk, emCanvasOpts };
 }

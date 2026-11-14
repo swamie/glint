@@ -145,4 +145,8 @@ glintAddLanguage("ko", "한국어", {
   "The editor's color looks. Make your own in the editor's {link}.": "편집기의 색상 룩이에요. 내 룩은 편집기의 {link}에서 만들 수 있어요.",
   "color panel": "색상 패널",
   "Save or import a clip first: the color panel is in the editor.": "먼저 클립을 저장하거나 가져오세요. 색상 패널은 편집기에 있어요.",
+  "Editor: a Canvas for vertical videos. Pick 9:16 (TikTok, Shorts, Reels), 1:1, 4:5 or your own size, then choose which parts of the picture show and where: the gameplay in the middle, the kill feed zoomed above, the health bar below. Behind them is the clip blurred, black or a color.": "편집기: 세로 영상을 위한 캔버스가 생겼어요. 9:16(TikTok, Shorts, Reels), 1:1, 4:5 또는 원하는 크기를 고른 다음, 화면의 어느 부분을 어디에 보여 줄지 정하세요. 가운데는 게임 화면, 위에는 확대한 킬 로그, 아래에는 체력 바처럼요. 뒤 배경은 흐리게 한 클립, 검정 또는 색상이에요.",
+  "Arrange the pieces on the picture: drag to move, a corner scales, an edge crops, the mouse wheel zooms. “Add a piece” lets you drag a box around what the piece should show.": "조각은 화면 위에서 바로 배치해요. 끌면 옮겨지고, 모서리는 크기를 바꾸고, 변은 잘라 내고, 마우스 휠은 확대해요. “조각 추가”를 누르고 보여 줄 부분을 상자로 끌어서 그리면 돼요.",
+  "Canvas layouts: ready-made ones for each shape, and your own, saved under “My layouts” and used on any clip with one click.": "캔버스 배치: 모양마다 미리 만든 배치가 있고, 내가 만든 배치는 “내 배치”에 저장해서 어느 클립에서나 한 번의 클릭으로 쓸 수 있어요.",
+  "With a canvas, text, shapes, drawings and blur boxes are placed on the canvas.": "캔버스를 쓰면 글자, 도형, 그림, 블러 상자는 캔버스 위에 놓여요.",
 });

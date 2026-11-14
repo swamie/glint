@@ -409,7 +409,8 @@ function ovMount(root, c, P) {
   /* ----- where the picture is ----- */
   function place() {
     const br = box.getBoundingClientRect(), vr = v.getBoundingClientRect();
-    const vw = v.videoWidth || c.width || 16, vh = v.videoHeight || c.height || 9;
+    const cs = P.cv?.size?.(); // a canvas (canvas.js): the overlays lie on it, not on the clip's own picture
+    const vw = cs ? cs.width : v.videoWidth || c.width || 16, vh = cs ? cs.height : v.videoHeight || c.height || 9;
     if (!vr.width || !vr.height) return false;
     const k = Math.min(vr.width / vw, vr.height / vh), W = vw * k, H = vh * k;
     const left = vr.left - br.left + (vr.width - W) / 2, top = vr.top - br.top + (vr.height - H) / 2;
@@ -947,7 +948,8 @@ function ovMount(root, c, P) {
       commitText();
       const mm = m();
       if (!mm) return [];
-      const W = v.videoWidth || c.width || 1920, H = v.videoHeight || c.height || 1080;
+      const cs = P.cv?.size?.();
+      const W = cs ? cs.width : v.videoWidth || c.width || 1920, H = cs ? cs.height : v.videoHeight || c.height || 1080;
       const out = [];
       for (const g of ovGroups(mm)) {
         const cv = document.createElement("canvas");

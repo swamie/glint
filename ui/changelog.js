@@ -14,6 +14,17 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.26", date: "2026-11-15",
+    new: [
+      t("Editor: a Canvas for vertical videos. Pick 9:16 (TikTok, Shorts, Reels), 1:1, 4:5 or your own size, then choose which parts of the picture show and where: the gameplay in the middle, the kill feed zoomed above, the health bar below. Behind them is the clip blurred, black or a color."),
+      t("Arrange the pieces on the picture: drag to move, a corner scales, an edge crops, the mouse wheel zooms. “Add a piece” lets you drag a box around what the piece should show."),
+      t("Canvas layouts: ready-made ones for each shape, and your own, saved under “My layouts” and used on any clip with one click."),
+    ],
+    improved: [
+      t("With a canvas, text, shapes, drawings and blur boxes are placed on the canvas."),
+    ],
+  },
+  {
     version: "0.1.25", date: "2026-11-15",
     new: [
       t("Editor: put text, rectangles, ellipses, lines, arrows and freehand drawing on the picture, each for the time you choose. A blur box hides what is inside it: pick Blur and drag a box. Fade in and fade out for the start and the end of the clip."),

@@ -181,6 +181,16 @@ impl Default for ThemePreset {
     }
 }
 
+/// A canvas layout the user saved in the editor (0.1.26): an output size,
+/// a background and the pieces of the picture placed on it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct CanvasPreset {
+    pub id: String,
+    pub name: String,
+    pub canvas: crate::editor::Canvas,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -306,6 +316,8 @@ pub struct Settings {
     pub rules: Vec<crate::rules::Rule>,
     /// The rule the editor's Export box runs on the exported clip ("Then run"); "" = none.
     pub rules_after_export: String,
+    /// The user's saved canvas layouts for the editor's export (vertical videos and other sizes).
+    pub canvas_presets: Vec<CanvasPreset>,
     /// Soft sounds for clicks, switches and results in Glint's window.
     pub ui_sounds: bool,
     /// Also a very quiet tick when the pointer moves onto a button (needs `ui_sounds`).
@@ -384,6 +396,7 @@ impl Default for Settings {
             upscale: Default::default(),
             rules: Vec::new(),
             rules_after_export: String::new(),
+            canvas_presets: Vec::new(),
             ui_sounds: false,
             ui_sounds_hover: false,
             ui_sounds_volume: 50,

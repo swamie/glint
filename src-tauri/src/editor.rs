@@ -159,12 +159,50 @@ pub struct ExportOpts {
     /// its end, picture and sound together. 0 = no fade.
     pub fade_in: f64,
     pub fade_out: f64,
+    /// An output picture of its own size with pieces of the clip placed on
+    /// it (vertical videos). None = the clip's own picture, as before.
+    pub canvas: Option<Canvas>,
 }
 
 impl Default for ExportOpts {
     fn default() -> Self {
-        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new(), ordered: false, overlays: Vec::new(), blurs: Vec::new(), fade_in: 0.0, fade_out: 0.0 }
+        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new(), ordered: false, overlays: Vec::new(), blurs: Vec::new(), fade_in: 0.0, fade_out: 0.0, canvas: None }
     }
+}
+
+/// The export's output picture (0.1.26): `width` x `height` pixels, a
+/// background ("blur" = the clip blurred and darkened, "black", or
+/// "#rrggbb"), and the pieces of the clip drawn on it in order (last on top).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Canvas {
+    /// Pixels; made even and kept to 16..=4096 by the export.
+    pub width: f64,
+    pub height: f64,
+    pub background: String,
+    pub pieces: Vec<CanvasPiece>,
+}
+
+impl Default for Canvas {
+    fn default() -> Self {
+        Canvas { width: 1080.0, height: 1920.0, background: "black".into(), pieces: Vec::new() }
+    }
+}
+
+/// A box cut out of the source picture (`sx`, `sy`, `sw`, `sh`: fractions of
+/// the source) shown in a box of the canvas (`x`, `y`, `w`, `h`: fractions of
+/// the canvas; it may hang over the canvas's edges and is clipped there).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct CanvasPiece {
+    pub sx: f64,
+    pub sy: f64,
+    pub sw: f64,
+    pub sh: f64,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
 }
 
 /// A transparent PNG the size of the picture (written by `save_overlay_png`),
@@ -1055,6 +1093,143 @@ fn layer_chain(l: &Layers, first_png: usize, (pw, ph): (u32, u32), total: f64) -
     g
 }
 
+/// A `Canvas` checked and turned into whole pixels.
+#[derive(Debug, Clone, PartialEq)]
+struct CanvasPlan {
+    width: u32,
+    height: u32,
+    /// None = the clip blurred and darkened; Some = this flat color (R, G, B).
+    color: Option<(u8, u8, u8)>,
+    /// Each piece that shows: the crop of the source (x, y, w, h) and the
+    /// part of the canvas it covers (x, y, w, h), already clipped to the
+    /// canvas. All even, as 4:2:0 needs.
+    pieces: Vec<([u32; 4], [u32; 4])>,
+}
+
+/// A canvas side: made even and kept to 16..=4096 (`fallback` when not a number).
+fn canvas_side(v: f64, fallback: u32) -> u32 {
+    let v = if v.is_finite() { v.clamp(16.0, 4096.0) } else { fallback as f64 };
+    (v as u32) & !1
+}
+
+/// "#rrggbb" (or "#rgb") as R, G, B.
+fn hex_color(s: &str) -> Option<(u8, u8, u8)> {
+    let h = s.trim().strip_prefix('#')?;
+    if !h.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let n = |a: usize, b: usize| u8::from_str_radix(&h[a..b], 16).ok();
+    match h.len() {
+        6 => Some((n(0, 2)?, n(2, 4)?, n(4, 6)?)),
+        3 => Some((n(0, 1)? * 17, n(1, 2)? * 17, n(2, 3)? * 17)),
+        _ => None,
+    }
+}
+
+/// `c` on a source picture `sw` x `sh` pixels: sizes clamped, numbers that
+/// are not numbers dropped, each piece clipped to the canvas (the source
+/// part under the visible part is cropped, so nothing is ever scaled to more
+/// than the canvas's size), pieces that do not show left out.
+fn canvas_plan(c: &Canvas, (sw, sh): (u32, u32)) -> CanvasPlan {
+    let (cw, ch) = (canvas_side(c.width, 1080), canvas_side(c.height, 1920));
+    let color = match c.background.trim() {
+        "blur" => None,
+        other => Some(hex_color(other).unwrap_or((0, 0, 0))),
+    };
+    let fin = |v: f64| if v.is_finite() { v } else { 0.0 };
+    let even = |v: f64| ((v / 2.0).round().max(0.0) as u32) * 2;
+    let (sw_f, sh_f, cw_f, ch_f) = (sw as f64, sh as f64, cw as f64, ch as f64);
+    let mut pieces = Vec::new();
+    for p in &c.pieces {
+        let sx = fin(p.sx).clamp(0.0, 1.0);
+        let sy = fin(p.sy).clamp(0.0, 1.0);
+        let pw = fin(p.sw).min(1.0 - sx);
+        let ph = fin(p.sh).min(1.0 - sy);
+        let x = fin(p.x).clamp(-4.0, 4.0);
+        let y = fin(p.y).clamp(-4.0, 4.0);
+        let w = fin(p.w).min(8.0);
+        let h = fin(p.h).min(8.0);
+        if pw <= 0.0 || ph <= 0.0 || w <= 0.0 || h <= 0.0 {
+            continue;
+        }
+        // The box on the canvas in pixels, and its visible part.
+        let (dx, dy, dw, dh) = (x * cw_f, y * ch_f, w * cw_f, h * ch_f);
+        let (vx0, vx1) = (even(dx.max(0.0)).min(cw), even((dx + dw).min(cw_f)).min(cw));
+        let (vy0, vy1) = (even(dy.max(0.0)).min(ch), even((dy + dh).min(ch_f)).min(ch));
+        if vx1 <= vx0 || vy1 <= vy0 {
+            continue;
+        }
+        // The part of the source box shown there.
+        let (fx, fy, fw, fh) = (sx * sw_f, sy * sh_f, pw * sw_f, ph * sh_f);
+        let ux0 = fx + (vx0 as f64 - dx) / dw * fw;
+        let ux1 = fx + (vx1 as f64 - dx) / dw * fw;
+        let uy0 = fy + (vy0 as f64 - dy) / dh * fh;
+        let uy1 = fy + (vy1 as f64 - dy) / dh * fh;
+        let cx = even(ux0).min(sw.saturating_sub(2));
+        let cy = even(uy0).min(sh.saturating_sub(2));
+        let crop_w = even(ux1 - ux0).clamp(2, (sw - cx).max(2));
+        let crop_h = even(uy1 - uy0).clamp(2, (sh - cy).max(2));
+        pieces.push(([cx, cy, crop_w, crop_h], [vx0, vy0, vx1 - vx0, vy1 - vy0]));
+    }
+    CanvasPlan { width: cw, height: ch, color, pieces }
+}
+
+/// Filter chains from `[{input}]` (the joined result, yuv420p, source size)
+/// to `[{out}]` (the canvas). The background is made from the same frames
+/// (split), so every frame keeps its timestamp: a flat color is a 2x2 crop
+/// painted with `lutyuv` and scaled up; "blur" is the picture scaled to cover
+/// a quarter-size canvas, Gaussian-blurred (sigma 2% of the canvas height),
+/// darkened to 70% and scaled up. Each piece is a crop scaled to its box,
+/// laid on in order. `matrix` / `range` are the source's (for the color).
+fn canvas_chain(p: &CanvasPlan, input: &str, out: &str, (sw, sh): (u32, u32), matrix: &str, range: &str) -> Vec<String> {
+    let (cw, ch) = (p.width, p.height);
+    let n = p.pieces.len();
+    let mut g = Vec::new();
+    let bg_in = if n == 0 {
+        input.to_string()
+    } else {
+        let outs: String = std::iter::once("[cb]".to_string()).chain((0..n).map(|i| format!("[cp{i}]"))).collect();
+        g.push(format!("[{input}]split={}{outs}", n + 1));
+        "cb".to_string()
+    };
+    let black = if range == "pc" { 0.0 } else { 16.0 };
+    let bg = match p.color {
+        Some((r, gg, b)) => {
+            let (kr, kb) = if matrix == "bt601" { (0.299, 0.114) } else { (0.2126, 0.0722) };
+            let (r, gg, b) = (r as f64 / 255.0, gg as f64 / 255.0, b as f64 / 255.0);
+            let y = kr * r + (1.0 - kr - kb) * gg + kb * b;
+            let (u, v) = ((b - y) / (2.0 * (1.0 - kb)), (r - y) / (2.0 * (1.0 - kr)));
+            let (ys, cs) = if range == "pc" { (255.0, 255.0) } else { (219.0, 224.0) };
+            let q = |x: f64| x.round().clamp(0.0, 255.0) as u8;
+            let (y, u, v) = (q(black + ys * y), q(128.0 + cs * u), q(128.0 + cs * v));
+            format!("crop=2:2:0:0,lutyuv=y={y}:u={u}:v={v},scale={cw}:{ch}:flags=neighbor,setsar=1")
+        }
+        None => {
+            let (qw, qh) = (((cw / 4) & !1).max(2), ((ch / 4) & !1).max(2));
+            // Cover: the smallest even size at least qw x qh with the source's shape.
+            let k = (qw as f64 / sw.max(1) as f64).max(qh as f64 / sh.max(1) as f64);
+            let up = |v: f64, min: u32| (((v / 2.0).ceil() as u32) * 2).max(min);
+            let (aw, ah) = (up(sw as f64 * k, qw), up(sh as f64 * k, qh));
+            let sigma = (0.02 * ch as f64 / 4.0).max(0.5);
+            let dark = |c: f64| format!("'{c}+(val-{c})*0.7'");
+            format!(
+                "scale={aw}:{ah},crop={qw}:{qh},gblur=sigma={sigma:.3},lutyuv=y={}:u={}:v={},scale={cw}:{ch},setsar=1",
+                dark(black),
+                dark(128.0),
+                dark(128.0)
+            )
+        }
+    };
+    let mut cur = "cbg".to_string();
+    g.push(format!("[{bg_in}]{bg}[{cur}]"));
+    for (i, ([cx, cy, crw, crh], [vx, vy, vw, vh])) in p.pieces.iter().enumerate() {
+        g.push(format!("[cp{i}]crop={crw}:{crh}:{cx}:{cy},scale={vw}:{vh},setsar=1[cq{i}];[{cur}][cq{i}]overlay={vx}:{vy}[cv{i}]"));
+        cur = format!("cv{i}");
+    }
+    g.push(format!("[{cur}]format=yuv420p,setsar=1[{out}]"));
+    g
+}
+
 /// Write a new clip beside `src` with `opts` applied, and return its library entry.
 /// `progress` receives 0..100 while ffmpeg runs.
 pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dyn FnMut(f32)) -> Result<ClipMeta, String> {
@@ -1099,7 +1274,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     // Overlays, blur boxes and fades (on the result's own timeline, `out_total` long).
     let out_total = kept / speed;
     let layers = layer_plan(opts, out_total)?;
-    if k_count == 1 && same(speed, 1.0) && plain && opts.tracks.is_empty() && opts.audio.is_empty() && layers.is_none() {
+    if k_count == 1 && same(speed, 1.0) && plain && opts.tracks.is_empty() && opts.audio.is_empty() && layers.is_none() && opts.canvas.is_none() {
         let meta = crate::clip::trim(s, src, base, if to_end { duration } else { last_end }, true)?;
         progress(100.0);
         return Ok(meta);
@@ -1199,9 +1374,32 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         video += ",";
         video += &f;
     }
+    // The picture's size: the source's, or the canvas's when there is one.
+    let src_size = if src.width > 0 && src.height > 0 {
+        Some((src.width, src.height))
+    } else if layers.is_some() || opts.canvas.is_some() {
+        Some(library::probe(&ffmpeg, &src_path, false).map(|p| (p.width, p.height)).filter(|(w, h)| *w > 0 && *h > 0).ok_or("Could not read the clip's picture size")?)
+    } else {
+        None
+    };
+    let canvas = match (&opts.canvas, src_size) {
+        (Some(c), Some(size)) => Some(canvas_plan(c, size)),
+        _ => None,
+    };
     // With overlays, blur boxes or fades the picture goes on through `layer_chain` (below) to [v].
-    video += if layers.is_some() { ",format=yuv420p[vb]" } else { ",format=yuv420p[v]" };
-    graph.push(video);
+    let after = if layers.is_some() { "vb" } else { "v" };
+    match (&canvas, src_size) {
+        (Some(c), Some(size)) => {
+            // The canvas stage: pieces of the picture on a picture of the canvas's size.
+            video += ",format=yuv420p[vc]";
+            graph.push(video);
+            graph.extend(canvas_chain(c, "vc", after, size, matrix, range));
+        }
+        _ => {
+            video += &format!(",format=yuv420p[{after}]");
+            graph.push(video);
+        }
+    }
     let mut maps: Vec<String> = vec!["-map".into(), "[v]".into()];
     let mut audio_args: Vec<String> = Vec::new();
     let aac = |a: &mut Vec<String>| a.extend(["-c:a", "aac", "-b:a", "160k"].map(String::from));
@@ -1279,11 +1477,8 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     // The overlay pictures are the last inputs.
     let first_png = first_file + file_inputs.len();
     if let Some(l) = &layers {
-        let size = if src.width > 0 && src.height > 0 {
-            (src.width, src.height)
-        } else {
-            library::probe(&ffmpeg, &src_path, false).map(|p| (p.width, p.height)).filter(|(w, h)| *w > 0 && *h > 0).ok_or("Could not read the clip's picture size")?
-        };
+        // On a canvas, overlay PNGs arrive at the canvas's size and blur boxes are fractions of it.
+        let size = canvas.as_ref().map(|c| (c.width, c.height)).or(src_size).ok_or("Could not read the clip's picture size")?;
         graph.extend(layer_chain(l, first_png, size, out_total));
     }
     let png_inputs: Vec<String> = layers.as_ref().map(|l| l.overlays.iter().map(|o| o.0.clone()).collect()).unwrap_or_default();
@@ -1679,6 +1874,7 @@ fn run_self_test(r: &mut Report) {
     look_checks(r, &ffmpeg, &s, &src, f_desk);
     ordered_checks(r, &ffmpeg, &s, &dir);
     layer_checks(r, &ffmpeg, &s, &src, &src_file, (f_desk, 1));
+    canvas_checks(r, &ffmpeg, &s, &src, &src_file, (f_desk, 1));
     if let Some(clip) = std::env::var_os("GLINT_EDITOR_BENCH") {
         bench(r, &ffmpeg, &s, Path::new(&clip));
     }
@@ -1874,6 +2070,229 @@ fn layer_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, src
     r.check("overlay PNG removed when the export fails", bad.is_err() && png3.as_ref().is_some_and(|p| !p.exists()), &format!("{:?}", bad.err()));
     let gone = ex(&ExportOpts { overlays: vec![Overlay { png: odir.join("never-written.png").to_string_lossy().into_owned(), from: 0.0, to: 8.0 }], ..Default::default() });
     r.check("missing overlay PNG is refused cleanly", gone.as_ref().is_err_and(|e| e.contains("overlay")), &format!("{:?}", gone.err()));
+}
+
+/// A box of the first frame at or after `t` (x, y, w, h: fractions of the
+/// picture after the filter steps `pre`), scaled to `w` x `h` grey pixels.
+fn grey_box_at(ffmpeg: &Path, file: &Path, t: f64, pre: &str, (bx, by, bw, bh): (f64, f64, f64, f64), w: usize, h: usize) -> Option<Vec<u8>> {
+    let vf = format!("{pre}crop=iw*{bw:.6}:ih*{bh:.6}:iw*{bx:.6}:ih*{by:.6},scale={w}:{h},format=gray");
+    let out = util::hidden_cmd(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-ss", &format!("{t:.3}"), "-i"])
+        .arg(file)
+        .args(["-frames:v", "1", "-vf", &vf, "-f", "rawvideo", "pipe:1"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    (out.stdout.len() == w * h).then_some(out.stdout)
+}
+
+/// Mean R, G, B of a box (fractions) of the frame at `t`, read as BT.709 limited range.
+fn rgb_box_at(ffmpeg: &Path, file: &Path, t: f64, (bx, by, bw, bh): (f64, f64, f64, f64)) -> Option<(f64, f64, f64)> {
+    let vf = format!("crop=iw*{bw:.6}:ih*{bh:.6}:iw*{bx:.6}:ih*{by:.6},scale=8:8:in_color_matrix=bt709:in_range=tv,format=rgb24");
+    let out = util::hidden_cmd(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-ss", &format!("{t:.3}"), "-i"])
+        .arg(file)
+        .args(["-frames:v", "1", "-vf", &vf, "-f", "rawvideo", "pipe:1"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if out.stdout.len() != 8 * 8 * 3 {
+        return None;
+    }
+    let ch = |c: usize| out.stdout.iter().skip(c).step_by(3).map(|v| *v as f64).sum::<f64>() / 64.0;
+    Some((ch(0), ch(1), ch(2)))
+}
+
+/// The canvas (0.1.26): size, pieces in their boxes (also over an edge and
+/// overlapping), the three backgrounds, overlays and blur boxes on the canvas,
+/// cuts / order / speed, and hostile numbers. The test clip is 640x360, 8 s,
+/// still from 3 to 5 s, with the desktop tone `f_desk` on audio stream `desk`.
+fn canvas_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, src_file: &Path, (f_desk, desk): (u32, u32)) {
+    let ex = |opts: &ExportOpts| export(s, src, opts, &mut |_| {});
+    let piece = |sx: f64, sy: f64, sw: f64, sh: f64, x: f64, y: f64, w: f64, h: f64| CanvasPiece { sx, sy, sw, sh, x, y, w, h };
+    // A box shrunk by 6% of its size on every side, away from scaled edges.
+    let inset = |(x, y, w, h): (f64, f64, f64, f64)| (x + w * 0.06, y + h * 0.06, w * 0.88, h * 0.88);
+    let (gw, gh) = (40usize, 24usize);
+    // Mean difference between a box of the export at `t` and a box of the source at `ts`.
+    let same_as = |out: &Path, t: f64, ob: (f64, f64, f64, f64), ts: f64, sb: (f64, f64, f64, f64)| {
+        box_diff(&grey_box_at(ffmpeg, out, t, "", inset(ob), gw, gh), &grey_box_at(ffmpeg, src_file, ts, "", inset(sb), gw, gh), gw, (0, 0, gw, gh))
+    };
+    let mean_of = |out: &Path, t: f64, b: (f64, f64, f64, f64)| grey_box_at(ffmpeg, out, t, "", b, 16, 8).map(|f| box_mean(&f, 16, (0, 0, 16, 8))).unwrap_or(-1.0);
+    let seg = |a: f64, b: f64| Range { start: a, end: b, ..Default::default() };
+
+    // --- options
+    let old: Result<ExportOpts, _> = serde_json::from_str(r#"{"start":1,"end":5,"speed":1,"overlays":[],"blurs":[],"fade_in":0,"fade_out":0}"#);
+    let null: Result<ExportOpts, _> = serde_json::from_str(r#"{"start":1,"end":5,"canvas":null}"#);
+    let full: Result<ExportOpts, _> = serde_json::from_str(r##"{"canvas":{"width":1080,"height":1920,"background":"#112233","pieces":[{"sx":0.1,"sy":0.2,"sw":0.3,"sh":0.4,"x":-0.5,"y":0.5,"w":2,"h":0.25}]}}"##);
+    r.check(
+        "export options without a canvas, with canvas null and with a canvas parse",
+        old.as_ref().is_ok_and(|o| o.canvas.is_none() && o.start == 1.0)
+            && null.as_ref().is_ok_and(|o| o.canvas.is_none() && o.end == 5.0)
+            && full.as_ref().is_ok_and(|o| o.canvas.as_ref().is_some_and(|c| c.height == 1920.0 && c.background == "#112233" && c.pieces.len() == 1 && c.pieces[0].x == -0.5 && c.pieces[0].w == 2.0)),
+        &format!("{:?} / {:?} / {:?}", old.err(), null.err(), full.err()),
+    );
+
+    // --- the plan: odd sizes made even, hostile numbers never reach ffmpeg
+    let odd = canvas_plan(&Canvas { width: 1081.0, height: 1351.0, ..Default::default() }, (640, 360));
+    let hostile = Canvas {
+        width: -5.0,
+        height: 1e12,
+        background: "url(x);drawtext".into(),
+        pieces: vec![
+            piece(f64::NAN, 0.0, f64::NAN, 0.5, 0.0, 0.0, 1.0, 1.0),
+            piece(0.0, 0.0, 0.5, 0.5, 0.0, 0.0, -1.0, 1.0),
+            piece(0.0, 0.0, 0.5, 0.5, 1e9, 0.0, 1.0, 1.0),
+            piece(0.0, 0.0, 1e9, 1e9, 0.0, 0.0, 1.0, 1.0),
+            piece(0.2, 0.2, 0.5, 0.5, -1e300, f64::INFINITY, 1e300, 1e300),
+            piece(0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0, 1.0),
+        ],
+    };
+    let hp = canvas_plan(&hostile, (640, 360));
+    let ok_box = |&([cx, cy, cw, ch], [vx, vy, vw, vh]): &([u32; 4], [u32; 4])| {
+        [cx, cy, cw, ch, vx, vy, vw, vh].iter().all(|v| v % 2 == 0) && cw > 0 && ch > 0 && vw > 0 && vh > 0 && cx + cw <= 640 && cy + ch <= 360 && vx + vw <= hp.width && vy + vh <= hp.height
+    };
+    let chain = canvas_chain(&hp, "vc", "v", (640, 360), "bt709", "tv").join(";");
+    let clean = !chain.contains("NaN") && !chain.contains("inf") && !chain.contains("url") && !chain.contains('-');
+    r.check(
+        "canvas sizes made even and kept to 16..4096, hostile pieces dropped or clamped",
+        (odd.width, odd.height) == (1080, 1350) && (hp.width, hp.height) == (16, 4096) && hp.color == Some((0, 0, 0)) && hp.pieces.len() == 2 && hp.pieces.iter().all(ok_box) && clean,
+        &format!("odd {}x{}, hostile {}x{} {:?} {:?}", odd.width, odd.height, hp.width, hp.height, hp.color, hp.pieces),
+    );
+
+    // --- 1. A 1080x1920 canvas with three pieces: a strip from the top right,
+    //        the middle hanging over both side edges, a strip from the bottom left; black around them.
+    let a = (0.0, 0.05, 1.0, 0.158203125); // 256x72 source pixels shown 1080 wide
+    let b = (-0.1, 0.25, 1.2, 0.50625); // 480x360 shown 1296 wide
+    let c = (0.1, 0.8, 0.8, 0.16875); // 192x72 shown 864 wide
+    let three = Canvas {
+        width: 1080.0,
+        height: 1920.0,
+        background: "black".into(),
+        pieces: vec![piece(0.6, 0.0, 0.4, 0.2, a.0, a.1, a.2, a.3), piece(0.125, 0.0, 0.75, 1.0, b.0, b.1, b.2, b.3), piece(0.0, 0.8, 0.3, 0.2, c.0, c.1, c.2, c.3)],
+    };
+    // The visible part of the middle piece, and the source under it.
+    let b_out = (0.0, 0.25, 1.0, 0.50625);
+    let b_src = (0.125 + 0.75 * (0.1 / 1.2), 0.0, 0.75 / 1.2, 1.0);
+    let canvas_opts = ExportOpts { canvas: Some(three.clone()), ..Default::default() };
+    let first = ex(&canvas_opts);
+    match &first {
+        Ok(m) => {
+            let out = Path::new(&m.path);
+            let p = library::probe(ffmpeg, out, true).unwrap_or_default();
+            let tone = (band_db_at(ffmpeg, out, desk, f_desk, 1.0, 2.0), band_db_at(ffmpeg, src_file, desk, f_desk, 1.0, 2.0));
+            r.check(
+                "1080x1920 canvas export has that size, the full length and the audio",
+                m.kind == "edit" && (m.width, m.height) == (1080, 1920) && (p.width, p.height) == (1080, 1920) && near(p.duration, 8.0, 0.15) && p.audio_streams == 3 && matches!(tone, (Some(x), Some(y)) if near(x, y, 1.5)),
+                &format!("{}x{} (probe {}x{}) dur={:.3} audio={} tone {tone:?}", m.width, m.height, p.width, p.height, p.duration, p.audio_streams),
+            );
+            let (da, db, dc) = (same_as(out, 1.5, a, 1.5, (0.6, 0.0, 0.4, 0.2)), same_as(out, 1.5, b_out, 1.5, b_src), same_as(out, 1.5, c, 1.5, (0.0, 0.8, 0.3, 0.2)));
+            let wrong = same_as(out, 1.5, a, 1.5, (0.0, 0.8, 0.3, 0.2));
+            r.check("each canvas piece shows its part of the source in its box", da < 12.0 && db < 12.0 && dc < 12.0 && wrong > da + 10.0, &format!("diff top {da:.1}, middle (over the edges) {db:.1}, bottom {dc:.1}; wrong part {wrong:.1}"));
+            let gaps = [(0.0, 0.0, 1.0, 0.045), (0.0, 0.212, 1.0, 0.035), (0.0, 0.76, 1.0, 0.035), (0.0, 0.972, 1.0, 0.028), (0.0, 0.81, 0.09, 0.15)];
+            let levels: Vec<f64> = gaps.iter().map(|g| mean_of(out, 1.5, *g)).collect();
+            r.check("black canvas is black outside the pieces", levels.iter().all(|v| (0.0..6.0).contains(v)), &format!("luma {levels:.1?}"));
+        }
+        Err(e) => r.check("1080x1920 canvas export has that size, the full length and the audio", false, e),
+    }
+
+    // --- 2. An odd size, a color, and two overlapping pieces (the later one on top); 0.5..2.5 s of the source.
+    let two = Canvas {
+        width: 1081.0,
+        height: 1351.0,
+        background: "#3366cc".into(),
+        pieces: vec![piece(0.0, 0.0, 0.5, 0.5, 0.1, 0.1, 0.6, 0.27), piece(0.5, 0.5, 0.5, 0.5, 0.3, 0.2, 0.6, 0.27)],
+    };
+    match ex(&ExportOpts { segments: vec![seg(0.5, 2.5)], canvas: Some(two), ..Default::default() }) {
+        Ok(m) => {
+            let out = Path::new(&m.path);
+            // Output 1.0 s is source 1.5 s. Where they overlap the second piece shows; elsewhere the first.
+            let top = same_as(out, 1.0, (0.3, 0.2, 0.4, 0.17), 1.5, (0.5, 0.5, 0.5 * 0.4 / 0.6, 0.5 * 0.17 / 0.27));
+            let under = same_as(out, 1.0, (0.3, 0.2, 0.4, 0.17), 1.5, (0.5 * 0.2 / 0.6, 0.5 * 0.1 / 0.27, 0.5 * 0.4 / 0.6, 0.5 * 0.17 / 0.27));
+            let lower = same_as(out, 1.0, (0.1, 0.1, 0.2, 0.1), 1.5, (0.0, 0.0, 0.5 * 0.2 / 0.6, 0.5 * 0.1 / 0.27));
+            r.check("odd canvas size made even (1081x1351 to 1080x1350)", (m.width, m.height) == (1080, 1350), &format!("{}x{}", m.width, m.height));
+            r.check("overlapping pieces: the later one on top", top < 12.0 && lower < 12.0 && under > top + 10.0, &format!("overlap vs top piece {top:.1}, vs the one under {under:.1}; first piece alone {lower:.1}"));
+            let rgb = rgb_box_at(ffmpeg, out, 1.0, (0.1, 0.75, 0.8, 0.2));
+            r.check("#rrggbb canvas is that color outside the pieces", rgb.is_some_and(|(rr, g, bb)| near(rr, 51.0, 6.0) && near(g, 102.0, 6.0) && near(bb, 204.0, 6.0)), &format!("{rgb:?} for (51, 102, 204)"));
+        }
+        Err(e) => r.check("odd canvas size made even (1081x1351 to 1080x1350)", false, &e),
+    }
+
+    // --- 3. The blurred background: much less detail than the source there, darker, not black.
+    let blur_bg = Canvas { width: 1080.0, height: 1920.0, background: "blur".into(), pieces: vec![piece(0.0, 0.0, 1.0, 1.0, 0.0, 0.35, 1.0, 0.31640625)] };
+    match ex(&ExportOpts { segments: vec![seg(0.5, 2.5)], canvas: Some(blur_bg), ..Default::default() }) {
+        Ok(m) => {
+            let out = Path::new(&m.path);
+            let cover = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,";
+            let (rw, rh) = (216usize, 120usize);
+            let mut parts = Vec::new();
+            let mut ok = true;
+            for region in [(0.0, 0.02, 1.0, 0.3), (0.0, 0.7, 1.0, 0.28)] {
+                let (o, refr) = (grey_box_at(ffmpeg, out, 1.0, "", region, rw, rh), grey_box_at(ffmpeg, src_file, 1.5, cover, region, rw, rh));
+                let (d_o, d_r) = (box_detail(&o, rw, (0, 0, rw, rh)), box_detail(&refr, rw, (0, 0, rw, rh)));
+                let (m_o, m_r) = (o.as_ref().map(|f| box_mean(f, rw, (0, 0, rw, rh))).unwrap_or(0.0), refr.as_ref().map(|f| box_mean(f, rw, (0, 0, rw, rh))).unwrap_or(0.0));
+                // Grey pixels are full range, so 70% of the level is 70% of the grey value.
+                let want = 0.7 * m_r;
+                ok &= d_r > 0.5 && d_o < d_r * 0.25 && m_o > 25.0 && near(m_o, want, want * 0.2 + 4.0);
+                parts.push(format!("detail {d_o:.2} vs {d_r:.2}, luma {m_o:.1} (70% of the source's {m_r:.1} is {want:.1})"));
+            }
+            r.check("blur canvas: blurred, darkened, not black", ok, &parts.join("; "));
+        }
+        Err(e) => r.check("blur canvas: blurred, darkened, not black", false, &e),
+    }
+
+    // --- 4. An overlay PNG at the canvas's size and a blur box (fractions of the canvas) on the canvas.
+    let odir = overlay_dir();
+    let _ = fs::create_dir_all(&odir);
+    let png = odir.join("canvas-ov.png");
+    let made = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=black@0.0:s=1080x1920,format=rgba,drawbox=x=0:y=1100:w=540:h=300:color=white@1.0:t=fill:replace=1", "-frames:v", "1", &png.to_string_lossy()]);
+    let layered = ExportOpts {
+        overlays: vec![Overlay { png: png.to_string_lossy().into_owned(), from: 1.0, to: 2.5 }],
+        blurs: vec![BlurBox { x: 0.6, y: 0.52, w: 0.4, h: 0.2, from: 0.0, to: 8.0, strength: 0.03 }],
+        ..canvas_opts.clone()
+    };
+    match (made, &first, ex(&layered)) {
+        (Ok(()), Ok(plain), Ok(m)) => {
+            let (out, base) = (Path::new(&m.path), Path::new(&plain.path));
+            let white = mean_of(out, 1.5, (0.05, 0.6, 0.4, 0.1));
+            let (rw, rh) = (108usize, 96usize);
+            let inbox = (0.62, 0.54, 0.36, 0.16);
+            let (d_in, d_base) = (box_detail(&grey_box_at(ffmpeg, out, 1.5, "", inbox, rw, rh), rw, (0, 0, rw, rh)), box_detail(&grey_box_at(ffmpeg, base, 1.5, "", inbox, rw, rh), rw, (0, 0, rw, rh)));
+            let rest = box_diff(&grey_box_at(ffmpeg, out, 1.5, "", (0.5, 0.3, 0.45, 0.15), gw, gh), &grey_box_at(ffmpeg, base, 1.5, "", (0.5, 0.3, 0.45, 0.15), gw, gh), gw, (0, 0, gw, gh));
+            r.check("overlay PNG lands at its canvas position", white > 200.0, &format!("white box mean {white:.1}"));
+            r.check("blur box lands at its canvas position", d_base > 0.3 && d_in < d_base * 0.4 && rest < 6.0, &format!("detail {d_in:.2} vs {d_base:.2} without; elsewhere off by {rest:.1}"));
+        }
+        (made, first, e) => r.check("overlay PNG lands at its canvas position", false, &format!("{made:?} / {:?} / {:?}", first.as_ref().err(), e.err())),
+    }
+    let _ = fs::remove_file(&png);
+
+    // --- 5. With cuts, a moved part and 2x speed: output 0..1 s is source 5.5..7.5, 1..2 s is source 0.5..2.5.
+    let moved = ExportOpts { segments: vec![seg(5.5, 7.5), seg(0.5, 2.5)], ordered: true, speed: 2.0, ..canvas_opts.clone() };
+    match ex(&moved) {
+        Ok(m) => {
+            let out = Path::new(&m.path);
+            let len = library::probe(ffmpeg, out, false).map(|p| p.duration).unwrap_or(0.0);
+            let (r1, w1) = (same_as(out, 0.6, b_out, 6.7, b_src), same_as(out, 0.6, b_out, 0.6, b_src));
+            let (r2, w2) = (same_as(out, 1.5, b_out, 1.5, b_src), same_as(out, 1.5, b_out, 6.5, b_src));
+            r.check(
+                "canvas with cuts, a moved part and 2x speed: length and frames at their times",
+                near(len, 2.0, 0.1) && (m.width, m.height) == (1080, 1920) && r1 < 12.0 && r2 < 12.0 && w1 > r1 + 5.0 && w2 > r2 + 5.0,
+                &format!("length {len:.2}; at 0.6 s {r1:.1} (wrong time {w1:.1}), at 1.5 s {r2:.1} (wrong time {w2:.1})"),
+            );
+        }
+        Err(e) => r.check("canvas with cuts, a moved part and 2x speed: length and frames at their times", false, &e),
+    }
+
+    // --- 6. Hostile numbers in a real export: a working file of a sane size.
+    let wild = Canvas { width: f64::NAN, height: 1e12, ..hostile };
+    match ex(&ExportOpts { segments: vec![seg(0.0, 1.0)], canvas: Some(wild), ..Default::default() }) {
+        Ok(m) => {
+            let p = library::probe(ffmpeg, Path::new(&m.path), false).unwrap_or_default();
+            r.check("canvas with hostile numbers exports a working file", (p.width, p.height) == (1080, 4096) && near(p.duration, 1.0, 0.15), &format!("{}x{} dur={:.3}", p.width, p.height, p.duration));
+        }
+        Err(e) => r.check("canvas with hostile numbers exports a working file", !e.starts_with("Export failed") && !e.is_empty(), &format!("clean error: {e}")),
+    }
 }
 
 /// Like `band_db`, over `from`..`to` seconds of the file only, and with two

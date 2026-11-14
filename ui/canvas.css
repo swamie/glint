@@ -1,0 +1,55 @@
+/* The editor's canvas (canvas.js): the composed preview, the piece boxes, the side panel. */
+
+/* The preview lies where the picture is shown (its place is set by canvas.js); the video under it keeps playing, unseen. */
+.cv-view { position: absolute; z-index: 0; display: block; background: #000; pointer-events: none; }
+.cv-view[hidden], .cv-layer[hidden], .cv-tool[hidden], .cv-sep[hidden] { display: none; }
+.player.cv-on video { opacity: 0; }
+.player.e-blank .cv-view { opacity: 0; }
+
+/* The piece boxes: over the picture and the overlays, only while arranging. */
+.cv-layer { position: absolute; z-index: 2; touch-action: none; cursor: default; }
+.cv-layer.drawing { cursor: crosshair; }
+.cv-layer.drawing .cv-box { pointer-events: none; opacity: .55; }
+.cv-box { position: absolute; box-sizing: border-box; border: 2px solid var(--cvc, var(--accent)); cursor: move; }
+.cv-box:hover { background: color-mix(in srgb, var(--cvc, var(--accent)) 12%, transparent); }
+.cv-box.on { box-shadow: 0 0 0 1px rgba(0, 0, 0, .6), inset 0 0 0 1px rgba(0, 0, 0, .6); z-index: 1; }
+.cv-box > b { position: absolute; left: 0; top: 0; min-width: 18px; padding: 1px 5px; border-radius: 0 0 6px 0; background: var(--cvc, var(--accent)); color: #fff; font: 700 11px/16px var(--sans, system-ui); text-align: center; pointer-events: none; }
+.cv-h { position: absolute; width: 11px; height: 11px; margin: -6px 0 0 -6px; box-sizing: border-box; border: 2px solid var(--cvc, var(--accent)); border-radius: 2px; background: #fff; }
+.cv-h-nw { left: 0; top: 0; cursor: nwse-resize; }
+.cv-h-n { left: 50%; top: 0; cursor: ns-resize; }
+.cv-h-ne { left: 100%; top: 0; cursor: nesw-resize; }
+.cv-h-e { left: 100%; top: 50%; cursor: ew-resize; }
+.cv-h-se { left: 100%; top: 100%; cursor: nwse-resize; }
+.cv-h-s { left: 50%; top: 100%; cursor: ns-resize; }
+.cv-h-sw { left: 0; top: 100%; cursor: nesw-resize; }
+.cv-h-w { left: 0; top: 50%; cursor: ew-resize; }
+/* Edge handles are bars (they crop), corner handles are squares (they scale). */
+.cv-h-n, .cv-h-s { width: 22px; height: 8px; margin: -4px 0 0 -11px; border-radius: 4px; }
+.cv-h-e, .cv-h-w { width: 8px; height: 22px; margin: -11px 0 0 -4px; border-radius: 4px; }
+.cv-band { position: absolute; box-sizing: border-box; border: 2px dashed #fff; background: rgba(255, 255, 255, .12); pointer-events: none; }
+/* While arranging, the controls' shaded strip lets the pointer through to the boxes (as while drawing). */
+.player.cv-arranging .p-ui { pointer-events: none; }
+.player.cv-arranging .p-ui .p-bar, .player.cv-arranging .p-ui .p-row { pointer-events: auto; }
+/* The clip's own picture is shown to pick what a piece shows: overlays belong to the canvas and wait. */
+.player.cv-src .ov-layer { visibility: hidden; }
+
+/* Side panel. */
+.e-cv .cv-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; font-size: 12px; color: var(--muted); }
+.e-cv .cv-row > span:first-child { min-width: 72px; }
+.e-cv select { min-width: 120px; max-width: 100%; }
+.cv-layouts { display: flex; flex-wrap: wrap; gap: 6px; }
+.cv-lay { display: grid; place-items: center; min-width: 40px; height: 52px; padding: 3px 6px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--raised); cursor: pointer; }
+.cv-lay:hover { border-color: var(--accent); }
+.cv-thumb { display: block; }
+.e-cv .btn.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.cv-views { align-self: flex-start; }
+.cv-views button { width: auto; height: 28px; padding: 0 10px; font-weight: 600; font-size: 12px; }
+.cv-views button.on { background: var(--accent); color: var(--accent-ink, #fff); }
+.cv-list .ov-item { cursor: pointer; }
+.cv-dot { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 3px; }
+.cv-mini { flex: 0 0 auto; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 14px; line-height: 1; cursor: pointer; }
+.cv-mini:hover { background: var(--raised-2); color: var(--text); }
+.cv-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cv-chip { display: inline-flex; align-items: center; border: 1px solid var(--line-2); border-radius: 7px; background: var(--raised); }
+.cv-chip > button:first-child { padding: 3px 4px 3px 9px; border: 0; background: transparent; color: var(--text); font-size: 12px; cursor: pointer; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-chip > button:first-child:hover { color: var(--accent); }
