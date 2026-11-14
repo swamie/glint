@@ -149,4 +149,6 @@ glintAddLanguage("ko", "한국어", {
   "Arrange the pieces on the picture: drag to move, a corner scales, an edge crops, the mouse wheel zooms. “Add a piece” lets you drag a box around what the piece should show.": "조각은 화면 위에서 바로 배치해요. 끌면 옮겨지고, 모서리는 크기를 바꾸고, 변은 잘라 내고, 마우스 휠은 확대해요. “조각 추가”를 누르고 보여 줄 부분을 상자로 끌어서 그리면 돼요.",
   "Canvas layouts: ready-made ones for each shape, and your own, saved under “My layouts” and used on any clip with one click.": "캔버스 배치: 모양마다 미리 만든 배치가 있고, 내가 만든 배치는 “내 배치”에 저장해서 어느 클립에서나 한 번의 클릭으로 쓸 수 있어요.",
   "With a canvas, text, shapes, drawings and blur boxes are placed on the canvas.": "캔버스를 쓰면 글자, 도형, 그림, 블러 상자는 캔버스 위에 놓여요.",
+  "In a window that was not maximized, the editor's player controls (play, the seek bar, volume, speed) did not react to clicks.": "창을 최대화하지 않았을 때 편집기의 플레이어 컨트롤(재생, 탐색 바, 볼륨, 속도)이 클릭에 반응하지 않던 문제를 고쳤어요.",
+  "The hover sound no longer repeats while the pointer rests on a clip and the list is redrawn.": "포인터를 클립 위에 올려 둔 채 목록이 다시 그려질 때 호버 소리가 계속 반복되지 않아요.",
 });

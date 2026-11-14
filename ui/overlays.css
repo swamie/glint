@@ -9,9 +9,12 @@
 .ov-blurs { inset: 0; }
 .ov-fade { inset: 0; background: #000; opacity: 0; }
 .ov-edit { position: absolute; z-index: 2; margin: 0; padding: 0; border: 1px dashed var(--accent); border-radius: 2px; background: rgba(0, 0, 0, .15); outline: 0; resize: none; overflow: hidden; white-space: pre; caret-color: #fff; }
-/* While a drawing tool is on, the controls' shaded strip lets the pointer through to the picture. */
-.player.ov-drawing .p-ui { pointer-events: none; }
-.player.ov-drawing .p-ui .p-bar, .player.ov-drawing .p-ui .p-row { pointer-events: auto; }
+/* The player's controls lie over the bottom of the picture when the picture reaches that far (a window that is
+   not maximized), so while editing they are above the layers: their seek bar and buttons take the pointer, and
+   the shaded strip around them lets it through to the picture. */
+.viewer.editing .player .p-ui { z-index: 4; pointer-events: none; }
+.viewer.editing .player .p-ui .p-bar, .viewer.editing .player .p-ui .p-row { pointer-events: auto; }
+.viewer.editing .player.idle .p-ui .p-bar, .viewer.editing .player.idle .p-ui .p-row { pointer-events: none; }
 
 /* Tool bar over the top edge of the picture (edit mode only). */
 .ov-bar { position: absolute; z-index: 3; top: 8px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 9px; background: rgba(7, 10, 16, .78); border: 1px solid rgba(255, 255, 255, .12); max-width: calc(100% - 16px); flex-wrap: wrap; justify-content: center; }

@@ -133,6 +133,13 @@ function sfxEventPlay(name) {
 /* ---------- wiring ---------- */
 const SFX_CLICKABLE = 'button, [role="option"], [role="tab"], [role="button"], a[href], summary, [data-sfx], #view .card';
 const SFX_HOVER = "[data-hover], .topbar .btn";
+/** What a hover element stands for: the same text for the same clip, project, page, folder, tab or button
+ *  after the page redrew it; "" when it has nothing to be known by. */
+function sfxHoverKey(el) {
+  const d = el.dataset || {};
+  for (const k of ["clip", "pj", "page", "folder", "tab", "act"]) if (d[k] !== undefined) return `${k}:${d[k]}`;
+  return el.id ? `#${el.id}` : "";
+}
 const sfxIsToggle = (el) => !!el.matches?.('input[type="checkbox"], input[type="radio"]');
 
 /** Glint's own choices for a press on `el` (the clickable element found), or undefined for the plain rule. */
@@ -167,6 +174,7 @@ function sfxKindFor(target, e) {
 
 function sfxInstall() {
   let lastHover = null;
+  let lastHoverKey = ""; // what `lastHover` stands for (sfxHoverKey), so a redrawn copy of it is known again
   let lastHoverAt = 0;
   const pressed = (kind) => { sfxPointerAt = performance.now(); sfxPlay(kind); };
   const down = (e) => {
@@ -199,14 +207,30 @@ function sfxInstall() {
       if (!sfxCfg.enabled || !sfxCfg.hover) return;
       const el = e.target.closest?.(SFX_HOVER);
       if (!el || el === lastHover) return;
+      // The page redraws its lists (a job's progress, a new clip, the status each second): the element under a
+      // resting pointer is then a new one for the same thing. That is not a new hover.
+      const key = sfxHoverKey(el);
+      const same = key !== "" && key === lastHoverKey;
       lastHover = el;
+      lastHoverKey = key;
+      if (same) return;
       const now = performance.now();
       if (now - lastHoverAt < 45) return;
       lastHoverAt = now;
       sfxPlay("hover");
     } catch {}
   };
-  const out = (e) => { if (lastHover && !lastHover.contains(e.relatedTarget)) lastHover = null; };
+  const out = (e) => {
+    if (!lastHover) return;
+    // Still on it: inside the element, or inside the redrawn element of the same thing.
+    const to = e.relatedTarget?.closest?.(SFX_HOVER);
+    if (lastHover.contains(e.relatedTarget) || (to && lastHoverKey !== "" && sfxHoverKey(to) === lastHoverKey)) return;
+    // A redraw takes the element away without the pointer leaving (no element to go to, the old one detached):
+    // the next "over" decides by the key whether this is the same thing.
+    if (!e.relatedTarget && !lastHover.isConnected) return;
+    lastHover = null;
+    lastHoverKey = "";
+  };
   document.addEventListener("pointerdown", down, true);
   document.addEventListener("click", click, true);
   document.addEventListener("change", change, true);
