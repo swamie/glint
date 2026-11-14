@@ -464,6 +464,10 @@ pub struct RecStatus {
     pub height: u32,
     pub fps: u32,
     pub maxrate: u64,
+    /// The yellow Graphics Capture border: "" (not a Graphics Capture), "off"
+    /// (asked for none, ffmpeg reported no trouble), "failed" (ffmpeg warned
+    /// that Windows refused to turn it off).
+    pub border: String,
 }
 
 /// One monitor's buffer, as `stats` reports it.
@@ -611,16 +615,20 @@ fn ffmpeg_ok(ffmpeg: &Path, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+static ENC_CACHE: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
+
+/// The encoder "auto" found for this ffmpeg, if it was tested already (no test run here).
+pub fn cached_encoder(ffmpeg: &Path) -> Option<String> {
+    ENC_CACHE.lock().unwrap().as_ref().filter(|(p, _)| p == ffmpeg).map(|(_, e)| e.clone())
+}
+
 /// Pick a working H.264 encoder by actually encoding two frames with each.
-fn resolve_encoder(ffmpeg: &Path, wanted: &str) -> String {
-    static CACHE: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
+pub fn resolve_encoder(ffmpeg: &Path, wanted: &str) -> String {
     if wanted != "auto" {
         return wanted.to_string();
     }
-    if let Some((p, e)) = CACHE.lock().unwrap().as_ref() {
-        if p == ffmpeg {
-            return e.clone();
-        }
+    if let Some(e) = cached_encoder(ffmpeg) {
+        return e;
     }
     let mut found = "x264".to_string();
     for (name, codec) in [("nvenc", "h264_nvenc"), ("amf", "h264_amf"), ("qsv", "h264_qsv")] {
@@ -630,32 +638,59 @@ fn resolve_encoder(ffmpeg: &Path, wanted: &str) -> String {
             break;
         }
     }
-    *CACHE.lock().unwrap() = Some((ffmpeg.to_path_buf(), found.clone()));
+    *ENC_CACHE.lock().unwrap() = Some((ffmpeg.to_path_buf(), found.clone()));
     found
 }
 
+/// What this ffmpeg's Graphics Capture offers: (has `gfxcapture`, has its `display_border` option).
+/// Keyed by path and file time: "Check and repair" (deps.rs) can put a newer ffmpeg at the same path.
+pub fn gfx_caps(ffmpeg: &Path) -> (bool, bool) {
+    static CACHE: Mutex<Option<((PathBuf, Option<std::time::SystemTime>), (bool, bool))>> = Mutex::new(None);
+    let key = (ffmpeg.to_path_buf(), std::fs::metadata(ffmpeg).and_then(|m| m.modified()).ok());
+    if let Some(c) = CACHE.lock().unwrap().as_ref().filter(|(k, _)| *k == key).map(|(_, c)| *c) {
+        return c;
+    }
+    let out = |args: &[&str]| util::hidden_cmd(ffmpeg).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let has = out(&["-hide_banner", "-filters"]).contains(" gfxcapture ");
+    let border = has && out(&["-hide_banner", "-h", "filter=gfxcapture"]).contains("display_border");
+    *CACHE.lock().unwrap() = Some((key, (has, border)));
+    (has, border)
+}
+
+/// This ffmpeg has Windows Graphics Capture (ffmpeg 8+).
+pub fn has_wgc(ffmpeg: &Path) -> bool {
+    gfx_caps(ffmpeg).0
+}
+
 /// Windows Graphics Capture (ffmpeg 8+) when available, else Desktop Duplication.
-fn resolve_method(ffmpeg: &Path, wanted: &str) -> String {
-    // Keyed by path and file time: "Check and repair" (deps.rs) can put a newer ffmpeg at the same path.
-    static CACHE: Mutex<Option<((PathBuf, Option<std::time::SystemTime>), bool)>> = Mutex::new(None);
+pub fn resolve_method(ffmpeg: &Path, wanted: &str) -> String {
     if wanted == "wgc" || wanted == "dda" {
         return wanted.to_string();
     }
-    let key = (ffmpeg.to_path_buf(), std::fs::metadata(ffmpeg).and_then(|m| m.modified()).ok());
-    let cached = CACHE.lock().unwrap().as_ref().filter(|(k, _)| *k == key).map(|(_, ok)| *ok);
-    let has_wgc = cached.unwrap_or_else(|| {
-        let ok = util::hidden_cmd(ffmpeg)
-            .args(["-hide_banner", "-filters"])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains(" gfxcapture "))
-            .unwrap_or(false);
-        *CACHE.lock().unwrap() = Some((key.clone(), ok));
-        ok
-    });
-    // Windows 10 draws a yellow border around a Graphics Capture that cannot be turned off.
-    crate::polish::pick_method(wanted, has_wgc, crate::win::windows_build()).into()
+    // Windows 10 draws a yellow border around a Graphics Capture that cannot be turned off,
+    // and on Windows 11 the "Screenshot borders" setting can forbid turning it off.
+    let border_ok = crate::capture2::border_info().can_remove;
+    crate::polish::pick_method_border(wanted, has_wgc(ffmpeg), crate::win::windows_build(), border_ok).into()
+}
+
+/// One line of ffmpeg's log (run with `-loglevel level+warning`): (is a warning, text as it
+/// read before the level tags were added). Lines without a tag count as errors.
+pub fn split_log_line(line: &str) -> (bool, String) {
+    let warn = line.contains("[warning] ");
+    let text = line.replacen("[warning] ", "", 1).replacen("[error] ", "", 1).replacen("[fatal] ", "", 1).replacen("[panic] ", "", 1);
+    (warn, text)
+}
+
+/// Per monitor: did the last Graphics Capture run start without ffmpeg's border warning?
+/// A warning right after a clean run is retried once (see `supervise`).
+static BORDER_CLEAN: Mutex<Vec<(u32, bool)>> = Mutex::new(Vec::new());
+
+fn border_clean_set(monitor: u32, clean: bool) -> bool {
+    let mut v = BORDER_CLEAN.lock().unwrap();
+    let before = v.iter().find(|(m, _)| *m == monitor).is_some_and(|(_, c)| *c);
+    v.retain(|(m, _)| *m != monitor);
+    v.push((monitor, clean));
+    before
 }
 
 /// The ffmpeg command line of the capture.
@@ -665,7 +700,10 @@ fn resolve_method(ffmpeg: &Path, wanted: &str) -> String {
 /// frame), but it is the form every encoder accepts: some cannot take the capture's
 /// GPU frames at all (seen with AMD's AMF on a Radeon 680M, which stops with an
 /// "unknown error" on the first frame).
-pub fn capture_args(cfg: &CaptureCfg, enc: &str, method: &str, sw: bool) -> Vec<String> {
+///
+/// `no_border`: this ffmpeg has gfxcapture's `display_border` option; ask for no
+/// yellow border in so many words (it is ffmpeg's default too).
+pub fn capture_args(cfg: &CaptureCfg, enc: &str, method: &str, sw: bool, no_border: bool) -> Vec<String> {
     let (w, h) = (cfg.width, cfg.height);
     // Encoders spend bits per frame at the stream's nominal frame rate. The
     // Graphics Capture chain declares its capture rate (the `max_framerate` it is
@@ -694,6 +732,9 @@ pub fn capture_args(cfg: &CaptureCfg, enc: &str, method: &str, sw: bool) -> Vec<
         let (cap_num, cap_den) = (hz as u64 * 21, k as u64 * 20);
         rate_scale = (cap_num as f64 / cap_den as f64 / cfg.fps.max(1) as f64).max(1.0);
         let mut s = format!("gfxcapture=monitor_idx={}:max_framerate={}/{}:capture_cursor={}", cfg.monitor, cap_num, cap_den, cfg.cursor as u8);
+        if no_border {
+            s += ":display_border=0";
+        }
         if cfg.scaled {
             s += &format!(":width={w}:height={h}:resize_mode=scale:scale_mode=bicubic");
         }
@@ -729,7 +770,9 @@ pub fn capture_args(cfg: &CaptureCfg, enc: &str, method: &str, sw: bool) -> Vec<
     // no filler: a picture that cannot use the bits is not padded up to the rate).
     // Automatic mode targets a quality level and only caps the rate.
     let buf = if fixed { enc_rate } else { enc_rate * 2 }.to_string();
-    let mut a = sv(&["-hide_banner", "-loglevel", "error", "-nostats", "-nostdin", "-filter_complex", &src]);
+    // Warnings too, tagged with their level: gfxcapture only warns when Windows refuses to
+    // hide the border. `split_log_line` keeps errors as they read before and drops the rest.
+    let mut a = sv(&["-hide_banner", "-loglevel", "level+warning", "-nostats", "-nostdin", "-filter_complex", &src]);
     match enc {
         "nvenc" => {
             let rate = w as u64 * h as u64 * cfg.fps as u64;
@@ -939,32 +982,65 @@ fn supervise(pipe: Arc<Pipe>) {
     let mut backoff = 1u64;
     let mut quick_fails = 0u32;
 
+    let no_border = gfx_caps(&ffmpeg).1;
     while pipe.alive() {
         {
             let mut st = pipe.status.lock().unwrap();
             st.encoder = enc.clone();
             st.method = method.clone();
+            st.border = if method == "wgc" { "off".into() } else { String::new() };
         }
-        let args = capture_args(&cfg, &enc, &method, sw);
+        let args = capture_args(&cfg, &enc, &method, sw, no_border);
         let frames_before = pipe.ring.lock().unwrap().frames;
         let spawned = util::hidden_cmd_prio(&ffmpeg).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
         let started = Instant::now();
         let mut got_data = false;
+        let mut border_noted = false;
         match spawned {
             Err(e) => pipe.set_error(&format!("Could not start ffmpeg: {e}")),
             Ok(mut child) => {
                 let mut out = child.stdout.take().unwrap();
+                let pid = child.id();
                 if let Some(err) = child.stderr.take() {
                     let pipe2 = pipe.clone();
+                    let wgc = method == "wgc";
                     thread::spawn(move || {
                         for line in BufReader::new(err).lines().map_while(Result::ok) {
-                            if !line.trim().is_empty() && pipe2.alive() {
-                                pipe2.set_error(line.trim());
+                            let line = line.trim();
+                            if line.is_empty() || !pipe2.alive() {
+                                continue;
+                            }
+                            let (warning, text) = split_log_line(line);
+                            if !warning {
+                                pipe2.set_error(&text);
+                                continue;
+                            }
+                            // Other warnings are dropped, as before (the log level used to be "error").
+                            if !(wgc && text.to_lowercase().contains("border drawing")) {
+                                continue;
+                            }
+                            pipe2.status.lock().unwrap().border = "failed".into();
+                            let was_clean = border_clean_set(mon, false);
+                            // Windows turned the border off for the previous capture of this monitor but not
+                            // for this one: most likely it was started while a game switched the display
+                            // mode. Start it again once, after the display has settled. The buffer is kept.
+                            let retry = was_clean && text.contains("Failed setting");
+                            util::log(&format!("capture {mon}: ffmpeg: {text}{}", if retry { "; starting the capture again in 3 s" } else { "" }));
+                            if retry {
+                                let pipe3 = pipe2.clone();
+                                thread::spawn(move || {
+                                    thread::sleep(Duration::from_secs(3));
+                                    if let Some(c) = pipe3.child.lock().unwrap().as_mut() {
+                                        if c.id() == pid {
+                                            let _ = c.kill();
+                                        }
+                                    }
+                                });
                             }
                         }
                     });
                 }
-                pipe.status.lock().unwrap().pid = child.id();
+                pipe.status.lock().unwrap().pid = pid;
                 {
                     // Checked under the lock: halt() clears `alive` before taking the child.
                     let mut slot = pipe.child.lock().unwrap();
@@ -985,6 +1061,13 @@ fn supervise(pipe: Arc<Pipe>) {
                             if !got_data {
                                 got_data = true;
                                 pipe.set_error("");
+                            }
+                            // Five seconds of pictures and no border warning: this monitor's capture starts clean.
+                            if !border_noted && method == "wgc" && started.elapsed() > Duration::from_secs(5) {
+                                border_noted = true;
+                                if pipe.status.lock().unwrap().border == "off" {
+                                    border_clean_set(mon, true);
+                                }
                             }
                             // Checked under the lock: halt() clears `alive` before it empties the ring.
                             let mut ring = pipe.ring.lock().unwrap();

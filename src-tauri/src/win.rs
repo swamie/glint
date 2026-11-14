@@ -322,6 +322,12 @@ pub fn wait_for_exit(pid: u32, max_ms: u32) -> bool {
 
 /// An executable's icon as RGBA pixels, `size` x `size`, top row first.
 pub fn exe_icon_rgba(path: &str, size: u32) -> Option<Vec<u8>> {
+    exe_icon_rgba_at(path, 0, size)
+}
+
+/// Icon number `index` of an .exe, .dll or .ico file (a negative index is a resource id,
+/// as in a shortcut's or an uninstall entry's "file,-101") as RGBA pixels, `size` x `size`.
+pub fn exe_icon_rgba_at(path: &str, index: i32, size: u32) -> Option<Vec<u8>> {
     use windows::Win32::Graphics::Gdi::{CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS};
     use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, PrivateExtractIconsW, HICON, ICONINFO};
     unsafe {
@@ -332,7 +338,7 @@ pub fn exe_icon_rgba(path: &str, size: u32) -> Option<Vec<u8>> {
         }
         wide[..chars.len()].copy_from_slice(&chars);
         let mut icon = [HICON::default()];
-        let got = PrivateExtractIconsW(&wide, 0, size as i32, size as i32, Some(&mut icon), None, 0);
+        let got = PrivateExtractIconsW(&wide, index, size as i32, size as i32, Some(&mut icon), None, 0);
         if got == 0 || got == u32::MAX || icon[0].is_invalid() {
             return None;
         }

@@ -14,6 +14,27 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.16", date: "2026-11-14",
+    new: [
+      t("Editor: your editing sessions are now projects, kept on the new Editor page in the sidebar. Close one at any time and go on later. Add more clips from the library list beside the editor: click, Ctrl+click, Shift+click or drag a box, then double-click, press Enter or drag them onto the timeline."),
+      t("Compress page in the sidebar: compress clips or any video file to the size you choose, see the resolution and bitrate each one will get before you start, and set the speed, audio, highest resolution and where the results go."),
+      t("Settings → Appearance → Custom colours: set the accent, background, panels, text and more with Glint's own colour picker (drag in the square, or type a hex or RGB value)."),
+      t("Capture: an Apply recommended settings button picks settings from your graphics card, screen and memory, and shows each change before it is made."),
+      t("Import: choose where the imported clips go: a folder for each game, one folder you name, or no folder."),
+      t("Settings has a Credits section at the bottom."),
+    ],
+    improved: [
+      t("Library: the game and folder chips each fit on one line, with a “more” chip for the rest, and a trail beside the title shows the folder and game you are in."),
+      t("Game icons: an imported game gets its real icon when the game is installed on this PC (Steam, Epic, Xbox, Riot, Ubisoft, GOG, shortcuts). Right-click a game and pick Find icon again to look once more."),
+      t("Every Auto choice shows what it is using right now, such as Auto (NVIDIA NVENC)."),
+    ],
+    fixed: [
+      t("Clips imported without copying are never moved: Sort by game and moving them to a folder now only file them in the library. Before, the other program's own files could be moved."),
+      t("Imported Medal clips no longer end up in the main folder while the rest go to game folders, and a game is no longer listed twice under two spellings."),
+      t("Windows' yellow capture border coming back when a game starts: Glint now waits for the new screen mode to settle before it restarts the capture, restarts it once more if the border shows, and the Capture page names the Windows setting to check."),
+    ],
+  },
+  {
     version: "0.1.15", date: "2026-11-14",
     new: [],
     improved: [

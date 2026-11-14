@@ -24,11 +24,19 @@ pub const BORDERLESS_WGC_BUILD: u32 = 22000;
 /// captured screen that no program can turn off; there Desktop Duplication
 /// (no border) is used. An unknown build (0) is treated as Windows 11.
 pub fn pick_method(wanted: &str, has_wgc: bool, build: u32) -> &'static str {
+    pick_method_border(wanted, has_wgc, build, true)
+}
+
+/// As `pick_method`, and "auto" also takes Desktop Duplication when Windows'
+/// "Screenshot borders" setting does not let desktop apps hide the border
+/// (`border_ok` false, from `capture2::border_info`).
+pub fn pick_method_border(wanted: &str, has_wgc: bool, build: u32, border_ok: bool) -> &'static str {
     match wanted {
         "wgc" => "wgc",
         "dda" => "dda",
         _ if !has_wgc => "dda",
         _ if build != 0 && build < BORDERLESS_WGC_BUILD => "dda",
+        _ if !border_ok => "dda",
         _ => "wgc",
     }
 }
@@ -336,6 +344,10 @@ pub fn self_test(report_path: &str) {
     }
     let build = crate::win::windows_build();
     r.check("this PC's Windows build is read", build > 10000, &build.to_string());
+    // 0.1.16: the screenshot border setting, ffmpeg's log lines, recommended settings (capture2.rs).
+    for (name, ok, detail) in crate::capture2::self_test_checks() {
+        r.check(&name, ok, &detail);
+    }
 
     // 2. Icon.
     match stock_rgba() {

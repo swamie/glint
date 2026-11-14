@@ -464,6 +464,151 @@ function emMovePart(m, from, to) {
 /** True if the parts are not in source order. */
 const emReordered = (m) => !!m.parts && m.parts.some((p, i) => i > 0 && p.src < m.parts[i - 1].src);
 
+/* ---------- editor projects: more clips, saved state ---------- */
+// A project's draft grows when clips are added: the backend joins [old draft, new clips], so every
+// source second of the old draft keeps its place and the new clips start at its end.
+
+/** The new parts emAddParts would append: [{ src, len, title }] (empty if none fit). */
+function emNewParts(D, starts, titles, end) {
+  const list = [], names = Array.isArray(titles) ? titles : [];
+  (Array.isArray(starts) ? starts : []).forEach((x, k) => {
+    x = +x;
+    if (!Number.isFinite(x)) return;
+    const prev = list[list.length - 1];
+    // The first new clip starts where the old draft ends; a few ms of difference between the two
+    // measurements is snapped away so the parts keep tiling the source.
+    if (!prev && Math.abs(x - D) < 0.25) x = D;
+    if (prev ? x >= prev.src + EM_MIN_SEG : x >= D - 0.25) { if (x <= end - EM_MIN_SEG) list.push({ src: x, k }); }
+  });
+  if (!list.length && end - D >= EM_MIN_SEG) list.push({ src: D, k: 0 });
+  return list.map((p, j) => ({ src: p.src, len: (j + 1 < list.length ? list[j + 1].src : end) - p.src, title: typeof names[p.k] === "string" && names[p.k] ? names[p.k] : `Clip ${p.k + 1}` }));
+}
+/** Append `parts` after timeline second D on a model-like object (the model or an undo snapshot). */
+function emAppendTo(o, D, parts, firstTitle) {
+  if (!Array.isArray(o.parts) || !o.parts.length) o.parts = [{ src: 0, len: D, title: firstTitle }];
+  let at = D;
+  for (const p of parts) {
+    o.cuts.push(at);
+    o.removed.push(false);
+    o.colors.push(emNoColor());
+    o.blank.push(false);
+    for (const r of o.audio) r.gains.push(1);
+    o.parts.push({ src: p.src, len: p.len, title: p.title });
+    at += p.len;
+  }
+  return at;
+}
+
+/**
+ * The project's draft got longer: clips were added at its end. `starts` = source second where each
+ * new clip starts (the first is the old draft's length), `titles` their names, `end` = the new
+ * draft's length. The new clips become parts at the END of the display order, each one kept, with
+ * neutral colour and full level on every row; nothing that was there moves (cuts, order, levels,
+ * file rows, bookmarks). A model without parts first becomes one part (its title: `firstTitle`).
+ * Undo snapshots get the same new parts, so undo still works across the add. Returns true if
+ * parts were added. Does not snapshot.
+ */
+function emAddParts(m, starts, titles, end, firstTitle) {
+  const D = m.duration;
+  end = +end;
+  if (!Number.isFinite(end) || end - D < EM_MIN_SEG) return false;
+  const parts = emNewParts(D, starts, titles, end);
+  if (!parts.length) return false;
+  const first = typeof firstTitle === "string" && firstTitle ? firstTitle : "Clip 1";
+  const fix = (json) => {
+    try { const s = JSON.parse(json); emAppendTo(s, D, parts, first); return JSON.stringify(s); } catch { return null; }
+  };
+  m.undo = m.undo.map(fix).filter(Boolean);
+  m.redo = m.redo.map(fix).filter(Boolean);
+  m.duration = emAppendTo(m, D, parts, first);
+  return true;
+}
+
+const EM_STATE_V = 1;
+/**
+ * The edit as plain data, to save with a project and give back to emStateLoad: cuts, order, cut-out
+ * parts, levels, added audio rows, colours, hidden video, speed, bookmarks (timeline seconds), and
+ * `joins` (where each source clip after the first starts, as the caller passes them). `undo` keeps
+ * the undo history too (only for a reload in the same session; it is not worth saving to disk).
+ */
+function emStateSave(m, joins, undo) {
+  const s = {
+    v: EM_STATE_V, duration: m.duration, joins: Array.isArray(joins) ? joins.slice() : [],
+    cuts: m.cuts, removed: m.removed, colors: m.colors, blank: m.blank, speed: m.speed,
+    audio: m.audio.map((r) => (r.kind === "track" ? { id: r.id, kind: "track", index: r.index, title: r.title, volume: r.volume, muted: r.muted, gains: r.gains } : r)),
+    parts: m.parts, marks: m.marks || [],
+  };
+  if (undo) { s.undo = m.undo.slice(); s.redo = m.redo.slice(); }
+  return JSON.parse(JSON.stringify(s));
+}
+
+/** True if `s` is a state emStateLoad can use (shape and numbers checked; nothing else trusted). */
+function emStateOk(s) {
+  const num = (x) => typeof x === "number" && Number.isFinite(x);
+  if (!s || typeof s !== "object" || s.v !== EM_STATE_V || !num(s.duration) || s.duration <= 0) return false;
+  const D = s.duration, n = Array.isArray(s.cuts) ? s.cuts.length + 1 : 0;
+  if (!n || !s.cuts.every((c, i) => num(c) && c > 0 && c < D && (i === 0 || c > s.cuts[i - 1]))) return false;
+  if (!Array.isArray(s.removed) || s.removed.length !== n || !s.removed.some((r) => !r)) return false;
+  if (!Array.isArray(s.blank) || s.blank.length !== n) return false;
+  if (!Array.isArray(s.colors) || s.colors.length !== n || !s.colors.every((c) => c && typeof c === "object" && EM_COLOR_KEYS.every((k) => num(c[k])))) return false;
+  if (!num(s.speed) || s.speed < 0.25 || s.speed > 4) return false;
+  if (!Array.isArray(s.joins) || !s.joins.every(num)) return false;
+  if (!Array.isArray(s.audio) || !s.audio.every((r) => r && (r.kind === "track" || r.kind === "file") && Array.isArray(r.gains) && r.gains.length === n && r.gains.every(num) && num(r.volume)
+    && (r.kind === "track" || (typeof r.path === "string" && r.path && num(r.offset) && num(r.trimStart) && num(r.length) && num(r.fileDuration) && typeof r.id === "string")))) return false;
+  if (s.parts != null) {
+    if (!Array.isArray(s.parts) || s.parts.length < 1 || !s.parts.every((p) => p && num(p.src) && num(p.len) && p.len > 0 && typeof p.title === "string")) return false;
+    if (Math.abs(s.parts.reduce((a, p) => a + p.len, 0) - D) > 1e-3) return false;
+  }
+  return true;
+}
+
+/**
+ * Put saved state `s` (emStateSave) on `m`, a fresh model of the project's draft (emNew with the
+ * draft's tracks). The draft may since have grown (the caller then calls emAddParts for the new
+ * clips), never shrunk. Track rows are matched by title (the draft's track list can change when a
+ * clip with another track joins); a track the state does not know starts at full level. File rows
+ * come back as saved. Returns false, and leaves `m` as it was, when `s` cannot be used.
+ */
+function emStateLoad(m, s) {
+  if (typeof s === "string") { try { s = JSON.parse(s); } catch { return false; } }
+  if (!emStateOk(s) || s.duration > m.duration + 0.5) return false;
+  const n = s.cuts.length + 1;
+  const saved = s.audio.filter((r) => r.kind === "track");
+  const used = new Set();
+  const find = (row) => {
+    let k = saved.findIndex((r, i) => !used.has(i) && r.title && r.title === row.title);
+    if (k < 0) k = saved.findIndex((r, i) => !used.has(i) && !r.title && r.index === row.index);
+    if (k >= 0) used.add(k);
+    return k >= 0 ? saved[k] : null;
+  };
+  const tracks = m.audio.filter((r) => r.kind === "track").map((row) => {
+    const old = find(row);
+    return { ...row, volume: old ? Math.min(EM_MAX_GAIN, Math.max(0, old.volume)) : 1, muted: old ? !!old.muted : false, gains: old ? old.gains.slice() : Array(n).fill(1) };
+  });
+  const sameTracks = used.size === saved.length && tracks.length === saved.length;
+  const files = s.audio.filter((r) => r.kind === "file").map((r) => ({ ...r, gains: r.gains.slice() }));
+  m.duration = s.duration;
+  m.cuts = s.cuts.slice();
+  m.removed = s.removed.map((r) => !!r);
+  m.colors = s.colors.map((c) => ({ ...emNoColor(), ...c }));
+  m.blank = s.blank.map((b) => !!b);
+  m.speed = s.speed;
+  m.audio = [...tracks, ...files];
+  m.parts = Array.isArray(s.parts) && s.parts.length > 1 ? s.parts.map((p) => ({ src: p.src, len: p.len, title: p.title })) : null;
+  emSetMarks(m, s.marks);
+  // The undo history only when the rows are the same ones (their paths are refreshed).
+  const keep = (list) => (sameTracks && Array.isArray(list) ? list.filter((x) => typeof x === "string").map((json) => {
+    try {
+      const o = JSON.parse(json);
+      o.audio = o.audio.map((r) => { if (r.kind !== "track") return r; const now = tracks.find((x) => x.title === r.title && (r.title || x.index === r.index)); return now ? { ...r, id: now.id, index: now.index, path: now.path } : r; });
+      return JSON.stringify(o);
+    } catch { return null; }
+  }).filter(Boolean) : []);
+  m.undo = keep(s.undo);
+  m.redo = keep(s.redo);
+  return true;
+}
+
 /* ---------- time mapping ---------- */
 
 /** The kept parts as merged source ranges: [{ start, end }]. */
@@ -810,5 +955,6 @@ function emToOpts(m) {
 // Lets the functions be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { EM_MIN_SEG, EM_MAX_GAIN, EM_EPS, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emTrimBounds, emSameSeg, emSetTrimStart, emSetTrimEnd, emSegCopy, emSegPaste, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emTrackRow, emGameHidden, emRowHint, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts,
-    emSetParts, emParts, emPartAt, emToSrc, emFromSrc, emSrcSpans, emMovePart, emCutLocked, emLockedTimes, emPartSegs, emPartRemoved, emSetPartRemoved, emReordered, emState, emRestore };
+    emSetParts, emParts, emPartAt, emToSrc, emFromSrc, emSrcSpans, emMovePart, emCutLocked, emLockedTimes, emPartSegs, emPartRemoved, emSetPartRemoved, emReordered, emState, emRestore,
+    emAddParts, emNewParts, emStateSave, emStateOk, emStateLoad, EM_STATE_V };
 }

@@ -134,6 +134,65 @@ pub fn canonical(name: &str) -> String {
     trimmed.to_string()
 }
 
+/// Words before "Edition" that do not change which game it is ("Deluxe Edition", "Game of the Year Edition").
+const EDITION_WORDS: &[&str] = &[
+    "standard", "deluxe", "gold", "ultimate", "definitive", "complete", "goty", "special", "premium", "collectors", "anniversary", "digital", "enhanced",
+    "legendary", "year", "launch", "founders", "champions", "cross", "gen", "pc", "windows", "steam",
+];
+
+/// A game name reduced to what tells games apart: lower case, no "™ ® ©", apostrophes
+/// dropped, other punctuation as spaces, "Tom Clancy's" in front and an edition at the
+/// end left out. "Tom Clancy's Rainbow Six® Siege" and "Rainbow Six Siege" give the same key.
+pub fn name_key(name: &str) -> String {
+    let lower = name.to_lowercase().replace("(tm)", " ").replace("(r)", " ").replace('&', " and ");
+    let mut clean = String::with_capacity(lower.len());
+    for c in lower.chars() {
+        match c {
+            '\'' | '\u{2019}' | '\u{2018}' | '`' | '\u{2122}' | '\u{00ae}' | '\u{00a9}' => {}
+            c if c.is_alphanumeric() => clean.push(c),
+            _ => clean.push(' '),
+        }
+    }
+    let mut words: Vec<&str> = clean.split_whitespace().collect();
+    if words.len() > 2 && words[0] == "tom" && words[1] == "clancys" {
+        words.drain(..2);
+    }
+    // "... Deluxe Edition", "... Game of the Year Edition", "... GOTY". Not a bare "Legacy"
+    // or "Enhanced": "Hogwarts Legacy" is a game of its own.
+    loop {
+        let n = words.len();
+        if n > 1 && words[n - 1] == "edition" {
+            words.pop();
+            while words.len() > 1 && EDITION_WORDS.contains(words.last().unwrap()) {
+                words.pop();
+            }
+            if words.len() > 3 && words[words.len() - 3..] == ["game", "of", "the"] {
+                words.truncate(words.len() - 3);
+            }
+        } else if n > 1 && words[n - 1] == "goty" {
+            words.pop();
+        } else {
+            break;
+        }
+    }
+    words.join(" ")
+}
+
+/// Two names for one game: equal keys (`name_key`), or the same `canonical` name.
+/// "Tom Clancys Rainbow Six Siege" (Medal's folder) and "Rainbow Six Siege" are one game.
+pub fn same_game(a: &str, b: &str) -> bool {
+    let (ka, kb) = (name_key(a), name_key(b));
+    if ka.is_empty() || kb.is_empty() {
+        return false;
+    }
+    ka == kb || name_key(&canonical(a)) == name_key(&canonical(b))
+}
+
+/// The game an executable belongs to, from the table of known executables (`stem` lower case, no ".exe").
+pub fn known_exe_name(stem: &str) -> Option<&'static str> {
+    KNOWN.iter().find(|(exe, _)| *exe == stem).map(|(_, name)| *name)
+}
+
 /// Window titles and install folders that give Minecraft away when it runs inside Java.
 const MC_TITLES: &[&str] = &["minecraft", "lunar client", "badlion", "feather client", "labymod", "forge", "fabric", "optifine", "hypixel"];
 const MC_PATHS: &[&str] = &[
@@ -292,6 +351,29 @@ impl Games {
             self.save();
         }
         changed
+    }
+
+    /// Games that have no usable icon and no icon the user picked: the ones to look one up for.
+    pub fn missing_icons(&self) -> Vec<Game> {
+        self.list.iter().filter(|g| !g.custom_icon && g.name != DESKTOP && g.name != "Imported" && (g.icon.is_empty() || !Path::new(&g.icon).is_file())).cloned().collect()
+    }
+
+    /// Give `name` an icon found on this PC (`icons.rs`). `again`: the user asked for it
+    /// ("Find icon again"), so it replaces any icon, a picked one too; otherwise only a
+    /// missing icon is filled and a picked one is never touched. True if it was set.
+    pub fn set_found_icon(&mut self, name: &str, icon: &str, again: bool) -> bool {
+        let Some(g) = self.list.iter_mut().find(|g| g.name.eq_ignore_ascii_case(name)) else { return false };
+        if !again && (g.custom_icon || (!g.icon.is_empty() && Path::new(&g.icon).is_file())) {
+            return false;
+        }
+        // The file it replaces goes, if it is one of ours.
+        if !g.icon.is_empty() && g.icon != icon && Path::new(&g.icon).starts_with(icons_dir()) {
+            let _ = fs::remove_file(&g.icon);
+        }
+        g.icon = icon.to_string();
+        g.custom_icon = false;
+        self.save();
+        true
     }
 
     /// Use an image the user picked as the game's icon.

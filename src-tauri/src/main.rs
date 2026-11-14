@@ -5,6 +5,7 @@ mod audio;
 mod bench;
 mod blur;
 mod bugreport;
+mod capture2;
 mod clip;
 mod compress;
 mod core;
@@ -14,6 +15,7 @@ mod discord;
 mod editor;
 mod games;
 mod hotkeys;
+mod icons;
 mod import;
 mod jobs;
 mod join;
@@ -22,6 +24,7 @@ mod lang;
 mod library;
 mod polish;
 mod procaudio;
+mod projects;
 mod recorder;
 mod settings;
 mod sound;
@@ -135,6 +138,11 @@ fn main() {
         join::self_test(args.get(i + 1).map(String::as_str).unwrap_or("join.txt"));
         return;
     }
+    if let Some(i) = args.iter().position(|a| a == "--project-test") {
+        // glint.exe --project-test <report.txt>: editor projects (add, rebuild, state, rename, delete, start-up sweep) on made-up clips.
+        projects::self_test(args.get(i + 1).map(String::as_str).unwrap_or("project.txt"));
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--compress-test") {
         // glint.exe --compress-test <report.txt>: Compress for Discord on made-up clips (never the clipboard).
         compress::self_test(args.get(i + 1).map(String::as_str).unwrap_or("compress.txt"));
@@ -143,6 +151,11 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--polish-test") {
         // glint.exe --polish-test <report.txt>: capture method choice, themed icon, thumbnail shapes.
         polish::self_test(args.get(i + 1).map(String::as_str).unwrap_or("polish.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--icons-test") {
+        // glint.exe --icons-test <report.txt>: game icons by name on a made-up PC, then a read-only count on this one.
+        icons::self_test(args.get(i + 1).map(String::as_str).unwrap_or("icons.txt"));
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--folders-test") {

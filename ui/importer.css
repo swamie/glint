@@ -79,6 +79,11 @@
 .imp-opt input { flex: none; margin: 2px 0 0; width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
 .imp-opt-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .imp-opt-txt b { font-weight: 600; overflow-wrap: anywhere; }
+/* "One folder": the name field, under its hint. */
+.imp-opt-txt { flex: 1; }
+/* `.imp-opt input` above sizes the radio: the name field needs the stronger selector to keep its own size. */
+.imp-opt input.imp-name { flex: none; margin: 6px 0 0; width: min(320px, 100%); height: 30px; cursor: text; }
+.imp-sec .imp-note[data-imp-placenote] { margin: 8px 0 0; }
 
 /* Nothing found */
 .imp-empty { padding: 30px 12px; text-align: center; color: var(--muted); }

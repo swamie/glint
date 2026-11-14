@@ -557,9 +557,9 @@ function openClip(id) {
   // clipById (join.js) also finds an "Edit together" draft, which is never in S.clips.
   const c = typeof clipById === "function" ? clipById(id) : S.clips.find((x) => x.id === id);
   if (!c) return;
-  // Leaving an open draft goes through its own close logic first (it may ask; join.js).
-  if (S.open && S.open !== id && typeof joinIsDraft === "function" && joinIsDraft(S.open)) return void joinLeaveDraft(() => openClip(id));
-  const draft = !!c.draft; // a draft: edit mode only, nothing to keep, copy, rename or delete
+  const draft = !!c.draft; // a project's draft (projects.js): edit mode only, nothing to keep, copy, rename or delete
+  // An open project saves its edit before it goes (projects.js); it never asks and is never deleted.
+  if (S.player && typeof projFlush === "function") projFlush(S.player);
   if (S.player) { S.player.destroy(); S.player = null; }
   edDropInit();
   S.open = id;
@@ -634,6 +634,8 @@ function openClip(id) {
   const root = $(".viewer", m);
   S.player = mountPlayer(root, c);
   S.player.ed = mountEditor(root, c, S.player);
+  // A project: the library's clips beside the editor, to add more (projects.js).
+  if (draft && typeof projMountPanel === "function") projMountPanel(root, id);
   if (draft) {
     // A draft has nothing to view: it opens in edit mode, and leaving edit mode closes it
     // (closeClip asks first when there is work to lose).
@@ -691,7 +693,8 @@ function mountPlayer(root, c) {
   };
   P.alive = () => !dead;
   P.refreshTimeline = () => tl((h) => h.refresh());
-  P.draft = !!c.draft; // an "Edit together" draft: Export is always possible (it saves the clips joined as they are)
+  P.draft = !!c.draft; // a project's draft: Export is always possible (it saves the clips joined as they are)
+  P.clipMeta = c;      // the clip as opened (projects.js saves a project's edit with its joins)
 
   /* ----- timeline time and the video's time ----- */
   // With parts ("Edit together", m.parts) the model, the seek bar, the timeline and added files count
@@ -1073,20 +1076,34 @@ function mountPlayer(root, c) {
         tracks = edFallbackTracks(c);
       }
       if (dead) return null;
-      P.model = emNew(dur(), tracks);
-      emSetMarks(P.model, edMarksLoad(c.id)); // drops any past the clip's end
-      // "Edit together": each joined clip is its own part (block) on the timeline, in the order selected.
-      if (c.kind === "joined" && Array.isArray(c.joins) && c.joins.length) {
-        const starts = [0, ...c.joins], names = Array.isArray(c.join_names) ? c.join_names : [];
-        emSetParts(P.model, starts, starts.map((_, i) => (typeof names[i] === "string" && names[i].trim()) || t("Clip {n}", { n: i + 1 })));
+      const m = emNew(dur(), tracks);
+      // A project's draft: its saved edit comes back (projects.js); false = nothing usable saved.
+      let restored = false;
+      if (P.draft && typeof projRestore === "function") {
+        try { restored = await projRestore(c, m); } catch (e) { console.warn("Glint: the project's saved edit could not be restored; it opens as it is.", e); restored = false; }
+        if (dead) return null;
       }
+      if (!restored) {
+        emSetMarks(m, edMarksLoad(c.id)); // drops any past the clip's end
+        // A joined clip or a project: each joined clip is its own part (block) on the timeline, in the order selected.
+        if (c.kind === "joined" && Array.isArray(c.joins) && c.joins.length) {
+          const starts = [0, ...c.joins], names = Array.isArray(c.join_names) ? c.join_names : [];
+          emSetParts(m, starts, starts.map((_, i) => (typeof names[i] === "string" && names[i].trim()) || t("Clip {n}", { n: i + 1 })));
+        }
+      }
+      P.model = m;
+      if (P.draft && typeof projModelReady === "function") projModelReady(P, restored);
       return P.model;
     })();
     return modelJob;
   }
   P.whenModel = ensureModel;
   /** Saves the bookmarks in source seconds, so they find their picture again whatever the part order. */
-  const saveMarks = () => { const m = P.model; if (m) edMarksSave(c.id, (m.marks || []).map((x) => emToSrc(m, x))); };
+  const saveMarks = () => {
+    const m = P.model;
+    if (m) edMarksSave(c.id, (m.marks || []).map((x) => emToSrc(m, x)));
+    if (P.draft && typeof projDirty === "function") projDirty(P, "marks"); // a project saves them with its edit
+  };
 
   const tlFailHtml = () => `<div class="e-tl-fail">${esc(t("The timeline did not load. Speed, colour, export and the I and O keys still work."))}</div>`;
   function mountTl() {
@@ -1182,6 +1199,7 @@ function mountPlayer(root, c) {
     output(["load", "undo", "redo", "file", "order"].includes(what));
     paint();
     P.ed?.sync(what);
+    if (P.draft && typeof projDirty === "function") projDirty(P, what); // a project saves its edit (debounced)
   };
   /** Change the model: snapshot, run `fn`, then refresh the timeline and the preview.
    *  If `fn` changed nothing, the snapshot is taken back and `failMsg` (if any) is shown. */
@@ -1810,9 +1828,10 @@ async function edExport(withBlur) {
   }
   delete S.exports[id];
   const stillOpen = S.open === id;
+  const fromProject = !!P.draft; // a project stays open after an export (the new clip is in the library)
   replaceClip(meta);
-  if (stillOpen) openClip(meta.id); // the source clip is still (or again) open: show the result
-  flash(withBlur ? t("Exported. Rendering with Blur…") : stillOpen ? t("Exported as a new clip") : t("Export finished: {title}", { title: meta.title }));
+  if (stillOpen && !fromProject) openClip(meta.id); // the source clip is still (or again) open: show the result
+  flash(withBlur ? t("Exported. Rendering with Blur…") : stillOpen && fromProject ? t("Exported as a new clip. It is in your library.") : stillOpen ? t("Exported as a new clip") : t("Export finished: {title}", { title: meta.title }));
   if (!withBlur) return;
   const show = () => { if (S.open === meta.id) $("#v-blur").innerHTML = blurPanel(meta); else render(); };
   S.jobs[meta.id] = { pct: 0, state: "running", message: "" };
@@ -1822,11 +1841,11 @@ async function edExport(withBlur) {
 }
 
 /** Close the viewer. Every way out (Close, Done on a draft, Esc, the backdrop, the window's close
- *  button) comes here. An "Edit together" draft is left through joinLeaveDraft (join.js), which may
- *  ask first and then calls closeClip(true); `sure` skips that. */
-function closeClip(sure) {
-  if (sure !== true && typeof joinIsDraft === "function" && joinIsDraft(S.open)) return void joinLeaveDraft(() => closeClip(true));
+ *  button) comes here. A project saves its edit first and stays in the Editor's list (projects.js):
+ *  closing never asks and never deletes. */
+function closeClip() {
   const m = $("#modal");
+  if (S.player && typeof projFlush === "function") projFlush(S.player);
   if (S.player) { S.player.destroy(); S.player = null; }
   m.hidden = true;
   m.innerHTML = "";

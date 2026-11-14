@@ -35,8 +35,9 @@ pub struct ClipMeta {
     /// The editor shows each as a clip of its own that can be moved.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub join_names: Vec<String>,
-    /// A working file of "Edit together": never shown in the library, deleted when the editor
-    /// is done with it (and at the next start). What the editor exports from it is a normal clip.
+    /// A working file of "Edit together" / an editor project (projects.rs, id = the project's):
+    /// never shown in the library, deleted with its project (and at the next start when it
+    /// belongs to none). What the editor exports from it is a normal clip.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub draft: bool,
 }
@@ -307,12 +308,22 @@ fn remove_thumb(thumb: &str) {
 /// folder of any draft entry (the clips folder may have changed since). Nothing
 /// outside a folder named `.drafts` is deleted, subfolders and links are left
 /// alone, and an empty `.drafts` folder is removed. Returns the files deleted.
-pub fn sweep_drafts(lib: &mut Library, clips_dir: &Path) -> usize {
+/// The drafts whose id is in `keep` (editor projects, projects.rs) are kept:
+/// their entry, file and thumbnail (and their `.drafts` folder is still swept of the rest).
+pub fn sweep_drafts(lib: &mut Library, clips_dir: &Path, keep: &[String]) -> usize {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if !clips_dir.as_os_str().is_empty() {
         dirs.push(clips_dir.join(DRAFTS));
     }
-    let drafts: Vec<ClipMeta> = lib.clips.iter().filter(|c| c.draft).cloned().collect();
+    let kept: Vec<String> = lib.clips.iter().filter(|c| c.draft && keep.contains(&c.id)).map(|c| c.path.to_lowercase()).collect();
+    for c in lib.clips.iter().filter(|c| c.draft && keep.contains(&c.id)) {
+        if let Some(dir) = Path::new(&c.path).parent().filter(|_| in_drafts_dir(Path::new(&c.path))) {
+            if !dirs.iter().any(|x| x.to_string_lossy().to_lowercase() == dir.to_string_lossy().to_lowercase()) {
+                dirs.push(dir.to_path_buf());
+            }
+        }
+    }
+    let drafts: Vec<ClipMeta> = lib.clips.iter().filter(|c| c.draft && !keep.contains(&c.id)).cloned().collect();
     for d in &drafts {
         let p = Path::new(&d.path);
         if in_drafts_dir(p) {
@@ -325,7 +336,7 @@ pub fn sweep_drafts(lib: &mut Library, clips_dir: &Path) -> usize {
         remove_thumb(&d.thumb);
     }
     if !drafts.is_empty() {
-        lib.clips.retain(|c| !c.draft);
+        lib.clips.retain(|c| !c.draft || keep.contains(&c.id));
         lib.save();
     }
     let mut n = 0;
@@ -336,6 +347,9 @@ pub fn sweep_drafts(lib: &mut Library, clips_dir: &Path) -> usize {
         for e in rd.flatten() {
             // symlink_metadata: a link is judged by itself, never by what it points at.
             let Ok(md) = fs::symlink_metadata(e.path()) else { continue };
+            if kept.contains(&e.path().to_string_lossy().to_lowercase()) {
+                continue; // a project's draft
+            }
             if md.is_file() && md.file_attributes() & REPARSE == 0 && fs::remove_file(e.path()).is_ok() {
                 n += 1;
             }

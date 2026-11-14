@@ -38,7 +38,7 @@
 <script>
   const d = window.__TOAST__ || {};
   // The overlay follows the theme it was sent, not the one remembered by the main window.
-  window.applyGlintTheme(d.theme || "glint", d.css || "");
+  window.applyGlintTheme(d.theme || "glint", d.css || "", d.colors || {}); // custom colours (settings.theme_colors) between the two
   document.getElementById("t").textContent = d.title || "Clip saved";
   document.getElementById("s").textContent = d.sub || "";
   document.getElementById("mic").hidden = !d.mic;

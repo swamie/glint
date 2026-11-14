@@ -1,0 +1,49 @@
+/* The Compress page (compresspage.js): picked clips with their plans, sizes, results, settings, and its clip picker. */
+
+.cpg-add { display: flex; flex-wrap: wrap; gap: 8px; padding: 13px 18px; border-bottom: 1px solid var(--line); }
+.cpg-add .cpg-clear { margin-left: auto; }
+.cpg-empty { padding: 16px 18px; color: var(--muted); font-size: 13px; }
+.cpg-list { max-height: 420px; overflow-y: auto; }
+.cpg-item { display: flex; align-items: center; gap: 12px; padding: 9px 18px; border-bottom: 1px solid var(--line); }
+.cpg-item:last-child { border-bottom: 0; }
+.cpg-pic { position: relative; width: 80px; height: 45px; flex: none; border-radius: 5px; overflow: hidden; background: #000; display: grid; place-items: center; }
+.cpg-pic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.cpg-noimg svg { width: 20px; height: 20px; color: var(--dim); }
+.cpg-main { flex: 1; min-width: 0; }
+.cpg-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cpg-tag { font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--line-2); border-radius: 4px; padding: 0 5px; margin-left: 4px; }
+.cpg-plan { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.cpg-plan b { color: var(--text); font-weight: 600; }
+.cpg-job { display: flex; align-items: center; gap: 10px; }
+.cpg-job:empty { display: none; }
+.cpg-job .progress { flex: 1; max-width: 220px; }
+.cpg-state { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.cpg-state.ok { color: var(--ok); }
+.cpg-bad { color: var(--danger); }
+.cpg-x { flex: none; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; color: var(--dim); }
+.cpg-x:hover { background: var(--raised-2); color: var(--text); }
+.cpg-x svg { width: 14px; height: 14px; }
+
+.cpg-sizes { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 13px 18px; border-bottom: 1px solid var(--line); }
+.cpg-custom { display: inline-flex; align-items: center; gap: 6px; margin-left: 6px; color: var(--muted); font-size: 12.5px; font-weight: 600; }
+.cpg-custom .field { width: 80px; height: 28px; }
+.cpg-custom.on .field { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.cpg-start { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 18px; }
+.cpg-start .hint { color: var(--muted); font-size: 12px; }
+.cpg-start .btn { flex: none; }
+.cpg-unit { color: var(--muted); font-size: 12px; }
+.cpg-res .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.cpg-pick { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: rgba(0, 0, 0, .55); }
+.cpg-pick-box { width: min(720px, calc(100vw - 48px)); height: min(640px, calc(100vh - 48px)); display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 20px 60px rgba(0, 0, 0, .5); overflow: hidden; }
+.cpg-pick-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.cpg-pick-head b { margin-right: auto; font-size: 15px; }
+.cpg-pick-q { width: 260px; }
+.cpg-pick-list { flex: 1; overflow-y: auto; }
+.cpg-pick-row { display: flex; align-items: center; gap: 12px; padding: 7px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.cpg-pick-row:hover { background: var(--raised); }
+.cpg-pick-row.added { opacity: .55; cursor: default; }
+.cpg-pick-row input { width: 16px; height: 16px; accent-color: var(--accent); flex: none; }
+.cpg-pick-txt { display: flex; flex-direction: column; min-width: 0; }
+.cpg-pick-foot { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-top: 1px solid var(--line); }
+.cpg-pick-n { margin-right: auto; color: var(--muted); font-size: 12.5px; }

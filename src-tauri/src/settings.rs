@@ -227,6 +227,10 @@ pub struct Settings {
     pub icon_theme: bool,
     pub icon_accent: String,
     pub icon_accent_2: String,
+    /// The user's own colours from Settings → Appearance → Custom colours: theme
+    /// variable name ("accent", "bg", ...) -> "#rrggbb". Applied on top of the
+    /// theme and under `custom_css` (ui/themes.js), in the window and the overlay.
+    pub theme_colors: std::collections::BTreeMap<String, String>,
     /// Discord Rich Presence, and the Application ID it identifies as.
     pub discord_rpc: bool,
     pub discord_app_id: String,
@@ -249,9 +253,12 @@ pub struct Settings {
     /// "Ctrl+Shift+KeyZ" (see `ED_KEYS` in ui/editor.js). A command that is
     /// not listed keeps its default keys; an empty list means no shortcut.
     pub editor_keys: std::collections::BTreeMap<String, Vec<String>>,
-    /// The size last picked for "Compress for Discord", in MB (1 MB = 1,000,000
-    /// bytes): the menu lists it first. 5..=1000; the menu offers 10, 20, 50 and 500.
+    /// The default size for "Compress for Discord", in MB (1 MB = 1,000,000
+    /// bytes), set on the Compress page: the menu lists it first. 5..=1000.
+    /// (Before 0.1.16 it was the size picked last.)
     pub compress_mb: u32,
+    /// The Compress page's settings (sizes in the menu, preset, audio, caps, where the result goes).
+    pub compress: crate::compress::CompressSettings,
     /// Soft sounds for clicks, switches and results in Glint's window.
     pub ui_sounds: bool,
     /// Also a very quiet tick when the pointer moves onto a button (needs `ui_sounds`).
@@ -307,6 +314,7 @@ impl Default for Settings {
             icon_theme: false,
             icon_accent: String::new(),
             icon_accent_2: String::new(),
+            theme_colors: Default::default(),
             discord_rpc: false,
             discord_app_id: String::new(),
             update_check: true,
@@ -318,6 +326,7 @@ impl Default for Settings {
             show_empty_main: false,
             editor_keys: Default::default(),
             compress_mb: 10,
+            compress: Default::default(),
             ui_sounds: false,
             ui_sounds_hover: false,
             ui_sounds_volume: 50,

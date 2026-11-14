@@ -171,6 +171,8 @@ const uiPref = (key, def) => { try { const v = localStorage.getItem(key); return
 const setUiPref = (key, on) => { try { localStorage.setItem(key, on ? "1" : "0"); } catch {} };
 S.sideMin = uiPref("glint.sideMin", false);         // sidebar folded to icons
 S.foldersOpen = uiPref("glint.foldersOpen", false); // the Folders row in the sidebar unfolded
+S.gamesOpen = uiPref("glint.gameChipsOpen", false);     // the Library's game chips show every game (else one line)
+S.folderChipsOpen = uiPref("glint.folderChipsOpen", false); // the Library's folder chips show every folder (else one line)
 
 function renderChrome() {
   if (!S.settings) return;
@@ -202,6 +204,9 @@ function renderChrome() {
     `<button class="nav-item nav-fold${inFolder && (!S.foldersOpen || S.sideMin) ? " active" : ""}" data-act="folders-toggle" data-sfx="tap" data-hover aria-expanded="${S.foldersOpen}" title="${esc(t("Folders"))}">${ICON.folder}<span class="label">${t("Folders")}</span>${S.folders.length ? `<span class="badge">${S.folders.length}</span>` : ""}<svg class="nav-chev" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></svg></button>` +
     `<div class="nav-sub" id="nav-folders"${S.foldersOpen ? "" : " hidden"}>${folderList}</div>`;
   $("#nav-tools").innerHTML =
+    // Editor (projects.js) and Compress (compresspage.js) are pages of their own; S.projects is the project list.
+    navItem("editor", t("Editor"), "edit", Array.isArray(S.projects) ? S.projects.length : 0) +
+    navItem("compress", t("Compress"), "compress") +
     navItem("keybinds", t("Keybinds"), "keys", S.settings.keybinds.length) +
     navItem("recording", t("Capture"), "rec") +
     navItem("blur", t("Blur"), "blur") +
@@ -290,17 +295,19 @@ function gameIcon(name) {
   return `<span class="gi" style="background:hsl(${hue(name)} 45% 34%)">${esc(String(name).slice(0, 1).toUpperCase())}</span>`;
 }
 
-/** Game chips above the grid: filter the library by detected game. Right-click one to change its icon. */
-const GAMES_SHOWN = 14;
+/**
+ * Game chips above the grid: filter the library by detected game. Right-click one to change its icon.
+ * Every chip is drawn, fullest first; folded (the default, `S.gamesOpen` off) library2.js's
+ * libFitRows keeps the ones that fit on one line and counts the rest on the "{n} more" chip.
+ */
 function gameRowHtml(base) {
   const counts = Object.entries(base.reduce((m, c) => ((m[c.game] = (m[c.game] || 0) + 1), m), {})).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   if (S.tab !== "all" && !counts.some(([g]) => g === S.tab)) S.tab = "all";
-  const shown = S.gamesOpen || counts.length <= GAMES_SHOWN ? counts : counts.filter(([g], i) => i < GAMES_SHOWN - 1 || g === S.tab);
-  const chip = (id, label, n, icon, cls = "") => `<button class="chip game${cls}${S.tab === id ? " active" : ""}" data-tab="${esc(id)}" data-hover title="${esc(label)}">${icon}<span>${esc(label)}</span><i>${n}</i></button>`;
-  return `<div class="games">
+  const chip = (id, label, n, icon, cls = "", fit = "") => `<button class="chip game${cls}${S.tab === id ? " active" : ""}" data-tab="${esc(id)}"${fit} data-hover title="${esc(label)}">${icon}<span>${esc(label)}</span><i>${n}</i></button>`;
+  return `<div class="games chiprow${S.gamesOpen ? " open" : ""}">
     ${chip("all", t("All"), base.length, ICON.game, " all")}
-    ${shown.map(([g, n]) => chip(g, g, n, gameIcon(g))).join("")}
-    ${counts.length > GAMES_SHOWN ? `<button class="chip game more" data-act="games-more" data-sfx="tap" data-hover><span>${S.gamesOpen ? t("Show fewer") : t("{n} more", { n: counts.length - shown.length })}</span></button>` : ""}
+    ${counts.map(([g, n]) => chip(g, g, n, gameIcon(g), "", " data-fit")).join("")}
+    <button class="chip game more" data-act="games-more" data-fit-more data-sfx="tap" data-hover hidden><span>${S.gamesOpen ? t("Show fewer") : t("{n} more", { n: counts.length })}</span></button>
   </div>`;
 }
 
@@ -319,24 +326,32 @@ function folderChipList(folders, clips, cur, showEmptyMain, mainLabel) {
   return list.sort((a, b) => b.n - a.n || a.label.localeCompare(b.label));
 }
 
-/** Folder chips above the grid. Each one filters the library and is a drop target for dragged clips. */
+/**
+ * Folder chips above the grid. Each one filters the library and is a drop target for dragged clips.
+ * Folds to one line like the game chips (`S.folderChipsOpen`); "New folder", "Rename" and
+ * "Delete folder" always stay on it.
+ */
 function folderRowHtml() {
   if (S.folder && !S.folders.includes(S.folder)) S.folder = null;
   const cur = S.folder === null ? "*" : S.folder;
-  const chip = (id, label, n, icon = "") => `<button class="chip${cur === id ? " active" : ""}" data-folder="${esc(id)}" data-hover title="${esc(label)}">${icon}<span>${esc(label)}</span><i>${n}</i></button>`;
+  const chip = (id, label, n, icon = "", fit = "") => `<button class="chip${cur === id ? " active" : ""}" data-folder="${esc(id)}"${fit} data-hover title="${esc(label)}">${icon}<span>${esc(label)}</span><i>${n}</i></button>`;
   const list = folderChipList(S.folders, S.clips, S.folder, !!S.settings.show_empty_main, t("Main folder"));
-  return `<div class="folders">
+  return `<div class="folders chiprow${S.folderChipsOpen ? " open" : ""}">
     ${chip("*", t("All clips"), S.clips.length)}
-    ${list.map((f) => chip(f.id, f.label, f.n, f.id ? ICON.folder : "")).join("")}
+    ${list.map((f) => chip(f.id, f.label, f.n, f.id ? ICON.folder : "", " data-fit")).join("")}
+    <button class="chip more" data-act="folders-more" data-fit-more data-sfx="tap" data-hover hidden><span>${S.folderChipsOpen ? t("Show fewer") : t("{n} more", { n: list.length })}</span></button>
     <button class="chip ghost" data-act="folder-new" data-hover>${ICON.plus}<span>${t("New folder")}</span></button>
     ${S.folder ? `<span class="sp"></span><button class="btn sm" data-act="folder-rename">${t("Rename")}</button><button class="btn sm danger" data-act="folder-del">${ICON.trash}${t("Delete folder")}</button>` : ""}
   </div>`;
 }
 
 function renderLibrary() {
-  const titles = { library: [t("Library"), t("Every clip Glint has saved")], favorites: [t("Favorites"), t("Clips you starred")], rendered: [t("Rendered"), t("Clips finished with Blur")] };
+  // The Library has no subtitle: beside its title, a trail shows the folder and game filters (library2.js).
+  const titles = { library: [t("Library"), ""], favorites: [t("Favorites"), t("Clips you starred")], rendered: [t("Rendered"), t("Clips finished with Blur")] };
   const [title, sub] = titles[S.page];
   const gameRow = gameRowHtml(visibleClips().base); // may reset S.tab, so it runs before the list is built
+  if (S.folder && !S.folders.includes(S.folder)) S.folder = null; // a folder that is gone: before the trail names it
+  const trail = S.page === "library" && typeof libTrailHtml === "function" ? libTrailHtml(S.folder, S.tab, t("Main folder")) : "";
   const { list } = visibleClips();
   const binds = clipBinds().filter((k) => k.key);
   const empty = S.clips.length
@@ -345,7 +360,7 @@ function renderLibrary() {
         <div class="keys">${binds.map((k) => `<div>${t("{keys} saves the last {length}", { keys: comboHtml(k), length: fmtLen(k.seconds) })}</div>`).join("")}</div></div>`;
   $("#view").innerHTML = `
     <div class="page-head">
-      <div><h1>${title}</h1><div class="sub">${sub}</div></div>
+      ${S.page === "library" ? `<div class="lib-title"><h1>${title}</h1>${trail}</div>` : `<div><h1>${title}</h1><div class="sub">${sub}</div></div>`}
       <div class="head-actions">
         <button class="btn" data-act="import">${ICON.plus}${t("Import")}</button>
         <button class="btn" data-act="rescan">${ICON.refresh}${t("Rescan folder")}</button>
@@ -361,6 +376,8 @@ function renderLibrary() {
     </div>
     ${S.page === "library" ? folderRowHtml() : ""}
     ${list.length ? `<div class="grid ${S.size}">${list.map(cardHtml).join("")}</div>` : empty}`;
+  // Fold the chip rows to one line, measured now (before render() puts the scroll position back).
+  if (typeof libFitRows === "function") libFitRows();
 }
 
 /* ---------- selection, folders, bulk actions ---------- */
@@ -506,9 +523,12 @@ function openClipMenu(id, x, y) {
   const counts = S.clips.reduce((map, k) => ((map[k.game] = (map[k.game] || 0) + 1), map), {});
   const games = Object.keys(counts).sort((a, b) => counts[b] - counts[a]).slice(0, 14);
   const gameItems = games.map((g) => mItem("game", g, "", g, clips.every((k) => k.game === g) ? "on" : "")).join("") + "<hr>" + mItem("game-new", t("New game…"), ICON.plus);
-  // Compress for Discord: the size used last comes first and is ticked. With several clips, one job each.
-  const lastMb = COMPRESS_MB.includes(+S.settings.compress_mb) ? +S.settings.compress_mb : 10;
-  const compressItems = [lastMb, ...COMPRESS_MB.filter((n) => n !== lastMb)].map((n) => mItem("compress", t("{n} MB", { n }), "", String(n), n === lastMb ? "on" : "", "launch")).join("")
+  // Compress for Discord: the sizes set on the Compress page (compresspage.js), the default size first
+  // and ticked. With several clips, one job each. "More options…" opens the Compress page with them.
+  const sizesMb = typeof compressMenuSizes === "function" ? compressMenuSizes() : COMPRESS_MB;
+  const lastMb = sizesMb.includes(+S.settings.compress_mb) ? +S.settings.compress_mb : sizesMb[0];
+  const compressItems = [lastMb, ...sizesMb.filter((n) => n !== lastMb)].map((n) => mItem("compress", t("{n} MB", { n }), "", String(n), n === lastMb ? "on" : "", "launch")).join("")
+    + (typeof compressOpenPage === "function" ? "<hr>" + mItem("compress-more", t("More options…"), ICON.gear) : "")
     + `<div class="menu-hint">${esc(t("10 MB: free · 50 MB: Nitro Basic · 500 MB: Nitro"))}</div>`;
   $("#menu").innerHTML = (many ? `<div class="menu-head">${t("{n} selected", { n: menuIds.length })}</div>` : mItem("open", t("Open"), PICON.play))
     + mItem("copy", many ? t("Copy files") : t("Copy file"), ICON.copy)
@@ -524,7 +544,7 @@ function openClipMenu(id, x, y) {
 /** Right-click on a game chip. */
 function openGameMenu(name, x, y) {
   menuIds = [];
-  $("#menu").innerHTML = mItem("game-filter", t("Show {game} clips", { game: name }), ICON.game, name) + mItem("game-icon", t("Change icon…"), ICON.image, name);
+  $("#menu").innerHTML = mItem("game-filter", t("Show {game} clips", { game: name }), ICON.game, name) + mItem("game-icon", t("Change icon…"), ICON.image, name) + mItem("game-icon-find", t("Find icon again"), ICON.refresh, name);
   placeMenu(x, y);
 }
 
@@ -571,6 +591,7 @@ async function menuAction(m, arg) {
     }
     case "rename": return editTitle(id);
     case "compress": return compressIds(ids, +arg || 10);
+    case "compress-more": return compressOpenPage(ids); // compresspage.js
     case "join": return joinClips(ids); // join.js
     case "game": return setGame(arg);
     case "game-new": { const game = await askText(t("Game name"), c?.game || "", t("Set game")); if (game) await setGame(game); return; }
@@ -604,6 +625,13 @@ async function menuAction(m, arg) {
       S.games = (await invoke("list_games")) || [];
       return render();
     }
+    case "game-icon-find": {
+      // Looks on this PC only (Steam, Epic, shortcuts...); a game that is not installed keeps its letter.
+      const g = await invoke("find_game_icon", { game: arg });
+      if (!g) return flash(t("No icon for {game} was found on this PC", { game: arg }));
+      S.games = (await invoke("list_games")) || [];
+      return render();
+    }
     case "folder-open": S.page = "library"; S.folder = arg; S.tab = "all"; S.sel.clear(); return render();
     case "folder-rename": return renameFolder(arg);
     case "folder-del": return deleteFolder(arg);
@@ -624,10 +652,10 @@ const moveSel = (folder) => moveIds([...S.sel], folder);
 /**
  * Compress each clip in `ids` for Discord, aiming under `mb` megabytes. Each one is its own job in
  * the background queue (the renders button lists it); "clip-compressed" reports each result.
- * The size picked is remembered as the one to list first.
+ * The Compress page's settings apply (settings.compress); the default size (compress_mb) is set
+ * on that page and is not changed by picking another size here.
  */
 async function compressIds(ids, mb) {
-  S.settings.compress_mb = mb;
   const errors = [];
   for (const id of ids) {
     try {
@@ -848,11 +876,13 @@ function recommended() {
   const hw = S.hardware || {};
   const gpu = hw.gpu ? hw.gpu.name : "";
   const encName = { nvenc: "NVIDIA NVENC", amf: "AMD AMF", qsv: "Intel Quick Sync", x264: "x264" }[hw.encoder] || "";
+  // "Auto (what it uses now)", from the backend (capture2.js).
+  const autoL = (key) => (typeof cap2AutoLabel === "function" ? cap2AutoLabel(key) : t("Auto"));
   return {
     encoder: { value: hw.encoder || "auto", also: ["auto"], label: encName, why: gpu ? t("Your graphics card: {gpu}", { gpu }) : t("No graphics card with a video encoder was found") },
-    method: { value: "auto", also: [], label: t("Auto"), why: t("Picks the fastest capture your Windows version has") },
-    aspect: { value: "auto", also: [], label: t("Auto"), why: t("Fixes stretched resolutions and leaves everything else alone") },
-    bitrate: { value: 0, also: [], label: t("Auto"), why: t("Uses only as much as the picture needs, which keeps the buffer small") },
+    method: { value: "auto", also: [], label: autoL("method"), why: t("Picks the fastest capture your Windows version has") },
+    aspect: { value: "auto", also: [], label: autoL("aspect"), why: t("Fixes stretched resolutions and leaves everything else alone") },
+    bitrate: { value: 0, also: [], label: autoL("bitrate"), why: t("Uses only as much as the picture needs, which keeps the buffer small") },
     height: { value: 0, also: [], label: t("Native"), why: t("Your graphics card scales and encodes this without trouble") },
     "blur.gpu_type": { value: hw.gpu ? hw.gpu.vendor : "nvidia", also: [], label: "", why: "" },
   };
@@ -989,6 +1019,7 @@ function renderRecording() {
   const bufferDir = s.buffer_dir || "%LOCALAPPDATA%\\Glint\\buffer";
   const extra = kbExtraMons(); // these keep their own capture whatever the Monitor dropdown says
   $("#view").innerHTML = pageHead(t("Capture"), t("What the replay buffer captures")) + `
+    ${typeof cap2TopHtml === "function" ? cap2TopHtml() : ""}
     ${st.error && st.recording ? `<div class="note bad"><b>${t("Capture problem:")}</b> ${esc(st.error)}${typeof depsErrorExtra === "function" ? depsErrorExtra(st.error) : ""}</div>` : ""}
     <div class="section"><h2>${t("Video")}</h2>
       ${row(t("Monitor"), t("The screen that is captured") + (extra.length ? `<br>${t("Also buffered for a keybind: {list}", { list: extra.map((m) => esc(m.name)).join(", ") })}` : ""), select("monitor", S.monitors.map((m) => [m.index, monLabel(m)]), true))}
@@ -998,7 +1029,7 @@ function renderRecording() {
       ${row(t("Bitrate"), s.bitrate ? (plan.disk ? t("Fixed. Moving pictures use all of it; the {length} buffer can reach {size}", { length: fmtLen(maxSecs()), size: fmtSize((s.bitrate * 1e6 * maxSecs()) / 8) }) : t("Fixed. Moving pictures use all of it; the {length} buffer can reach {size} of RAM", { length: fmtLen(maxSecs()), size: fmtSize((s.bitrate * 1e6 * maxSecs()) / 8) })) : t("Auto picks the bitrate from the Quality level below"), select("bitrate", [[0, t("Auto")], ...[...new Set([5, 8, 10, 15, 20, 30, 40, 50, 60, 80, 100, s.bitrate])].filter(Boolean).sort((a, b) => a - b).map((b) => [b, `${b} Mbps`])], true))}
       ${s.bitrate ? "" : row(t("Quality"), st.max_mbps ? t("Current ceiling {mbps} Mbps; quiet scenes use much less", { mbps: st.max_mbps.toFixed(0) }) : t("Quality-targeted bitrate"), select("quality", [["low", t("Low")], ["medium", t("Medium")], ["high", t("High")], ["ultra", t("Ultra")]]))}
       ${row(t("Encoder"), t("Auto picks your GPU's hardware encoder"), select("encoder", [["auto", t("Auto")], ["nvenc", "NVIDIA NVENC"], ["amf", "AMD AMF"], ["qsv", "Intel Quick Sync"], ["x264", t("x264 (CPU, heavy)")]]))}
-      ${row(t("Capture method"), t("Graphics Capture is smoother at high frame rates") + win10CaptureHint(), select("method", [["auto", t("Auto")], ["wgc", "Windows Graphics Capture"], ["dda", "Desktop Duplication"]]))}
+      ${row(t("Capture method"), t("Graphics Capture is smoother at high frame rates") + win10CaptureHint() + (typeof cap2BorderHint === "function" ? cap2BorderHint() : ""), select("method", [["auto", t("Auto")], ["wgc", "Windows Graphics Capture"], ["dda", "Desktop Duplication"]]))}
       ${row(t("Show cursor"), "", toggle("cursor"))}
     </div>
     <div class="section"><h2>${t("Replay buffer")}</h2>
@@ -1016,6 +1047,7 @@ function renderRecording() {
       ${row(t("Start clipping when Glint starts"), t("Otherwise the buffer stays off until you resume"), toggle("record_on_start"))}
     </div>`;
   markRecommended(["encoder", "method", "aspect", "bitrate", "height"]);
+  if (typeof cap2AfterRender === "function") cap2AfterRender(); // "Auto (what it uses now)" in the dropdowns
 }
 
 function renderSettings() {
@@ -1032,7 +1064,8 @@ function renderSettings() {
     ${S.ffmpeg ? "" : `<div class="note bad">${t("<b>ffmpeg.exe was not found.</b> Glint needs ffmpeg 8 or newer. Install it or set its path below.")}</div>`}
     <div class="section"><h2>${t("Appearance")}</h2>
       <div class="themes">${window.GLINT_THEMES.map((th) => `<button class="theme${(s.theme || "glint") === th.id ? " active" : ""}" data-theme="${th.id}" style="background:${th.vars.panel || "#0a0e16"};color:${th.vars.text || "#e8edf6"}"><i style="background:${th.vars.accent || "#62b6f7"}"></i>${esc(th.name)}</button>`).join("")}</div>
-      ${row(t("Match the taskbar icon to the theme"), t("Colours Glint's icon in the taskbar and the tray with the theme's accent, including a custom theme's"), toggle("icon_theme"))}
+      ${typeof colorRowsHtml === "function" ? colorRowsHtml() : ""}
+      ${row(t("Match the taskbar icon to the theme"), t("Colours Glint's icon in the taskbar and the tray with the theme's accent, including a custom theme's and your own accent colour"), toggle("icon_theme"))}
       ${row(t("Renders button"), t("The button in the top bar that lists Blur renders and their progress"), select("renders_button", [["auto", t("While rendering")], ["always", t("Always")], ["never", t("Never")]]))}
       ${row(t("Interface size"), t("Makes everything in the window bigger or smaller, so more or less fits on screen"), select("ui_zoom", [70, 80, 90, 100, 110, 125, 150].map((z) => [z, `${z}%`]), true))}
       <details class="css-box"${S.cssOpen || s.custom_css ? " open" : ""}>
@@ -1093,9 +1126,15 @@ function renderSettings() {
       ${row(t("Check for updates daily"), t("Asks GitHub once a day whether a newer Glint has been released. Nothing about you or this PC is sent"), toggle("update_check"))}
     </div>
     <div class="section"><h2>${t("Program")}</h2>
-      ${row(t("ffmpeg.exe path"), S.ffmpeg ? t("Using {path}", { path: `<span class="path" title="${esc(S.ffmpeg)}">${esc(S.ffmpeg)}</span>` }) : t("Not found"), `<input class="field" type="text" data-set="ffmpeg_path" value="${esc(S.settings.ffmpeg_path)}" placeholder="${esc(t("Auto"))}" style="width:340px">`)}
+      ${row(t("ffmpeg.exe path"), S.ffmpeg ? t("Using {path}", { path: `<span class="path" title="${esc(S.ffmpeg)}">${esc(S.ffmpeg)}</span>` }) : t("Not found"), `<input class="field" type="text" data-set="ffmpeg_path" value="${esc(S.settings.ffmpeg_path)}" placeholder="${esc(S.ffmpeg ? t("Auto ({name})", { name: S.ffmpeg }) : t("Auto"))}" style="width:340px">`)}
     </div>
-    ${typeof depsSection === "function" ? depsSection() : ""}`;
+    ${typeof depsSection === "function" ? depsSection() : ""}
+    <div class="section credits"><h2>${t("Credits")}</h2>
+      <div class="row"><div class="txt">
+        <div class="name">${t("Eternal thanks to my friends {a} and {b}, who helped build this project alongside me. I really appreciate you both.", { a: "<b>heaven</b>", b: "<b>rubust</b>" })}</div>
+        <div class="hint">${t("And thank you to everyone who chooses Glint over the major clipping services. It keeps me motivated to keep working on it.")}</div>
+      </div></div>
+    </div>`;
   // The Capture page's settings can be found from here too: its sections are
   // added to this page, hidden until a search asks for them.
   const own = $("#view").innerHTML;
@@ -1148,7 +1187,10 @@ function render() {
   if (!S.settings) return;
   if (S.renaming) { S.renderLater = true; return; } // a clip name is being edited in place: redraw once it is done
   const keep = $("#view").scrollTop;
-  ({ library: renderLibrary, favorites: renderLibrary, rendered: renderLibrary, keybinds: renderKeybinds, recording: renderRecording, blur: renderBlur, settings: renderSettings })[S.page]();
+  // "editor" is drawn by projects.js (renderEditorPage) and "compress" by compresspage.js (renderCompressPage).
+  const later = (fn, title) => () => (typeof window[fn] === "function" ? window[fn]() : ($("#view").innerHTML = pageHead(title, "")));
+  ({ library: renderLibrary, favorites: renderLibrary, rendered: renderLibrary, keybinds: renderKeybinds, recording: renderRecording, blur: renderBlur, settings: renderSettings,
+    editor: later("renderEditorPage", t("Editor")), compress: later("renderCompressPage", t("Compress")) })[S.page]();
   $("#view").scrollTop = keep;
   renderSelBar();
 }
@@ -1203,7 +1245,14 @@ document.addEventListener("click", async (e) => {
         try { const n = await invoke("sort_by_game"); flash(t("Moved {clips} into game folders", { clips: plural(n ?? loose) })); } finally { await refreshClips(); }
         return;
       }
-      case "games-more": S.gamesOpen = !S.gamesOpen; return render();
+      case "games-more": S.gamesOpen = !S.gamesOpen; setUiPref("glint.gameChipsOpen", S.gamesOpen); return render();
+      case "folders-more": S.folderChipsOpen = !S.folderChipsOpen; setUiPref("glint.folderChipsOpen", S.folderChipsOpen); return render();
+      case "trail":
+        // The trail beside the Library's title: "All clips" clears both filters, the folder step only the game.
+        if (d.step === "all") S.folder = null;
+        if (d.step !== "game") S.tab = "all";
+        S.sel.clear();
+        return render();
       case "side-toggle": S.sideMin = !S.sideMin; setUiPref("glint.sideMin", S.sideMin); return renderChrome();
       case "folders-toggle":
         // From the icon strip, the row opens the sidebar with the folders showing.
@@ -1378,7 +1427,7 @@ async function refreshClips() {
 }
 async function refreshState() {
   const st = await invoke("get_state");
-  Object.assign(S, { settings: st.settings, monitors: st.monitors, status: st.status, ffmpeg: st.ffmpeg, blur: st.blur, hardware: st.hardware || null });
+  Object.assign(S, { settings: st.settings, monitors: st.monitors, status: st.status, ffmpeg: st.ffmpeg, blur: st.blur, hardware: st.hardware || null, auto: st.auto || null });
   if (!S.sounds.length) S.sounds = (await invoke("list_sounds")) || [];
   window.applyGlintTheme(S.settings.theme, S.settings.custom_css);
   glintSetLanguage(S.settings.language || "en");
@@ -1390,7 +1439,7 @@ async function pollStatus() {
   if (document.hidden || !S.settings) return;
   try {
     // What the settings pages show from the status: re-render them when it changes, unless the user is in a field.
-    const key = () => `${S.status.error}|${S.status.max_mbps}|${S.status.recording}|${S.status.discord}|${S.status.width}x${S.status.height}`;
+    const key = () => `${S.status.error}|${S.status.max_mbps}|${S.status.recording}|${S.status.discord}|${S.status.width}x${S.status.height}|${S.status.border}|${S.status.method}|${S.status.encoder}`;
     const before = key();
     S.status = await invoke("get_status");
     renderChrome();

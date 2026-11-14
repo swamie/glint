@@ -2,8 +2,9 @@
 // The import dialog. Loaded before app.js: nothing here may touch its globals at load time.
 //
 // openImport() shows it: pick a program (or any folder), scan it, tick the clips
-// to bring in (grouped by game), choose whether to copy them, import. Backend:
-// import_sources, import_scan, import_run, pick_import_folder, and the
+// to bring in (grouped by game), choose whether to copy them and which library
+// folder they go in (import_run's `place` "games" | "one" | "none" and `folder`),
+// import. Backend: import_sources, import_scan, import_run, pick_import_folder, and the
 // "import-progress" event ({ done, total, title, skipped? }).
 
 /** Dialog state. `el` is the dialog's backdrop element while it is open. */
@@ -17,6 +18,11 @@ const IMP = {
   sel: new Set(),       // indexes of ticked items
   expanded: new Set(),  // games whose clips are shown
   copy: false,
+  // "Put the imported clips in": "games" | "one" | "none"; null = as the game folders setting says.
+  place: null,
+  folderName: "",       // the folder for "one"
+  nameTyped: false,     // the user changed it (else it follows the source: "Medal", or the folder's name)
+  srcName: "",          // the program (or folder) scanned
   scanId: 0,            // ignores a scan the user has moved on from
   running: false,
   progress: { done: 0, total: 0, title: "" },
@@ -43,6 +49,7 @@ async function openImport() {
   back.addEventListener("mousedown", (e) => { IMP.downOnBack = e.target === back; });
   back.addEventListener("click", impClick);
   back.addEventListener("change", impChange);
+  back.addEventListener("input", impInput);
   if (!IMP.running && IMP.view !== "done") IMP.view = IMP.items.length ? "found" : "where";
   impRender();
   back.querySelector(".imp-box").focus();
@@ -111,6 +118,11 @@ function impGroupsOf(items) {
   groups.sort((a, b) => (a.game === "Imported") - (b.game === "Imported") || items[b.idx[0]].modified - items[a.idx[0]].modified);
   return groups;
 }
+
+/** The "Put the imported clips in" choice now. */
+const impPlace = () => IMP.place || (S.settings?.game_folders ? "games" : "none");
+/** Whether the Import button can run: "One folder" needs a name. */
+const impPlaceOk = () => impPlace() !== "one" || !!IMP.folderName.trim().replace(/^\.+$/, "");
 
 function impSelected() {
   let n = 0, size = 0;
@@ -194,7 +206,6 @@ function impFound() {
   const fresh = IMP.items.filter((x) => !x.known).length;
   const groups = IMP.groups.map((g, gi) => impGroup(g, gi)).join("");
   const { size } = impSelected();
-  const folders = !!S.settings?.game_folders;
   return `${head}
     <section class="imp-sec">
       <div class="imp-bar">
@@ -218,9 +229,41 @@ function impFound() {
         <label class="imp-opt${IMP.copy ? " on" : ""}">
           <input type="radio" name="imp-copy" value="copy" data-imp-copy="1" ${IMP.copy ? "checked" : ""}>
           <span class="imp-opt-txt"><b>${esc(t("Copy them into Glint's folder"))}</b>
-          <span class="imp-hint">${esc(folders ? t("Each game gets its own folder. Needs {size} of free space.", { size: fmtSize(size) }) : t("Needs {size} of free space. The originals stay where they are.", { size: fmtSize(size) }))}</span></span>
+          <span class="imp-hint">${esc(t("Needs {size} of free space. The originals stay where they are.", { size: fmtSize(size) }))}</span></span>
         </label>
       </div>
+    </section>
+    ${impWhereTo()}`;
+}
+
+/**
+ * "Put the imported clips in": game folders, one folder (named after the
+ * source; an existing folder may be picked), or none. A library folder is a
+ * folder inside Glint's clips folder: copies go into it; files left where they
+ * are cannot be, so the folder only lists them, and the dialog says so.
+ */
+function impWhereTo() {
+  const place = impPlace();
+  const opt = (v, title, hint, extra = "") => `
+    <label class="imp-opt${place === v ? " on" : ""}" data-imp-opt="${v}">
+      <input type="radio" name="imp-place" value="${v}" data-imp-place="${v}" ${place === v ? "checked" : ""}>
+      <span class="imp-opt-txt"><b>${esc(title)}</b>${hint ? `<span class="imp-hint">${esc(hint)}</span>` : ""}${extra}</span>
+    </label>`;
+  const names = (Array.isArray(S.folders) ? S.folders : []).map((f) => `<option value="${esc(f)}"></option>`).join("");
+  const field = `<input type="text" class="field imp-name" data-imp-name maxlength="60" list="imp-folder-list" value="${esc(IMP.folderName)}"
+      placeholder="${esc(t("Folder name"))}" aria-label="${esc(t("Folder name"))}" spellcheck="false"><datalist id="imp-folder-list">${names}</datalist>`;
+  const note = !IMP.copy
+    ? `<p class="imp-note" data-imp-placenote ${place === "none" ? "hidden" : ""}>${esc(t("The files stay where they are, outside Glint's clips folder. The library folder only lists them: nothing is moved into it."))}</p>`
+    : "";
+  return `
+    <section class="imp-sec">
+      <h3>${esc(t("Put the imported clips in"))}</h3>
+      <div class="imp-how">
+        ${opt("games", t("Game folders"), t("A folder for each game."))}
+        ${opt("one", t("One folder"), t("Every clip of this import goes in it. Type a name or pick one of your folders."), field)}
+        ${opt("none", t("No folder"), t("They go in the main folder."))}
+      </div>
+      ${note}
     </section>`;
 }
 
@@ -274,7 +317,7 @@ function impDone() {
     <div class="imp-run">
       <h3>${esc(r.added === 1 ? t("Added 1 clip") : t("Added {n} clips", { n: r.added }))}</h3>
       ${r.skipped ? `<p class="imp-bad">${esc(r.skipped === 1 ? t("1 could not be read") : t("{k} could not be read", { k: r.skipped }))}</p>` : ""}
-      <p class="imp-hint">${esc(t("They are in the library, grouped under their games."))}</p>
+      <p class="imp-hint">${esc(r.folder ? t("They are in the library, in the folder {folder}.", { folder: r.folder }) : t("They are in the library, grouped under their games."))}</p>
     </div>`;
 }
 
@@ -284,7 +327,7 @@ function impFoot() {
     const sum = n === 1 ? t("1 clip, {size}", { size: fmtSize(size) }) : t("{n} clips, {size}", { n, size: fmtSize(size) });
     return `<div class="imp-sum">${esc(sum)}</div>
       <button class="btn" data-imp-act="close">${esc(t("Cancel"))}</button>
-      <button class="btn primary" data-imp-act="run" ${n ? "" : "disabled"}>${IMP_ICON.download}<span>${esc(t("Import"))}</span></button>`;
+      <button class="btn primary" data-imp-act="run" ${n && impPlaceOk() ? "" : "disabled"}>${IMP_ICON.download}<span>${esc(t("Import"))}</span></button>`;
   }
   if (IMP.view === "running") return `<div class="imp-sum"></div><button class="btn" data-imp-act="close">${esc(t("Hide"))}</button>`;
   if (IMP.view === "done") {
@@ -319,8 +362,8 @@ async function impClick(e) {
   try {
     switch (d.impAct) {
       case "close": return closeImport();
-      case "scan": { const s = IMP.sources[+d.impSrc]; if (s?.found) await impScan(s.path); return; }
-      case "pick": { const dir = await invoke("pick_import_folder"); if (dir) await impScan(dir); return; }
+      case "scan": { const s = IMP.sources[+d.impSrc]; if (s?.found) await impScan(s.path, s.name); return; }
+      case "pick": { const dir = await invoke("pick_import_folder"); if (dir) await impScan(dir, String(dir).replace(/[\\/]+$/, "").split(/[\\/]/).pop()); return; }
       case "back": IMP.scanId++; impReset(); impRender(); if (!IMP.sources.length) IMP.sources = (await invoke("import_sources")) || []; return impRender();
       case "again": impReset(); return impRender();
       case "all": IMP.items.forEach((it, i) => { if (!it.known) IMP.sel.add(i); }); return impRender();
@@ -334,6 +377,12 @@ async function impClick(e) {
 function impChange(e) {
   const el = e.target;
   if ("impCopy" in el.dataset) { IMP.copy = el.dataset.impCopy === "1"; return impRender(); }
+  if ("impPlace" in el.dataset) {
+    IMP.place = el.dataset.impPlace;
+    impRender();
+    if (IMP.place === "one") IMP.el?.querySelector("[data-imp-name]")?.focus();
+    return;
+  }
   if ("impGroup" in el.dataset) {
     const g = IMP.groups[+el.dataset.impGroup];
     if (!g) return;
@@ -348,9 +397,32 @@ function impChange(e) {
   }
 }
 
-async function impScan(path) {
+/** Typing a folder name: no redraw (the field keeps focus); it picks "One folder" and updates the Import button. */
+function impInput(e) {
+  const el = e.target;
+  if (!("impName" in el.dataset)) return;
+  IMP.folderName = el.value;
+  IMP.nameTyped = true;
+  if (impPlace() !== "one") {
+    IMP.place = "one";
+    for (const lab of IMP.el.querySelectorAll("[data-imp-opt]")) {
+      const on = lab.dataset.impOpt === "one";
+      lab.classList.toggle("on", on);
+      const radio = lab.querySelector("input[type=radio]");
+      if (radio) radio.checked = on;
+    }
+    const note = IMP.el.querySelector("[data-imp-placenote]");
+    if (note) note.hidden = false;
+  }
+  const run = IMP.el.querySelector('[data-imp-act="run"]');
+  if (run) run.disabled = !(impSelected().n && impPlaceOk());
+}
+
+async function impScan(path, srcName = "") {
   const id = ++IMP.scanId;
-  Object.assign(IMP, { view: "scanning", path, items: [], groups: [] });
+  Object.assign(IMP, { view: "scanning", path, items: [], groups: [], srcName: srcName || "" });
+  // "One folder" is named after the program (or folder) scanned until the user types a name.
+  if (!IMP.nameTyped || !IMP.folderName.trim()) Object.assign(IMP, { folderName: IMP.srcName, nameTyped: false });
   IMP.sel.clear();
   IMP.expanded.clear();
   impRender();
@@ -376,13 +448,15 @@ async function impScan(path) {
 async function impRun() {
   if (IMP.running) return;
   const items = [...IMP.sel].sort((a, b) => a - b).map((i) => IMP.items[i]).filter((it) => it && !it.known);
-  if (!items.length) return;
+  if (!items.length || !impPlaceOk()) return;
   const copy = IMP.copy;
+  const place = impPlace();
+  const folder = place === "one" ? IMP.folderName.trim() : "";
   Object.assign(IMP, { running: true, view: "running", skipped: null, progress: { done: 0, total: items.length, title: "" } });
   impRender();
   let added = 0;
   try {
-    added = (await invoke("import_run", { items, copy })) ?? 0;
+    added = (await invoke("import_run", { items, copy, place, folder })) ?? 0;
   } catch (e) {
     IMP.running = false;
     IMP.view = "found";
@@ -394,7 +468,9 @@ async function impRun() {
   await new Promise((r) => setTimeout(r, 60));
   const skipped = IMP.skipped ?? 0;
   IMP.running = false;
-  IMP.result = { added, skipped };
+  // The backend may spell the folder as an existing one ("medal" -> "Medal"): show the one the library has.
+  const shown = folder ? ((Array.isArray(S.folders) && S.folders.find((f) => f.toLowerCase() === folder.toLowerCase())) || folder) : "";
+  IMP.result = { added, skipped, folder: shown };
   IMP.view = "done";
   try { await refreshClips(); } catch (e) { fail(e); }
   if (IMP.el) impRender();

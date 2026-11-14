@@ -823,7 +823,10 @@ fn test_live(r: &mut Report) {
     }
     // Not a running Glint: its loopback capture shows as a session with a level,
     // but that process plays nothing (seen twice: 0 samples above silence).
-    let loud = sessions.iter().filter(|s| s.1 > 0.001 && !name(s.0).eq_ignore_ascii_case("glint.exe")).max_by(|a, b| a.1.total_cmp(&b.1)).copied();
+    // Not Discord either: in a voice call one of its processes shows the call's level
+    // while the sound itself comes from another one (seen twice: 0 samples above silence).
+    let skip = |pid: u32| ["glint.exe", "discord.exe"].iter().any(|x| name(pid).eq_ignore_ascii_case(x));
+    let loud = sessions.iter().filter(|s| s.1 > 0.001 && !skip(s.0)).max_by(|a, b| a.1.total_cmp(&b.1)).copied();
     let (pid, playing) = match loud {
         Some((p, _)) => (p, true),
         None => (std::process::id(), false),

@@ -3,8 +3,10 @@
 //! title, so the editor can open it with every clip as a part of its own that
 //! can be moved. The source clips are never changed. What the editor exports
 //! from the draft is a normal clip; the draft itself is never shown in the
-//! library and is deleted when the editor is done with it (`discard_draft`)
-//! and at the next start (`library::sweep_drafts`).
+//! library. Since 0.1.16 a draft belongs to an editor project (projects.rs
+//! builds it with `join` below and keeps it); it is deleted with its project
+//! (`discard_draft` = `projects::delete`), and a draft of no project at the
+//! next start (`library::sweep_drafts`).
 //!
 //! It is a background job of kind "join" (its own lane in jobs.rs). The job:
 //! 1. probes every clip (streams, start times, packet counts from the header,
@@ -43,7 +45,7 @@
 //!    `joins` = those times, `join_names` = the clips' titles) and emits
 //!    "clip-joined" { clip, joins, mode, secs }.
 use crate::core::Core;
-use crate::jobs::{Job, Runner};
+use crate::jobs::Job;
 use crate::library::{self, ClipMeta};
 use crate::util;
 use serde_json::{json, Value};
@@ -960,62 +962,13 @@ pub fn pick(core: &Core, ids: &[String]) -> Result<Vec<ClipMeta>, String> {
     Ok(clips)
 }
 
-/// Queue "Edit together" of `ids`. The job's `clip_id` is "join:<ids in that
+/// Queue "Edit together" of `ids`: since 0.1.16 this makes an editor project
+/// (projects.rs) named as `joined_title` does and adds the clips to it; the
+/// draft's id is the project's. The job's `clip_id` is "join:<ids in that
 /// order>", so the same selection cannot be queued twice (and `Jobs::busy`
 /// sees every source clip in it); its title is the draft's.
 pub fn enqueue(core: &Arc<Core>, ids: Vec<String>) -> Result<Job, String> {
-    let clips = pick(core, &ids)?;
-    let key = format!("join:{}", clips.iter().map(|c| c.id.as_str()).collect::<Vec<_>>().join(","));
-    if core.jobs.list().iter().any(|j| j.clip_id == key && matches!(j.state.as_str(), "queued" | "running")) {
-        return Err("Those clips are already being joined".into());
-    }
-    let s = core.settings();
-    let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg").ok_or("ffmpeg.exe was not found")?;
-    let title = joined_title(&clips[0].title, clips.len() - 1);
-    core.jobs.connect(core);
-    let weak = Arc::downgrade(core);
-    let job_title = title.clone();
-    let run: Runner = Box::new(move |cancel, progress| {
-        let started = Instant::now();
-        let core = weak.upgrade().ok_or("Glint is closing")?;
-        for c in &clips {
-            if !Path::new(&c.path).is_file() {
-                return Err(format!("The video file of \"{}\" is missing", c.title));
-            }
-        }
-        let ffprobe = library::ffprobe_for(&ffmpeg).ok_or("Could not read the clip (ffprobe.exe was not found)")?;
-        let mut srcs = Vec::with_capacity(clips.len());
-        for c in &clips {
-            if cancel.load(Ordering::SeqCst) {
-                return Err(CANCELLED.into());
-            }
-            srcs.push(probe(&ffprobe, Path::new(&c.path), &c.title)?);
-        }
-        progress(1.0);
-        let first = &clips[0];
-        // The draft: `<clips_dir>\.drafts\<id>.mp4` (beside the first clip's folder if no clips folder is set).
-        let root = if s.clips_dir.trim().is_empty() { Path::new(&first.path).parent().map(Path::to_path_buf).unwrap_or_default() } else { PathBuf::from(&s.clips_dir) };
-        let dir = library::drafts_dir(&root);
-        let id = util::new_id();
-        let out = dir.join(format!("{id}.mp4"));
-        let fps: Vec<u32> = clips.iter().map(|c| c.fps).collect();
-        let done = join(&ffmpeg, &srcs, &fps, &out, &title, &s.encoder, cancel, &mut |p| progress(p))?;
-        let mut new = library::register_id(&ffmpeg, &done.file, id, &title, &first.game, "joined");
-        new.draft = true;
-        new.folder = first.folder.clone();
-        let names: Vec<String> = clips.iter().map(|c| c.title.clone()).collect();
-        (new.joins, new.join_names) = clean_parts(&done.starts, &names, new.duration.max(done.duration));
-        if new.fps == 0 || done.mode != Mode::Encode {
-            new.fps = clips.iter().map(|c| c.fps).max().unwrap_or(new.fps).max(new.fps);
-        }
-        // Never "clips-changed": a draft is not in the library the user sees.
-        core.lib.lock().unwrap().add(new.clone());
-        let secs = started.elapsed().as_secs_f64();
-        util::log(&format!("join: draft done in {secs:.1} s, mode {}, joins {:?}", done.mode.name(), new.joins));
-        core.emit("clip-joined", event_payload(&new, done.mode, secs));
-        Ok(new.id)
-    });
-    core.jobs.enqueue(&key, &job_title, "join", run)
+    crate::projects::join_clips(core, ids)
 }
 
 /// The cut points to store: every start but the first, rounded to the millisecond,
@@ -1051,6 +1004,10 @@ pub fn clean_parts(starts: &[f64], names: &[String], duration: f64) -> (Vec<f64>
 /// Delete draft `id` (entry, file, thumbnail) when it is a draft and no queued
 /// or running job uses it. Returns whether it was deleted.
 pub fn discard_draft(core: &Core, id: &str) -> bool {
+    // The draft of an editor project: delete the whole project (0.1.16).
+    if crate::projects::exists(id) {
+        return crate::projects::delete(core, id);
+    }
     if core.jobs.busy(id) {
         return false;
     }
@@ -1069,7 +1026,7 @@ pub fn discard_draft(core: &Core, id: &str) -> bool {
 }
 
 /// The "clip-joined" payload.
-fn event_payload(clip: &ClipMeta, mode: Mode, secs: f64) -> Value {
+pub(crate) fn event_payload(clip: &ClipMeta, mode: Mode, secs: f64) -> Value {
     json!({ "clip": clip, "joins": clip.joins, "mode": mode.name(), "secs": secs })
 }
 
@@ -1111,22 +1068,22 @@ fn build(ffmpeg: &Path, args: &[String]) -> Result<(), String> {
 
 /// One synthetic clip: a black picture with a one-frame white flash at `flash`
 /// seconds, and on every audio track a 1 kHz beep starting at the same moment.
-struct Spec<'a> {
-    w: u32,
-    h: u32,
-    fps: u32,
-    secs: f64,
+pub(crate) struct Spec<'a> {
+    pub(crate) w: u32,
+    pub(crate) h: u32,
+    pub(crate) fps: u32,
+    pub(crate) secs: f64,
     /// Audio length minus picture length, seconds.
-    audio_extra: f64,
-    tracks: u32,
-    vfr: bool,
-    sar: &'a str,
-    flash: f64,
+    pub(crate) audio_extra: f64,
+    pub(crate) tracks: u32,
+    pub(crate) vfr: bool,
+    pub(crate) sar: &'a str,
+    pub(crate) flash: f64,
     /// Track titles ("" = untitled); empty = Mix, Desktop, Microphone, Extra, ...
-    names: &'a [&'a str],
+    pub(crate) names: &'a [&'a str],
 }
 
-fn make_clip(ffmpeg: &Path, out: &Path, sp: &Spec) -> Result<(), String> {
+pub(crate) fn make_clip(ffmpeg: &Path, out: &Path, sp: &Spec) -> Result<(), String> {
     let frame = 1.0 / sp.fps as f64;
     let mut vf = format!("color=c=black:s={}x{}:r={}:d={},drawbox=c=white:t=fill:enable='between(t,{},{})',setsar={}", sp.w, sp.h, sp.fps, sp.secs, sp.flash - frame * 0.25, sp.flash + frame * 0.6, sp.sar);
     if sp.vfr {
@@ -1714,7 +1671,7 @@ fn run_self_test(r: &mut Report) {
         }
         let joining = w(&drafts.join(".x.mp4.joining"));
         let before = core.lib.lock().unwrap().visible().len();
-        let n = library::sweep_drafts(&mut core.lib.lock().unwrap(), &root);
+        let n = library::sweep_drafts(&mut core.lib.lock().unwrap(), &root, &[]);
         let lib = core.lib.lock().unwrap();
         r.check("sweep: every draft entry is dropped, the clips stay", !lib.clips.iter().any(|c| c.draft) && lib.visible().len() == before && ids.iter().all(|id| lib.get(id).is_some()), "");
         r.check("sweep: files in .drafts are deleted, also in a former clips folder's .drafts", n == 3 && !drafts.join("sw1.mp4").exists() && !old_drafts.join("sw2.mp4").exists() && !Path::new(&joining).exists(), &format!("{n} deleted"));

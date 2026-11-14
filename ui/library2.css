@@ -1,0 +1,23 @@
+/* 0.1.16, the Library page (library2.js): chip rows that fold to one line, and the trail beside the title. */
+
+/* A chip set to [hidden] must go, although .chip sets its own display. */
+.chiprow > [hidden] { display: none !important; }
+
+/* Folded: one line, whatever the measuring left. 34 px holds a 30 px game chip; a second line would start at 36. */
+.chiprow:not(.open):not(.tight) { max-height: 34px; overflow: hidden; }
+/* Room for the chips' outlines, which overflow: hidden would otherwise cut. */
+.chiprow:not(.open):not(.tight) { padding: 2px 0; margin-top: -2px; margin-bottom: -2px; }
+.toolbar.games-bar .chiprow:not(.open):not(.tight) { max-height: 38px; }
+.folders.chiprow:not(.open):not(.tight) { max-height: 32px; margin-top: -4px; margin-bottom: 14px; }
+.chip.more { color: var(--muted); }
+.chip.more:hover { color: var(--text); }
+
+/* The trail: on the title's line, so the page does not move when a filter is switched on or off. */
+.lib-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 16px; min-width: 0; }
+.lib-title h1 { margin-bottom: 6px; }
+.lib-trail { display: flex; flex-direction: row; /* style.css stacks every <nav> for the sidebar */ align-items: baseline; flex-wrap: wrap; gap: 2px 4px; min-width: 0; font-size: 14.5px; color: var(--muted); }
+.lib-trail-sep { color: var(--dim); padding: 0 2px; }
+.lib-trail-step { max-width: 260px; padding: 2px 6px; margin: 0 -2px; background: none; border: 0; border-radius: 6px; color: var(--muted); font: inherit; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lib-trail-step:hover { color: var(--text); background: var(--raised); }
+.lib-trail-step.here { color: var(--text); font-weight: 600; }
+.lib-trail-step:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

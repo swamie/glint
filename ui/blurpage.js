@@ -255,7 +255,7 @@ function renderBlur() {
       ${row(t("RIFE model"), t("Folder name under Blur's models folder."), text("blur.rife_model", 240))}`}`)}
 
     <div class="section"><h2>${t("Program")}</h2>
-      ${row(t("blur-cli.exe path"), t("Leave empty to find it automatically"), `<input class="field" type="text" data-set="blur_path" value="${esc(S.settings.blur_path)}" placeholder="${esc(t("Auto"))}" style="width:340px">`)}
+      ${row(t("blur-cli.exe path"), t("Leave empty to find it automatically"), `<input class="field" type="text" data-set="blur_path" value="${esc(S.settings.blur_path)}" placeholder="${esc(S.blur ? t("Auto ({name})", { name: S.blur }) : t("Auto"))}" style="width:340px">`)}
     </div>
   </div>`;
   bpBind();

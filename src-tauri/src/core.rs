@@ -41,6 +41,8 @@ pub struct Status {
     /// The separate game audio track: "off", "waiting" (no game), "capturing",
     /// "failed" (this game could not be captured), "unavailable" (Windows too old).
     pub game_audio: String,
+    /// The capture monitor's yellow Graphics Capture border (`RecStatus::border`): "", "off" or "failed".
+    pub border: String,
     /// One per buffered monitor, the capture monitor first. The fields above
     /// describe the capture monitor; `buffer_bytes`, `buffer_disk_bytes` and
     /// `ram_total` count all of them.
@@ -315,6 +317,7 @@ impl Core {
         thread::spawn(move || {
             let modes = || win::monitors().iter().map(|m| (m.width, m.height, m.hz)).collect::<Vec<_>>();
             let mut seen = modes();
+            let mut pending_mode: Option<Vec<(u32, u32, u32)>> = None;
             let mut rpc: Option<(String, discord::Client)> = None;
             let mut shown: Option<discord::Activity> = None;
             let mut retry_at = std::time::Instant::now();
@@ -323,7 +326,16 @@ impl Core {
                 core.track_game();
 
                 let now = modes();
-                if now != seen {
+                // A new mode is acted on once it held for one more check (2 s): a game that is
+                // starting often switches the display more than once, and each capture restart
+                // is a new Graphics Capture session (and a new chance for Windows' yellow border).
+                // Until then Graphics Capture keeps its size, cropping or padding the picture.
+                if now == seen {
+                    pending_mode = None;
+                } else if pending_mode.as_ref() != Some(&now) {
+                    pending_mode = Some(now);
+                } else {
+                    pending_mode = None;
                     seen = now;
                     if core.rec.is_running() {
                         let cfgs = capture_cfgs(&core.settings());
@@ -486,6 +498,7 @@ impl Core {
             game: self.playing.lock().unwrap().as_ref().map(|p| p.name.clone()).unwrap_or_default(),
             discord: self.discord.lock().unwrap().clone(),
             game_audio: game_audio.status(),
+            border: if st.running { st.status.border.clone() } else { String::new() },
             captures,
         }
     }
@@ -542,6 +555,7 @@ impl Core {
                 secs: s.toast_secs.clamp(1.0, 15.0),
                 theme: s.theme,
                 css: s.custom_css,
+                colors: s.theme_colors,
             },
         );
     }
@@ -719,13 +733,20 @@ impl Core {
                 added += 1;
             }
         }
+        let names = self.folders();
         let mut lib = self.lib.lock().unwrap();
         let before = lib.clips.len();
         lib.clips.retain(|c| std::path::Path::new(&c.path).is_file());
         let mut changed = lib.clips.len() != before;
         // A draft keeps the folder of its first clip (its export goes there); its file is in `.drafts`.
+        // A clip imported in place (its file outside the clips folder) keeps the folder it was
+        // filed in while that folder exists: the folder only lists it, the file never moves.
         for c in lib.clips.iter_mut().filter(|c| !c.draft) {
-            let f = folder_of(&root, &c.path);
+            let f = if in_clips_dir(&root, &c.path) {
+                folder_of(&root, &c.path)
+            } else {
+                names.iter().find(|n| n.eq_ignore_ascii_case(&c.folder)).cloned().unwrap_or_default()
+            };
             if c.folder != f {
                 c.folder = f;
                 changed = true;
@@ -775,7 +796,9 @@ impl Core {
         std::fs::rename(&old, &new).map_err(|e| format!("Could not rename the folder: {e}"))?;
         let mut lib = self.lib.lock().unwrap();
         for c in lib.clips.iter_mut().filter(|c| !c.draft && c.folder.eq_ignore_ascii_case(from)) {
-            if let Some(file) = Path::new(&c.path).file_name() {
+            // Only files that were inside the folder moved with it; a clip imported in place keeps its path.
+            let inside = Path::new(&c.path).parent().is_some_and(|p| same_dir(p, &old));
+            if let Some(file) = Path::new(&c.path).file_name().filter(|_| inside) {
                 c.path = new.join(file).to_string_lossy().into_owned();
             }
             c.folder = to.clone();
@@ -905,6 +928,15 @@ impl Core {
             if meta.draft || src.parent().map(|p| same_dir(p, &dest)).unwrap_or(false) {
                 continue;
             }
+            // A clip imported in place belongs to another program: its file is never moved (nor
+            // copied and deleted). The library folder only lists it.
+            if meta.kind == "import" && !in_clips_dir(&root, &meta.path) {
+                if !meta.folder.eq_ignore_ascii_case(&folder) {
+                    self.lib.lock().unwrap().update(id, |c| c.folder = folder.clone());
+                    moved += 1;
+                }
+                continue;
+            }
             // A queued or running render (or "Edit together") reads the file where it is.
             if self.jobs.busy(id) {
                 failed.push(format!("{} (it is being rendered)", meta.title));
@@ -945,6 +977,14 @@ fn folder_name(name: &str) -> Result<String, String> {
 fn same_dir(a: &Path, b: &Path) -> bool {
     let norm = |p: &Path| p.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
     norm(a) == norm(b)
+}
+
+/// Whether a file is inside the clips folder (at any depth). Clips imported in
+/// place are not: their files belong to the program that made them.
+pub fn in_clips_dir(clips_dir: &Path, path: &str) -> bool {
+    let norm = |p: &Path| p.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    let root = norm(clips_dir);
+    !root.is_empty() && norm(Path::new(path)).starts_with(&format!("{root}\\"))
 }
 
 /// The library folder a file is in: the name of its directory if that sits

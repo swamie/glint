@@ -47,7 +47,7 @@ Add, remove and rebind under **Keybinds**. One key can carry several bindings; t
 
 **Game audio.** Capture → "Separate game audio track" (off by default) records the current game's sound on its own, using Windows' per-process loopback (Windows 10 version 2004 or newer). A clip then has a last track named Game: Mix, Desktop, Microphone, Game. Desktop still holds everything the PC played, the game included. In the editor, the Game track is heard only where Desktop is muted, so muting Desktop and keeping Game drops voice chat and music.
 
-**Edit together.** Select two or more clips, right-click → Edit together. The clips open in the editor as separate clips, in the order you selected them: drag a clip in the Clips strip to move it, right-click it to move it or cut it out, and trim, split or colour each as usual. Desktop, Microphone and Game stay separate audio tracks, matched by name, even when the clips were recorded with different tracks. Nothing is added to the library until you export; the original clips are not changed. Underneath, Glint puts the clips into one hidden working file (in `.drafts` inside the clips folder, deleted when the editor closes and at the next start). Clips of the same format go in without re-encoding; if their sound and picture lengths would drift apart, only the sound is rebuilt; clips of different sizes or rates are re-encoded, letterboxed to the largest.
+**Edit together.** Select two or more clips, right-click → Edit together. The clips open in the editor as separate clips, in the order you selected them: drag a clip in the Clips strip to move it, right-click it to move it or cut it out, and trim, split or colour each as usual. Desktop, Microphone and Game stay separate audio tracks, matched by name, even when the clips were recorded with different tracks. Nothing is added to the library until you export; the original clips are not changed. Underneath, Glint puts the clips into one hidden working file (in `.drafts` inside the clips folder), kept as a project until you delete it. Clips of the same format go in without re-encoding; if their sound and picture lengths would drift apart, only the sound is rebuilt; clips of different sizes or rates are re-encoded, letterboxed to the largest.
 
 **Windows 10.** Windows Graphics Capture draws a yellow border around the captured screen, and Windows only lets a program hide it from Windows 11 on. On Windows 10, capture method Auto therefore uses Desktop Duplication, which has no border.
 
@@ -74,6 +74,10 @@ The files are temporary: `%LOCALAPPDATA%\Glint\buffer` unless you pick another f
 Clips go to `Videos\Glint`. Settings, the clip index and thumbnails live in `%APPDATA%\Glint`.
 
 Closing the window keeps the recorder in the tray and destroys the WebView, so the UI costs no memory while hidden. `Glint.exe --minimized` starts straight to the tray.
+
+**Editor projects.** Tools → Editor lists your editing sessions. Each one is a project: the clips in it, your cuts, their order, levels and colours, saved as you work. "Edit together" makes one; New project starts an empty one. Beside the editor a list of your library lets you add more clips: click, Ctrl+click, Shift+click or drag a box to select, then double-click, press Enter, or drag them onto the timeline. New clips go to the end and your edits stay. Close a project at any time and open it again later; after an export it stays in the list, tagged Exported, until you delete it. Adding clips whose size or frame rate differs re-encodes what is already in the project, so quality drops a little with each such add.
+
+**Yellow capture border (Windows 11).** Windows draws a yellow border around a captured screen unless the program may turn it off (Settings → Privacy & security → Screenshot borders → "Let desktop apps turn off the screenshot border"). Glint asks for no border. When a game changes the screen mode, Glint waits for the new mode to settle before it restarts the capture, and restarts it once more if the border still shows. If it keeps coming back, pick Desktop Duplication under Capture → Capture method: it has no border.
 
 ## Build
 
@@ -110,6 +114,8 @@ Every game is filed under one name: "Overwatch 2" (as NVIDIA names it) and "Over
 
 Each game seen is remembered in `%APPDATA%\Glint\games.json` with its icon, taken from the game's executable into `%APPDATA%\Glint\icons`. The Library shows one chip per game with that icon; click to filter, right-click to pick your own icon image.
 
+**Icons.** A game Glint has seen running gets the icon of its program. A game that only came in with imported clips gets its icon when the game is installed on this PC: Glint looks in Steam, Epic, Xbox, Riot, Ubisoft, GOG, Roblox, the installed-programs list and Start menu shortcuts, by name, without going online. A game that is not installed keeps its coloured letter. Right-click a game chip → Find icon again looks once more; Change icon takes a picture of your own.
+
 ## Stretched resolutions
 
 A stretched resolution (4:3, 5:4, 3:2 or 16:10 shown full-screen on a wider display) reaches any screen capture as a narrow picture, although the player sees it filling the screen; left alone, the clip plays back narrow with black bars. With Capture → Aspect ratio on Auto, Glint compares the current display mode with the display's own shape (its largest mode) and, when the mode is clearly narrower, widens the clip to the display's shape on the GPU: 2160×1440 on a 16:9 display is saved as 2560×1440. Modes as wide as the display, or wider, are left alone, so ultrawide and 16:10 screens are not touched. A fixed ratio or "As captured" can be chosen instead. Glint also notices when a game changes the display mode and restarts the capture at the new size.
@@ -121,6 +127,8 @@ Settings → Discord. While the buffer is on, your Discord profile shows "Clippi
 ## Themes
 
 Settings → Appearance has twelve colour themes. Custom CSS, applied after the theme, can restyle anything; the colours are CSS variables (`--bg`, `--panel`, `--raised`, `--raised-2`, `--line`, `--line-2`, `--text`, `--muted`, `--dim`, `--accent`, `--accent-2`, `--accent-ink`), so `:root { --accent: #ff4fd8; }` is a one-line recolour.
+
+**Custom colours.** Settings → Appearance → Custom colours changes single colours on top of the picked theme: accent, background, panels, buttons and cards, lines, text, secondary text. Each has a round swatch that opens Glint's colour picker: drag in the square and on the hue strip, or type a hex or R G B value. The whole window shows the colour while you pick; Enter or a click outside keeps it, Esc cancels. Colours you did not set follow the ones you did (a readable text colour on the accent, panels and lines from the background). Custom CSS still wins over them.
 
 ## Library
 
@@ -137,6 +145,8 @@ The bar that appears moves the selection to a folder, favorites it, copies the f
 **Game folders.** With Settings → Game folders on, each new clip is saved into a subfolder named after its game (`Videos\Glint\Overwatch\…`), which also shows as a library folder. The game is the product name of the app in the foreground when the key is pressed; "Desktop" when that is the shell. "Sort by game" in Settings moves the clips that sit loose in the clips folder into their game's folder and leaves clips you filed yourself alone. Changing a clip's game from the right-click menu moves it to the new game's folder if it was still in its old game's folder.
 
 Folders are real subfolders of the clips folder, one level deep. Moving a clip moves its file; a name clash in the target gets " (2)" added, never an overwrite. Deleting a folder moves its clips back to the clips folder first and deletes no clip. Rescan also picks up videos you put into those subfolders yourself.
+
+**Chip rows.** The game chips and the folder chips each stay on one line; "{n} more" opens the rest and "Show fewer" closes them again. While a folder or game filter is on, a trail beside the title (`All clips › folder › game`) steps back.
 
 ## Editor
 
@@ -168,9 +178,13 @@ A Blur render is a job. Jobs run in the background whether or not the clip is op
 
 Library → Import brings in clips recorded by NVIDIA ShadowPlay / NVIDIA app, Medal, Outplayed and SteelSeries GG Moments, or from any folder. Glint finds each program's clips folder, lists what is there grouped by game (from the folder layout, the file name, or Medal's own index), and adds what you tick. By default files stay where they are and are only listed; "Copy them into Glint's folder" copies them (into game folders if that setting is on). The originals are never moved, changed or deleted.
 
+**Where imported clips go.** The import dialog asks: a folder for each game, one folder you name (the source's name by default), or no folder. Clips left where they are (not copied) are filed in a library folder by name only: Glint never moves, renames or changes another program's files, also not with "Sort by game" or when you move the clip to another folder.
+
 ## Compress for Discord
 
 Right-click a clip → Compress for Discord → 10, 20, 50 or 500 MB (the size used last is listed first). Glint re-encodes a copy with ffmpeg (x264, two passes, so the size is hit rather than guessed), shrinking the picture and frame rate only as far as the size needs: a short clip keeps 1440p60, a long one may come down to 720p30. The copy is saved beside the original as "… (Discord 10MB).mp4", tagged Discord in the library, and put on the clipboard ready to paste. It runs in the background queue with the Blur renders, one compression at a time; a clip already under the size is refused, and one too long for the size is refused with the length that would fit.
+
+**Compress page.** Tools → Compress does the same for several clips or any video file: pick them, pick a size (a preset or your own), see the resolution, frame rate and bitrate each one will get, start, and copy or open the results. Its settings: the default size, the sizes in the right-click menu, speed, audio bitrate, highest resolution and frame rate, which audio tracks to keep, where results go, and whether the result is copied to the clipboard.
 
 ## Interface sounds, What's new
 
@@ -191,6 +205,8 @@ For builders: the destination is not in the source. `src-tauri/bug-webhook.txt` 
 - The search box at the top right of Settings filters the page as you type. It also finds the Capture page's settings (bitrate, encoder, replay buffer and so on), which can be changed right there.
 - Settings → Language switches language (English, Korean, Greek). Texts are looked up by their English wording in `ui/lang/<code>-*.js`; a text without a translation shows in English. `node tools/i18n-check.js ui ko` (or `el`) lists texts that still lack a translation.
 - Custom theme (CSS) is a fold-out box in Appearance. "Copy AI prompt" copies a prompt that explains Glint's theme variables to an AI, so it can write a theme from a one-line description.
+
+**Apply recommended settings.** The button at the top of Capture works out encoder, capture method, resolution, frame rate, quality and buffer mode from this PC's graphics card, screen, memory and Windows version, lists every change with its reason, and applies them only after you agree. Results can be inconsistent: treat them as a start and tweak to your liking. Every choice that is on Auto shows what it is using, such as "Auto (NVIDIA NVENC)".
 
 ## Blur
 

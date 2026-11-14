@@ -468,6 +468,25 @@ fn compact(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect()
 }
 
+/// Publisher prefixes some programs keep in a game's name and others drop
+/// (Medal files "Rainbow Six Siege" under "Tom Clancys Rainbow Six Siege"), compacted.
+const NAME_PREFIXES: &[&str] = &["tomclancys", "sidmeiers"];
+
+/// One key per game however it is spelled: case, spaces, punctuation, "™" and
+/// a publisher prefix ignored. "Tom Clancy's Rainbow Six® Siege" and
+/// "Rainbow Six Siege" share "rainbowsixsiege".
+fn game_key(s: &str) -> String {
+    let c = compact(s);
+    for p in NAME_PREFIXES {
+        if let Some(rest) = c.strip_prefix(p) {
+            if rest.len() >= 3 {
+                return rest.to_string();
+            }
+        }
+    }
+    c
+}
+
 /// What a scan knows beyond the files themselves.
 #[derive(Default)]
 struct Ctx {
@@ -491,8 +510,13 @@ impl Ctx {
 
 /// The game in a Medal file name ("MedalTVRiskofRain220261023215833072"), matched against known names.
 fn medal_known(rest: &str, ctx: &Ctx) -> Option<String> {
-    let c = compact(rest);
-    ctx.compact.iter().find(|(k, _)| c.starts_with(k.as_str()) && c[k.len()..].len() >= 8 && c[k.len()..].chars().all(|x| x.is_ascii_digit())).map(|(_, n)| desktop_map(n))
+    // As written, then without a publisher prefix ("TomClancysRainbowSixSiege2026..." also matches "Rainbow Six Siege").
+    let mut tries = vec![compact(rest)];
+    let k = game_key(rest);
+    if k != tries[0] {
+        tries.push(k);
+    }
+    tries.iter().find_map(|c| ctx.compact.iter().find(|(k, _)| c.starts_with(k.as_str()) && c[k.len()..].len() >= 8 && c[k.len()..].chars().all(|x| x.is_ascii_digit())).map(|(_, n)| desktop_map(n)))
 }
 
 /// The game in a Medal file name without help: the part before the 17-digit time stamp.
@@ -679,20 +703,28 @@ fn scan_with(core: &Arc<Core>, path: &str, real: bool) -> Result<Vec<Found>, Str
         names.iter().for_each(|n| ctx.add_name(n));
     }
     ctx.finish();
-    // One spelling per game: the one Glint already uses, else Medal's own name
-    // for it (Medal's folders drop characters: "osu!" is filed under "osu").
+    // One spelling per game (`game_key`): Medal's own name for it from its index
+    // (Medal's folders drop characters and keep publisher prefixes: "osu!" is
+    // filed under "osu", "Rainbow Six Siege" under "Tom Clancys Rainbow Six
+    // Siege"), else the one Glint already uses, a name without a prefix first.
     let mut proper: HashMap<String, String> = HashMap::new();
-    for g in core.games.lock().unwrap().list.iter() {
-        proper.entry(compact(&g.name)).or_insert_with(|| g.name.clone());
+    let mut idx_names: Vec<&String> = ctx.index.values().collect();
+    idx_names.sort();
+    for g in idx_names {
+        proper.entry(game_key(g)).or_insert_with(|| desktop_map(g));
     }
-    for g in ctx.index.values() {
-        proper.entry(compact(g)).or_insert_with(|| desktop_map(g));
+    {
+        let games = core.games.lock().unwrap();
+        let (plain, prefixed): (Vec<_>, Vec<_>) = games.list.iter().partition(|g| game_key(&g.name) == compact(&g.name));
+        for g in plain.into_iter().chain(prefixed) {
+            proper.entry(game_key(&g.name)).or_insert_with(|| g.name.clone());
+        }
     }
     let spell = |g: String| -> String {
         if g == UNKNOWN || g == crate::games::DESKTOP {
             return g;
         }
-        proper.get(&compact(&g)).cloned().unwrap_or(g)
+        proper.get(&game_key(&g)).cloned().unwrap_or(g)
     };
 
     let known = known_paths(core);
@@ -721,14 +753,72 @@ fn folder_of(clips_dir: &Path, file: &Path) -> String {
     }
 }
 
+/// Which library folder an import puts its clips in ("Put the imported clips in").
+///
+/// A library folder is a subfolder of the clips folder. A copy is written into
+/// it. A clip imported in place stays where it is (its file belongs to the other
+/// program and is never moved, changed or deleted): the folder lists it by name
+/// (`ClipMeta.folder`), and `Core::rescan`, `move_clips`, `rename_folder` and
+/// `delete_folder` keep it that way without touching the file.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Place {
+    /// A folder per game, named as Glint names game folders (`util::game_folder`).
+    Games,
+    /// Every clip of this import in one folder.
+    One(String),
+    /// The main folder.
+    Main,
+}
+
+/// The UI's choice: `place` "games" | "one" | "none" with `folder` the name for
+/// "one". Without a choice (an older caller): game folders when that setting is
+/// on, else the main folder, as before.
+pub fn place_from(place: Option<&str>, folder: Option<&str>, game_folders: bool) -> Result<Place, String> {
+    match place.map(str::trim).unwrap_or("") {
+        "games" | "game" => Ok(Place::Games),
+        "none" | "main" => Ok(Place::Main),
+        "one" => {
+            let name = folder.unwrap_or("").trim();
+            if name.trim_matches('.').trim().is_empty() {
+                return Err("Type a folder name".into());
+            }
+            Ok(Place::One(util::sanitize_filename(name)))
+        }
+        "" => Ok(if game_folders { Place::Games } else { Place::Main }),
+        other => Err(format!("Unknown place \"{other}\"")),
+    }
+}
+
 struct Job<'a> {
     core: &'a Arc<Core>,
     ffmpeg: &'a Path,
     root: &'a Path,
-    game_folders: bool,
+    place: Place,
     copy: bool,
     /// Held while a copy's file name is chosen and claimed.
     naming: &'a Mutex<()>,
+    /// The library folders that exist (spelled as on disk), grown as folders are made.
+    folders: &'a Mutex<Vec<String>>,
+}
+
+impl Job<'_> {
+    /// The library folder for a clip of `game` ("" = the main folder), made if
+    /// needed, spelled as an existing folder of the same name is (Windows names
+    /// ignore case; the library compares names exactly).
+    fn folder_for(&self, game: &str) -> Result<String, String> {
+        let want = match &self.place {
+            Place::Games => util::game_folder(game),
+            Place::One(n) => n.clone(),
+            Place::Main => return Ok(String::new()),
+        };
+        let mut known = self.folders.lock().unwrap();
+        if let Some(f) = known.iter().find(|f| f.eq_ignore_ascii_case(&want)) {
+            return Ok(f.clone());
+        }
+        fs::create_dir_all(self.root.join(&want)).map_err(|e| format!("Could not create the folder \"{want}\": {e}"))?;
+        known.push(want.clone());
+        Ok(want)
+    }
 }
 
 fn import_one(j: &Job, it: &Found) -> Result<library::ClipMeta, String> {
@@ -742,8 +832,9 @@ fn import_one(j: &Job, it: &Found) -> Result<library::ClipMeta, String> {
     let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Clip".into());
     let title = if it.title.trim().is_empty() { stem.clone() } else { it.title.clone() };
     let mut copied: Option<PathBuf> = None;
+    let lib_folder = j.folder_for(&game)?;
     let file = if j.copy {
-        let dir = if j.game_folders { j.root.join(util::game_folder(&game)) } else { j.root.to_path_buf() };
+        let dir = if lib_folder.is_empty() { j.root.to_path_buf() } else { j.root.join(&lib_folder) };
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let ext = src.extension().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "mp4".into());
         let dest = {
@@ -774,28 +865,40 @@ fn import_one(j: &Job, it: &Found) -> Result<library::ClipMeta, String> {
         return Err("not a readable video".into());
     }
     meta.created = if modified > 0 { modified } else { meta.created };
-    meta.folder = folder_of(j.root, &file);
+    // A copy is in the folder it was written to. A file left in place is filed
+    // by name only (it was filed under "" before 0.1.16, whatever the setting:
+    // the bug where Medal clips stayed in the main folder).
+    meta.folder = if crate::core::in_clips_dir(j.root, &file.to_string_lossy()) { folder_of(j.root, &file) } else { lib_folder };
     j.core.lib.lock().unwrap().add(meta.clone());
     j.core.games.lock().unwrap().note(&game, "");
     Ok(meta)
 }
 
 /// Add `items` to the library, tagged with their games. With `copy`, the files
-/// are copied into Glint's clips folder first (into a game folder when that
-/// setting is on); otherwise they stay where they are and are only indexed.
-/// The originals are never moved, changed or deleted. Returns how many were added.
-pub fn run(core: &Arc<Core>, items: Vec<Found>, copy: bool) -> Result<usize, String> {
-    run_counted(core, items, copy).map(|(added, _)| added)
+/// are copied into Glint's clips folder first; otherwise they stay where they
+/// are and are only indexed. `place` / `folder` pick the library folder (see
+/// `place_from`). The originals are never moved, changed or deleted. Returns
+/// how many were added.
+pub fn run(core: &Arc<Core>, items: Vec<Found>, copy: bool, place: Option<&str>, folder: Option<&str>) -> Result<usize, String> {
+    let place = place_from(place, folder, core.settings().game_folders)?;
+    run_placed(core, items, copy, place).map(|(added, _)| added)
+}
+
+/// `run` as before 0.1.16 (place from the game folders setting), also returning how many files were skipped.
+fn run_counted(core: &Arc<Core>, items: Vec<Found>, copy: bool) -> Result<(usize, usize), String> {
+    let place = place_from(None, None, core.settings().game_folders)?;
+    run_placed(core, items, copy, place)
 }
 
 /// `run`, also returning how many files were skipped as unreadable.
-fn run_counted(core: &Arc<Core>, items: Vec<Found>, copy: bool) -> Result<(usize, usize), String> {
+fn run_placed(core: &Arc<Core>, items: Vec<Found>, copy: bool, place: Place) -> Result<(usize, usize), String> {
     let s = core.settings();
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg").ok_or("ffmpeg was not found. Set its path in Settings.")?;
     let root = PathBuf::from(&s.clips_dir);
-    if copy {
+    if copy || place != Place::Main {
         fs::create_dir_all(&root).map_err(|e| format!("Could not create the clips folder: {e}"))?;
     }
+    let folders = Mutex::new(core.folders());
     let known = known_paths(core);
     let mut seen = HashSet::new();
     let todo: Vec<Found> = items.into_iter().filter(|i| !i.path.trim().is_empty() && seen.insert(i.path.to_lowercase()) && !known.contains(&i.path.to_lowercase())).collect();
@@ -803,7 +906,12 @@ fn run_counted(core: &Arc<Core>, items: Vec<Found>, copy: bool) -> Result<(usize
     let (next, done, added, skipped) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0));
     let naming = Mutex::new(());
     let new_records: Mutex<Vec<Record>> = Mutex::new(Vec::new());
-    let job = Job { core, ffmpeg: &ffmpeg, root: &root, game_folders: s.game_folders, copy, naming: &naming };
+    let one = if let Place::One(n) = &place { Some(n.clone()) } else { None };
+    let job = Job { core, ffmpeg: &ffmpeg, root: &root, place, copy, naming: &naming, folders: &folders };
+    // "One folder": made (or matched to an existing one) before the workers start; a bad name fails here.
+    if let Some(n) = one {
+        job.folder_for(&n)?;
+    }
     let workers = WORKERS.min(total).min(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).max(1));
     std::thread::scope(|sc| {
         for _ in 0..workers {
@@ -842,6 +950,7 @@ fn run_counted(core: &Arc<Core>, items: Vec<Found>, copy: bool) -> Result<(usize
     core.emit("import-progress", serde_json::json!({ "done": total, "total": total, "title": "", "skipped": skipped }));
     core.emit("clips-changed", ());
     core.emit("games-changed", ());
+    crate::icons::fill_in_background(core.clone()); // icons for the imported games, found on this PC (B)
     util::log(&format!("import: {added} added, {skipped} skipped ({})", if copy { "copied" } else { "in place" }));
     Ok((added, skipped))
 }
@@ -884,6 +993,97 @@ fn set_mtime(p: &Path, secs: u64) {
     if let Ok(f) = fs::OpenOptions::new().write(true).open(p) {
         let _ = f.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(secs));
     }
+}
+
+/// 0.1.16 checks: "Put the imported clips in", clips imported in place inside
+/// library folders (never moved), and one game per spelling (Medal's folder
+/// "Tom Clancys Rainbow Six Siege" and its index's "Rainbow Six Siege").
+fn placement_tests(r: &mut Report, core: &Arc<Core>, base: &Path, clips: &Path, put: &dyn Fn(&str, u64) -> PathBuf) {
+    // --- the choice
+    r.check("place: no choice follows the game folders setting", place_from(None, None, true) == Ok(Place::Games) && place_from(None, None, false) == Ok(Place::Main), "");
+    r.check("place: games / none", place_from(Some("games"), None, false) == Ok(Place::Games) && place_from(Some("none"), Some("x"), true) == Ok(Place::Main), "");
+    r.check("place: one folder needs a name", place_from(Some("one"), Some("  "), false).is_err() && place_from(Some("one"), None, false).is_err() && place_from(Some("one"), Some(".."), false).is_err(), "");
+    let odd = place_from(Some("one"), Some(" Me:dal? "), false);
+    r.check("place: one folder's name is made safe", odd == Ok(Place::One(util::sanitize_filename("Me:dal?"))), format!("{odd:?}"));
+    r.check("place: an unknown choice is an error", place_from(Some("elsewhere"), None, false).is_err(), "");
+
+    // --- spellings
+    r.check("game key: publisher prefix, case, punctuation and (R) ignored", game_key("Tom Clancy's Rainbow Six\u{ae} Siege") == game_key("Rainbow Six Siege") && game_key("Tom Clancys Rainbow Six Siege") == "rainbowsixsiege", game_key("Tom Clancy's Rainbow Six\u{ae} Siege"));
+    r.check("game key: different games stay different", game_key("Rainbow Six Siege") != game_key("Rainbow Six Extraction") && game_key("Tom Clancys") == "tomclancys", "");
+
+    // --- the reported case: a Medal tree where most clips sit in Medal's game
+    // folder (Medal's spelling) and some elsewhere, named by Medal's index.
+    let t1 = 1_710_000_000u64;
+    let in_folder = put(r"src3\Medal\Clips\Tom Clancys Rainbow Six Siege\MedalTVTomClancysRainbowSixSiege20261101101010101.mp4", t1 + 9);
+    let elsewhere = put(r"src3\Medal\Clips\MedalTVRainbowSixSiege20261102101010101.mp4", t1 + 8);
+    let mut db: Vec<u8> = b"SQLite format 3\0junk\x00\x05".to_vec();
+    db.extend_from_slice(b"C:\\Users\\x\\Videos\\Medal\\Clips\\MedalTVRainbowSixSiege20261102101010101.mp4\x00\xc7\x0ccategoryName\xc7\x11Rainbow Six Siege\x47icon\x00");
+    let _ = fs::create_dir_all(base.join(r"src3\Medal\Databases"));
+    let _ = fs::write(base.join(r"src3\Medal\Databases\medal-1.db"), &db);
+    let loose_a = put(r"src3\Loose\Valorant 2024.06.01 - 10.00.00.00.mp4", t1 + 7);
+    let loose_b = put(r"src3\Loose\Valorant 2024.06.02 - 10.00.00.00.mp4", t1 + 6);
+    let copy_a = put(r"src3\Copies\Apex Legends 2024.06.03 - 10.00.00.00.mp4", t1 + 5);
+    let copy_b = put(r"src3\Copies\Apex Legends 2024.06.04 - 10.00.00.00.mp4", t1 + 4);
+    let main_a = put(r"src3\Main\Deadlock 2024.06.05 - 10.00.00.00.mp4", t1 + 3);
+    let found = match scan_with(core, &base.join("src3").to_string_lossy(), false) {
+        Ok(f) => f,
+        Err(e) => return r.check("scan the placement tree", false, e),
+    };
+    // Medal's index names it "Rainbow Six Siege"; Glint files it under games::canonical of that.
+    let want = desktop_map("Rainbow Six Siege");
+    let wf = util::game_folder(&want);
+    let item = |p: &Path| found.iter().find(|f| f.path.eq_ignore_ascii_case(&p.to_string_lossy())).cloned();
+    let g = |p: &Path| item(p).map(|f| f.game).unwrap_or_else(|| "(not found)".into());
+    r.check("spelling: Medal's folder name and its index's name are one game", g(&in_folder) == g(&elsewhere) && g(&elsewhere) == want, format!("\"{}\" / \"{}\"", g(&in_folder), g(&elsewhere)));
+    let items = |ps: &[&PathBuf]| -> Vec<Found> { ps.iter().filter_map(|p| item(p)).collect() };
+    let get = |p: &Path| core.lib.lock().unwrap().clips.iter().find(|c| c.path.eq_ignore_ascii_case(&p.to_string_lossy())).cloned();
+    let bytes = fs::read(&in_folder).unwrap_or_default();
+
+    // In place with game folders: both are filed in the game's folder, nothing moves.
+    let res = run_placed(core, items(&[&in_folder, &elsewhere]), false, Place::Games);
+    r.check("in place, game folders: 2 added", res == Ok((2, 0)), format!("{res:?}"));
+    let (a, b) = (get(&in_folder), get(&elsewhere));
+    r.check(
+        "in place, game folders: a clip with a known game is filed like its siblings (the Main folder bug)",
+        a.as_ref().is_some_and(|c| c.folder == wf && c.game == want) && b.as_ref().is_some_and(|c| c.folder == wf && c.game == want),
+        format!("{:?} / {:?}", a.map(|c| (c.game, c.folder)), b.map(|c| (c.game, c.folder))),
+    );
+    r.check("in place, game folders: the folder exists in the clips folder and is listed", clips.join(&wf).is_dir() && core.folders().iter().any(|f| *f == wf), format!("{:?}", core.folders()));
+    r.check("in place, game folders: originals untouched, nothing copied", fs::read(&in_folder).unwrap_or_default() == bytes && elsewhere.is_file() && fs::read_dir(clips.join(&wf)).map(|d| d.count() == 0).unwrap_or(false), "");
+    core.rescan();
+    r.check("rescan keeps an in-place clip in its folder", get(&in_folder).is_some_and(|c| c.folder == wf), format!("{:?}", get(&in_folder).map(|c| c.folder)));
+
+    // Folder operations never move a file that stays outside the clips folder.
+    let id = get(&in_folder).map(|c| c.id).unwrap_or_default();
+    let mv = core.move_clips(&[id.clone()], "Picked");
+    r.check("move: an in-place clip is filed, its file stays", mv == Ok(1) && get(&in_folder).is_some_and(|c| c.folder == "Picked") && in_folder.is_file() && fs::read_dir(clips.join("Picked")).map(|d| d.count() == 0).unwrap_or(false), format!("{mv:?}"));
+    let rn = core.rename_folder("Picked", "Picked again");
+    r.check("rename folder: the in-place clip follows, its path is unchanged", rn.is_ok() && get(&in_folder).is_some_and(|c| c.folder == "Picked again" && Path::new(&c.path) == in_folder.as_path()), format!("{rn:?}"));
+    let dl = core.delete_folder("Picked again");
+    r.check("delete folder: the in-place clip goes back to the main folder, the original stays", dl.is_ok() && get(&in_folder).is_some_and(|c| c.folder.is_empty()) && fs::read(&in_folder).unwrap_or_default() == bytes && !clips.join("Picked again").exists(), format!("{dl:?}"));
+    let sg = core.sort_by_game();
+    r.check("sort by game: files an in-place clip without moving it", sg.is_ok() && get(&in_folder).is_some_and(|c| c.folder == wf) && fs::read(&in_folder).unwrap_or_default() == bytes, format!("{sg:?}"));
+    let _ = core.move_clips(&[id], "Gone");
+    let _ = fs::remove_dir(clips.join("Gone"));
+    core.rescan();
+    r.check("rescan: a folder removed by hand gives its in-place clips back to the main folder", get(&in_folder).is_some_and(|c| c.folder.is_empty()) && in_folder.is_file(), "");
+
+    // In place into one folder.
+    let res = run_placed(core, items(&[&loose_a, &loose_b]), false, Place::One("Medal".into()));
+    r.check("in place, one folder: every clip in it", res == Ok((2, 0)) && [&loose_a, &loose_b].iter().all(|p| get(p).is_some_and(|c| c.folder == "Medal") && p.is_file()) && clips.join("Medal").is_dir(), format!("{res:?}"));
+
+    // Copies into one folder that exists with other letter case: its spelling is kept.
+    let _ = fs::create_dir_all(clips.join("Best Of"));
+    let res = run_placed(core, items(&[&copy_a, &copy_b]), true, Place::One("best of".into()));
+    let ca = clips.join("Best Of").join("Apex Legends 2024.06.03 - 10.00.00.00.mp4");
+    r.check("copy, one folder: copies there, filed under the existing spelling", res == Ok((2, 0)) && ca.is_file() && get(&ca).is_some_and(|c| c.folder == "Best Of") && copy_a.is_file() && copy_b.is_file(), format!("{res:?} {:?}", get(&ca).map(|c| c.folder)));
+
+    // No folder, with the game folders setting on: the main folder.
+    core.settings.lock().unwrap().game_folders = true;
+    let res = run_placed(core, items(&[&main_a]), true, Place::Main);
+    let cm = clips.join("Deadlock 2024.06.05 - 10.00.00.00.mp4");
+    r.check("copy, no folder: in the clips folder itself although game folders is on", res == Ok((1, 0)) && get(&cm).is_some_and(|c| c.folder.is_empty()) && main_a.is_file(), format!("{res:?}"));
+    core.settings.lock().unwrap().game_folders = false;
 }
 
 /// `glint.exe --import-test <report.txt>`: headless checks on scratch folders.
@@ -1138,6 +1338,8 @@ fn run_self_test(r: &mut Report) {
     let uniq: HashSet<&String> = paths.iter().collect();
     r.check("bulk import: no duplicate entries", uniq.len() == paths.len(), "");
     r.check("all originals still in place", [&nv_a, &nv_b, &nv_c, &nv_mkv, &md_e, &md_f, &md_g, &op_i, &ss_k, &ss_l, &broken].iter().all(|p| p.is_file()), "");
+
+    placement_tests(r, &core, &base, &clips, &put);
 
     let fails = r.lines.iter().filter(|l| l.starts_with("FAIL")).count();
     // Optional, read-only: how the real folders on this PC would be sorted (counts only, nothing imported).

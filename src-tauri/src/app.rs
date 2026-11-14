@@ -63,6 +63,8 @@ pub struct Toast {
     /// Colour theme id and the user's CSS, so the overlay matches the app.
     pub theme: String,
     pub css: String,
+    /// The user's custom colours (`settings.theme_colors`), applied between the two.
+    pub colors: std::collections::BTreeMap<String, String>,
 }
 
 /// Small click-through overlay in a corner of the recorded monitor. Never takes focus.
@@ -77,7 +79,7 @@ pub fn show_toast(app: &AppHandle, t: Toast) {
     let pos = if ["tl", "tr", "bl", "br"].contains(&t.pos.as_str()) { t.pos.clone() } else { "tr".to_string() };
     let script = format!(
         "window.__TOAST__ = {};",
-        serde_json::json!({ "title": t.title, "sub": t.sub, "compact": t.compact, "mic": t.mic, "pos": pos, "opacity": t.opacity, "zoom": zoom, "secs": t.secs, "theme": t.theme, "css": t.css })
+        serde_json::json!({ "title": t.title, "sub": t.sub, "compact": t.compact, "mic": t.mic, "pos": pos, "opacity": t.opacity, "zoom": zoom, "secs": t.secs, "theme": t.theme, "css": t.css, "colors": t.colors })
     );
     let stay = Duration::from_millis((t.secs * 1000.0) as u64);
     thread::spawn(move || {
@@ -143,12 +145,15 @@ struct AppState {
     blur: Option<String>,
     hardware: win::Hardware,
     version: &'static str,
+    /// What each "Auto" capture choice resolves to (capture2.rs; the encoder only if already tested).
+    auto: crate::capture2::AutoInfo,
 }
 
 #[tauri::command(async)]
 fn get_state(core: St) -> AppState {
     let s = core.settings();
     AppState {
+        auto: crate::capture2::resolve_auto(&core, false),
         monitors: win::monitors(),
         status: core.status(),
         ffmpeg: util::find_exe(&s.ffmpeg_path, "ffmpeg").map(|p| p.to_string_lossy().into_owned()),
@@ -198,6 +203,7 @@ fn list_clips(core: St) -> Vec<ClipMeta> {
 #[tauri::command(async)]
 fn rescan_library(core: St) -> Vec<ClipMeta> {
     core.rescan();
+    crate::icons::fill_in_background(core.inner().clone()); // icons for games that have none
     core.lib.lock().unwrap().visible()
 }
 
@@ -352,6 +358,12 @@ fn pick_game_icon(core: St, game: String) -> Result<Option<crate::games::Game>, 
     core.games.lock().unwrap().set_icon(&game, &file).map(Some)
 }
 
+/// "Find icon again": look the game's icon up on this PC now (replaces a picked one). None: nothing found.
+#[tauri::command(async)]
+fn find_game_icon(core: St, game: String) -> Option<crate::games::Game> {
+    crate::icons::find_again(&core.games, &crate::icons::RealHost, &game)
+}
+
 #[tauri::command(async)]
 fn move_clips(core: St, ids: Vec<String>, folder: String) -> Result<usize, String> {
     core.move_clips(&ids, &folder)
@@ -420,6 +432,9 @@ fn export_clip(core: St, id: String, opts: crate::editor::ExportOpts) -> Result<
     let mut progress = |pct: f32| emitter.emit("export-progress", serde_json::json!({ "id": source, "pct": pct }));
     let new = crate::editor::export(&core.settings(), &meta, &opts, &mut progress)?;
     core.lib.lock().unwrap().add(new.clone());
+    if meta.draft {
+        crate::projects::mark_exported(core.inner(), &id); // the project shows "Exported"
+    }
     core.emit("clips-changed", new.id.clone());
     Ok(new)
 }
@@ -520,8 +535,9 @@ fn import_scan(core: St, path: String) -> Result<Vec<crate::import::Found>, Stri
 }
 
 #[tauri::command(async)]
-fn import_run(core: St, items: Vec<crate::import::Found>, copy: bool) -> Result<usize, String> {
-    crate::import::run(core.inner(), items, copy)
+fn import_run(core: St, items: Vec<crate::import::Found>, copy: bool, place: Option<String>, folder: Option<String>) -> Result<usize, String> {
+    // place: "games" | "one" (into `folder`) | "none"; absent = as the game folders setting says.
+    crate::import::run(core.inner(), items, copy, place.as_deref(), folder.as_deref())
 }
 
 #[tauri::command(async)]
@@ -535,37 +551,71 @@ fn blur_clip(core: St, id: String) -> Result<(), String> {
     core.inner().blur_clip(id)
 }
 
-/// Queue "Compress for Discord" of a clip to fit `mb` megabytes (5..=1000).
-/// The size is remembered as `settings.compress_mb` so the menu lists it first.
-/// The finished copy is saved beside the original, put on the clipboard and
+/// Queue "Compress for Discord" of a clip to fit `mb` megabytes (5..=1000),
+/// with the Compress page's settings (`settings.compress`). Since 0.1.16
+/// `settings.compress_mb` is the default size the user sets on that page; a
+/// size picked in the menu no longer changes it. The finished copy is saved
+/// (beside the original or in the chosen folder), copied if that is on and
 /// announced with "clip-compressed" (see compress.rs).
 #[tauri::command(async)]
 fn compress_clip(core: St, id: String, mb: u32) -> Result<crate::jobs::Job, String> {
     core.lib.lock().unwrap().get_saved(&id)?;
-    if (crate::compress::MIN_MB..=crate::compress::MAX_MB).contains(&mb) {
-        let s = {
-            let mut s = core.settings.lock().unwrap();
-            s.compress_mb = mb;
-            s.clone()
-        };
-        s.save();
-    }
     crate::compress::enqueue(core.inner(), id, mb)
 }
 
-/// "Edit together": queue a job that joins clips `ids` (2..=20, in the order
-/// given, which is the order selected) into a draft (kind "joined", `draft`
-/// true, never listed), announced with "clip-joined" (see join.rs).
+/// "Edit together": make an editor project of clips `ids` (2..=20, in the order
+/// given, which is the order selected) and queue the job that joins them into
+/// its draft (kind "joined", `draft` true, never listed), announced with
+/// "project-changed" and "clip-joined" (see projects.rs, join.rs).
 #[tauri::command(async)]
 fn join_clips(core: St, ids: Vec<String>) -> Result<crate::jobs::Job, String> {
     crate::join::enqueue(core.inner(), ids)
 }
 
-/// Delete a draft of "Edit together" (entry, file, thumbnail) once the editor
-/// is done with it. False when `id` is not a draft or a job still uses it.
+/// Another name for `delete_project` (a draft of no project is still deleted).
+/// False when `id` is not a draft or a job still uses it.
 #[tauri::command(async)]
 fn discard_draft(core: St, id: String) -> bool {
     crate::join::discard_draft(core.inner(), &id)
+}
+
+// Editor projects (projects.rs): a kept draft plus the editor's saved state.
+
+#[tauri::command(async)]
+fn list_projects(core: St) -> Vec<crate::projects::Project> {
+    crate::projects::list(core.inner())
+}
+
+#[tauri::command(async)]
+fn create_project(core: St, name: String) -> crate::projects::Project {
+    crate::projects::create(core.inner(), &name)
+}
+
+/// Queue a job (kind "join") that appends library clips `ids` to project `id`.
+#[tauri::command(async)]
+fn project_add_clips(core: St, id: String, ids: Vec<String>) -> Result<crate::jobs::Job, String> {
+    crate::projects::add_clips(core.inner(), &id, ids)
+}
+
+#[tauri::command(async)]
+fn project_save_state(core: St, id: String, state: String) -> Result<crate::projects::Project, String> {
+    crate::projects::save_state(core.inner(), &id, &state)
+}
+
+#[tauri::command(async)]
+fn project_state(id: String) -> Option<String> {
+    crate::projects::state(&id)
+}
+
+#[tauri::command(async)]
+fn rename_project(core: St, id: String, name: String) -> Result<crate::projects::Project, String> {
+    crate::projects::rename(core.inner(), &id, &name)
+}
+
+/// False while a job uses the project or when there is none.
+#[tauri::command(async)]
+fn delete_project(core: St, id: String) -> bool {
+    crate::projects::delete(core.inner(), &id)
 }
 
 #[tauri::command]
@@ -688,6 +738,7 @@ pub fn run(minimized: bool) {
             preview_toast,
             list_games,
             pick_game_icon,
+            find_game_icon,
             move_clips,
             list_folders,
             create_folder,
@@ -717,15 +768,30 @@ pub fn run(minimized: bool) {
             export_clip,
             blur_clip,
             compress_clip,
+            crate::compress::compress_plan,
+            crate::compress::compress_file,
+            crate::compress::compress_info,
+            crate::compress::pick_compress_files,
+            crate::compress::compress_copy,
+            crate::compress::compress_reveal,
             join_clips,
             discard_draft,
+            list_projects,
+            create_project,
+            project_add_clips,
+            project_save_state,
+            project_state,
+            rename_project,
+            delete_project,
             suspend_hotkeys,
             fire_keybind,
             check_deps,
             install_dep,
             cancel_dep_install,
             win_action,
-            crate::polish::set_app_icon
+            crate::polish::set_app_icon,
+            crate::capture2::auto_info,
+            crate::capture2::recommended_settings
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -736,13 +802,14 @@ pub fn run(minimized: bool) {
             // and must not delete the draft open in the running copy's editor.
             {
                 let dir = PathBuf::from(core.settings().clips_dir);
-                library::sweep_drafts(&mut core.lib.lock().unwrap(), &dir);
+                crate::projects::sweep_at_start(&mut core.lib.lock().unwrap(), &dir); // keeps the drafts of editor projects
             }
             let _ = app.asset_protocol_scope().allow_directory(library::thumbs_dir(), true);
             let _ = app.asset_protocol_scope().allow_directory(crate::games::icons_dir(), true);
             build_tray(&handle, core.clone())?;
             crate::polish::apply_icon(&handle, &core.settings()); // tray icon in the theme's colour, if on
             crate::polish::spawn_thumb_repair(core.clone());
+            crate::icons::fill_in_background(core.clone()); // icons for games that have none (imported ones)
             core.watch();
 
             // Updates: clear what the last update left behind, then look for a new

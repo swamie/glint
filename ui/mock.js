@@ -16,6 +16,7 @@ if (!window.__TAURI__) {
       toast: true, toast_pos: "tr", toast_opacity: 96, toast_scale: 100, toast_secs: 3.5, toast_length: true, toast_game: true, toast_mic: true,
       ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", icon_theme: false, icon_accent: "", icon_accent_2: "", discord_rpc: false, discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true,
       compress_mb: 10, ui_sounds: false, ui_sounds_hover: false, ui_sounds_volume: 50,
+      compress: { sizes: [10, 20, 50, 500], preset: "veryfast", audio_kbps: 0, max_height: 0, max_fps: 0, audio: "first", dest: "beside", dest_dir: "", copy: true }, theme_colors: {},
       ffmpeg_path: "", blur_path: "",
       keybinds: [
         { id: "a", ctrl: false, shift: false, alt: false, win: false, key: "F8", action: "clip", seconds: 30, monitor: -1 },
@@ -35,7 +36,9 @@ if (!window.__TAURI__) {
       { index: 0, name: "DISPLAY1", width: 2160, height: 1440, hz: 280, primary: true, x: 0, y: 0, native_width: 2560, native_height: 1440 },
       { index: 1, name: "DISPLAY2", width: 1680, height: 1050, hz: 60, primary: false, x: 2160, y: 0, native_width: 1680, native_height: 1050 },
     ],
-    status: { recording: true, encoder: "nvenc", method: "wgc", width: 2560, height: 1440, fps: 60, fps_actual: 59.9, buffer_secs: 412, buffer_max: 600, buffer_bytes: 3.1e7, buffer_disk_bytes: 2.8e8, ram_total: 2.4e8, cpu_pct: 0.9, ram_app: 3.4e7, ram_ffmpeg: 1.4e8, max_mbps: 15, error: "", game: "Overwatch", discord: "off" },
+    status: { recording: true, encoder: "nvenc", method: "wgc", width: 2560, height: 1440, fps: 60, fps_actual: 59.9, buffer_secs: 412, buffer_max: 600, buffer_bytes: 3.1e7, buffer_disk_bytes: 2.8e8, ram_total: 2.4e8, cpu_pct: 0.9, ram_app: 3.4e7, ram_ffmpeg: 1.4e8, max_mbps: 15, error: "", game: "Overwatch", discord: "off", border: "off" },
+    // capture2.rs AutoInfo: what each "Auto" resolves to (get_state.auto, auto_info).
+    auto: { encoder: "nvenc", method: "wgc", method_why: "", aspect_width: 2560, aspect_height: 1440, mode_width: 2160, mode_height: 1440, widened: true, auto_mbps: 17.7, native_width: 2160, native_height: 1440, ffmpeg: "C:\\tools\\ffmpeg\\bin\\ffmpeg.exe", blur: "C:\\tools\\blur\\blur-cli.exe", border: { build: 26300, configurable: true, main: "Allow", desktop_apps: "Allow", device: "Allow", can_remove: true } },
     // What's new opens by itself after an update: localStorage["glint.seenVersion"] = "0.1.7", then reload.
     ffmpeg: "C:\\tools\\ffmpeg\\bin\\ffmpeg.exe", blur: "C:\\tools\\blur\\blur-cli.exe", version: "0.1.8",
     hardware: { gpus: [{ name: "NVIDIA GeForce RTX 5060 Ti", vendor: "nvidia" }], cpu: "11th Gen Intel(R) Core(TM) i5-11600", gpu: { name: "NVIDIA GeForce RTX 5060 Ti", vendor: "nvidia" }, encoder: "nvenc" },
@@ -70,13 +73,121 @@ if (!window.__TAURI__) {
   ];
   const MOCK_VIDEO_SECS = 20; // the length of "/__test.mp4" (clip c2's video), the only real one
   let drafts = [];            // "Edit together" drafts: never in list_clips, removed by discard_draft
+  // Editor projects, as projects.rs: { id, name, created, modified, clips, exported, state }; a
+  // project's draft is in `drafts` with the project's id. An add is a "join" job (one at a time,
+  // about 2 s); its parts lie inside the real 20 s video, one MOCK_SLOT (1 s) each, so 20 clips fit
+  // and an add only appends (old joins never move, as in projects.rs).
+  // window.__mockAddFails = true: the next add jobs fail and leave the project as it was.
+  const MOCK_SLOT = MOCK_VIDEO_SECS / 20;
+  const mockProj = {
+    list: [],
+    seq: 0,
+    changed: () => window.__mockEmit("projects-changed", null),
+    active: (j) => ["queued", "running"].includes(j.state),
+    busy: (id) => jobs.some((j) => j.kind === "join" && j.project === id && mockProj.active(j)),
+    view: (p) => {
+      const clip = drafts.find((d) => d.id === p.id) || null;
+      return { id: p.id, name: p.name, created: p.created, modified: p.modified, clip: clip && { ...clip, joins: [...clip.joins], join_names: [...clip.join_names] }, clips: p.clips.map((c) => ({ ...c })), exported: p.exported, size: clip ? clip.size : 0, busy: mockProj.busy(p.id) };
+    },
+    make: (name) => {
+      const now = Date.now();
+      const p = { id: "p" + now + "-" + mockProj.seq++, name: String(name || "").trim().slice(0, 100) || "New project", created: now, modified: now, clips: [], exported: false, state: null };
+      mockProj.list.push(p);
+      return p;
+    },
+    remove: (id) => { mockProj.list = mockProj.list.filter((p) => p.id !== id); drafts = drafts.filter((d) => d.id !== id); },
+    add: (p, ids, fromJoin) => {
+      const uniq = [...new Set(ids)];
+      if (!uniq.length) throw "Pick at least one clip to add";
+      const hasDraft = drafts.some((d) => d.id === p.id);
+      const pending = jobs.filter((j) => j.kind === "join" && j.project === p.id && mockProj.active(j));
+      const have = (hasDraft ? p.clips.length : 0) + pending.reduce((s, j) => s + j.picked.length, 0);
+      if (have + uniq.length > 20) throw "A project takes at most 20 clips";
+      const picked = uniq.map((id) => clips.find((c) => c.id === id));
+      if (picked.some((c) => !c)) throw "Clip not found";
+      const secs = (hasDraft ? p.clips.reduce((s, c) => s + c.duration, 0) : 0) + pending.reduce((s, j) => s + j.picked.reduce((a, c) => a + c.duration, 0), 0);
+      if (secs + picked.reduce((s, c) => s + c.duration, 0) > 1800) throw "A project takes at most 30 minutes of clips";
+      const key = "join:" + (hasDraft ? [p.id, ...uniq] : uniq).join(",");
+      if (jobs.some((j) => j.clip_id === key && mockProj.active(j))) throw "Those clips are already being joined";
+      const job = { id: "j" + Date.now() + jobs.length, clip_id: key, title: p.name, kind: "join", state: "queued", pct: 0, message: "", result_id: "", queued: Date.now(), project: p.id, picked, fromJoin };
+      jobs.push(job);
+      const answer = { ...job };
+      delete answer.project; delete answer.picked; delete answer.fromJoin;
+      mockProj.pump();
+      mockProj.changed();
+      return answer;
+    },
+    pump: () => {
+      if (jobs.some((j) => j.kind === "join" && j.state === "running")) return;
+      const job = jobs.find((j) => j.kind === "join" && j.state === "queued");
+      if (!job) { window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x }))); return; }
+      job.state = "running";
+      const tick = setInterval(() => {
+        if (job.state !== "running") { clearInterval(tick); mockProj.pump(); mockProj.changed(); return; }
+        job.pct = Math.min(100, job.pct + 10);
+        if (job.pct >= 100) {
+          clearInterval(tick);
+          mockProj.finish(job);
+          mockProj.pump();
+        }
+        window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
+      }, 200);
+      window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
+    },
+    finish: (job) => {
+      const p = mockProj.list.find((x) => x.id === job.project);
+      if (!p || window.__mockAddFails) {
+        job.state = "error";
+        job.message = p ? `The video file of "${job.picked[0].title}" is missing` : "Project not found";
+        if (p && job.fromJoin && !drafts.some((d) => d.id === p.id)) mockProj.remove(p.id);
+        mockProj.changed();
+        return;
+      }
+      const old = drafts.find((d) => d.id === p.id);
+      const round = (x) => Math.round(x * 1000) / 1000;
+      const titles = job.picked.map((c) => c.title);
+      // Every part gets its own slot of MOCK_SLOT seconds of the real video and the draft is as long
+      // as its parts, so an add only appends: old joins, names and source seconds never move.
+      let joins, names, starts;
+      const before = old ? old.join_names.length : 0;
+      starts = titles.map((_, i) => round((before + i) * MOCK_SLOT));
+      if (!old) {
+        joins = starts.slice(1);
+        names = titles;
+      } else {
+        joins = [...old.joins, ...starts];
+        names = [...old.join_names, ...titles];
+      }
+      const length = round(names.length * MOCK_SLOT);
+      const gen = ++mockProj.seq;
+      const first = old || job.picked[0];
+      const made = {
+        ...first, id: p.id, title: p.name, kind: "joined", draft: true, created: old ? old.created : Date.now(),
+        duration: length, size: (old ? old.size : 0) + job.picked.reduce((s, c) => s + c.size, 0), joins, join_names: names,
+        path: `/__test.mp4?draft=${p.id}-${gen}`, favorite: false, folder: first.folder || "",
+      };
+      drafts = drafts.filter((d) => d.id !== p.id);
+      drafts.push(made);
+      const added = job.picked.map((c) => ({ id: c.id, title: c.title, duration: c.duration }));
+      if (!old) p.clips = [];
+      p.clips.push(...added);
+      p.modified = Math.max(Date.now(), p.modified + 1);
+      p.exported = false;
+      job.state = "done";
+      job.pct = 100;
+      job.result_id = p.id;
+      window.__mockEmit("project-changed", { project: mockProj.view(p), job_id: job.id, added, mode: "copy", secs: 2, starts, titles });
+      mockProj.changed();
+    },
+  };
+  window.__mockProjects = mockProj; // for checks in the console
   // A pretend render queue: each job takes about 4 s. Blur jobs run at most settings.blur_parallel
   // at once; compress jobs ("Compress for Discord") one at a time in their own lane, as in jobs.rs.
   let jobs = [];
   const pumpJobs = () => {
     const limit = state.settings.blur_parallel || 2;
     for (const j of jobs) {
-      if (j.state !== "queued") continue;
+      if (j.state !== "queued" || j.kind === "join") continue; // joins: mockProj.pump
       const squeeze = j.kind === "compress";
       if (jobs.filter((x) => x.state === "running" && (x.kind === "compress") === squeeze).length >= (squeeze ? 1 : limit)) continue;
       j.state = "running";
@@ -89,12 +200,14 @@ if (!window.__TAURI__) {
           if (squeeze) {
             // The copy aims a little under the size asked for; window.__mockCopyFails = true: the clipboard refuses.
             const size = Math.round(j.mb * 0.94e6);
-            const made = { ...(src || clips[0]), id: "d" + Date.now(), title: j.title + " (discord)", kind: "discord", size, created: Date.now() };
-            clips.push(made);
+            // A file from outside the library (compress_file, j.file): saved beside it, not added to the library.
+            const outPath = (j.file || (src && src.path) || "C:\\Users\\you\\Videos\\Glint\\clip.mp4").replace(/(\.[^.\\]+)?$/, ` (Discord ${j.mb}MB).mp4`);
+            const made = j.file ? null : { ...(src || clips[0]), id: "d" + Date.now(), title: j.title + ` (Discord ${j.mb}MB)`, kind: "discord", size, created: Date.now(), path: outPath };
+            if (made) clips.push(made);
             j.state = "done";
-            j.result_id = made.id;
-            window.__mockEmit("clips-changed", made.id);
-            window.__mockEmit("clip-compressed", { clip: made, mb: j.mb, size, copied: !window.__mockCopyFails, secs: 4.1 });
+            j.result_id = made ? made.id : "";
+            if (made) window.__mockEmit("clips-changed", made.id);
+            window.__mockEmit("clip-compressed", { clip: made, mb: j.mb, size, copied: !window.__mockCopyFails && state.settings.compress?.copy !== false, secs: 4.1, path: outPath, job_id: j.id, source: j.clip_id });
           } else {
             const made = { ...(src || clips[0]), id: "b" + Date.now(), title: j.title + " (blur)", kind: "blur", created: Date.now() };
             clips.push(made);
@@ -178,6 +291,7 @@ if (!window.__TAURI__) {
         switch (cmd) {
           case "list_games": return games;
           case "pick_game_icon": return null;
+          case "find_game_icon": return null;
           case "bug_report_info": return { configured: true, version: "0.1.6", system: "Glint 0.1.6\nWindows 11 (build 26300)\nNVIDIA GeForce RTX 5060 Ti\nCapture 2560x1440 @ 120 fps, nvenc, wgc, buffer mixed", log: "2026-11-13 09:13:54 hotkey kb-30s -> clip 30s\n2026-11-13 09:13:56 clip 30s: saved 30.4s, 184.2 MB in 1743 ms -> ~\\Videos\\Glint\\Risk of Rain 2\\Risk of Rain 2 2026-11-13 09-13-54.mp4" };
           case "send_bug_report": await new Promise((r) => setTimeout(r, 600)); if (/fail/i.test(args.text)) throw "Discord did not accept the report (HTTP 400)"; return null;
           case "editor_audio_tracks": return [{ index: 0, title: "Mix", path: "/__test.mp4" }, { index: 1, title: "Desktop", path: "/__test.mp4" }, { index: 2, title: "Microphone", path: "/__test.mp4" }];
@@ -193,6 +307,8 @@ if (!window.__TAURI__) {
             for (const pct of [20, 60, 100]) { await new Promise((r) => setTimeout(r, 150)); window.__mockEmit("export-progress", { id: args.id, pct }); }
             const made = { ...src, id: "e" + Date.now(), title: src.title + " (edit)", kind: "edit", created: Date.now(), draft: false, joins: [], join_names: [] };
             clips.push(made);
+            const proj = src.draft && mockProj.list.find((p) => p.id === src.id);
+            if (proj) { proj.exported = true; mockProj.changed(); } // the project shows "Exported"
             return made;
           }
           case "import_sources": return [
@@ -213,7 +329,10 @@ if (!window.__TAURI__) {
             const n = args.items.length;
             for (let i = 1; i <= n; i++) { await new Promise((r) => setTimeout(r, 100)); window.__mockEmit("import-progress", { done: i, total: n, title: args.items[i - 1].title }); }
             window.__mockEmit("import-progress", { done: n, total: n, title: "", skipped: 1 });
-            args.items.slice(0, n - 1).forEach((it, i) => clips.push(clip(100 + clips.length + i, it.title, it.game, 60 * 24 * (i + 1), 30, { kind: "import" })));
+            // place: "games" | "one" (args.folder) | "none"; absent = the game folders setting (0.1.16).
+            const place = args.place || (state.settings.game_folders ? "games" : "none");
+            const folderFor = (g) => { const f = place === "one" ? String(args.folder || "").trim() : place === "games" ? g : ""; const have = folders.find((x) => x.toLowerCase() === f.toLowerCase()); if (f && !have) folders.push(f); return have || f; };
+            args.items.slice(0, n - 1).forEach((it, i) => clips.push(clip(100 + clips.length + i, it.title, it.game, 60 * 24 * (i + 1), 30, { kind: "import", folder: folderFor(it.game) })));
             window.__mockEmit("clips-changed", "");
             return n - 1;
           }
@@ -246,60 +365,106 @@ if (!window.__TAURI__) {
             if (!src) throw "Clip not found";
             if (jobs.some((j) => j.clip_id === args.id && j.kind === "compress" && ["queued", "running"].includes(j.state))) throw "That clip is already being compressed";
             if (src.size <= args.mb * 1e6) throw `This clip is already under ${args.mb} MB, so you can send it to Discord as it is`;
-            state.settings.compress_mb = args.mb;
             const job = { id: "j" + Date.now() + jobs.length, clip_id: args.id, title: src.title, kind: "compress", state: "queued", pct: 0, message: "", result_id: "", queued: Date.now(), mb: args.mb };
             jobs.push(job);
             const answer = { ...job }; // as queued, like the backend's answer
             pumpJobs();
             return answer;
           }
+          // The Compress page (compress.rs). A picked file is 80 MB, 1920x1080 at 60 fps, 45 s, two audio tracks.
+          case "compress_info": return { min_mb: 5, max_mb: 1000, default_sizes: [10, 20, 50, 500], presets: ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"], default_preset: "veryfast", auto: { audio_kbps: 96, audio_low_kbps: 64, audio_low_below: 600, max_height: 1440, max_fps: 60 } };
+          case "pick_compress_files": return ["D:\\Recordings\\match point.mkv"];
+          case "compress_copy": case "compress_reveal": return null;
+          case "compress_file": {
+            if (!(args.mb >= 5 && args.mb <= 1000)) throw "Pick a size from 5 to 1000 MB";
+            if (jobs.some((j) => j.clip_id === args.path && ["queued", "running"].includes(j.state))) throw "That clip is already being compressed";
+            if (80e6 <= args.mb * 1e6) throw `This clip is already under ${args.mb} MB (it is 80.0 MB)`;
+            const title = args.path.split(/[\\/]/).pop().replace(/\.[^.]+$/, "");
+            const job = { id: "j" + Date.now() + jobs.length, clip_id: args.path, title, kind: "compress", state: "queued", pct: 0, message: "", result_id: "", queued: Date.now(), mb: args.mb, file: args.path };
+            jobs.push(job);
+            const answer = { ...job };
+            pumpJobs();
+            return answer;
+          }
+          case "compress_plan": {
+            // A rough copy of compress.rs's budget and size rule, enough to show what each clip becomes.
+            const c = state.settings.compress || {};
+            const mb = Math.min(1000, Math.max(5, args.mb));
+            const plan = (key, id, path, title, size, dur, w, h, fps, tracks) => {
+              const row = { key, id, path, title, size, duration: dur, src_w: w, src_h: h, src_fps: fps, audio_tracks: tracks, width: 0, height: 0, fps: 0, video_kbps: 0, audio_kbps: 0, audio_mix: 0, small: size <= mb * 1e6, error: "" };
+              const total = ((mb * 1e6 * 0.96 - 30000) * 0.99 * 8) / dur / 1000;
+              const audio = tracks ? (c.audio_kbps || (total < 600 ? 64 : 96)) : 0;
+              const video = Math.min(40000, total - audio);
+              if (video < 150) { row.error = `This clip is too long for ${mb} MB. Trim it or pick a bigger size.`; return row; }
+              const ladder = [[12000, 1440, 60], [6000, 1080, 60], [3500, 720, 60], [2000, 720, 30], [1000, 480, 30], [0, 360, 30]];
+              for (const [need, lh, cap] of ladder) {
+                const hh = Math.min(lh, c.max_height || 1e9), f = Math.min(fps || 60, cap, c.max_fps || 1e9);
+                if (video >= need * (hh / lh) ** 2 * f / cap) { const k = Math.min(1, Math.sqrt((hh * hh * 16 / 9) / (w * h))); Object.assign(row, { width: Math.round(w * k / 2) * 2, height: Math.round(h * k / 2) * 2, fps: f }); break; }
+              }
+              Object.assign(row, { video_kbps: video, audio_kbps: audio, audio_mix: tracks ? (c.audio === "all" ? tracks : 1) : 0 });
+              return row;
+            };
+            const rows = (args.ids || []).map((id) => { const k = clips.find((x) => x.id === id); return k ? plan(id, id, k.path, k.title, k.size, k.duration, k.width, k.height, k.fps, k.audio_tracks) : { key: id, id, error: "Clip not found" }; });
+            for (const p of args.paths || []) rows.push(plan(p, "", p, p.split(/[\\/]/).pop().replace(/\.[^.]+$/, ""), 80e6, 45, 1920, 1080, 60, 2));
+            await new Promise((r) => setTimeout(r, 150));
+            return rows;
+          }
+          // Editor projects (projects.rs): kept in memory. "Edit together" makes one too.
           case "join_clips": {
-            // "Edit together", refused like join.rs; window.__mockJoinMissing = true: a clip's file is gone.
-            // Runs on its own (about 2 s), then "clip-joined" with a DRAFT (never in list_clips): the clips
-            // in the order given, as parts of the one real 20 s video, so the editor can play every part.
+            // Refused like join.rs; window.__mockJoinMissing = true: a clip's file is gone.
             const picked = [...new Set(args.ids)].map((id) => clips.find((c) => c.id === id)).filter(Boolean);
             if (picked.length < 2) throw "Pick at least two clips to edit together";
             if (picked.length > 20) throw "Edit together takes at most 20 clips";
             if (picked.reduce((s, c) => s + c.duration, 0) > 1800) throw "Edit together takes at most 30 minutes of clips";
             if (window.__mockJoinMissing) throw `The video file of "${picked[picked.length - 1].title}" is missing`;
-            const key = "join:" + picked.map((c) => c.id).join(",");
-            if (jobs.some((j) => j.clip_id === key && ["queued", "running"].includes(j.state))) throw "Those clips are already being joined";
-            const title = `${picked[0].title} + ${picked.length - 1} more`;
-            const job = { id: "j" + Date.now() + jobs.length, clip_id: key, title, kind: "join", state: "running", pct: 0, message: "", result_id: "", queued: Date.now() };
-            jobs.push(job);
-            const answer = { ...job };
-            const tick = setInterval(() => {
-              if (job.state !== "running") { clearInterval(tick); return; }
-              job.pct = Math.min(100, job.pct + 10);
-              if (job.pct >= 100) {
-                clearInterval(tick);
-                // The parts are scaled into the real video's length (half shared evenly, half by each clip's
-                // own length), so every join lies inside it and no part is tiny.
-                const total = picked.reduce((s, c) => s + c.duration, 0) || 1;
-                const lens = picked.map((c) => MOCK_VIDEO_SECS * (0.5 / picked.length + (0.5 * c.duration) / total));
-                let at = 0;
-                const joins = lens.slice(0, -1).map((n) => Math.round((at += n) * 1000) / 1000);
-                const made = {
-                  ...picked[0], id: "g" + Date.now(), title, kind: "joined", draft: true, created: Date.now(),
-                  duration: MOCK_VIDEO_SECS, size: picked.reduce((s, c) => s + c.size, 0), joins, join_names: picked.map((c) => c.title),
-                  path: "/__test.mp4", favorite: false, folder: picked[0].folder || "",
-                };
-                drafts.push(made);
-                window.__mockEmit("clip-joined", { clip: { ...made }, joins, mode: "copy", secs: 2 });
-                job.state = "done";
-                job.result_id = made.id;
-              }
-              window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
-            }, 200);
-            window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
-            return answer;
+            if (jobs.some((j) => j.clip_id === "join:" + picked.map((c) => c.id).join(",") && ["queued", "running"].includes(j.state))) throw "Those clips are already being joined";
+            const p = mockProj.make(`${picked[0].title} + ${picked.length - 1} more`);
+            try { return mockProj.add(p, args.ids, true); } catch (e) { mockProj.remove(p.id); throw e; }
           }
-          case "discard_draft": {
-            // As join.rs: only a draft, and not while a queued or running job has it as its clip.
-            if (!drafts.some((d) => d.id === args.id)) return false;
-            if (jobs.some((j) => j.clip_id === args.id && ["queued", "running"].includes(j.state))) return false;
-            drafts = drafts.filter((d) => d.id !== args.id);
+          case "discard_draft": case "delete_project": {
+            // As projects.rs: false while a job builds or reads it; removes draft, thumbnail, state.
+            const p = mockProj.list.find((x) => x.id === args.id);
+            if (!p) {
+              if (cmd === "delete_project" || !drafts.some((d) => d.id === args.id)) return false;
+              if (jobs.some((j) => j.clip_id === args.id && ["queued", "running"].includes(j.state))) return false;
+              drafts = drafts.filter((d) => d.id !== args.id);
+              return true;
+            }
+            if (mockProj.busy(p.id)) return false;
+            mockProj.remove(p.id);
+            mockProj.changed();
             return true;
+          }
+          case "list_projects":
+            // "Edit together" cancelled before its first build: no empty project is left (as projects.rs).
+            jobs.filter((j) => j.kind === "join" && j.fromJoin && j.state === "cancelled" && !drafts.some((d) => d.id === j.project)).forEach((j) => mockProj.remove(j.project));
+            return mockProj.list.map(mockProj.view).sort((a, b) => b.modified - a.modified);
+          case "create_project": { const p = mockProj.make(args.name); mockProj.changed(); return mockProj.view(p); }
+          case "project_add_clips": {
+            const p = mockProj.list.find((x) => x.id === args.id);
+            if (!p) throw "Project not found";
+            return mockProj.add(p, args.ids || [], false);
+          }
+          case "project_save_state": {
+            const p = mockProj.list.find((x) => x.id === args.id);
+            if (!p) throw "Project not found";
+            p.state = String(args.state);
+            p.modified = Math.max(Date.now(), p.modified);
+            p.exported = false;
+            mockProj.changed();
+            return mockProj.view(p);
+          }
+          case "project_state": { const p = mockProj.list.find((x) => x.id === args.id); return p && p.state != null ? p.state : null; }
+          case "rename_project": {
+            const p = mockProj.list.find((x) => x.id === args.id);
+            if (!p) throw "Project not found";
+            const name = String(args.name || "").trim().slice(0, 100);
+            if (!name) throw "Type a name for the project";
+            p.name = name;
+            const d = drafts.find((x) => x.id === p.id);
+            if (d) d.title = name;
+            mockProj.changed();
+            return mockProj.view(p);
           }
           case "blur_clip": {
             if (jobs.some((j) => j.clip_id === args.id && j.kind !== "compress" && ["queued", "running"].includes(j.state))) throw "That clip is already rendering";
@@ -322,6 +487,20 @@ if (!window.__TAURI__) {
           case "copy_clips": return args.ids.length;
           case "set_favorites": clips.forEach((c) => { if (args.ids.includes(c.id)) c.favorite = args.favorite; }); return null;
           case "get_state": mockDeps.sync(); syncCaptures(); return state;
+          case "auto_info": return state.auto;
+          case "recommended_settings": return {
+            input: { gpu: "NVIDIA GeForce RTX 5060 Ti", encoder: "nvenc", width: 2160, height: 1440, hz: 280, ram_gb: 31.9, threads: 12, build: 26300, has_wgc: true, border_ok: true, longest_secs: 120 },
+            items: [
+              { key: "encoder", value: "auto", why: "Auto uses {encoder}, which passed a test encode on this PC", vars: { encoder: "nvenc" } },
+              { key: "method", value: "auto", why: "Auto uses Windows Graphics Capture, the smoothest at high frame rates", vars: {} },
+              { key: "aspect", value: "auto", why: "Fixes stretched resolutions and leaves everything else alone", vars: {} },
+              { key: "height", value: 0, why: "Your screen's own size, which {encoder} encodes comfortably at {fps} fps", vars: { encoder: "nvenc", fps: 120 } },
+              { key: "fps", value: 120, why: "Your {hz} Hz screen and {encoder} have room for 120 fps, which suits Blur", vars: { hz: 280, encoder: "nvenc" } },
+              { key: "bitrate", value: 0, why: "Uses only as much as the picture needs, which keeps the buffer small", vars: {} },
+              { key: "quality", value: "high", why: "High looks clean and the graphics card does the work", vars: {} },
+              { key: "buffer", value: "ram", why: "Your {ram} GB of RAM holds the whole buffer (at most {size} GB), so nothing is written to disk", vars: { ram: 32, size: 0.4 } },
+            ],
+          };
           case "get_status": case "toggle_recording": mockDeps.sync(); return syncCaptures();
           case "save_settings": state.settings = args.settings; return syncCaptures();
           case "list_clips": case "rescan_library": return clips;
