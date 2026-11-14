@@ -11,6 +11,19 @@
 .cp-swatch:focus-visible { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
 .cp-swatch.mine { border-color: var(--text); }
 
+/* 0.1.20: the user's presets among the theme tiles, "+ New preset", and the "Customise colours" box. */
+.theme .tp-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theme.tp-new { justify-content: center; background: transparent; color: var(--muted); border-style: dashed; font-weight: 600; }
+.theme.tp-new b { font-size: 17px; line-height: 1; font-weight: 500; }
+.theme.tp-new:hover { color: var(--accent-2); border-color: var(--accent); }
+.cp-box { border-bottom: 1px solid var(--line); }
+.cp-box[open] > summary { border-bottom: 1px solid var(--line); }
+.cp-box .cp-head { padding-top: 11px; }
+.cp-css { border-top: 1px solid var(--line); }
+.cp-css-title { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 18px 9px; }
+.cp-css-title .name { font-weight: 600; }
+.cp-css-title .hint { color: var(--muted); font-size: 12px; }
+
 .cpk { position: fixed; z-index: 90; width: 252px; padding: 12px; background: var(--panel); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: 0 14px 40px rgba(0, 0, 0, .5); }
 .cpk-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .cpk-cmp { display: flex; border-radius: 6px; overflow: hidden; border: 1px solid var(--line-2); }

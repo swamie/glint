@@ -475,6 +475,10 @@ pub fn self_test(report_path: &str) {
     for (name, ok, detail) in crate::capture2::self_test_checks() {
         r.check(&name, ok, &detail);
     }
+    // 0.1.20: Blur's GPU encoding default and the GPU type fitted to this PC's cards (blur.rs).
+    for (name, ok, detail) in crate::blur::gpu_self_checks() {
+        r.check(&name, ok, &detail);
+    }
 
     // 2. Icon.
     match stock_rgba() {

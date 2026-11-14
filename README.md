@@ -136,6 +136,10 @@ Settings → Appearance has twelve colour themes. Custom CSS, applied after the 
 
 **Custom colours.** Settings → Appearance → Custom colours changes single colours on top of the picked theme: accent, background, panels, buttons and cards, lines, text, secondary text. Each has a round swatch that opens Glint's colour picker: drag in the square and on the hue strip, or type a hex or R G B value. The whole window shows the colour while you pick; Enter or a click outside keeps it, Esc cancels. Colours you did not set follow the ones you did (a readable text colour on the accent, panels and lines from the background). Custom CSS still wins over them.
 
+**Presets.** The theme tiles under Settings → Appearance are the built-in themes followed by your own presets and "+ New preset", which saves the look on screen under a name. A preset is a built-in theme plus your colours and your custom CSS. The built-in themes never change: the first colour you change while one of them is picked makes a preset called "My theme" and goes on there. Right-click a preset to rename, duplicate or delete it; right-click a built-in theme to duplicate it. The colours and the custom CSS sit in one box, "Customise colours", under the tiles.
+
+**Closing the window.** Settings → Startup → "When I close the window (X)": "Keep Glint running in the tray" (the buffer keeps running and the clip keys still work; quit from the tray icon) or "Quit Glint" (everything stops; Glint asks first if a render, compression or export is still running).
+
 ## Library
 
 The sidebar folds to a strip of icons with the button at the left of the top bar. Folders sit under one "Folders" row there, closed until you open it (it opens by itself while clips are being dragged); the folder chips above the grid run from the fullest folder to the emptiest. Search is an icon in the top bar that opens when clicked or with Ctrl K.

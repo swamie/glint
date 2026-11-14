@@ -189,6 +189,142 @@ function glintColorsCss(themeId, colors) {
   return vars ? `:root { ${vars} }` : "";
 }
 
+/* ---------- user presets (0.1.20) ---------- */
+// settings.theme_presets = [{ id, name, base, colors, css }] and settings.theme_preset = the id of
+// the active one ("" = a built-in theme is active: it is always shown in its own colours).
+// settings.theme / theme_colors / custom_css are a MIRROR of what is in force: the active
+// preset's base, colours and CSS, or the built-in theme with no colours and no CSS. Every
+// change goes through these functions and ends with glintPresetSync, so the overlay, the
+// taskbar icon and the early paint from localStorage read the mirror and need no change.
+// They change the settings object they are given; the UI saves it.
+
+const glintThemeIds = () => GLINT_W.GLINT_THEMES.map((x) => x.id);
+const glintBaseOk = (id) => (glintThemeIds().includes(id) ? id : "glint");
+
+/** A new preset id, unlike any in `s`. */
+function glintPresetId(s) {
+  const taken = new Set((s.theme_presets || []).map((p) => p.id));
+  let id;
+  do id = "tp-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); while (taken.has(id));
+  return id;
+}
+
+/** `name`, or "name 2", "name 3"... when a preset already has it (letter case ignored). */
+function glintPresetName(s, name) {
+  const base = String(name || "").trim().slice(0, 60) || "Preset";
+  const taken = new Set((s.theme_presets || []).map((p) => String(p.name).toLowerCase()));
+  if (!taken.has(base.toLowerCase())) return base;
+  for (let n = 2; ; n++) if (!taken.has(`${base} ${n}`.toLowerCase())) return `${base} ${n}`;
+}
+
+/** The active preset, or null. */
+function glintPresetActive(s) {
+  return (s.theme_preset && (s.theme_presets || []).find((p) => p.id === s.theme_preset)) || null;
+}
+
+/** Write the mirror (theme, theme_colors, custom_css) from the active preset, or clear it for a built-in theme. */
+function glintPresetSync(s) {
+  const p = glintPresetActive(s);
+  if (!p) s.theme_preset = "";
+  if (p) s.theme = p.base;
+  s.theme = glintBaseOk(s.theme);
+  s.theme_colors = p ? glintCleanColors(p.colors) : {};
+  s.custom_css = p ? String(p.css || "") : "";
+}
+
+/** Add a preset { name, base, colors, css }, make it active and sync. Returns it. */
+function glintPresetCreate(s, name, from) {
+  const p = { id: glintPresetId(s), name: glintPresetName(s, name), base: glintBaseOk(from && from.base), colors: glintCleanColors(from && from.colors), css: String((from && from.css) || "") };
+  s.theme_presets = [...(s.theme_presets || []), p];
+  s.theme_preset = p.id;
+  glintPresetSync(s);
+  return p;
+}
+
+/** What is on screen now, as a preset's content (the mirror holds it). */
+const glintPresetFromScreen = (s) => ({ base: s.theme, colors: s.theme_colors, css: s.custom_css });
+
+/**
+ * Change the colours and/or the CSS (`patch` = { colors?, css? }). With a user preset
+ * active it changes that preset; with a built-in theme active it first makes a preset
+ * named `autoName` (numbered if taken) from that theme. Returns { preset, created }.
+ */
+function glintPresetEdit(s, patch, autoName) {
+  let p = glintPresetActive(s), created = false;
+  if (!p) { p = glintPresetCreate(s, autoName, glintPresetFromScreen(s)); created = true; }
+  if (patch && "colors" in patch) p.colors = glintCleanColors(patch.colors);
+  if (patch && "css" in patch) p.css = String(patch.css || "");
+  glintPresetSync(s);
+  return { preset: p, created };
+}
+
+/** Pick a built-in theme: its own look, no preset. */
+function glintPresetPickBuiltin(s, themeId) {
+  s.theme = glintBaseOk(themeId);
+  s.theme_preset = "";
+  glintPresetSync(s);
+}
+
+/** Pick a user preset. False if there is none with that id. */
+function glintPresetPick(s, id) {
+  if (!(s.theme_presets || []).some((p) => p.id === id)) return false;
+  s.theme_preset = id;
+  glintPresetSync(s);
+  return true;
+}
+
+/** Rename a preset (numbered if another one has the name). Returns the name given, or "" if there is no such preset. */
+function glintPresetRename(s, id, name) {
+  const p = (s.theme_presets || []).find((x) => x.id === id);
+  if (!p) return "";
+  const others = { theme_presets: s.theme_presets.filter((x) => x !== p) };
+  p.name = glintPresetName(others, name);
+  return p.name;
+}
+
+/** Copy a user preset (by id) or a built-in theme (by theme id) into a new active preset named `name`. Returns it, or null. */
+function glintPresetDuplicate(s, id, name) {
+  const src = (s.theme_presets || []).find((x) => x.id === id);
+  if (src) return glintPresetCreate(s, name, src);
+  if (glintThemeIds().includes(id)) return glintPresetCreate(s, name, { base: id, colors: {}, css: "" });
+  return null;
+}
+
+/** Delete a preset. If it was active, its base theme comes back. Returns true if one was deleted. */
+function glintPresetDelete(s, id) {
+  const p = (s.theme_presets || []).find((x) => x.id === id);
+  if (!p) return false;
+  s.theme_presets = s.theme_presets.filter((x) => x !== p);
+  if (s.theme_preset === id) { s.theme_preset = ""; s.theme = p.base; }
+  glintPresetSync(s);
+  return true;
+}
+
+/**
+ * Bring loaded settings in line, once at every start (refreshState). The mirror is what was
+ * on screen, so it wins and the look never changes here:
+ * - drop malformed presets and an active id that no longer exists;
+ * - a preset is active: it takes the mirror's base, colours and CSS (they match after any save);
+ * - a built-in theme is active but colours or CSS are set (settings from before 0.1.20, or
+ *   changed by an older Glint): they become a new active preset named `name`.
+ * Returns true when the settings changed and should be saved.
+ */
+function glintPresetMigrate(s, name) {
+  const before = JSON.stringify([s.theme, s.theme_colors, s.custom_css, s.theme_presets, s.theme_preset]);
+  const seen = new Set();
+  s.theme_presets = (Array.isArray(s.theme_presets) ? s.theme_presets : [])
+    .filter((p) => p && typeof p === "object" && typeof p.id === "string" && p.id && !seen.has(p.id) && seen.add(p.id))
+    .map((p) => ({ id: p.id, name: String(p.name || "").trim().slice(0, 60) || "Preset", base: glintBaseOk(p.base), colors: glintCleanColors(p.colors), css: String(p.css || "") }));
+  if (typeof s.theme_preset !== "string") s.theme_preset = "";
+  s.theme = glintBaseOk(s.theme);
+  const colors = glintCleanColors(s.theme_colors), css = String(s.custom_css || "");
+  const p = glintPresetActive(s);
+  if (p) Object.assign(p, { base: s.theme, colors, css });
+  else if (Object.keys(colors).length || css.trim()) glintPresetCreate(s, name || "My theme", { base: s.theme, colors, css });
+  glintPresetSync(s);
+  return JSON.stringify([s.theme, s.theme_colors, s.custom_css, s.theme_presets, s.theme_preset]) !== before;
+}
+
 /* ---------- applying ---------- */
 
 let glintLastTheme = "glint";
@@ -239,5 +375,6 @@ if (typeof document !== "undefined") {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { GLINT_BASE_COLORS, GLINT_THEME_VARS, GLINT_CUSTOM_VARS, glintHexToRgb, glintRgbToHex, glintNormHex, glintRgbToHsv, glintHsvToRgb, glintLuminance, glintContrast, glintMix, glintLift, glintInkFor, glintThemePalette, glintCleanColors, glintDeriveColors, glintEffectiveColor, glintColorsCss };
+  module.exports = { GLINT_BASE_COLORS, GLINT_THEME_VARS, GLINT_CUSTOM_VARS, glintHexToRgb, glintRgbToHex, glintNormHex, glintRgbToHsv, glintHsvToRgb, glintLuminance, glintContrast, glintMix, glintLift, glintInkFor, glintThemePalette, glintCleanColors, glintDeriveColors, glintEffectiveColor, glintColorsCss,
+    glintPresetId, glintPresetName, glintPresetActive, glintPresetSync, glintPresetCreate, glintPresetFromScreen, glintPresetEdit, glintPresetPickBuiltin, glintPresetPick, glintPresetRename, glintPresetDuplicate, glintPresetDelete, glintPresetMigrate };
 }

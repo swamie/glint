@@ -101,6 +101,8 @@ function projUpsert(p) {
   S.projects = list;
 }
 async function projRefresh() {
+  // An event can arrive while the page's scripts are still loading: app.js (S, invoke) comes after this file.
+  if (typeof S === "undefined" || typeof invoke !== "function") { setTimeout(projRefresh, 50); return; }
   try {
     const list = await invoke("list_projects");
     S.projects = Array.isArray(list) ? list : [];

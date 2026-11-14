@@ -16,7 +16,7 @@ if (!window.__TAURI__) {
       toast: true, toast_pos: "tr", toast_opacity: 96, toast_scale: 100, toast_secs: 3.5, toast_length: true, toast_game: true, toast_mic: true,
       ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", icon_theme: false, icon_accent: "", icon_accent_2: "", discord_rpc: false, discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true, update_check: true, update_auto: true,
       compress_mb: 10, ui_sounds: false, ui_sounds_hover: false, ui_sounds_volume: 50,
-      compress: { sizes: [10, 20, 50, 500], preset: "veryfast", audio_kbps: 0, max_height: 0, max_fps: 0, audio: "first", dest: "beside", dest_dir: "", copy: true }, theme_colors: {}, folder_colors: { "Best of": "#e5484d" },
+      compress: { sizes: [10, 20, 50, 500], preset: "veryfast", audio_kbps: 0, max_height: 0, max_fps: 0, audio: "first", dest: "beside", dest_dir: "", copy: true }, theme_colors: {}, theme_presets: [{ id: "tp-mock1", name: "Night pink", base: "midnight", colors: { accent: "#ff7ab8" }, css: "" }], theme_preset: "", folder_colors: { "Best of": "#e5484d" },
       ffmpeg_path: "", blur_path: "",
       keybinds: [
         { id: "a", ctrl: false, shift: false, alt: false, win: false, key: "F8", action: "clip", seconds: 30, monitor: -1 },
@@ -25,7 +25,7 @@ if (!window.__TAURI__) {
       blur: {
         blur: true, amount: 1, output_fps: 60, weighting: "equal", gamma: 1, interpolate: true, interpolated_fps: "5x", interpolation_method: "svp",
         pre_interpolate: false, pre_interpolated_fps: "360", deduplicate: true, deduplicate_method: "svp", encode_preset: "h264", quality: 16, copy_dates: false,
-        gpu_decoding: true, gpu_interpolation: true, gpu_encoding: false, gpu_type: "nvidia", rife_gpu: -1,
+        gpu_decoding: true, gpu_interpolation: true, gpu_encoding: true, gpu_type: "nvidia", rife_gpu: -1,
         timescale: false, input_timescale: 1, output_timescale: 1, adjust_audio_pitch: false, filters: false, brightness: 1, saturation: 1, contrast: 1,
         advanced: false, deduplicate_range: 2, deduplicate_threshold: 0.001, container: "mp4", ffmpeg_filters: "", debug: false,
         gaussian_std_dev: 1, gaussian_mean: 2, gaussian_bound: "[0,2]", svp_preset: "weak", svp_algorithm: 13, block_size: 8, mask_area: 0, rife_model: "rife-v4.26_ensembleFalse",

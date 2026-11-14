@@ -60,4 +60,12 @@ glintAddLanguage("ko", "한국어", {
   "Forward {n} seconds": "{n}초 앞으로",
   "Right-click to change the step": "우클릭하면 간격을 바꿀 수 있어요",
   "Import shows Medal's own logo, used as Medal's brand page allows.": "가져오기 창에 Medal의 실제 로고가 표시돼요. Medal 브랜드 페이지가 허용하는 방식대로 사용해요.",
+  "Theme presets: “+ New preset” saves the look you have as your own preset. Right-click a preset to rename, duplicate or delete it. Changing a colour never alters the built-in themes: it makes a preset of yours instead.": "테마 프리셋: “+ 새 프리셋”을 누르면 지금 모습이 내 프리셋으로 저장돼요. 프리셋을 우클릭하면 이름 바꾸기, 복제, 삭제를 할 수 있어요. 색을 바꿔도 기본 테마는 바뀌지 않고, 대신 내 프리셋이 만들어져요.",
+  "Settings → Startup → When I close the window (X): keep Glint running in the tray, or quit. Quitting asks first if a render, compression or export is still running.": "설정 → 시작 → 창을 닫을 때(X): Glint를 트레이에서 계속 실행할지, 완전히 끌지 고를 수 있어요. 렌더링, 압축, 내보내기가 진행 중이면 끄기 전에 먼저 물어봐요.",
+  "The colours and the custom CSS are in one “Customise colours” box that opens when you need it.": "색상과 사용자 CSS가 필요할 때 펼치는 “색상 사용자 지정” 상자 하나에 모였어요.",
+  "The clip button is simpler: your clip key as a keycap, then “Clip 30s”.": "클립 버튼이 더 간단해졌어요. 클립 단축키가 키 모양으로 보이고, 그 옆에 “Clip 30s”가 있어요.",
+  "A coloured folder is highlighted in its own colour while it is open.": "색을 지정한 폴더는 열려 있는 동안 그 색으로 강조돼요.",
+  "What's new: the section titles are a little bigger and sit closer to their lists.": "새 소식: 구역 제목이 조금 커지고 목록에 더 가까워졌어요.",
+  "Blur encodes on the graphics card by default on a new install, and uses the card this PC really has.": "새로 설치하면 Blur가 기본으로 그래픽 카드에서 인코딩하고, 이 PC에 실제로 있는 카드를 써요.",
+  "Clicks that made their sound but did nothing: a button could be redrawn between the press and the release. Buttons now keep their click, and the sidebar's pages open the moment you press.": "소리는 나는데 아무 일도 일어나지 않던 클릭을 고쳤어요. 누르고 떼는 사이에 버튼이 다시 그려질 수 있었어요. 이제 버튼이 클릭을 놓치지 않고, 사이드바 페이지는 누르는 순간 열려요.",
 });

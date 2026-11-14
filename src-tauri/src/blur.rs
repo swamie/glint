@@ -47,6 +47,53 @@ fn one_line(s: &str, fallback: &str) -> String {
     if t.is_empty() { fallback.to_string() } else { t.to_string() }
 }
 
+/// The Blur settings as they suit this PC, given the brands of its graphics cards (`present`:
+/// "nvidia" | "amd" | "intel" | "other", from `win::hardware`). `gpu_type` (default "nvidia") stays
+/// when the PC has a card of that brand; otherwise it becomes the card Glint encodes on (NVIDIA,
+/// else AMD, else Intel), so the GPU encoding default works on AMD and Intel PCs too. With no card
+/// of a known brand, GPU encoding is turned off (Blur would fail without one). Only the config
+/// Blur is given changes; the saved settings stay as the user set them.
+pub fn for_this_pc(b: &BlurSettings, present: &[&str]) -> BlurSettings {
+    const BRANDS: [&str; 3] = ["nvidia", "amd", "intel"];
+    let mut out = b.clone();
+    let wanted = b.gpu_type.trim().to_lowercase();
+    if !(BRANDS.contains(&wanted.as_str()) && present.contains(&wanted.as_str())) {
+        match BRANDS.iter().find(|v| present.contains(v)) {
+            Some(v) => out.gpu_type = v.to_string(),
+            None => out.gpu_encoding = false,
+        }
+    }
+    out
+}
+
+/// Checks of `for_this_pc` for `--polish-test`: (name, ok, detail).
+pub fn gpu_self_checks() -> Vec<(String, bool, String)> {
+    let base = BlurSettings::default();
+    let mut out = vec![("blur: GPU encoding is on by default".to_string(), base.gpu_encoding, String::new())];
+    let cases: [(&str, &[&str], &str, bool); 8] = [
+        ("nvidia", &["nvidia"], "nvidia", true),
+        ("nvidia", &["amd"], "amd", true),
+        ("nvidia", &["intel"], "intel", true),
+        ("nvidia", &["other", "intel", "amd"], "amd", true),
+        ("intel", &["nvidia", "intel"], "intel", true),
+        ("amd", &["nvidia", "intel"], "nvidia", true),
+        ("bogus", &["intel"], "intel", true),
+        ("nvidia", &["other"], "nvidia", false),
+    ];
+    for (wanted, present, want_type, want_enc) in cases {
+        let b = BlurSettings { gpu_type: wanted.into(), ..BlurSettings::default() };
+        let got = for_this_pc(&b, present);
+        out.push((
+            format!("blur gpu type {wanted:?} on {present:?} -> {want_type}, GPU encoding {want_enc}"),
+            got.gpu_type == want_type && got.gpu_encoding == want_enc,
+            format!("{} {}", got.gpu_type, got.gpu_encoding),
+        ));
+    }
+    let off = for_this_pc(&BlurSettings { gpu_encoding: false, ..BlurSettings::default() }, &["amd"]);
+    out.push(("blur: GPU encoding left off stays off".into(), !off.gpu_encoding && off.gpu_type == "amd", String::new()));
+    out
+}
+
 /// A complete blur v2 config, in the layout blur itself writes.
 pub fn config_text(b: &BlurSettings) -> String {
     let pick = |v: &str, allowed: &[&str]| -> String { if allowed.contains(&v) { v.to_string() } else { allowed[0].to_string() } };
@@ -213,7 +260,14 @@ fn render_in(blur_cli: &Path, input: &Path, output: &Path, cfg: &BlurSettings, j
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg");
     let issue = ffmpeg.as_deref().and_then(library::ffprobe_for).and_then(|p| sync_issue(&p, input));
     let link = stage_input(ffmpeg.as_deref(), &s.encoder, issue, input, &ext, job, cancel)?;
-    fs::write(job.join(".blur-config.cfg"), config_text(cfg)).map_err(|e| format!("Cannot write blur config: {e}"))?;
+    // The GPU type and GPU encoding as this PC's cards allow (the "nvidia" default on an AMD or Intel PC).
+    let hw = crate::win::hardware();
+    let present: Vec<&str> = hw.gpus.iter().map(|g| g.vendor.as_str()).collect();
+    let fit = for_this_pc(cfg, &present);
+    if fit.gpu_type != cfg.gpu_type || fit.gpu_encoding != cfg.gpu_encoding {
+        util::log(&format!("blur: gpu type {} -> {}, gpu encoding {} -> {} (cards: {present:?})", cfg.gpu_type, fit.gpu_type, cfg.gpu_encoding, fit.gpu_encoding));
+    }
+    fs::write(job.join(".blur-config.cfg"), config_text(&fit)).map_err(|e| format!("Cannot write blur config: {e}"))?;
     run_blur(blur_cli, &link, output, cancel, progress)
 }
 

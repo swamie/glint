@@ -24,17 +24,151 @@ function cpLabel(v) {
 const cpColors = () => glintCleanColors((S.settings && S.settings.theme_colors) || {});
 const cpTheme = () => (S.settings && S.settings.theme) || "glint";
 
-/** The "Custom colours" rows, drawn by renderSettings under the theme tiles. */
+/* ---------- presets (0.1.20): the tiles, the "Customise colours" box, the right-click menu ---------- */
+// The model is in themes.js (glintPreset* functions); here it is drawn and wired.
+// theme_colors / custom_css are the mirror of the active preset (see themes.js), so the
+// picker below keeps reading cpColors() and S.settings.custom_css.
+
+const prActive = () => (S.settings ? glintPresetActive(S.settings) : null);
+const prAutoName = () => t("My theme");
+let prBySearch = false; // the box was opened by the settings search, not by the user
+
+/** The tile grid: the built-in themes, the user's presets, then "+ New preset". */
+function presetTilesHtml() {
+  const s = S.settings;
+  const act = prActive();
+  const builtin = window.GLINT_THEMES.map((th) => `<button class="theme${!act && (s.theme || "glint") === th.id ? " active" : ""}" data-theme="${th.id}" style="background:${th.vars.panel || "#0a0e16"};color:${th.vars.text || "#e8edf6"}"><i style="background:${th.vars.accent || "#62b6f7"}"></i>${esc(th.name)}</button>`).join("");
+  const mine = (s.theme_presets || []).map((p) => {
+    const c = (v) => glintEffectiveColor(p.base, p.colors, v);
+    return `<button class="theme tp-tile${act && act.id === p.id ? " active" : ""}" data-tp="${esc(p.id)}" style="background:${c("panel")};color:${c("text")}" title="${esc(t("Your preset. Right-click to rename, duplicate or delete it"))}"><i style="background:${c("accent")}"></i><span class="tp-name">${esc(p.name)}</span></button>`;
+  }).join("");
+  return `<div class="themes">${builtin}${mine}<button class="theme tp-new" data-tp-new title="${esc(t("Make a new preset from the look you have now"))}"><b>+</b>${t("New preset")}</button></div>`;
+}
+
+/** The summary's hint: what an edit changes. */
+function prSummaryHint() {
+  const act = prActive();
+  if (act) return t("Editing {name}", { name: act.name });
+  const th = window.GLINT_THEMES.find((x) => x.id === S.settings.theme) || window.GLINT_THEMES[0];
+  return t("{theme} stays as it is: a change makes a new preset", { theme: th.name });
+}
+
+/** The "Customise colours" box, drawn by renderSettings under the tiles: the colour rows, Reset all, the custom CSS. */
 function colorRowsHtml() {
   const user = cpColors();
   const any = Object.keys(user).length > 0;
+  const css = S.settings.custom_css || "";
   const rows = GLINT_CUSTOM_VARS.map((v) => {
     const [name, hint] = cpLabel(v);
     return row(esc(name), esc(hint), cpCtl(v, user));
   }).join("");
-  return `<div class="cp-head"><div class="txt"><div class="name">${t("Custom colours")}</div><div class="hint">${t("Your own colours on top of the theme. They stay when you pick another theme. Custom CSS still wins over them.")}</div></div>
+  const open = prBySearch || uiPref("glint.colorsOpen", false);
+  return `<details class="css-box cp-box"${open ? " open" : ""}>
+    <summary><span class="name">${t("Customise colours")}</span><span class="hint" data-cp-sum>${esc(prSummaryHint())}</span></summary>
+    <div class="cp-head"><div class="txt"><div class="name">${t("Colours")}</div><div class="hint">${t("Your own colours on top of the preset's theme. Custom CSS still wins over them.")}</div></div>
       <button class="btn sm" data-cp-reset-all${any ? "" : " disabled"}>${t("Reset all")}</button></div>
-    <div class="cp-rows">${rows}</div>`;
+    <div class="cp-rows">${rows}</div>
+    <div class="cp-css">
+      <div class="cp-css-title"><span class="name">${t("Custom theme (CSS)")}</span><span class="hint" data-cp-css-state>${css ? t("In use") : t("Make your own look")}</span></div>
+      <div class="css-help">
+        <p>${t("The easiest way to get your own theme is to ask an AI for it. Press Copy AI prompt, paste it into Claude, ChatGPT or any other AI, add a line about the look you want, then paste the CSS it gives you into the box below.")}</p>
+        <div class="css-actions">
+          <button class="btn sm primary" data-act="css-prompt">${ICON.copy}${t("Copy AI prompt")}</button>
+          <button class="btn sm" data-cp-css-clear${css ? "" : " disabled"}>${t("Clear")}</button>
+        </div>
+        <p class="hint">${t("Your CSS is applied on top of the theme picked above. Colours are variables, so one line recolours everything:")} <code>:root { --accent: #ff4fd8; }</code></p>
+      </div>
+      <textarea class="code" data-cp-css spellcheck="false" placeholder=":root { --accent: #ff4fd8; }&#10;.card h3 { font-style: italic; }">${esc(css)}</textarea>
+    </div>
+  </details>`;
+}
+
+/** Apply what the mirror holds now, save, and bring the tiles and the box's hints up to date in place. */
+function prApplied(rerender) {
+  window.applyGlintTheme(S.settings.theme, S.settings.custom_css);
+  saveSettings(!!rerender);
+  if (rerender) return;
+  const grid = document.querySelector("#view .themes");
+  if (grid) grid.outerHTML = presetTilesHtml();
+  const sum = document.querySelector("[data-cp-sum]");
+  if (sum) sum.textContent = prSummaryHint();
+  const css = S.settings.custom_css || "";
+  const st = document.querySelector("[data-cp-css-state]");
+  if (st) st.textContent = css ? t("In use") : t("Make your own look");
+  const clr = document.querySelector("[data-cp-css-clear]");
+  if (clr) clr.disabled = !css;
+  cpRefreshRows();
+}
+
+/** A colour or CSS change: into the active preset, or a new "My theme" one when a built-in theme is active. */
+function prEdit(patch) {
+  const { created, preset } = glintPresetEdit(S.settings, patch, prAutoName());
+  prApplied(false);
+  if (created) flash(t("Saved as a new preset: {name}", { name: preset.name }));
+}
+
+/** A built-in tile was clicked (app.js's data-theme case). */
+function prPickBuiltin(id) {
+  glintPresetPickBuiltin(S.settings, id);
+  prApplied(true);
+}
+
+/** Ask a name and make a preset; `from` = { base, colors, css } (what is on screen when left out). */
+async function prNew(from, suggested) {
+  const name = await askText(t("Name the new preset"), glintPresetName(S.settings, suggested || prAutoName()), t("Create"));
+  if (!name) return;
+  glintPresetCreate(S.settings, name, from || glintPresetFromScreen(S.settings));
+  prApplied(true);
+}
+
+/** Right-click on a theme tile (app.js's contextmenu listener). True when it was one. */
+function prMenu(e) {
+  const tile = e.target.closest?.("#view .themes .theme");
+  if (!tile || tile.matches("[data-tp-new]")) return false;
+  menuIds = [];
+  const id = tile.dataset.tp || tile.dataset.theme;
+  $("#menu").innerHTML = tile.dataset.tp
+    ? mItem("tp-rename", t("Rename…"), ICON.edit, id) + mItem("tp-dup", t("Duplicate"), ICON.copy, id) + "<hr>" + mItem("tp-del", t("Delete"), ICON.trash, id, "danger")
+    : mItem("tp-dup", t("Duplicate"), ICON.copy, id);
+  placeMenu(e.clientX, e.clientY);
+  return true;
+}
+
+/** The menu's items (app.js's menuAction passes "tp-*" here). */
+async function prMenuAction(m, id) {
+  const s = S.settings;
+  const p = (s.theme_presets || []).find((x) => x.id === id);
+  if (m === "tp-rename" && p) {
+    const name = await askText(t('Rename the preset "{name}"', { name: p.name }), p.name, t("Rename"));
+    if (!name || name === p.name) return;
+    glintPresetRename(s, id, name);
+    return prApplied(true);
+  }
+  if (m === "tp-dup") {
+    const th = window.GLINT_THEMES.find((x) => x.id === id);
+    const src = p || (th && { base: th.id, colors: {}, css: "" });
+    if (!src) return;
+    return prNew({ base: src.base, colors: src.colors, css: src.css }, t("{name} copy", { name: p ? p.name : th.name }));
+  }
+  if (m === "tp-del" && p) {
+    if (!(await ask(t('Delete the preset "{name}"? This cannot be undone.', { name: p.name }), t("Delete")))) return;
+    glintPresetDelete(s, id);
+    return prApplied(true);
+  }
+}
+
+/** Startup (app.js's refreshState): old custom colours / CSS become a preset; saved only if something changed. */
+function prMigrate() {
+  if (S.settings && glintPresetMigrate(S.settings, prAutoName())) saveSettings(false);
+}
+
+/** The settings search (app.js's applySettingsFilter): a match inside the box opens it; clearing the search puts it back. */
+function cpSearchOpen(q) {
+  const box = document.querySelector("#view .cp-box");
+  if (!box) return;
+  const hit = !!q && box.textContent.toLowerCase().includes(q);
+  if (hit) { if (!box.open) { prBySearch = true; box.open = true; } }
+  else if (prBySearch) { prBySearch = false; box.open = uiPref("glint.colorsOpen", false); }
 }
 
 /** The hex text and the round swatch button of one row. */
@@ -67,12 +201,13 @@ function cpRefreshRows() {
   if (all) all.disabled = !Object.keys(user).length;
 }
 
-/** Save `map` as the custom colours and apply it (the taskbar icon follows through applyGlintTheme). */
-function cpSave(map, rerender) {
-  S.settings.theme_colors = glintCleanColors(map);
-  window.applyGlintTheme(S.settings.theme, S.settings.custom_css);
-  saveSettings(!!rerender);
-  if (!rerender) cpRefreshRows();
+/**
+ * Save `map` as the custom colours and apply it (the taskbar icon follows through applyGlintTheme).
+ * 0.1.20: into the active preset, or a new one when a built-in theme is active (prEdit).
+ * Updated in place, never redrawn: a click on another swatch must not be lost.
+ */
+function cpSave(map) {
+  prEdit({ colors: map });
 }
 
 /* ---------- the picker ---------- */
@@ -295,6 +430,31 @@ document.addEventListener("click", (e) => {
   const sw = e.target.closest?.("[data-cp-var]");
   if (sw) { cpOpen(sw.dataset.cpVar, sw); return; }
   const all = e.target.closest?.("[data-cp-reset-all]");
-  if (all && !all.disabled) cpSave({}, true);
+  if (all && !all.disabled) return cpSave({});
+  const tp = e.target.closest?.("[data-tp]");
+  if (tp) { if (glintPresetPick(S.settings, tp.dataset.tp)) prApplied(true); return; }
+  if (e.target.closest?.("[data-tp-new]")) return void prNew().catch((err) => fail(err));
+  const clr = e.target.closest?.("[data-cp-css-clear]");
+  if (clr && !clr.disabled) {
+    const box = document.querySelector("[data-cp-css]");
+    if (box) box.value = "";
+    return prEdit({ css: "" });
+  }
 });
+
+// The custom CSS box: kept when it loses focus, like the other settings fields.
+document.addEventListener("change", (e) => {
+  if (!e.target.matches?.("[data-cp-css]")) return;
+  if (e.target.value === (S.settings.custom_css || "")) return;
+  prEdit({ css: e.target.value });
+});
+
+// The open state of "Customise colours" is remembered, except while the settings search opened it.
+// ("toggle" does not bubble, hence capture. It also fires when the box is drawn already open.)
+document.addEventListener("toggle", (e) => {
+  if (!e.target.classList?.contains("cp-box")) return;
+  if (e.target.open && prBySearch) return;
+  prBySearch = false;
+  setUiPref("glint.colorsOpen", e.target.open);
+}, true);
 window.addEventListener("resize", () => cpClose(true));

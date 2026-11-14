@@ -116,7 +116,8 @@ impl Default for BlurSettings {
             copy_dates: false,
             gpu_decoding: true,
             gpu_interpolation: true,
-            gpu_encoding: false,
+            // On for new installs (0.1.20); blur::for_this_pc fits gpu_type to the PC's card, and turns it off without one.
+            gpu_encoding: true,
             gpu_type: "nvidia".into(),
             rife_gpu: -1,
             timescale: false,
@@ -159,6 +160,24 @@ pub struct ColorPreset {
 impl Default for ColorPreset {
     fn default() -> Self {
         ColorPreset { name: String::new(), brightness: 1.0, contrast: 1.0, saturation: 1.0, gamma: 1.0 }
+    }
+}
+
+/// A theme preset the user made (Settings → Appearance): a built-in theme (`base`, an id
+/// in ui/themes.js) with the user's own colours (variable -> "#rrggbb") and CSS on top.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct ThemePreset {
+    pub id: String,
+    pub name: String,
+    pub base: String,
+    pub colors: std::collections::BTreeMap<String, String>,
+    pub css: String,
+}
+
+impl Default for ThemePreset {
+    fn default() -> Self {
+        ThemePreset { id: String::new(), name: String::new(), base: "glint".into(), colors: Default::default(), css: String::new() }
     }
 }
 
@@ -234,6 +253,12 @@ pub struct Settings {
     /// variable name ("accent", "bg", ...) -> "#rrggbb". Applied on top of the
     /// theme and under `custom_css` (ui/themes.js), in the window and the overlay.
     pub theme_colors: std::collections::BTreeMap<String, String>,
+    /// The user's own theme presets (Settings → Appearance, 0.1.20) and the id of the
+    /// active one ("" = a built-in theme). `theme`, `theme_colors` and `custom_css`
+    /// above always hold what the active preset has (empty for a built-in theme), so
+    /// the overlay and the icon read only those; ui/themes.js keeps them in step.
+    pub theme_presets: Vec<ThemePreset>,
+    pub theme_preset: String,
     /// Library folder colours: folder name -> "#rrggbb" (right-click a folder → Colour).
     /// Renaming a folder carries its colour along, deleting it drops it (`carry_folder_color`).
     pub folder_colors: std::collections::BTreeMap<String, String>,
@@ -325,6 +350,8 @@ impl Default for Settings {
             icon_accent: String::new(),
             icon_accent_2: String::new(),
             theme_colors: Default::default(),
+            theme_presets: Vec::new(),
+            theme_preset: String::new(),
             folder_colors: Default::default(),
             discord_rpc: false,
             discord_app_id: String::new(),

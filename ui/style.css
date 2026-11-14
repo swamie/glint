@@ -85,12 +85,27 @@ kbd { font: 600 11px var(--sans); padding: 2px 6px; border-radius: 5px; backgrou
 .winctl button:hover { background: var(--raised-2); color: var(--text); }
 .winctl button[data-win="close"]:hover { background: #c4313a; color: #fff; }
 .winctl svg { width: 14px; height: 14px; }
-/* Narrowest windows: the clip button keeps only its icon (its text, "F8 to clip the last 30s", is its tooltip).
-   Before that, a long key combination is cut short rather than pushing the window buttons away. */
-#btn-clip { max-width: 280px; }
-#btn-clip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The clip button: an ordinary (not filled) button, "[F8] Clip 30s", the key(s) of its keybind as keycaps
+   (app.js renderChrome; its tooltip is the full sentence). A long combination is cut short rather than
+   pushing the window buttons away, and in narrow windows the keycaps go: "Clip 30s" alone is short. */
+#btn-clip { max-width: 280px; gap: 7px; transition: background-color .12s, border-color .12s, box-shadow .12s; }
+#btn-clip .clip-keys { display: inline-flex; align-items: center; gap: 3px; min-width: 0; overflow: hidden; }
+#btn-clip .clip-keys[hidden] { display: none; }
+#btn-clip .clip-label { flex: none; }
+#btn-clip:not(:disabled):hover { background: var(--raised-2); border-color: color-mix(in srgb, var(--accent) 60%, var(--line-2)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent); }
+#btn-clip:not(:disabled):active { background: var(--raised); transform: translateY(1px); }
+/* Paused: the button is plainly off, but its keycaps and words stay readable (no .btn:disabled fade). */
+#btn-clip:disabled { opacity: 1; color: var(--muted); background: var(--panel); border-color: var(--line-2); }
+/* A keycap: its own border, a face a little lighter than the button, a thicker bottom edge. */
+#btn-clip .kc { display: inline-grid; place-items: center; flex: none; min-width: 20px; height: 20px; padding: 0 5px; box-sizing: border-box;
+  font: 700 10.5px/1 var(--sans); color: var(--text); border-radius: 5px;
+  background: linear-gradient(color-mix(in srgb, var(--raised-2) 82%, #fff), color-mix(in srgb, var(--raised-2) 92%, #fff));
+  border: 1px solid color-mix(in srgb, var(--line-2) 70%, var(--text)); border-bottom-width: 2px;
+  border-bottom-color: color-mix(in srgb, var(--line-2) 55%, #000); box-shadow: 0 1px 0 rgba(0, 0, 0, .25); }
+#btn-clip:not(:disabled):active .kc { border-bottom-width: 1px; margin-top: 1px; box-shadow: none; }
+#btn-clip:disabled .kc { color: var(--muted); }
 @media (max-width: 920px) {
-  #btn-clip span { display: none; }
+  #btn-clip .clip-keys { display: none; }
 }
 
 .btn { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px; background: var(--raised); border: 1px solid var(--line-2); border-radius: var(--radius); font-weight: 600; font-size: 13px; cursor: pointer; white-space: nowrap; }
@@ -418,6 +433,11 @@ body.moving-clips .nav-item[data-folder] { box-shadow: inset 0 0 0 1px var(--acc
 .fcol > svg:first-child { color: var(--fc); }
 .nav-item.fcol, .chip.fcol, .menu button.fcol { box-shadow: inset 3px 0 0 var(--fc); }
 .nav-item.active.fcol > svg:first-child, .chip.active.fcol > svg:first-child { color: inherit; }
+/* The active folder is lit in its own colour instead of the accent (--fc-ink: readable text on it, app.js fcInk).
+   Only colours change, so the chip widths the one-line fit measures stay the same. */
+.chip.active.fcol, .chip.active.fcol:hover { background: var(--fc); border-color: var(--fc); color: var(--fc-ink, var(--accent-ink)); }
+.nav-item.active.fcol, .nav-item.active.fcol:hover { background: var(--fc); color: var(--fc-ink, var(--accent-ink)); }
+.nav-item.active.fcol .badge { background: color-mix(in srgb, var(--fc-ink, #000) 18%, transparent); color: var(--fc-ink, var(--accent-ink)); }
 /* The Colour submenu: a row of swatches, then Custom… and No colour. */
 .menu .fc-row { display: grid; grid-template-columns: repeat(4, 26px); gap: 7px; padding: 6px 9px 8px; }
 .menu .fc-row .fc-sw { width: 26px; height: 26px; padding: 0; border-radius: 50%; border: 2px solid transparent; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25); }

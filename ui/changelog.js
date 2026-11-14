@@ -14,6 +14,23 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.20", date: "2026-11-14",
+    new: [
+      t("Theme presets: “+ New preset” saves the look you have as your own preset. Right-click a preset to rename, duplicate or delete it. Changing a colour never alters the built-in themes: it makes a preset of yours instead."),
+      t("Settings → Startup → When I close the window (X): keep Glint running in the tray, or quit. Quitting asks first if a render, compression or export is still running."),
+    ],
+    improved: [
+      t("The colours and the custom CSS are in one “Customise colours” box that opens when you need it."),
+      t("The clip button is simpler: your clip key as a keycap, then “Clip 30s”."),
+      t("A coloured folder is highlighted in its own colour while it is open."),
+      t("What's new: the section titles are a little bigger and sit closer to their lists."),
+      t("Blur encodes on the graphics card by default on a new install, and uses the card this PC really has."),
+    ],
+    fixed: [
+      t("Clicks that made their sound but did nothing: a button could be redrawn between the press and the release. Buttons now keep their click, and the sidebar's pages open the moment you press."),
+    ],
+  },
+  {
     version: "0.1.19", date: "2026-11-14",
     new: [],
     improved: [

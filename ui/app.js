@@ -114,6 +114,17 @@ function ask(message, okLabel) {
 }
 let askKey = null; // key handler of the open prompt, if any
 
+/** The window's X. With "Quit Glint" chosen (close_to_tray off), quitting cancels every render, compression and
+ *  join and cuts an export short, so while one is queued or running it asks first. In the tray they carry on: no question. */
+function closeQuitOk() {
+  if (!S.settings || S.settings.close_to_tray !== false) return Promise.resolve(true);
+  const busy = typeof jobsRows === "function" && typeof jobsActive === "function" ? jobsRows().filter(jobsActive).length : 0;
+  if (!busy) return Promise.resolve(true);
+  return ask(busy === 1
+    ? t("A render, compression or export is still running. Quitting Glint stops it and its result is lost. Quit anyway?")
+    : t("{n} renders, compressions or exports are still running. Quitting Glint stops them and their results are lost. Quit anyway?", { n: busy }), t("Quit Glint"));
+}
+
 /** Glint's own one-line text prompt. Resolves to the trimmed text, or null if cancelled or empty. */
 function askText(message, value = "", okLabel) {
   return new Promise((resolve) => {
@@ -181,6 +192,44 @@ S.foldersOpen = uiPref("glint.foldersOpen", false); // the Folders row in the si
 S.gamesOpen = uiPref("glint.gameChipsOpen", false);     // the Library's game chips show every game (else one line)
 S.folderChipsOpen = uiPref("glint.folderChipsOpen", false); // the Library's folder chips show every folder (else one line)
 
+/*
+ * Clicks that went nowhere (0.1.20). A click needs the press and the release on the SAME element.
+ * The sidebar was rebuilt every second (the status poll) and the page on many events, so a button
+ * could be replaced between press and release: the press made its sound, the click never came.
+ * Three things stop that:
+ *   - `keepHtml`: markup that has not changed is not assigned again, so its buttons live on;
+ *   - while a button is pressed (`pressEl`), a redraw of the part it is in waits for the release;
+ *   - the sidebar's pages open on the press itself (`navPress`), so they feel instant.
+ */
+let pressEl = null;      // the button-like element the pointer is down on, if any
+let renderOwed = false;  // a redraw was held back for it
+let navPressAt = -1e9;   // performance.now() of a sidebar press that already opened its page
+const pressHolds = (root) => !!(pressEl && pressEl.isConnected && root && root.contains(pressEl));
+/** `keepHtml(sel).innerHTML = html`: assign only when it differs, and never under a pressed button. */
+const keepHtml = (sel) => ({
+  set innerHTML(html) {
+    const el = $(sel);
+    if (!el || el.__html === html) return;
+    if (pressHolds(el)) { renderOwed = true; return; }
+    el.__html = html;
+    el.innerHTML = html;
+  },
+});
+document.addEventListener("pointerdown", (e) => {
+  pressEl = e.button === 0 ? e.target.closest?.("button, a, summary, label, select, [role=button]") || null : null;
+}, true);
+{
+  const pressEnd = () => {
+    if (!pressEl) return;
+    pressEl = null;
+    // After the click that follows this release has been handled.
+    if (renderOwed) { renderOwed = false; setTimeout(() => { if (!pressEl) render(); else renderOwed = true; }, 0); }
+  };
+  document.addEventListener("pointerup", pressEnd, true);
+  document.addEventListener("pointercancel", pressEnd, true);
+  window.addEventListener("blur", pressEnd);
+}
+
 function renderChrome() {
   if (!S.settings) return;
   // Texts that live in index.html: data-i18n holds the English text, data-i18n-ph a placeholder.
@@ -203,14 +252,14 @@ function renderChrome() {
     const n = S.clips.filter((c) => c.folder === f).length;
     return fcDeco(`<button class="nav-item small${inFolder && S.folder === f ? " active" : ""}" data-folder="${esc(f)}" data-hover title="${esc(f)}">${ICON.folder}<span class="label">${esc(f)}</span>${n ? `<span class="badge">${n}</span>` : ""}</button>`, f);
   }).join("") + `<button class="nav-item small ghost" data-act="folder-new" data-hover>${ICON.plus}<span class="label">${t("New folder")}</span></button>`;
-  $("#nav-general").innerHTML =
+  keepHtml("#nav-general").innerHTML =
     navItem("library", t("Library"), "library", S.clips.length).replace(' active"', S.folder ? '"' : ' active"') +
     navItem("favorites", t("Favorites"), "star", S.clips.filter((c) => c.favorite).length) +
     navItem("rendered", t("Rendered"), "blur", S.clips.filter((c) => c.kind === "blur").length) +
     // While closed, the row itself is lit when the folder being viewed is hidden inside it.
     `<button class="nav-item nav-fold${inFolder && (!S.foldersOpen || S.sideMin) ? " active" : ""}" data-act="folders-toggle" data-sfx="tap" data-hover aria-expanded="${S.foldersOpen}" title="${esc(t("Folders"))}">${ICON.folder}<span class="label">${t("Folders")}</span>${S.folders.length ? `<span class="badge">${S.folders.length}</span>` : ""}<svg class="nav-chev" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></svg></button>` +
     `<div class="nav-sub" id="nav-folders"${S.foldersOpen ? "" : " hidden"}>${folderList}</div>`;
-  $("#nav-tools").innerHTML =
+  keepHtml("#nav-tools").innerHTML =
     // Editor (projects.js) and Compress (compresspage.js) are pages of their own; S.projects is the project list.
     navItem("editor", t("Editor"), "edit", Array.isArray(S.projects) ? S.projects.length : 0) +
     navItem("compress", t("Compress"), "compress") +
@@ -222,10 +271,13 @@ function renderChrome() {
   const st = S.status || {};
   const on = !!st.recording;
   $("#btn-toggle").textContent = on ? t("Pause") : t("Resume");
-  // In the narrowest windows the clip button shows only its icon, so its text is also its tooltip.
-  // With a key set it names the keys of the clip keybind the button stands for: "F8 to clip the last 30s".
+  // The clip button: the keys of the clip keybind it stands for as keycaps, then "Clip 30s".
+  // Its tooltip keeps the full sentence: "F8 to clip the last 30s". In narrow windows the keycaps go (style.css).
   const clipKb = quickBind();
-  $("#btn-clip span").textContent = $("#btn-clip").title = clipKb
+  $("#btn-clip .clip-keys").innerHTML = clipKb ? comboParts(clipKb).map((p) => `<kbd class="kc">${esc(p)}</kbd>`).join("") : "";
+  $("#btn-clip .clip-keys").hidden = !clipKb;
+  $("#btn-clip .clip-label").textContent = t("Clip {length}", { length: fmtLen(quickSecs()) });
+  $("#btn-clip").title = clipKb
     ? t("{keys} to clip the last {length}", { keys: comboText(clipKb), length: fmtLen(quickSecs()) })
     : t("Clip last {length}", { length: fmtLen(quickSecs()) });
   $("#btn-clip").disabled = !on;
@@ -589,11 +641,18 @@ function folderColor(name) {
   const key = Object.keys(map).find((k) => k.toLowerCase() === String(name).toLowerCase());
   return (key && typeof glintNormHex === "function" && glintNormHex(map[key])) || "";
 }
-/** `html` (one element) with the folder's colour: class "fcol" and --fc on its first tag. style.css colours the icon and a thin marker. */
+/** A readable text colour on a folder colour (the active folder is filled with it): themes.js glintInkFor, else black or white. */
+function fcInk(hex) {
+  if (typeof glintInkFor === "function") return glintInkFor(hex);
+  const n = parseInt(String(hex).slice(1), 16);
+  return ((n >> 16) * 299 + ((n >> 8) & 255) * 587 + (n & 255) * 114) / 1000 > 150 ? "#000000" : "#ffffff";
+}
+/** `html` (one element) with the folder's colour: class "fcol", --fc and --fc-ink on its first tag. style.css colours the
+ *  icon and a thin marker, and fills the active folder (chip, sidebar row) with --fc instead of the accent. */
 function fcDeco(html, name) {
   const hex = name ? folderColor(name) : "";
   if (!hex) return html;
-  return html.replace(/^<(\w+)([^>]*?) class="/, (_, tag, attrs) => `<${tag}${attrs} style="--fc:${hex}" class="fcol `);
+  return html.replace(/^<(\w+)([^>]*?) class="/, (_, tag, attrs) => `<${tag}${attrs} style="--fc:${hex};--fc-ink:${fcInk(hex)}" class="fcol `);
 }
 /** Show `hex` ("" = none) on every element of the folder now on screen (the picker's live preview). */
 function fcPaint(name, hex) {
@@ -601,7 +660,8 @@ function fcPaint(name, hex) {
     const f = el.dataset.folder ?? el.dataset.arg;
     if (!f || f.toLowerCase() !== String(name).toLowerCase()) continue;
     el.classList.toggle("fcol", !!hex);
-    if (hex) el.style.setProperty("--fc", hex); else el.style.removeProperty("--fc");
+    if (hex) { el.style.setProperty("--fc", hex); el.style.setProperty("--fc-ink", fcInk(hex)); }
+    else { el.style.removeProperty("--fc"); el.style.removeProperty("--fc-ink"); }
   }
 }
 /** Set (or with "" clear) a folder's colour and save it. */
@@ -725,6 +785,7 @@ async function menuAction(m, arg) {
     case "folder-del": return deleteFolder(arg);
     case "folder-color": return fcMenu && setFolderColor(fcMenu.name, arg); // arg "" = No colour
     case "folder-color-custom": return fcMenu && folderColorCustom(fcMenu.name, fcMenu.rect);
+    case "tp-rename": case "tp-dup": case "tp-del": return prMenuAction(m, arg); // theme presets (colorpick.js)
   }
 }
 
@@ -768,6 +829,7 @@ document.addEventListener("contextmenu", (e) => {
   if (card && isLib() && !S.open) openClipMenu(card.dataset.clip, e.clientX, e.clientY);
   else if (game && game !== "all" && !S.open) openGameMenu(game, e.clientX, e.clientY);
   else if (folder && folder !== "*" && !S.open) openFolderMenu(folder, e.clientX, e.clientY);
+  else if (!S.open && prMenu(e)) return; // a theme tile in Settings → Appearance (colorpick.js)
   else closeMenu();
 });
 /** Ask for a name and create the folder. Returns the name as created, or null. */
@@ -1153,23 +1215,11 @@ function renderSettings() {
   $("#view").innerHTML = pageHead(t("Settings"), t("Look, storage, startup and notifications")).replace(/<\/div>$/, () => `<div class="head-actions">${searchBox}</div></div>`) + `
     ${S.ffmpeg ? "" : `<div class="note bad">${t("<b>ffmpeg.exe was not found.</b> Glint needs ffmpeg 8 or newer. Install it or set its path below.")}</div>`}
     <div class="section"><h2>${t("Appearance")}</h2>
-      <div class="themes">${window.GLINT_THEMES.map((th) => `<button class="theme${(s.theme || "glint") === th.id ? " active" : ""}" data-theme="${th.id}" style="background:${th.vars.panel || "#0a0e16"};color:${th.vars.text || "#e8edf6"}"><i style="background:${th.vars.accent || "#62b6f7"}"></i>${esc(th.name)}</button>`).join("")}</div>
-      ${typeof colorRowsHtml === "function" ? colorRowsHtml() : ""}
+      ${presetTilesHtml() /* colorpick.js: built-in tiles, the user's presets, "+ New preset" */}
+      ${colorRowsHtml() /* colorpick.js: the "Customise colours" box (colours and custom CSS) */}
       ${row(t("Match the taskbar icon to the theme"), t("Colours Glint's icon in the taskbar and the tray with the theme's accent, including a custom theme's and your own accent colour"), (typeof iconReloadButton === "function" ? iconReloadButton() : "") + toggle("icon_theme"))}
       ${row(t("Renders button"), t("The button in the top bar that lists Blur renders and their progress"), select("renders_button", [["auto", t("While rendering")], ["always", t("Always")], ["never", t("Never")]]))}
       ${row(t("Interface size"), t("Makes everything in the window bigger or smaller, so more or less fits on screen"), select("ui_zoom", [70, 80, 90, 100, 110, 125, 150].map((z) => [z, `${z}%`]), true))}
-      <details class="css-box"${S.cssOpen || s.custom_css ? " open" : ""}>
-        <summary><span class="name">${t("Custom theme (CSS)")}</span><span class="hint">${s.custom_css ? t("In use") : t("Make your own look")}</span></summary>
-        <div class="css-help">
-          <p>${t("The easiest way to get your own theme is to ask an AI for it. Press Copy AI prompt, paste it into Claude, ChatGPT or any other AI, add a line about the look you want, then paste the CSS it gives you into the box below.")}</p>
-          <div class="css-actions">
-            <button class="btn sm primary" data-act="css-prompt">${ICON.copy}${t("Copy AI prompt")}</button>
-            <button class="btn sm" data-act="css-clear">${t("Clear")}</button>
-          </div>
-          <p class="hint">${t("Your CSS is applied on top of the theme picked above. Colours are variables, so one line recolours everything:")} <code>:root { --accent: #ff4fd8; }</code></p>
-        </div>
-        <textarea class="code" data-set="custom_css" spellcheck="false" placeholder=":root { --accent: #ff4fd8; }&#10;.card h3 { font-style: italic; }">${esc(s.custom_css || "")}</textarea>
-      </details>
     </div>
     <div class="section"><h2>${t("Language")}</h2>
       ${row(t("Language"), t("Used in Glint's window, the clip overlay and the tray menu. The tray menu changes the next time Glint starts"), langSelect)}
@@ -1183,7 +1233,10 @@ function renderSettings() {
     </div>
     <div class="section"><h2>${t("Startup")}</h2>
       ${row(t("Start with Windows"), t("Launches hidden in the tray with the buffer running"), toggle("autostart"))}
-      ${row(t("Keep running in the tray"), t("Closing the window leaves the recorder on. The window uses no memory while closed"), toggle("close_to_tray"))}
+      ${row(t("When I close the window (X)"), S.settings.close_to_tray
+        ? t("Glint stays in the tray: the buffer keeps running and your clip keys still work. Quit from the tray icon's menu")
+        : t("Glint quits: the buffer stops and clip keys do nothing until you open Glint again"),
+        select("close_to_tray", [["true", t("Keep Glint running in the tray")], ["false", t("Quit Glint")]]))}
     </div>
     <div class="section"><h2>${t("Clip sound")}</h2>
       ${row(t("Clip sound"), t("Plays the moment a clip key is pressed"), toggle("sound"))}
@@ -1265,6 +1318,7 @@ function applySettingsFilter() {
   }
   const credits = $("#view .credits-text"); // plain text under the settings: not a setting, so a search hides it
   if (credits) credits.hidden = !!q;
+  cpSearchOpen(q); // colorpick.js: a match inside "Customise colours" opens it
   const none = $("#set-none");
   if (none) {
     none.hidden = shown > 0;
@@ -1273,6 +1327,8 @@ function applySettingsFilter() {
 }
 
 function render() {
+  // A button in the page is pressed right now: redrawing would take it away before its click. Wait for the release.
+  if (pressHolds($("#view"))) { renderOwed = true; return renderChrome(); }
   renderChrome();
   if (!S.settings) return;
   if (S.renaming) { S.renderLater = true; return; } // a clip name is being edited in place: redraw once it is done
@@ -1284,6 +1340,28 @@ function render() {
   $("#view").scrollTop = keep;
   renderSelBar();
 }
+
+/** Open a page of the sidebar. */
+function goPage(page) {
+  endCapture();
+  S.page = page;
+  S.tab = "all";
+  S.folder = null;
+  S.sel.clear();
+  $("#view").scrollTop = 0;
+  render();
+}
+// The sidebar's pages open on the press, not on the release: no wait, and nothing can get between
+// the two. (The keyboard still goes through the click handler below.)
+document.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0 || !S.settings) return;
+  const nav = e.target.closest?.(".side [data-page]");
+  if (!nav || !$("#modal").hidden || !$("#confirm").hidden || e.target.closest(".title-edit")) return;
+  navPressAt = performance.now();
+  pressEl = null; // this press is done: the redraw below may replace the button
+  if (!$("#menu").hidden) closeMenu();
+  goPage(nav.dataset.page);
+});
 
 /* ---------- events ---------- */
 function endCapture() {
@@ -1304,15 +1382,25 @@ document.addEventListener("click", async (e) => {
   const d = el.dataset;
   try {
     // Closing the window leaves an "Edit together" draft first (join.js: it may ask, then discards it).
-    if (d.win === "close" && typeof joinWindowClose === "function") return joinWindowClose(() => invoke("win_action", { action: d.win }));
+    // With "Quit Glint" chosen for X, a running render, compression or export asks first (closeQuitOk).
+    if (d.win === "close") {
+      return closeQuitOk().then((yes) => {
+        if (!yes) return;
+        const go = () => invoke("win_action", { action: "close" });
+        return typeof joinWindowClose === "function" ? joinWindowClose(go) : go();
+      });
+    }
     if (d.win) return invoke("win_action", { action: d.win });
     if (d.m) return await menuAction(d.m, d.arg || "");
-    if (d.page) { endCapture(); S.page = d.page; S.tab = "all"; S.folder = null; S.sel.clear(); $("#view").scrollTop = 0; return render(); }
+    if (d.page) {
+      if (e.detail !== 0 && performance.now() - navPressAt < 700) return; // its press already opened the page (navPress)
+      return goPage(d.page);
+    }
     if (d.tab) { S.tab = d.tab; S.sel.clear(); return render(); }
     if (d.size) { S.size = d.size; try { localStorage.setItem("glint.size", d.size); } catch {} return render(); }
     if ("folder" in d) { endCapture(); S.page = "library"; S.folder = d.folder === "*" ? null : d.folder; S.tab = "all"; S.sel.clear(); $("#view").scrollTop = 0; return render(); }
     if (d.corner) { S.settings.toast_pos = d.corner; saveSettings(true); setTimeout(() => invoke("preview_toast"), 350); return; }
-    if (d.theme) { S.settings.theme = d.theme; window.applyGlintTheme(d.theme, S.settings.custom_css); return saveSettings(true); }
+    if (d.theme) return prPickBuiltin(d.theme); // colorpick.js: the pure built-in look, no preset (0.1.20)
     if (d.clip) {
       // The name is its own hit area (a double click renames): a plain click on it does nothing,
       // Ctrl / Shift still select.
@@ -1349,7 +1437,7 @@ document.addEventListener("click", async (e) => {
         if (S.sideMin) { S.sideMin = false; S.foldersOpen = true; setUiPref("glint.sideMin", false); } else S.foldersOpen = !S.foldersOpen;
         setUiPref("glint.foldersOpen", S.foldersOpen);
         return renderChrome();
-      case "css-clear": S.settings.custom_css = ""; S.cssOpen = true; window.applyGlintTheme(S.settings.theme, ""); return saveSettings(true);
+      case "css-clear": return prEdit({ css: "" }); // colorpick.js: into the active preset (0.1.20)
       case "css-prompt": await copyText(THEME_PROMPT); return flash(t("Prompt copied. Paste it into an AI and say what look you want."));
       case "rec-use": {
         // "Use recommended" beside a setting: data-rec-path / data-rec-value name it.
@@ -1426,6 +1514,7 @@ document.addEventListener("change", (e) => {
   if (el.dataset.set) {
     let v = el.type === "checkbox" ? el.checked : "num" in el.dataset ? +el.value : el.value;
     if ("num" in el.dataset && !Number.isFinite(v)) return;
+    if (el.dataset.set === "close_to_tray") v = v === "true"; // Startup → "When I close the window (X)": a dropdown over a yes/no setting
     if (el.dataset.set === "encoder" || el.dataset.set === "blur.gpu_type") {
       // The setting is only written once the user has confirmed; a "no" puts the control back.
       confirmHardwareChoice(el.dataset.set, v).then((yes) => {
@@ -1521,6 +1610,7 @@ async function refreshState() {
   if (!S.sounds.length) S.sounds = (await invoke("list_sounds")) || [];
   window.applyGlintTheme(S.settings.theme, S.settings.custom_css);
   glintSetLanguage(S.settings.language || "en");
+  prMigrate(); // colorpick.js: old custom colours / CSS become the preset "My theme" (the look does not change)
   S.version = st.version;
   $("#ver").title = "Glint v" + st.version; // the logo in the top bar
   render();
