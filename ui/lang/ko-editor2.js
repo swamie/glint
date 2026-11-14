@@ -1,12 +1,12 @@
 "use strict";
-// Korean, part 3: the editor's per-segment colour, fullscreen and shortcut rebinding.
+// Korean, part 3: the editor's per-segment color, fullscreen and shortcut rebinding.
 glintAddLanguage("ko", "한국어", {
-  // Colour per segment
+  // Color per segment
   "Applies to: the whole clip": "적용 대상: 클립 전체",
   "Applies to: segment {n} of {total}": "적용 대상: 구간 {n}/{total}",
   "Applies to: {n} segments": "적용 대상: 구간 {n}개",
   "Apply to the whole clip": "클립 전체에 적용",
-  "The segments have different colours. The sliders show the one at the playhead.": "구간마다 색상이 달라요. 슬라이더에는 재생 헤드가 있는 구간의 값이 표시돼요.",
+  "The segments have different colors. The sliders show the one at the playhead.": "구간마다 색상이 달라요. 슬라이더에는 재생 헤드가 있는 구간의 값이 표시돼요.",
   "Video hidden in this segment": "이 구간은 영상이 숨겨져 있어요",
   "Solo needs at least two audio tracks": "솔로는 오디오 트랙이 두 개 이상 있어야 해요",
 

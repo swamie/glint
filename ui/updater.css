@@ -7,7 +7,7 @@
 .upd-label { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .upd-label:empty { display: none; }
 
-/* A newer version exists: filled with the accent colour and labelled, like the Clip button. */
+/* A newer version exists: filled with the accent color and labelled, like the Clip button. */
 .upd-btn.upd-new { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .upd-btn.upd-new:hover { background: var(--accent-2); border-color: var(--accent-2); }
 .upd-btn.upd-new svg { stroke-width: 2.3; }

@@ -1,8 +1,8 @@
 "use strict";
-// 0.1.16 texts (tag color): Settings → Appearance → Custom colours and the colour picker (colorpick.js).
+// 0.1.16 texts (tag color): Settings → Appearance → Custom colors and the color picker (colorpick.js).
 glintAddLanguage("el", "Ελληνικά", {
-  "Custom colours": "Δικά σας χρώματα",
-  "Your own colours on top of the theme. They stay when you pick another theme. Custom CSS still wins over them.": "Τα δικά σας χρώματα πάνω από το θέμα. Μένουν όταν διαλέγετε άλλο θέμα. Το προσαρμοσμένο CSS εξακολουθεί να υπερισχύει.",
+  "Custom colors": "Δικά σας χρώματα",
+  "Your own colors on top of the theme. They stay when you pick another theme. Custom CSS still wins over them.": "Τα δικά σας χρώματα πάνω από το θέμα. Μένουν όταν διαλέγετε άλλο θέμα. Το προσαρμοσμένο CSS εξακολουθεί να υπερισχύει.",
   "Reset all": "Επαναφορά όλων",
   "Accent": "Χρώμα έμφασης",
   "Buttons, highlights and progress bars": "Κουμπιά, επισημάνσεις και γραμμές προόδου",
@@ -18,15 +18,15 @@ glintAddLanguage("el", "Ελληνικά", {
   "Softer texts follow it unless you set them": "Τα πιο αχνά κείμενα το ακολουθούν, εκτός αν τα ορίσετε εσείς",
   "Secondary text": "Δευτερεύον κείμενο",
   "Hints and labels": "Υποδείξεις και ετικέτες",
-  "Change the colour: {name} ({hex})": "Αλλαγή χρώματος: {name} ({hex})",
-  "Pick a colour: {name}": "Επιλογή χρώματος: {name}",
+  "Change the color: {name} ({hex})": "Αλλαγή χρώματος: {name} ({hex})",
+  "Pick a color: {name}": "Επιλογή χρώματος: {name}",
   "Before": "Πριν",
   "Saturation and brightness": "Κορεσμός και φωτεινότητα",
   "Hue": "Απόχρωση",
   "Hex": "Hex",
-  "The theme's own colour: {hex}": "Το χρώμα του θέματος: {hex}",
+  "The theme's own color: {hex}": "Το χρώμα του θέματος: {hex}",
   "Reset": "Επαναφορά",
   "Enter keeps it, Esc cancels": "Enter για διατήρηση, Esc για ακύρωση",
   "Saturation {s} %, brightness {v} %": "Κορεσμός {s} %, φωτεινότητα {v} %",
-  "Colours Glint's icon in the taskbar and the tray with the theme's accent, including a custom theme's and your own accent colour": "Χρωματίζει το εικονίδιο του Glint στη γραμμή εργασιών και στην περιοχή ειδοποιήσεων με το χρώμα έμφασης του θέματος, και ενός προσαρμοσμένου θέματος και του δικού σας χρώματος έμφασης",
+  "Colors Glint's icon in the taskbar and the tray with the theme's accent, including a custom theme's and your own accent color": "Χρωματίζει το εικονίδιο του Glint στη γραμμή εργασιών και στην περιοχή ειδοποιήσεων με το χρώμα έμφασης του θέματος, και ενός προσαρμοσμένου θέματος και του δικού σας χρώματος έμφασης",
 });

@@ -14,14 +14,32 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.25", date: "2026-11-15",
+    new: [
+      t("Editor: put text, rectangles, ellipses, lines, arrows and freehand drawing on the picture, each for the time you choose. A blur box hides what is inside it: pick Blur and drag a box. Fade in and fade out for the start and the end of the clip."),
+      t("A keybind that opens your newest clip in the editor: Keybinds → Edit the last clip."),
+      t("Watching a clip fullscreen, the previous and next arrows show with the controls when the pointer moves, and the next clip opens without leaving fullscreen. Settings → Appearance sets how visible they are."),
+      t("Right-click a text box for Glint's own Cut, Copy and Paste, in place of the browser's menu."),
+    ],
+    improved: [
+      t("In the viewer, the previous and next arrows sit beside the clip instead of at the edges of the window."),
+      t("Glint writes “color” everywhere."),
+      t("In the import dialog, Medal's logo is the size of the others and Outplayed has its own mark."),
+      t("In a render rule's Color block, “color panel” is a link that opens the editor at its color panel."),
+    ],
+    fixed: [
+      t("A fix for the old-style window frame that could flash in for a moment while the window was resized fast."),
+    ],
+  },
+  {
     version: "0.1.24", date: "2026-11-15",
     new: [
-      t("Render rules: build a chain of steps from blocks (a colour look, Blur, upscale, compress to a size, GIF, copy) and run it on a clip with one click, from the right-click menu, the viewer, or right after Export in the editor. Make them under Tools → Render rules."),
+      t("Render rules: build a chain of steps from blocks (a color look, Blur, upscale, compress to a size, GIF, copy) and run it on a clip with one click, from the right-click menu, the viewer, or right after Export in the editor. Make them under Tools → Render rules."),
       t("Export as GIF: right-click a clip to make a GIF of it. You pick the size, the frames a second and an optional size limit; the GIF is saved beside the clip."),
       t("Upscale for YouTube: right-click a clip to save a 1080p, 1440p or 4K copy, sharp or smooth, so YouTube gives it more bitrate. It runs on your graphics card when it can."),
       t("Clip keys can save any length: choose Custom… on the Keybinds page and type minutes and seconds."),
       t("Tags on clip cards are back as a choice: under Settings → Appearance, pick which kinds (import, trim, edit, Blur, Discord and more) get a tag. None by default."),
-      t("A new folder can get its colour right away, in the same box as its name."),
+      t("A new folder can get its color right away, in the same box as its name."),
       t("Drag the theme tiles under Settings → Appearance to put them in your own order."),
       t("In the editor, drag the bar under the tracks to make them taller. Double-click it to reset."),
     ],
@@ -70,13 +88,13 @@ const wnReleases = () => [
   {
     version: "0.1.20", date: "2026-11-14",
     new: [
-      t("Theme presets: “+ New preset” saves the look you have as your own preset. Right-click a preset to rename, duplicate or delete it. Changing a colour never alters the built-in themes: it makes a preset of yours instead."),
+      t("Theme presets: “+ New preset” saves the look you have as your own preset. Right-click a preset to rename, duplicate or delete it. Changing a color never alters the built-in themes: it makes a preset of yours instead."),
       t("Settings → Startup → When I close the window (X): keep Glint running in the tray, or quit. Quitting asks first if a render, compression or export is still running."),
     ],
     improved: [
-      t("The colours and the custom CSS are in one “Customise colours” box that opens when you need it."),
+      t("The colors and the custom CSS are in one “Customise colors” box that opens when you need it."),
       t("The clip button is simpler: your clip key as a keycap, then “Clip 30s”."),
-      t("A coloured folder is highlighted in its own colour while it is open."),
+      t("A colored folder is highlighted in its own color while it is open."),
       t("What's new: the section titles are a little bigger and sit closer to their lists."),
       t("Blur encodes on the graphics card by default on a new install, and uses the card this PC really has."),
     ],
@@ -98,7 +116,7 @@ const wnReleases = () => [
       t("The installer is now a normal Windows setup window: choose the folder and what to install, watch the progress, and cancel at any time. Removing Glint has its own small window too."),
       t("Clip names: choose how new clips are named. Under Settings → Storage, drag Game, Date, Time, Length and your own words into any order, with a live preview."),
       t("Rename several clips at once: select them, right-click → Rename, and build the names from blocks, with numbering, a preview of every name and Undo."),
-      t("Folder colours: right-click a folder → Colour."),
+      t("Folder colors: right-click a folder → Color."),
       t("Viewer: arrows at the left and right go to the previous and the next clip (also Page Up and Page Down)."),
     ],
     improved: [
@@ -128,7 +146,7 @@ const wnReleases = () => [
     new: [
       t("Editor: your editing sessions are now projects, kept on the new Editor page in the sidebar. Close one at any time and go on later. Add more clips from the library list beside the editor: click, Ctrl+click, Shift+click or drag a box, then double-click, press Enter or drag them onto the timeline."),
       t("Compress page in the sidebar: compress clips or any video file to the size you choose, see the resolution and bitrate each one will get before you start, and set the speed, audio, highest resolution and where the results go."),
-      t("Settings → Appearance → Custom colours: set the accent, background, panels, text and more with Glint's own colour picker (drag in the square, or type a hex or RGB value)."),
+      t("Settings → Appearance → Custom colors: set the accent, background, panels, text and more with Glint's own color picker (drag in the square, or type a hex or RGB value)."),
       t("Capture: an Apply recommended settings button picks settings from your graphics card, screen and memory, and shows each change before it is made."),
       t("Import: choose where the imported clips go: a folder for each game, one folder you name, or no folder."),
       t("A thank-you note at the bottom of Settings."),
@@ -191,7 +209,7 @@ const wnReleases = () => [
       t("Settings → Components checks for ffmpeg and Blur and installs anything missing. If ffmpeg is missing, the status bar has an Install ffmpeg button."),
       t("Edit together: select several clips, right-click, and they are joined, oldest first, into one new clip that opens in the editor with a split where each clip starts. Your original clips stay as they are."),
       t("Separate game audio track (Capture, off until you switch it on): a track with only the game's sound. In the editor, mute Desktop and keep Game to drop voice chat and music."),
-      t("The taskbar icon can take your theme's colour: Settings, next to the themes."),
+      t("The taskbar icon can take your theme's color: Settings, next to the themes."),
     ],
     improved: [
       t("On Windows 10, Auto capture no longer shows the yellow border around the screen."),
@@ -268,7 +286,7 @@ const wnReleases = () => [
     version: "0.1.5", date: "2026-11-13",
     new: [
       t("Select several pieces on the editor timeline (Ctrl+click, Shift+click or drag a box) and right-click them to split, cut out, mute, solo, change the level or hide the picture."),
-      t("Colour correction for the selected pieces or the whole clip."),
+      t("Color correction for the selected pieces or the whole clip."),
       t("Full screen for the whole editor, and every editor shortcut can be changed in the Shortcuts panel."),
       t("\"Hide cut parts\" closes the gaps the cuts leave on the timeline."),
     ],

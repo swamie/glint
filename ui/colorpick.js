@@ -1,14 +1,14 @@
 "use strict";
-// Settings → Appearance → Custom colours, and Glint's own colour picker.
+// Settings → Appearance → Custom colors, and Glint's own color picker.
 // Loaded before app.js: app.js globals (S, $, row, esc, saveSettings, ...) are
-// used only inside functions. The colour maths is in themes.js (glint* functions).
+// used only inside functions. The color maths is in themes.js (glint* functions).
 //
 // Data: S.settings.theme_colors = { variable: "#rrggbb" } (only what the user set).
 // The picker previews on the whole window while it is open (glintPreviewColors);
-// Enter or a click outside keeps the colour, Esc puts the old one back.
+// Enter or a click outside keeps the color, Esc puts the old one back.
 // Names here start with `cp` / `CP`; markup uses `cp-` / `cpk-` classes and `data-cp*` attributes.
 
-/** Name and hint of each colour a user can set (GLINT_CUSTOM_VARS in themes.js). */
+/** Name and hint of each color a user can set (GLINT_CUSTOM_VARS in themes.js). */
 function cpLabel(v) {
   return ({
     accent: [t("Accent"), t("Buttons, highlights and progress bars")],
@@ -24,7 +24,7 @@ function cpLabel(v) {
 const cpColors = () => glintCleanColors((S.settings && S.settings.theme_colors) || {});
 const cpTheme = () => (S.settings && S.settings.theme) || "glint";
 
-/* ---------- presets (0.1.20): the tiles, the "Customise colours" box, the right-click menu ---------- */
+/* ---------- presets (0.1.20): the tiles, the "Customise colors" box, the right-click menu ---------- */
 // The model is in themes.js (glintPreset* functions); here it is drawn and wired.
 // theme_colors / custom_css are the mirror of the active preset (see themes.js), so the
 // picker below keeps reading cpColors() and S.settings.custom_css.
@@ -115,7 +115,7 @@ function prSummaryHint() {
   return t("{theme} stays as it is: a change makes a new preset", { theme: th.name });
 }
 
-/** The "Customise colours" box, drawn by renderSettings under the tiles: the colour rows, Reset all, the custom CSS. */
+/** The "Customise colors" box, drawn by renderSettings under the tiles: the color rows, Reset all, the custom CSS. */
 function colorRowsHtml() {
   const user = cpColors();
   const any = Object.keys(user).length > 0;
@@ -126,8 +126,8 @@ function colorRowsHtml() {
   }).join("");
   const open = prBySearch || uiPref("glint.colorsOpen", false);
   return `<details class="css-box cp-box"${open ? " open" : ""}>
-    <summary><span class="name">${t("Customise colours")}</span><span class="hint" data-cp-sum>${esc(prSummaryHint())}</span></summary>
-    <div class="cp-head"><div class="txt"><div class="name">${t("Colours")}</div><div class="hint">${t("Your own colours on top of the preset's theme. Custom CSS still wins over them.")}</div></div>
+    <summary><span class="name">${t("Customise colors")}</span><span class="hint" data-cp-sum>${esc(prSummaryHint())}</span></summary>
+    <div class="cp-head"><div class="txt"><div class="name">${t("Colors")}</div><div class="hint">${t("Your own colors on top of the preset's theme. Custom CSS still wins over them.")}</div></div>
       <button class="btn sm" data-cp-reset-all${any ? "" : " disabled"}>${t("Reset all")}</button></div>
     <div class="cp-rows">${rows}</div>
     <div class="cp-css">
@@ -138,7 +138,7 @@ function colorRowsHtml() {
           <button class="btn sm primary" data-act="css-prompt">${ICON.copy}${t("Copy AI prompt")}</button>
           <button class="btn sm" data-cp-css-clear${css ? "" : " disabled"}>${t("Clear")}</button>
         </div>
-        <p class="hint">${t("Your CSS is applied on top of the theme picked above. Colours are variables, so one line recolours everything:")} <code>:root { --accent: #ff4fd8; }</code></p>
+        <p class="hint">${t("Your CSS is applied on top of the theme picked above. Colors are variables, so one line recolors everything:")} <code>:root { --accent: #ff4fd8; }</code></p>
       </div>
       <textarea class="code" data-cp-css spellcheck="false" placeholder=":root { --accent: #ff4fd8; }&#10;.card h3 { font-style: italic; }">${esc(css)}</textarea>
     </div>
@@ -162,7 +162,7 @@ function prApplied(rerender) {
   cpRefreshRows();
 }
 
-/** A colour or CSS change: into the active preset, or a new "My theme" one when a built-in theme is active. */
+/** A color or CSS change: into the active preset, or a new "My theme" one when a built-in theme is active. */
 function prEdit(patch) {
   const { created, preset } = glintPresetEdit(S.settings, patch, prAutoName());
   prApplied(false);
@@ -219,7 +219,7 @@ async function prMenuAction(m, id) {
   }
 }
 
-/** Startup (app.js's refreshState): old custom colours / CSS become a preset; saved only if something changed. */
+/** Startup (app.js's refreshState): old custom colors / CSS become a preset; saved only if something changed. */
 function prMigrate() {
   if (S.settings && glintPresetMigrate(S.settings, prAutoName())) saveSettings(false);
 }
@@ -238,7 +238,7 @@ function cpCtl(v, user) {
   const hex = glintEffectiveColor(cpTheme(), user, v);
   const mine = v in user;
   const [name] = cpLabel(v);
-  const label = t("Change the colour: {name} ({hex})", { name, hex });
+  const label = t("Change the color: {name} ({hex})", { name, hex });
   return `<span class="cp-hex${mine ? " mine" : ""}" data-cp-hex="${v}">${mine ? esc(t("Custom")) + " · " : ""}${esc(hex)}</span><button type="button" class="cp-swatch${mine ? " mine" : ""}" data-cp-var="${v}" style="background:${esc(hex)}" title="${esc(label)}" aria-label="${esc(label)}"></button>`;
 }
 
@@ -251,7 +251,7 @@ function cpRefreshRows() {
     // Updated in place: replacing the button under a pressed pointer would swallow its click.
     const hex = glintEffectiveColor(cpTheme(), user, v);
     const mine = v in user;
-    const label = t("Change the colour: {name} ({hex})", { name: cpLabel(v)[0], hex });
+    const label = t("Change the color: {name} ({hex})", { name: cpLabel(v)[0], hex });
     btn.style.background = hex;
     btn.title = label;
     btn.setAttribute("aria-label", label);
@@ -264,7 +264,7 @@ function cpRefreshRows() {
 }
 
 /**
- * Save `map` as the custom colours and apply it (the taskbar icon follows through applyGlintTheme).
+ * Save `map` as the custom colors and apply it (the taskbar icon follows through applyGlintTheme).
  * 0.1.20: into the active preset, or a new one when a built-in theme is active (prEdit).
  * Updated in place, never redrawn: a click on another swatch must not be lost.
  */
@@ -278,7 +278,7 @@ const CP = {
   el: null,        // the open picker
   v: "",           // the variable being picked
   start: {},       // theme_colors when it opened (Esc goes back to these)
-  reset: "",       // the colour without the user's own for this variable
+  reset: "",       // the color without the user's own for this variable
   hsv: { h: 0, s: 0, v: 0 },
   hex: "",
   drag: null,      // "sv" | "hue" while the pointer holds one
@@ -288,8 +288,8 @@ const CP = {
 
 /**
  * Open the picker for theme variable `v` beside `anchor` (an element, or anything with getBoundingClientRect).
- * `custom` (0.1.18, folder colours) picks a colour that is not a theme variable:
- * { name, hex, reset, resetTitle, onPreview(hex), onKeep(hex), onCancel() }; the window's colours are left alone.
+ * `custom` (0.1.18, folder colors) picks a color that is not a theme variable:
+ * { name, hex, reset, resetTitle, onPreview(hex), onKeep(hex), onCancel() }; the window's colors are left alone.
  */
 function cpOpen(v, anchor, custom) {
   if (CP.el) cpClose(true);
@@ -310,11 +310,11 @@ function cpOpen(v, anchor, custom) {
   }
   CP.hsv = glintRgbToHsv(glintHexToRgb(CP.hex));
   const name = custom ? String(custom.name || "") : cpLabel(v)[0];
-  const resetTitle = custom ? String(custom.resetTitle || "") : t("The theme's own colour: {hex}", { hex: CP.reset });
+  const resetTitle = custom ? String(custom.resetTitle || "") : t("The theme's own color: {hex}", { hex: CP.reset });
   const el = document.createElement("div");
   el.className = "cpk";
   el.setAttribute("role", "dialog");
-  el.setAttribute("aria-label", t("Pick a colour: {name}", { name }));
+  el.setAttribute("aria-label", t("Pick a color: {name}", { name }));
   el.innerHTML = `<div class="cpk-head"><b>${esc(name)}</b><span class="cpk-cmp"><i class="cpk-old" style="background:${esc(CP.hex)}" title="${esc(t("Before"))}"></i><i class="cpk-new"></i></span></div>
     <div class="cpk-sv" tabindex="0" role="slider" aria-label="${esc(t("Saturation and brightness"))}"><i class="cpk-sv-thumb"></i></div>
     <div class="cpk-hue" tabindex="0" role="slider" aria-label="${esc(t("Hue"))}" aria-valuemin="0" aria-valuemax="360"><i class="cpk-hue-thumb"></i></div>
@@ -342,7 +342,7 @@ function cpPlace(el, anchor) {
   el.style.top = `${Math.max(8, y)}px`;
 }
 
-/** Show the current colour everywhere in the picker except `skip` (the field being typed in), and preview it. */
+/** Show the current color everywhere in the picker except `skip` (the field being typed in), and preview it. */
 function cpShow(skip) {
   const el = CP.el;
   if (!el) return;
@@ -363,7 +363,7 @@ function cpShow(skip) {
   cpPreview();
 }
 
-/** The whole window in the colour being picked, once per frame at most. */
+/** The whole window in the color being picked, once per frame at most. */
 function cpPreview() {
   if (CP.raf) return;
   CP.raf = requestAnimationFrame(() => {
@@ -447,7 +447,7 @@ function cpKey(e) {
   return false;
 }
 
-/** Close the picker: `keep` saves the colour (the theme's own colour means "not set"), else the old colours come back. */
+/** Close the picker: `keep` saves the color (the theme's own color means "not set"), else the old colors come back. */
 function cpClose(keep) {
   const el = CP.el;
   if (!el) return;
@@ -483,7 +483,7 @@ window.addEventListener("keydown", (e) => {
   if (CP.el.contains(document.activeElement)) e.stopImmediatePropagation();
 }, true);
 
-// A press outside the open picker keeps the colour.
+// A press outside the open picker keeps the color.
 document.addEventListener("pointerdown", (e) => {
   if (CP.el && !CP.el.contains(e.target)) cpClose(true);
 }, true);
@@ -511,7 +511,7 @@ document.addEventListener("change", (e) => {
   prEdit({ css: e.target.value });
 });
 
-// The open state of "Customise colours" is remembered, except while the settings search opened it.
+// The open state of "Customise colors" is remembered, except while the settings search opened it.
 // ("toggle" does not bubble, hence capture. It also fires when the box is drawn already open.)
 document.addEventListener("toggle", (e) => {
   if (!e.target.classList?.contains("cp-box")) return;

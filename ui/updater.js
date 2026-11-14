@@ -1,7 +1,7 @@
 "use strict";
 // The update button in the top bar: an arrow rising out of a tray. Glint itself
 // checks GitHub about once a day; a click checks right now. When a newer release
-// exists the button fills with the accent colour and says "Update 0.2.0", and a
+// exists the button fills with the accent color and says "Update 0.2.0", and a
 // click offers to download it and restart.
 // Loaded after app.js, so its globals (S, $, invoke, ask, flash, t, ...) exist.
 

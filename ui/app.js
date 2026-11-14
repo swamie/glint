@@ -30,6 +30,7 @@ const ICON = {
   rec: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.500"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>',
   gear: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.300l2-1.500-2-3.400-2.300 1a7 7 0 0 0-2.200-1.300L14 3h-4l-.4 2.500a7 7 0 0 0-2.200 1.300l-2.300-1-2 3.400 2 1.500a7 7 0 0 0 0 2.600l-2 1.500 2 3.400 2.300-1a7 7 0 0 0 2.200 1.300L10 21h4l.4-2.500a7 7 0 0 0 2.200-1.300l2.300 1 2-3.400-2-1.500c.1-.4.1-.8.1-1.300z"/></svg>',
   copy: '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
+  paste: '<svg viewBox="0 0 24 24"><rect x="5" y="4.500" width="14" height="16" rx="2"/><path d="M9 4.500V4a1.500 1.500 0 0 1 1.500-1.500h3A1.500 1.500 0 0 1 15 4v.500M9 11h6M9 15h4"/></svg>',
   cut: '<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.500"/><circle cx="6" cy="18" r="2.500"/><path d="M8 7.500 20 18M8 16.500 20 6"/></svg>',
   folder: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
   trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
@@ -170,17 +171,17 @@ function askDuration(secs) {
   });
 }
 
-/** The "new folder" prompt: its name and, if wanted, a colour (0.1.24). Resolves to { name, color }
- *  ("" = no colour) or null if cancelled or left empty. */
+/** The "new folder" prompt: its name and, if wanted, a color (0.1.24). Resolves to { name, color }
+ *  ("" = no color) or null if cancelled or left empty. */
 function askFolder() {
   return new Promise((resolve) => {
     const el = $("#confirm");
     let color = "";
-    const swatches = () => `<button type="button" class="fc-sw fc-none${color ? "" : " on"}" data-nf="" title="${esc(t("No colour"))}" aria-label="${esc(t("No colour"))}"></button>`
+    const swatches = () => `<button type="button" class="fc-sw fc-none${color ? "" : " on"}" data-nf="" title="${esc(t("No color"))}" aria-label="${esc(t("No color"))}"></button>`
       + FOLDER_COLORS.map(([hex, label]) => `<button type="button" class="fc-sw${color === hex ? " on" : ""}" data-nf="${hex}" style="background:${hex}" title="${esc(t(label))}" aria-label="${esc(t(label))}"></button>`).join("");
     el.innerHTML = `<div class="confirm-box"><p>${esc(t("Name the new folder"))}</p>
       <input class="field ask-input" type="text" maxlength="60" spellcheck="false" value="">
-      <div class="small nf-label">${esc(t("Colour (if you want one)"))}</div>
+      <div class="small nf-label">${esc(t("Color (if you want one)"))}</div>
       <div class="nf-colors">${swatches()}</div>
       <div class="confirm-row"><button class="btn" data-c="no">${t("Cancel")}</button><button class="btn primary" data-c="yes">${esc(t("Create folder"))}</button></div></div>`;
     el.hidden = false;
@@ -294,6 +295,7 @@ function renderChrome() {
   if (typeof jobsRender === "function") jobsRender(); // shown or hidden by a setting
   if (typeof sfxFromSettings === "function") sfxFromSettings(S.settings); // a sound setting applies at once
   // The sidebar can be folded to a strip of icons, so every item carries its name as a tooltip.
+  document.documentElement.style.setProperty("--nav-op", String(clamp(+S.settings.nav_opacity || 60, 20, 100) / 100)); // the clip arrows in fullscreen (editor.css)
   $("#app").classList.toggle("side-min", S.sideMin);
   $("#side-toggle").title = S.sideMin ? t("Show the sidebar") : t("Hide the sidebar");
   $("#side-toggle").setAttribute("aria-label", $("#side-toggle").title);
@@ -415,7 +417,7 @@ function cardHtml(c) {
   </article>`;
 }
 
-/** A game's icon: its own (taken from the game's exe, or picked by the user), else a coloured initial. */
+/** A game's icon: its own (taken from the game's exe, or picked by the user), else a colored initial. */
 function gameIcon(name) {
   const g = S.games.find((x) => x.name.toLowerCase() === String(name).toLowerCase());
   if (g?.icon) return `<img src="${fileSrc(g.icon)}" alt="" draggable="false">`;
@@ -686,7 +688,7 @@ function openGameMenu(name, x, y) {
 /** Right-click on a folder chip or a folder in the sidebar. */
 function openFolderMenu(name, x, y) {
   menuIds = [];
-  // Where the folder was clicked: "Custom…" opens the colour picker beside it (the menu is gone by then).
+  // Where the folder was clicked: "Custom…" opens the color picker beside it (the menu is gone by then).
   const at = { left: x, right: x, top: y, bottom: y };
   fcMenu = { name, rect: { getBoundingClientRect: () => at } };
   const cur = folderColor(name);
@@ -694,32 +696,32 @@ function openFolderMenu(name, x, y) {
   const custom = cur && !FOLDER_COLORS.some(([hex]) => hex === cur);
   const colorItems = `<div class="fc-row">${swatches}</div>`
     + mItem("folder-color-custom", t("Custom…"), FC_DOT, "", custom ? "on fc-item" : "fc-item").replace('class="', custom ? `style="--fc:${cur}" class="` : 'class="')
-    + mItem("folder-color", t("No colour"), ICON.x, "", cur ? "" : "on");
-  // The Colour item's dot shows the folder's colour.
-  const colorSub = `<div class="has-sub"><button tabindex="-1" class="fc-item"${cur ? ` style="--fc:${cur}"` : ""}>${FC_DOT}<span>${esc(t("Colour"))}</span><b class="chev">›</b></button><div class="submenu">${colorItems}</div></div>`;
+    + mItem("folder-color", t("No color"), ICON.x, "", cur ? "" : "on");
+  // The Color item's dot shows the folder's color.
+  const colorSub = `<div class="has-sub"><button tabindex="-1" class="fc-item"${cur ? ` style="--fc:${cur}"` : ""}>${FC_DOT}<span>${esc(t("Color"))}</span><b class="chev">›</b></button><div class="submenu">${colorItems}</div></div>`;
   $("#menu").innerHTML = mItem("folder-open", t("Open"), ICON.folder, name) + mItem("folder-rename", t("Rename…"), ICON.edit, name) + colorSub
     + "<hr>" + mItem("folder-del", t("Delete folder"), ICON.trash, name, "danger");
   placeMenu(x, y);
 }
 
-/* ---------- folder colours (settings.folder_colors: folder name -> "#rrggbb") ---------- */
-// Preset swatches of the folder menu's Colour submenu.
+/* ---------- folder colors (settings.folder_colors: folder name -> "#rrggbb") ---------- */
+// Preset swatches of the folder menu's Color submenu.
 const FOLDER_COLORS = [["#e5484d", "Red"], ["#f76b15", "Orange"], ["#ffc53d", "Yellow"], ["#30a46c", "Green"], ["#12a594", "Teal"], ["#3e63dd", "Blue"], ["#8e4ec6", "Purple"], ["#d6409f", "Pink"]];
 const FC_DOT = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5" class="fc-dot"/></svg>';
 let fcMenu = null; // { name, rect } of the folder whose menu is open
-/** A folder's own colour ("#rrggbb"), or "". Names match ignoring letter case, as folder names do on Windows. */
+/** A folder's own color ("#rrggbb"), or "". Names match ignoring letter case, as folder names do on Windows. */
 function folderColor(name) {
   const map = (S.settings && S.settings.folder_colors) || {};
   const key = Object.keys(map).find((k) => k.toLowerCase() === String(name).toLowerCase());
   return (key && typeof glintNormHex === "function" && glintNormHex(map[key])) || "";
 }
-/** A readable text colour on a folder colour (the active folder is filled with it): themes.js glintInkFor, else black or white. */
+/** A readable text color on a folder color (the active folder is filled with it): themes.js glintInkFor, else black or white. */
 function fcInk(hex) {
   if (typeof glintInkFor === "function") return glintInkFor(hex);
   const n = parseInt(String(hex).slice(1), 16);
   return ((n >> 16) * 299 + ((n >> 8) & 255) * 587 + (n & 255) * 114) / 1000 > 150 ? "#000000" : "#ffffff";
 }
-/** `html` (one element) with the folder's colour: class "fcol", --fc and --fc-ink on its first tag. style.css colours the
+/** `html` (one element) with the folder's color: class "fcol", --fc and --fc-ink on its first tag. style.css colors the
  *  icon and a thin marker, and fills the active folder (chip, sidebar row) with --fc instead of the accent. */
 function fcDeco(html, name) {
   const hex = name ? folderColor(name) : "";
@@ -736,7 +738,7 @@ function fcPaint(name, hex) {
     else { el.style.removeProperty("--fc"); el.style.removeProperty("--fc-ink"); }
   }
 }
-/** Set (or with "" clear) a folder's colour and save it. */
+/** Set (or with "" clear) a folder's color and save it. */
 function setFolderColor(name, hex) {
   const map = fcCarry({ ...(S.settings.folder_colors || {}) }, name, null);
   const n = hex && glintNormHex(hex);
@@ -744,7 +746,7 @@ function setFolderColor(name, hex) {
   S.settings.folder_colors = map;
   saveSettings(true);
 }
-/** The colour map with `from`'s colour moved to `to` (null: dropped). The backend does the same in rename_folder / delete_folder. */
+/** The color map with `from`'s color moved to `to` (null: dropped). The backend does the same in rename_folder / delete_folder. */
 function fcCarry(map, from, to) {
   const key = Object.keys(map).find((k) => k.toLowerCase() === String(from).toLowerCase());
   if (key === undefined) return map;
@@ -761,7 +763,7 @@ function folderColorCustom(name, anchor) {
     name,
     hex: cur || FOLDER_COLORS[5][0],
     reset: cur || FOLDER_COLORS[5][0],
-    resetTitle: cur ? t("Back to the colour it had") : t("Back to the first colour"),
+    resetTitle: cur ? t("Back to the color it had") : t("Back to the first color"),
     onPreview: (hex) => fcPaint(name, hex),
     onKeep: (hex) => { if (hex !== cur) setFolderColor(name, hex); else fcPaint(name, cur); },
     onCancel: () => fcPaint(name, cur),
@@ -773,7 +775,7 @@ async function renameFolder(name) {
   if (!to || to === name) return;
   const made = (await invoke("rename_folder", { from: name, to })) || to;
   if (S.folder === name) S.folder = made;
-  // The backend moved the colour too (and saved it): the same here, so a later save keeps it.
+  // The backend moved the color too (and saved it): the same here, so a later save keeps it.
   if (S.settings.folder_colors) fcCarry(S.settings.folder_colors, name, made);
   await refreshClips();
 }
@@ -855,7 +857,7 @@ async function menuAction(m, arg) {
     case "folder-open": S.page = "library"; S.folder = arg; S.tab = "all"; S.sel.clear(); return render();
     case "folder-rename": return renameFolder(arg);
     case "folder-del": return deleteFolder(arg);
-    case "folder-color": return fcMenu && setFolderColor(fcMenu.name, arg); // arg "" = No colour
+    case "folder-color": return fcMenu && setFolderColor(fcMenu.name, arg); // arg "" = No color
     case "folder-color-custom": return fcMenu && folderColorCustom(fcMenu.name, fcMenu.rect);
     case "tp-rename": case "tp-dup": case "tp-del": return prMenuAction(m, arg); // theme presets (colorpick.js)
   }
@@ -892,8 +894,90 @@ async function compressIds(ids, mb) {
   flash(ids.length === 1 ? t("Compressing for Discord…") : t("Compressing {clips} for Discord…", { clips: plural(ids.length) }));
 }
 
+/* ---------- right-click on a text box: Glint's own Cut / Copy / Paste (0.1.25) ----------
+   The web view's own menu there (Emoji, Import passwords, Writing direction, More tools) is the
+   browser's, not Glint's. This one is a small panel on <body> (above prompts and dialogs; inside the
+   fullscreen element when there is one) in the look of the other menus. */
+let textMenu = null; // { el, input }
+function textMenuClose() {
+  if (!textMenu) return;
+  textMenu.el.remove();
+  textMenu = null;
+}
+/** True for the fields a caret can sit in. */
+const isTextBox = (el) => !!el && (el.tagName === "TEXTAREA" || (el.tagName === "INPUT" && /^(text|search|number|url|email|tel|password|)$/.test(el.getAttribute("type") || "")));
+function textMenuOpen(input, x, y) {
+  textMenuClose();
+  if (input !== document.activeElement) input.focus();
+  // A number box has no selection to read: the whole value is taken.
+  let a = null, b = null;
+  try { a = input.selectionStart; b = input.selectionEnd; } catch { /* number, email: no selection API */ }
+  const whole = a === null || b === null;
+  const hasSel = whole ? String(input.value).length > 0 : b > a;
+  const locked = input.readOnly || input.disabled;
+  const secret = input.type === "password";
+  const item = (act, label, icon, off) => `<button type="button" data-tm="${act}"${off ? ' disabled aria-disabled="true"' : ""}>${icon}<span>${esc(label)}</span></button>`;
+  const el = document.createElement("div");
+  el.className = "menu ctx text-menu";
+  el.setAttribute("role", "menu");
+  el.innerHTML = item("cut", t("Cut"), ICON.cut, !hasSel || locked || secret) + item("copy", t("Copy"), ICON.copy, !hasSel || secret) + item("paste", t("Paste"), ICON.paste, locked);
+  (document.fullscreenElement || document.body).append(el);
+  const r = el.getBoundingClientRect();
+  el.style.left = `${clamp(x, 8, window.innerWidth - r.width - 8)}px`;
+  el.style.top = `${clamp(y, 8, window.innerHeight - r.height - 8)}px`;
+  textMenu = { el, input, whole };
+  // The text box keeps the focus and its selection while the menu is used.
+  el.addEventListener("mousedown", (e) => e.preventDefault());
+  el.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-tm]");
+    if (!btn || btn.disabled) return;
+    const act = btn.dataset.tm, m = textMenu;
+    textMenuClose();
+    textMenuDo(m.input, act, m.whole).catch((err) => console.warn("Glint: the text menu's", act, "failed", err));
+  });
+}
+/** Put `text` where the selection is (or in place of everything in a box without one) and tell the page. */
+function textInsert(input, text, whole) {
+  if (whole) input.value = text;
+  else input.setRangeText(text, input.selectionStart, input.selectionEnd, "end");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+async function textMenuDo(input, act, whole) {
+  if (!input.isConnected) return;
+  input.focus();
+  const picked = whole ? String(input.value) : input.value.slice(input.selectionStart, input.selectionEnd);
+  if (act === "copy" || act === "cut") {
+    if (!picked) return;
+    try { await navigator.clipboard.writeText(picked); }
+    catch { document.execCommand("copy"); } // the older way, on the selection that is still there
+    if (act === "cut") textInsert(input, "", whole);
+    return;
+  }
+  // Paste: the clipboard is read by the backend (the web view would ask for permission first).
+  const text = String((await invoke("clipboard_text")) || "");
+  if (!text) return;
+  const oneLine = input.tagName === "INPUT" ? text.replace(/\r?\n/g, " ") : text;
+  const room = input.maxLength > 0 ? Math.max(0, input.maxLength - (whole ? 0 : input.value.length - picked.length)) : Infinity;
+  textInsert(input, oneLine.slice(0, room), whole);
+}
+// Capturing, on window: before every other right-click handler, whichever part of the page the box is in.
+window.addEventListener("contextmenu", (e) => {
+  textMenuClose();
+  const box = e.target.closest?.("input, textarea");
+  if (!isTextBox(box)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  closeMenu();
+  textMenuOpen(box, e.clientX, e.clientY);
+}, true);
+window.addEventListener("mousedown", (e) => { if (textMenu && !textMenu.el.contains(e.target)) textMenuClose(); }, true);
+window.addEventListener("keydown", (e) => { if (textMenu) { textMenuClose(); if (e.code === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); } } }, true);
+window.addEventListener("blur", textMenuClose);
+window.addEventListener("resize", textMenuClose);
+window.addEventListener("scroll", textMenuClose, true);
+
 document.addEventListener("contextmenu", (e) => {
-  if (e.target.closest("input, textarea")) return; // typing fields keep the cut / copy / paste menu
+  if (e.target.closest("input, textarea")) return; // other fields (sliders, ticks): nothing; text boxes have their own menu above
   e.preventDefault();
   const card = e.target.closest("#view .card");
   const folder = e.target.closest("[data-folder]")?.dataset.folder;
@@ -1068,7 +1152,7 @@ async function copyText(text) {
 // What the user pastes into an AI to get a theme. It is addressed to the AI, so it is not translated.
 const THEME_PROMPT = `Write a CSS theme for a desktop app called Glint (a game clip library, dark UI). Reply with CSS only, in one code block, nothing else.
 
-How theming works: the app reads its colours from CSS variables on :root. Set these to recolour everything:
+How theming works: the app reads its colors from CSS variables on :root. Set these to recolor everything:
   --bg         window background (darkest)
   --panel      cards, side panels, dialogs
   --raised     buttons and raised surfaces
@@ -1078,15 +1162,15 @@ How theming works: the app reads its colours from CSS variables on :root. Set th
   --text       main text
   --muted      secondary text
   --dim        faint text and disabled items
-  --accent     highlight colour: active items, primary buttons, progress bars
-               (it also colours the big star of the taskbar and tray icon when "Match the taskbar icon to the theme" is on)
+  --accent     highlight color: active items, primary buttons, progress bars
+               (it also colors the big star of the taskbar and tray icon when "Match the taskbar icon to the theme" is on)
   --accent-2   lighter accent, for hover (also the small star of that icon)
-  --accent-ink text drawn on top of the accent colour (must contrast with --accent)
-  --danger, --ok, --warn   red, green, yellow status colours
+  --accent-ink text drawn on top of the accent color (must contrast with --accent)
+  --danger, --ok, --warn   red, green, yellow status colors
   --radius     corner radius, e.g. 8px
   --sans, --serif, --mono  font stacks (--serif is used for the big page titles and the logo)
 
-Useful selectors if you want to go further than colours:
+Useful selectors if you want to go further than colors:
   .topbar (top bar), .side (left sidebar), .nav-item and .nav-item.active (sidebar entries),
   .page-head h1 (page title), .card and .thumb (clip cards and their thumbnails), .chip and .chip.active (filter chips),
   .btn and .btn.primary (buttons), .section and .section > h2 (settings groups and their titles),
@@ -1181,7 +1265,7 @@ function renderKeybinds() {
     return `<div class="kb-row${clip || (swap && multi) ? "" : " kb-other"}">
       <button class="kb-keys${listening ? " listening" : ""}${k.key ? "" : " unset"}" data-kb="${i}" data-act="capture">${listening ? t("Press a key combination…") : k.key ? comboHtml(k) : t("Click to set key")}</button>
       <select class="field kb-act" data-kb="${i}" data-kbf="action">
-        ${[["clip", t("Save a clip")], ["toggle", t("Pause / resume clipping")], ["show", t("Open Glint")], ...(multi || swap ? [["monitor", t("Switch the capture monitor")]] : [])].map(([v, l]) => `<option value="${v}"${k.action === v ? " selected" : ""}>${l}</option>`).join("")}
+        ${[["clip", t("Save a clip")], ["toggle", t("Pause / resume clipping")], ["show", t("Open Glint")], ["edit", t("Edit the last clip")], ...(multi || swap ? [["monitor", t("Switch the capture monitor")]] : [])].map(([v, l]) => `<option value="${v}"${k.action === v ? " selected" : ""}>${l}</option>`).join("")}
       </select>
       ${clip ? `<select class="field kb-len" data-kb="${i}" data-kbf="seconds">${durs.map((d) => `<option value="${d}"${k.seconds === d ? " selected" : ""}>${t("Last {length}", { length: fmtLen(d) })}</option>`).join("")}<option value="custom">${t("Custom…")}</option></select>` : ""}
       ${(clip || swap) && multi ? monSel : ""}
@@ -1284,10 +1368,11 @@ function renderSettings() {
     ${S.ffmpeg ? "" : `<div class="note bad">${t("<b>ffmpeg.exe was not found.</b> Glint needs ffmpeg 8 or newer. Install it or set its path below.")}</div>`}
     <div class="section"><h2>${t("Appearance")}</h2>
       ${presetTilesHtml() /* colorpick.js: built-in tiles, the user's presets, "+ New preset" */}
-      ${colorRowsHtml() /* colorpick.js: the "Customise colours" box (colours and custom CSS) */}
-      ${row(t("Match the taskbar icon to the theme"), t("Colours Glint's icon in the taskbar and the tray with the theme's accent, including a custom theme's and your own accent colour"), (typeof iconReloadButton === "function" ? iconReloadButton() : "") + toggle("icon_theme"))}
+      ${colorRowsHtml() /* colorpick.js: the "Customise colors" box (colors and custom CSS) */}
+      ${row(t("Match the taskbar icon to the theme"), t("Colors Glint's icon in the taskbar and the tray with the theme's accent, including a custom theme's and your own accent color"), (typeof iconReloadButton === "function" ? iconReloadButton() : "") + toggle("icon_theme"))}
       ${row(t("Tags on clips"), t("A small label on a clip's picture that says what made it. Pick the kinds that get one"), `<div class="tag-kinds">${CARD_TAGS.map((k) => `<button type="button" class="chip${(s.card_tags || []).includes(k) ? " active" : ""}" data-act="tag-kind" data-kind="${k}" aria-pressed="${(s.card_tags || []).includes(k)}">${esc(cardTagLabel(k))}</button>`).join("")}</div>`)}
       ${row(t("Renders button"), t("The button in the top bar that lists Blur renders and their progress"), select("renders_button", [["auto", t("While rendering")], ["always", t("Always")], ["never", t("Never")]]))}
+      ${row(t("Clip arrows in fullscreen"), t("How visible the previous and next clip arrows are while you watch a clip fullscreen. They show with the controls, when the pointer moves"), slider("nav_opacity", 20, 100, 5, "%"))}
       ${row(t("Interface size"), t("Makes everything in the window bigger or smaller, so more or less fits on screen"), select("ui_zoom", [70, 80, 90, 100, 110, 125, 150].map((z) => [z, `${z}%`]), true))}
     </div>
     <div class="section"><h2>${t("Language")}</h2>
@@ -1383,7 +1468,7 @@ function applySettingsFilter() {
   }
   const credits = $("#view .credits-text"); // plain text under the settings: not a setting, so a search hides it
   if (credits) credits.hidden = !!q;
-  cpSearchOpen(q); // colorpick.js: a match inside "Customise colours" opens it
+  cpSearchOpen(q); // colorpick.js: a match inside "Customise colors" opens it
   const none = $("#set-none");
   if (none) {
     none.hidden = shown > 0;
@@ -1686,7 +1771,7 @@ async function refreshState() {
   if (!S.sounds.length) S.sounds = (await invoke("list_sounds")) || [];
   window.applyGlintTheme(S.settings.theme, S.settings.custom_css);
   glintSetLanguage(S.settings.language || "en");
-  prMigrate(); // colorpick.js: old custom colours / CSS become the preset "My theme" (the look does not change)
+  prMigrate(); // colorpick.js: old custom colors / CSS become the preset "My theme" (the look does not change)
   S.version = st.version;
   $("#ver").title = "Glint v" + st.version; // the logo in the top bar
   render();
@@ -1730,6 +1815,19 @@ async function pollStatus() {
   T.event.listen("status-changed", pollStatus);
   // A keybind changed a setting behind the window's back (it switched the capture monitor): read them again.
   T.event.listen("settings-changed", () => refreshState().catch((e) => console.warn("Glint: could not refresh the settings", e)));
+  // The "Edit the last clip" keybind: the backend names the clip once (now, or when this window started because of the key).
+  const editLast = async () => {
+    const id = await invoke("take_pending_edit");
+    if (!id) return;
+    await refreshClips();
+    if (!S.clips.some((c) => c.id === id)) return;
+    if (S.open === id && S.player?.editing) return; // already there
+    if (S.open) closeClip(); // a project saves its edit on the way out
+    openClip(id);
+    S.player?.setEdit(true);
+  };
+  T.event.listen("edit-last", () => editLast().catch((e) => console.error("Glint: edit-last failed", e)));
+  editLast().catch((e) => console.error("Glint: edit-last failed", e));
   // A game was seen for the first time, or its icon was just taken from its exe.
   T.event.listen("games-changed", async () => { S.games = (await invoke("list_games")) || []; if (isLib() && !S.open && !S.sel.size) render(); });
   T.event.listen("blur-progress", ({ payload: p }) => {

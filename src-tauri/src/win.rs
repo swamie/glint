@@ -486,3 +486,50 @@ pub fn windows_build() -> u32 {
             .unwrap_or(0)
     })
 }
+
+// ---------------------------------------------------------------------------
+// The main window's frame (0.1.25)
+//
+// Glint's window has no title bar of its own (`decorations(false)`), but it is
+// still an ordinary resizable window to Windows. On some messages the default
+// window procedure repaints the non-client area with the classic themed
+// caption (the look of a Windows 7 "Basic" window): the owner saw it flash
+// for a few milliseconds while resizing the window fast. The two undocumented
+// messages UxTheme sends to draw that caption and frame are swallowed here,
+// and WM_NCACTIVATE is passed on with lParam -1, which tells the default
+// procedure not to repaint the non-client area. Both are what other
+// frameless windows do (Chromium among them). The window's own subclass
+// (tao's) still sees every other message unchanged.
+
+#[link(name = "comctl32")]
+extern "system" {
+    fn SetWindowSubclass(hwnd: isize, proc_: unsafe extern "system" fn(isize, u32, usize, isize, usize, usize) -> isize, id: usize, data: usize) -> i32;
+    fn DefSubclassProc(hwnd: isize, msg: u32, wparam: usize, lparam: isize) -> isize;
+}
+
+const WM_NCACTIVATE: u32 = 0x0086;
+const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
+const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
+
+/// What `calm_frame`'s subclass does with a message: Some(result) = answer it without the default
+/// procedure; None = pass it on, with this lParam.
+pub fn frame_message(msg: u32, lparam: isize) -> (Option<isize>, isize) {
+    match msg {
+        WM_NCUAHDRAWCAPTION | WM_NCUAHDRAWFRAME => (Some(0), lparam),
+        WM_NCACTIVATE => (None, -1),
+        _ => (None, lparam),
+    }
+}
+
+unsafe extern "system" fn frame_proc(hwnd: isize, msg: u32, wparam: usize, lparam: isize, _id: usize, _data: usize) -> isize {
+    match frame_message(msg, lparam) {
+        (Some(result), _) => result,
+        (None, lparam) => DefSubclassProc(hwnd, msg, wparam, lparam),
+    }
+}
+
+/// Keep the classic caption from flashing on window `hwnd`. Must run on the thread that owns
+/// the window (the event loop's). False if Windows refused the subclass.
+pub fn calm_frame(hwnd: isize) -> bool {
+    unsafe { SetWindowSubclass(hwnd, frame_proc, 0x676c_696e, 0) != 0 }
+}

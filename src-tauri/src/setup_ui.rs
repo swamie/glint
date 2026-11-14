@@ -1773,12 +1773,12 @@ pub fn ui_test(folder: &Path, mut o: Opts) -> i32 {
         rep.check(pos == pct * 10, &format!("installing {pct} %: bar at {pos}/1000, \"{}\", \"{}\"", text_of(ui.h("i_step")), text_of(ui.h("i_detail"))), "wrong position");
         ui.check_page(&mut rep, &format!("installing {pct} %"), &["cancel"]);
         ui.capture(folder, file, &mut rep);
-        // How much of the drawn bar is coloured (the fill), read from the picture.
+        // How much of the drawn bar is colored (the fill), read from the picture.
         let (w, _, data) = draw(ui.hwnd, false);
         let r = rect_in_parent(ui.h("i_bar"), ui.hwnd);
         let row = (r.top + r.bottom) / 2;
         let inner = (r.left + 2..r.right - 2).collect::<Vec<i32>>();
-        let coloured = inner
+        let colored = inner
             .iter()
             .filter(|&&x| {
                 let i = ((row * w + x) * 4) as usize;
@@ -1786,7 +1786,7 @@ pub fn ui_test(folder: &Path, mut o: Opts) -> i32 {
                 b.max(g).max(rr) - b.min(g).min(rr) > 40
             })
             .count();
-        let drawn = coloured as f64 / inner.len() as f64 * 100.0;
+        let drawn = colored as f64 / inner.len() as f64 * 100.0;
         rep.check((drawn - pct as f64).abs() <= 6.0, &format!("installing {pct} %: the picture shows the bar {drawn:.0} % filled"), "the drawn bar does not match");
     }
     ui.feed(Prog { step: "Downloading ffmpeg (101 MB)".into(), index: 2, total: 4, busy: "Unpacking ffmpeg".into(), can_cancel: true, ..Default::default() });

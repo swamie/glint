@@ -1,12 +1,12 @@
 "use strict";
-// Greek, part 3: the editor's per-segment colour, fullscreen and shortcut rebinding.
+// Greek, part 3: the editor's per-segment color, fullscreen and shortcut rebinding.
 glintAddLanguage("el", "Ελληνικά", {
-  // Colour per segment
+  // Color per segment
   "Applies to: the whole clip": "Εφαρμογή σε: ολόκληρο το κλιπ",
   "Applies to: segment {n} of {total}": "Εφαρμογή σε: τμήμα {n} από {total}",
   "Applies to: {n} segments": "Εφαρμογή σε: {n} τμήματα",
   "Apply to the whole clip": "Εφαρμογή σε ολόκληρο το κλιπ",
-  "The segments have different colours. The sliders show the one at the playhead.": "Τα τμήματα έχουν διαφορετικά χρώματα. Τα ρυθμιστικά δείχνουν το τμήμα στη θέση του δείκτη.",
+  "The segments have different colors. The sliders show the one at the playhead.": "Τα τμήματα έχουν διαφορετικά χρώματα. Τα ρυθμιστικά δείχνουν το τμήμα στη θέση του δείκτη.",
   "Video hidden in this segment": "Το βίντεο είναι κρυφό σε αυτό το τμήμα",
   "Solo needs at least two audio tracks": "Η απομόνωση χρειάζεται τουλάχιστον δύο κομμάτια ήχου",
 

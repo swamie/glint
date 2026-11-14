@@ -9,7 +9,7 @@
 //! 2. `find(name, &sources)` / `find_all` is a pure function: the icon files that belong
 //!    to that game, best first. A name must match exactly after `games::name_key`
 //!    (case, punctuation, "™", "Tom Clancy's", edition words), or through `STORE_NAMES`:
-//!    a wrong icon is worse than the coloured letter.
+//!    a wrong icon is worse than the colored letter.
 //! 3. `save` turns a source into a PNG (or copied image) in the icons folder.
 use crate::core::Core;
 use crate::games::{self, Games};

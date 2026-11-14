@@ -14,7 +14,7 @@ if (!window.__TAURI__) {
       clips_dir: "C:\\Users\\you\\Videos\\Glint", game_folders: false, clip_name: [{ kind: "game" }, { kind: "date" }, { kind: "time" }], monitor: 0, height: 0, fps: 60, quality: "high", bitrate: 0, encoder: "auto", method: "auto", buffer: "mixed", buffer_ram_secs: 30, buffer_dir: "",
       cursor: true, desktop_audio: true, mic: true, mic_denoise: false, game_audio: false, record_on_start: true, sound: true, sound_name: "chirp", sound_volume: 40, sound_file: "",
       toast: true, toast_pos: "tr", toast_opacity: 96, toast_scale: 100, toast_secs: 3.5, toast_length: true, toast_game: true, toast_mic: true,
-      ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", icon_theme: false, icon_accent: "", icon_accent_2: "", card_tags: [], theme_order: [], gif: { width: 480, fps: 20, max_mb: 0, copy: false }, upscale: { height: 2160, filter: "sharp", quality: "high", encoder: "auto" }, rules: [], rules_after_export: "", discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true, update_check: true, update_auto: true,
+      ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", icon_theme: false, icon_accent: "", icon_accent_2: "", card_tags: [], nav_opacity: 60, theme_order: [], gif: { width: 480, fps: 20, max_mb: 0, copy: false }, upscale: { height: 2160, filter: "sharp", quality: "high", encoder: "auto" }, rules: [], rules_after_export: "", discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true, update_check: true, update_auto: true,
       compress_mb: 10, ui_sounds: false, ui_sounds_hover: false, ui_sounds_volume: 50,
       compress: { sizes: [10, 20, 50, 500], preset: "veryfast", audio_kbps: 0, max_height: 0, max_fps: 0, audio: "first", dest: "beside", dest_dir: "", copy: true }, theme_colors: {}, theme_presets: [{ id: "tp-mock1", name: "Night pink", base: "midnight", colors: { accent: "#ff7ab8" }, css: "" }], theme_preset: "", folder_colors: { "Best of": "#e5484d" },
       ffmpeg_path: "", blur_path: "",
@@ -306,6 +306,10 @@ if (!window.__TAURI__) {
             if (/noaudio/.test(args.path)) throw "That file has no audio in it";
             return { path: "/__test.mp4", title: args.path.split(/[\\/]/).pop().replace(/\.[^.]+$/, ""), duration: 8, per_second: 50, peaks: Array.from({ length: 400 }, (_, i) => Math.abs(Math.sin(i / 5)) * 0.8) };
           case "pick_audio_file": return "C:\\Music\\victory.mp3";
+          // overlays.js: the export's text / shape picture as a temp PNG (editor.rs save_overlay_png).
+          case "editor_overlay_png":
+            if (!/^data:image\/png;base64,/.test(args.data || "")) throw "The overlay picture is not a PNG";
+            return `C:\\Users\\you\\AppData\\Roaming\\Glint\\tmp\\overlays\\mock${window.__mockCalls.length}.png`;
           // Upscale for YouTube (upscale.rs): one job each, refused like the backend; 4 s each, then "clip-upscaled".
           case "upscale_clips": {
             const h = args.opts?.height || 2160, label = h === 2160 ? "4K" : `${h}p`;
@@ -594,6 +598,8 @@ if (!window.__TAURI__) {
           case "rename_folder": folders[folders.indexOf(args.from)] = args.to; clips.forEach((c) => { if (c.folder === args.from) c.folder = args.to; }); return args.to;
           case "delete_folder": folders.splice(folders.indexOf(args.name), 1); clips.forEach((c) => { if (c.folder === args.name) c.folder = ""; }); return null;
           case "move_clips": { let n = 0; clips.forEach((c) => { if (args.ids.includes(c.id) && c.folder !== args.folder) { c.folder = args.folder; n++; } }); return n; }
+          case "take_pending_edit": { const id = window.__mockPendingEdit || null; window.__mockPendingEdit = null; return id; }
+          case "clipboard_text": return window.__mockClipboard ?? "pasted text";
           case "replace_clips": {
             // As core.rs replace_clips: the chosen clips go, and with `adopt` the export takes the first one's name, date and favourite.
             const made = clips.find((c) => c.id === args.id);

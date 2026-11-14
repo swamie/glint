@@ -1,11 +1,11 @@
 //! Clip editor backend: per-track audio for the editor's preview, and the
-//! export that applies a trim, a speed change, colour correction and an audio
+//! export that applies a trim, a speed change, color correction and an audio
 //! track mix by re-encoding with ffmpeg.
 //!
 //! The types below are the contract with the UI (`ui/editor.js`). The Tauri
 //! commands that call these functions live in `app.rs`.
 //!
-//! Colour semantics (the UI preview must apply the same steps, in this order,
+//! Color semantics (the UI preview must apply the same steps, in this order,
 //! to 0..1 sRGB channel values, clamping to 0..1 after every step):
 //!   1. brightness b: v * b                      (CSS `brightness(b)`)
 //!   2. contrast c:   (v - 0.5) * c + 0.5        (CSS `contrast(c)`)
@@ -37,7 +37,7 @@ pub struct AudioTrack {
     pub path: String,
 }
 
-/// Colour correction. 1.0 is "unchanged" for every field.
+/// Color correction. 1.0 is "unchanged" for every field.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Color {
@@ -66,7 +66,7 @@ pub struct TrackVolume {
 pub struct Range {
     pub start: f64,
     pub end: f64,
-    /// This range's colour correction; replaces `ExportOpts::color` here. None = that one.
+    /// This range's color correction; replaces `ExportOpts::color` here. None = that one.
     pub color: Option<Color>,
     /// The picture is black here (same size and frame timing); the audio plays on.
     pub blank: bool,
@@ -139,7 +139,7 @@ pub struct ExportOpts {
     pub tracks: Vec<TrackVolume>,
     /// Timeline edit: the source ranges to keep, in order, joined end to end.
     /// Empty = use `start`..`end` (one range). Ranges that look different
-    /// (colour, blank) may touch: the end of one is the start of the next.
+    /// (color, blank) may touch: the end of one is the start of the next.
     pub segments: Vec<Range>,
     /// Timeline edit: the audio rows to mix into ONE track. Empty = fall back
     /// to `tracks` (and, if that is empty too, keep the clip's audio as recorded).
@@ -150,11 +150,120 @@ pub struct ExportOpts {
     /// and look the same. Audio rows stay in source time and are cut the same
     /// way, so each range keeps its own sound.
     pub ordered: bool,
+    /// Pictures drawn by the editor (text, shapes, drawings) laid over the
+    /// result, in order (later ones on top). Times are OUTPUT seconds.
+    pub overlays: Vec<Overlay>,
+    /// Boxes whose inside is blurred (censoring), under the overlays.
+    pub blurs: Vec<BlurBox>,
+    /// Seconds the result fades in from black at its start / out to black at
+    /// its end, picture and sound together. 0 = no fade.
+    pub fade_in: f64,
+    pub fade_out: f64,
 }
 
 impl Default for ExportOpts {
     fn default() -> Self {
-        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new(), ordered: false }
+        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new(), ordered: false, overlays: Vec::new(), blurs: Vec::new(), fade_in: 0.0, fade_out: 0.0 }
+    }
+}
+
+/// A transparent PNG the size of the picture (written by `save_overlay_png`),
+/// shown from `from` to `to` seconds of the RESULT (after cuts, order and speed).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct Overlay {
+    pub png: String,
+    pub from: f64,
+    pub to: f64,
+}
+
+/// A box of the picture that is blurred from `from` to `to` seconds of the
+/// result. Position and size are fractions (0..1) of the picture; `strength`
+/// is the blur's radius (Gaussian sigma) as a fraction of the picture's height,
+/// the same the preview gives CSS `blur()` on the shown picture.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct BlurBox {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub from: f64,
+    pub to: f64,
+    pub strength: f64,
+}
+
+/// Where overlay PNGs are written; an export removes the ones it used from here.
+fn overlay_dir() -> PathBuf {
+    util::tmp_dir().join("overlays")
+}
+
+/// Decode standard base64 (with or without padding; whitespace ignored).
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    let val = |c: u8| -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        } as u32)
+    };
+    let bytes: Vec<u8> = s.bytes().filter(|c| !c.is_ascii_whitespace() && *c != b'=').collect();
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
+    for chunk in bytes.chunks(4) {
+        let mut n = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            n |= val(c)? << (18 - 6 * i);
+        }
+        match chunk.len() {
+            4 => out.extend([(n >> 16) as u8, (n >> 8) as u8, n as u8]),
+            3 => out.extend([(n >> 16) as u8, (n >> 8) as u8]),
+            2 => out.push((n >> 16) as u8),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// The editor's overlay picture (a PNG, as a data URL or plain base64) written
+/// to a temp file for the export; returns its path. Files left over from an
+/// export that never ran are removed after a day.
+pub fn save_overlay_png(data: &str) -> Result<String, String> {
+    let b64 = data.split_once("base64,").map(|(_, b)| b).unwrap_or(data);
+    let bytes = base64_decode(b64).ok_or("The overlay picture is not valid base64")?;
+    if bytes.len() < 8 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" {
+        return Err("The overlay picture is not a PNG".into());
+    }
+    let dir = overlay_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    if let Ok(list) = fs::read_dir(&dir) {
+        for e in list.flatten() {
+            let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > Duration::from_secs(86_400));
+            if old {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+    }
+    let path = dir.join(format!("{}.png", util::new_id()));
+    fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Removes the overlay PNGs an export was given when it ends, however it ends
+/// (only files inside `overlay_dir`, never anything else a caller names).
+struct OverlayFiles(Vec<PathBuf>);
+
+impl Drop for OverlayFiles {
+    fn drop(&mut self) {
+        let dir = overlay_dir();
+        let dir = fs::canonicalize(&dir).unwrap_or(dir);
+        for p in &self.0 {
+            if fs::canonicalize(p).is_ok_and(|c| c.starts_with(&dir)) {
+                let _ = fs::remove_file(p);
+            }
+        }
     }
 }
 
@@ -291,7 +400,7 @@ pub fn audio_tracks(s: &Settings, src: &ClipMeta) -> Result<Vec<AudioTrack>, Str
         .collect())
 }
 
-/// Colour matrix and range to convert the clip's YUV to RGB and back with.
+/// Color matrix and range to convert the clip's YUV to RGB and back with.
 /// Glint's clips are untagged; WebView2 (Chromium) shows untagged video as
 /// BT.709, so that is what the preview the user tuned against looked like.
 fn video_colorspace(ffmpeg: &Path, file: &Path) -> (&'static str, &'static str) {
@@ -374,8 +483,8 @@ fn color_filter(c: &Color, matrix: &str, range: &str) -> Option<String> {
     Some(steps.join(","))
 }
 
-/// The picture filter `export` applies when colour `c` covers the whole of `file`
-/// (one look after the join, then yuv420p), for a render rule's colour step
+/// The picture filter `export` applies when color `c` covers the whole of `file`
+/// (one look after the join, then yuv420p), for a render rule's color step
 /// (rules.rs), so a rule's look matches the editor's export of it exactly.
 /// None when `c` changes nothing.
 pub(crate) fn look_filter(ffmpeg: &Path, file: &Path, c: &Color) -> Option<String> {
@@ -494,7 +603,7 @@ const MIX_RATE: u32 = 48_000;
 struct Kept {
     a: f64,
     b: f64,
-    /// The colour that applies here: the range's own, else `ExportOpts::color`
+    /// The color that applies here: the range's own, else `ExportOpts::color`
     /// (neutral on a blank range, where nothing of the picture is left to correct).
     color: Color,
     blank: bool,
@@ -858,9 +967,99 @@ pub(crate) fn frames_on_screen(ffmpeg: &Path, file: &Path, times: &[f64]) -> Vec
     found
 }
 
+/// The picture layers of an export, checked and clamped to the result's length.
+struct Layers {
+    /// (png path, from, to) in output seconds.
+    overlays: Vec<(String, f64, f64)>,
+    /// (x, y, w, h fractions, from, to, strength).
+    blurs: Vec<(f64, f64, f64, f64, f64, f64, f64)>,
+    fade_in: f64,
+    fade_out: f64,
+}
+
+/// `opts`' overlays, blur boxes and fades on a result `total` seconds long;
+/// None when there are none (or none that shows). A missing overlay file is an error.
+fn layer_plan(opts: &ExportOpts, total: f64) -> Result<Option<Layers>, String> {
+    let fin = |v: f64| if v.is_finite() { v } else { 0.0 };
+    let span = |a: f64, b: f64| {
+        let a = fin(a).clamp(0.0, total);
+        let b = fin(b).clamp(0.0, total);
+        (b - a > 0.001).then_some((a, b))
+    };
+    let mut overlays = Vec::new();
+    for o in &opts.overlays {
+        let Some((a, b)) = span(o.from, o.to) else { continue };
+        if !Path::new(&o.png).is_file() {
+            return Err("An overlay picture of the edit is missing. Try the export again.".into());
+        }
+        overlays.push((o.png.clone(), a, b));
+    }
+    let mut blurs = Vec::new();
+    for g in &opts.blurs {
+        let Some((a, b)) = span(g.from, g.to) else { continue };
+        let x = fin(g.x).clamp(0.0, 1.0);
+        let y = fin(g.y).clamp(0.0, 1.0);
+        let w = fin(g.w).min(1.0 - x);
+        let h = fin(g.h).min(1.0 - y);
+        let st = fin(g.strength).clamp(0.0, 0.2);
+        if w > 0.002 && h > 0.002 && st > 0.0 {
+            blurs.push((x, y, w, h, a, b, st));
+        }
+    }
+    // Fades longer than half the result would overlap: each is kept to half.
+    let fade_in = fin(opts.fade_in).clamp(0.0, total / 2.0);
+    let fade_out = fin(opts.fade_out).clamp(0.0, total / 2.0);
+    let fade_in = if fade_in >= 0.01 { fade_in } else { 0.0 };
+    let fade_out = if fade_out >= 0.01 { fade_out } else { 0.0 };
+    if overlays.is_empty() && blurs.is_empty() && fade_in == 0.0 && fade_out == 0.0 {
+        return Ok(None);
+    }
+    Ok(Some(Layers { overlays, blurs, fade_in, fade_out }))
+}
+
+/// Filter chains from `[vb]` (the joined result, on output time) to `[v]`:
+/// each blur box (crop, Gaussian blur, laid back at its place), then each
+/// overlay picture (input `first_png` + i, scaled to the picture `size`),
+/// each only `between` its times, then the fades. Pixel boxes are even, as
+/// 4:2:0 needs, so the blurred crop lands exactly where it was taken.
+fn layer_chain(l: &Layers, first_png: usize, (pw, ph): (u32, u32), total: f64) -> Vec<String> {
+    let mut g = Vec::new();
+    let mut cur = "vb".to_string();
+    let even = |v: f64| ((v / 2.0).round() as i64 * 2).max(0) as u32;
+    for (i, &(x, y, w, h, a, b, st)) in l.blurs.iter().enumerate() {
+        let bx = even(x * pw as f64).min(pw.saturating_sub(2));
+        let by = even(y * ph as f64).min(ph.saturating_sub(2));
+        let bw = even(w * pw as f64).clamp(2, pw - bx);
+        let bh = even(h * ph as f64).clamp(2, ph - by);
+        let sigma = (st * ph as f64).clamp(0.5, 500.0);
+        let on = format!("enable='between(t,{a:.4},{b:.4})'");
+        g.push(format!(
+            "[{cur}]split=2[{cur}m][{cur}s];[{cur}s]crop={bw}:{bh}:{bx}:{by},gblur=sigma={sigma:.3}:steps=2:{on}[bb{i}];[{cur}m][bb{i}]overlay={bx}:{by}:{on}[vl{i}]"
+        ));
+        cur = format!("vl{i}");
+    }
+    for (j, (_, a, b)) in l.overlays.iter().enumerate() {
+        let input = first_png + j;
+        g.push(format!("[{input}:v]scale={pw}:{ph},format=rgba[op{j}];[{cur}][op{j}]overlay=0:0:enable='between(t,{a:.4},{b:.4})'[vo{j}]"));
+        cur = format!("vo{j}");
+    }
+    let mut tail = vec![];
+    if l.fade_in > 0.0 {
+        tail.push(format!("fade=t=in:st=0:d={:.4}", l.fade_in));
+    }
+    if l.fade_out > 0.0 {
+        tail.push(format!("fade=t=out:st={:.4}:d={:.4}", (total - l.fade_out).max(0.0), l.fade_out));
+    }
+    tail.push("format=yuv420p".into());
+    g.push(format!("[{cur}]{}[v]", tail.join(",")));
+    g
+}
+
 /// Write a new clip beside `src` with `opts` applied, and return its library entry.
 /// `progress` receives 0..100 while ffmpeg runs.
 pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dyn FnMut(f32)) -> Result<ClipMeta, String> {
+    // The overlay PNGs are temp files made for this export: gone when it ends, whatever happens.
+    let _pngs = OverlayFiles(opts.overlays.iter().map(|o| PathBuf::from(&o.png)).collect());
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg").ok_or("ffmpeg.exe was not found")?;
     let src_path = PathBuf::from(&src.path);
     if !src_path.is_file() {
@@ -895,18 +1094,33 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     // Nothing but a cut: the lossless trim is faster and keeps the original
     // quality. Its result stays kind "trim" and is named "(trim)", because
     // that is exactly what it is. The one range's own look decides (it
-    // replaces `opts.color`), so a coloured or blank range is never copied.
+    // replaces `opts.color`), so a colored or blank range is never copied.
     let plain = pieces.iter().all(|k| !k.blank && is_neutral(&k.color));
-    if k_count == 1 && same(speed, 1.0) && plain && opts.tracks.is_empty() && opts.audio.is_empty() {
+    // Overlays, blur boxes and fades (on the result's own timeline, `out_total` long).
+    let out_total = kept / speed;
+    let layers = layer_plan(opts, out_total)?;
+    if k_count == 1 && same(speed, 1.0) && plain && opts.tracks.is_empty() && opts.audio.is_empty() && layers.is_none() {
         let meta = crate::clip::trim(s, src, base, if to_end { duration } else { last_end }, true)?;
         progress(100.0);
         return Ok(meta);
     }
 
     let titles = audio_titles(&ffmpeg, &src_path)?;
-    let tempo = atempo_chain(speed);
+    let mut tempo = atempo_chain(speed);
     // Every file the mix needs is checked here, before the long encode starts.
-    let plan = audio_plan(&ffmpeg, &src_path, opts, &titles, duration, base, total, k_count, speed)?;
+    let mut plan = audio_plan(&ffmpeg, &src_path, opts, &titles, duration, base, total, k_count, speed)?;
+    if let Some(l) = &layers {
+        // The sound fades with the picture (after the speed change, so on the result's time).
+        if l.fade_in > 0.0 {
+            tempo += &format!(",afade=t=in:st=0:d={:.4}", l.fade_in);
+        }
+        if l.fade_out > 0.0 {
+            tempo += &format!(",afade=t=out:st={:.4}:d={:.4}", (out_total - l.fade_out).max(0.0), l.fade_out);
+        }
+        if (l.fade_in > 0.0 || l.fade_out > 0.0) && matches!(plan, AudioPlan::Copy) {
+            plan = AudioPlan::Tracks; // a copied track cannot fade
+        }
+    }
 
     // Video: one input per kept range, each seeked (cheap: a keyframe every
     // second) to the frame that was ON SCREEN at the range's start, i.e. the
@@ -918,10 +1132,10 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     // keeps every range exactly as long as its audio (concat guesses a VFR
     // segment's length from its mean frame interval).
     //
-    // Look: when every range looks the same, the colour is applied once after
-    // the join, as before. Otherwise each range gets its own colour (or is
+    // Look: when every range looks the same, the color is applied once after
+    // the join, as before. Otherwise each range gets its own color (or is
     // painted black) on its own branch, before the join, and every branch ends
-    // in the same pixel format and colour tags so `interleave` joins like
+    // in the same pixel format and color tags so `interleave` joins like
     // with like. A blank range keeps its source frames and only overwrites
     // their pixels, so its size, frame timing and length are the source's.
     let (matrix, range) = video_colorspace(&ffmpeg, &src_path);
@@ -964,7 +1178,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         graph.push(format!("{labels}interleave=nb_inputs={k_count}[vj]"));
     }
 
-    // After the join: speed cap, then colour, ending in a pixel format every player takes.
+    // After the join: speed cap, then color, ending in a pixel format every player takes.
     //
     // Output frame rate: the source is variable-rate, so the export stays
     // variable-rate and never invents frames. It is capped at the capture rate
@@ -985,7 +1199,8 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         video += ",";
         video += &f;
     }
-    video += ",format=yuv420p[v]";
+    // With overlays, blur boxes or fades the picture goes on through `layer_chain` (below) to [v].
+    video += if layers.is_some() { ",format=yuv420p[vb]" } else { ",format=yuv420p[v]" };
     graph.push(video);
     let mut maps: Vec<String> = vec!["-map".into(), "[v]".into()];
     let mut audio_args: Vec<String> = Vec::new();
@@ -1061,6 +1276,18 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         }
     }
 
+    // The overlay pictures are the last inputs.
+    let first_png = first_file + file_inputs.len();
+    if let Some(l) = &layers {
+        let size = if src.width > 0 && src.height > 0 {
+            (src.width, src.height)
+        } else {
+            library::probe(&ffmpeg, &src_path, false).map(|p| (p.width, p.height)).filter(|(w, h)| *w > 0 && *h > 0).ok_or("Could not read the clip's picture size")?
+        };
+        graph.extend(layer_chain(l, first_png, size, out_total));
+    }
+    let png_inputs: Vec<String> = layers.as_ref().map(|l| l.overlays.iter().map(|o| o.0.clone()).collect()).unwrap_or_default();
+
     let title = format!("{} (edit)", src.title);
     // Beside the source; from a draft, into its folder in the clips folder.
     let (dir, folder) = crate::clip::output_dir(s, src);
@@ -1090,6 +1317,11 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         }
         for (path, seek, len) in &file_inputs {
             a.extend(["-ss".to_string(), format!("{seek:.6}"), "-t".into(), format!("{len:.6}"), "-i".into(), path.clone()]);
+        }
+        for png in &png_inputs {
+            // One still picture each; `pattern_type none` so no character of the path is read as a frame number pattern.
+            a.extend(["-f", "image2", "-pattern_type", "none", "-i"].map(String::from));
+            a.push(png.clone());
         }
         a.extend(["-filter_complex".into(), graph.join(";")]);
         a.extend(maps.iter().cloned());
@@ -1397,8 +1629,8 @@ fn run_self_test(r: &mut Report) {
     cpu.encoder = "x264".into();
     let warm = ExportOpts { color: Color { contrast: 1.3, gamma: 1.5, saturation: 1.6, ..Default::default() }, ..Default::default() };
     match ex(warm, &cpu, &mut prog_log) {
-        Ok((m, p)) => r.check("libx264 export with all colour steps", p.video_streams == 1 && near(p.duration, 8.0, 0.3), &desc(&m, &p)),
-        Err(e) => r.check("libx264 export with all colour steps", false, &e),
+        Ok((m, p)) => r.check("libx264 export with all color steps", p.video_streams == 1 && near(p.duration, 8.0, 0.3), &desc(&m, &p)),
+        Err(e) => r.check("libx264 export with all color steps", false, &e),
     }
 
     // Exact formula check on a flat mid-grey picture (Y only, so the matrix does not matter).
@@ -1446,12 +1678,202 @@ fn run_self_test(r: &mut Report) {
     timeline_checks(r, &ffmpeg, &s, &src, &dir, (f_desk, f_mic), base);
     look_checks(r, &ffmpeg, &s, &src, f_desk);
     ordered_checks(r, &ffmpeg, &s, &dir);
+    layer_checks(r, &ffmpeg, &s, &src, &src_file, (f_desk, 1));
     if let Some(clip) = std::env::var_os("GLINT_EDITOR_BENCH") {
         bench(r, &ffmpeg, &s, Path::new(&clip));
     }
 
     let fallbacks = fs::read_to_string(&log_file).unwrap_or_default().lines().filter(|l| l.contains("retrying with libx264")).count();
     r.check(&format!("{encoder} exports ran without falling back"), fallbacks == 0, &format!("{fallbacks} fallbacks"));
+}
+
+/// Standard base64 with padding (the test's way to hand a PNG to `save_overlay_png` as a data URL).
+fn base64_encode(b: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::new();
+    for c in b.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            s.push(if i <= c.len() { A[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    s
+}
+
+/// The first frame at or after `t` as `w`x`h` grey pixels.
+fn grey_at(ffmpeg: &Path, file: &Path, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
+    let out = util::hidden_cmd(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-ss", &format!("{t:.3}"), "-i"])
+        .arg(file)
+        .args(["-frames:v", "1", "-vf", &format!("scale={w}:{h},format=gray"), "-f", "rawvideo", "pipe:1"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    (out.stdout.len() == w * h).then_some(out.stdout)
+}
+
+/// Mean of a box (x0..x1, y0..y1) of a grey frame `w` pixels wide.
+fn box_mean(f: &[u8], w: usize, (x0, y0, x1, y1): (usize, usize, usize, usize)) -> f64 {
+    let mut n = 0.0;
+    let mut sum = 0.0;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            sum += f[y * w + x] as f64;
+            n += 1.0;
+        }
+    }
+    if n > 0.0 { sum / n } else { 0.0 }
+}
+
+/// Mean absolute difference of the same box in two grey frames (255 when either is missing).
+fn box_diff(a: &Option<Vec<u8>>, b: &Option<Vec<u8>>, w: usize, (x0, y0, x1, y1): (usize, usize, usize, usize)) -> f64 {
+    let (Some(a), Some(b)) = (a, b) else { return 255.0 };
+    let mut n = 0.0;
+    let mut sum = 0.0;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            sum += (a[y * w + x] as f64 - b[y * w + x] as f64).abs();
+            n += 1.0;
+        }
+    }
+    if n > 0.0 { sum / n } else { 255.0 }
+}
+
+/// Fine detail in a box: mean absolute second difference along rows and columns
+/// (a smooth gradient counts as none, so only edges and texture are measured).
+fn box_detail(f: &Option<Vec<u8>>, w: usize, (x0, y0, x1, y1): (usize, usize, usize, usize)) -> f64 {
+    let Some(f) = f else { return 0.0 };
+    let px = |x: usize, y: usize| f[y * w + x] as f64;
+    let mut n = 0.0;
+    let mut sum = 0.0;
+    for y in y0.max(1)..y1.saturating_sub(1) {
+        for x in x0.max(1)..x1.saturating_sub(1) {
+            sum += (2.0 * px(x, y) - px(x - 1, y) - px(x + 1, y)).abs() + (2.0 * px(x, y) - px(x, y - 1) - px(x, y + 1)).abs();
+            n += 1.0;
+        }
+    }
+    if n > 0.0 { sum / n } else { 0.0 }
+}
+
+/// Overlays, blur boxes and fades (0.1.25): each on the picture at the right
+/// OUTPUT times only, also after cuts, a moved part and a speed change; the
+/// sound fades with the picture; temp PNGs are removed; old options still parse.
+/// The test clip (640x360, 8 s, still from 3 to 5 s) and its desktop tone
+/// `f_desk` on audio stream `desk`.
+fn layer_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, src_file: &Path, (f_desk, desk): (u32, u32)) {
+    let ex = |opts: &ExportOpts| export(s, src, opts, &mut |_| {});
+    let odir = overlay_dir();
+    let _ = fs::create_dir_all(&odir);
+    // A transparent picture with a white top-left quarter, as the editor would send it.
+    let make_png = |name: &str| -> Option<PathBuf> {
+        let p = odir.join(name);
+        run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=black@0.0:s=640x360,format=rgba,drawbox=x=0:y=0:w=320:h=180:color=white@1.0:t=fill:replace=1", "-frames:v", "1", &p.to_string_lossy()]).ok()?;
+        p.is_file().then_some(p)
+    };
+    const W: usize = 64;
+    const TL: (usize, usize, usize, usize) = (2, 2, 30, 16); // inside the white quarter
+    const BR: (usize, usize, usize, usize) = (34, 20, 62, 34); // well away from it
+
+    // Old options without the new fields, and new ones.
+    let old: Result<ExportOpts, _> = serde_json::from_str(r#"{"start":1,"end":5,"speed":1,"color":{"brightness":1,"contrast":1,"saturation":1,"gamma":1},"tracks":[],"segments":[{"start":1,"end":5}],"audio":[],"ordered":false}"#);
+    r.check("old export options without overlays still parse", old.as_ref().is_ok_and(|o| o.overlays.is_empty() && o.blurs.is_empty() && o.fade_in == 0.0 && o.fade_out == 0.0 && o.segments.len() == 1), &format!("{:?}", old.as_ref().err()));
+    let new: Result<ExportOpts, _> = serde_json::from_str(r#"{"overlays":[{"png":"a.png","from":1,"to":2}],"blurs":[{"x":0.1,"y":0.2,"w":0.3,"h":0.4,"from":0,"to":3,"strength":0.03}],"fade_in":0.5,"fade_out":1}"#);
+    r.check("export options with overlays, blurs and fades parse", new.as_ref().is_ok_and(|o| o.overlays.len() == 1 && o.blurs.len() == 1 && o.blurs[0].h == 0.4 && o.fade_in == 0.5 && o.fade_out == 1.0 && o.speed == 1.0), &format!("{:?}", new.as_ref().err()));
+
+    // save_overlay_png: a data URL in, the same PNG bytes in a temp file out; anything else refused.
+    let saved = make_png("roundtrip-src.png").and_then(|p| {
+        let bytes = fs::read(&p).ok()?;
+        let _ = fs::remove_file(&p);
+        let path = save_overlay_png(&format!("data:image/png;base64,{}", base64_encode(&bytes))).ok()?;
+        Some((fs::read(&path).ok()? == bytes, path))
+    });
+    let refused = save_overlay_png("data:image/png;base64,aGVsbG8gd29ybGQ=").is_err() && save_overlay_png("not base64 !!").is_err();
+    r.check("overlay PNG data URL saved as the same file, other data refused", saved.as_ref().is_some_and(|(same, _)| *same) && refused, &format!("{saved:?} refused={refused}"));
+    if let Some((_, p)) = saved {
+        let _ = fs::remove_file(p);
+    }
+
+    // 1. An overlay from 1 to 2.5 s: on the picture inside, the source outside; never the lossless cut.
+    let png = make_png("ov1.png");
+    let opts = ExportOpts { overlays: vec![Overlay { png: png.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), from: 1.0, to: 2.5 }], ..Default::default() };
+    match ex(&opts) {
+        Ok(m) => {
+            let out = Path::new(&m.path);
+            let (on, off) = (grey_at(ffmpeg, out, 1.5, W, 36), grey_at(ffmpeg, out, 6.0, W, 36));
+            let (src_on, src_off) = (grey_at(ffmpeg, src_file, 1.5, W, 36), grey_at(ffmpeg, src_file, 6.0, W, 36));
+            let white = on.as_ref().map(|f| box_mean(f, W, TL)).unwrap_or(0.0);
+            let rest = box_diff(&on, &src_on, W, BR);
+            let after = box_diff(&off, &src_off, W, TL);
+            r.check("overlay is on the picture inside its time range", m.kind == "edit" && white > 200.0 && rest < 8.0, &format!("kind={} white quarter mean {white:.1}, rest differs by {rest:.1}", m.kind));
+            r.check("overlay is not on the picture outside its time range", after < 8.0, &format!("quarter differs from the source by {after:.1} at 6 s"));
+        }
+        Err(e) => r.check("overlay is on the picture inside its time range", false, &e),
+    }
+    r.check("overlay PNG removed after the export", png.as_ref().is_some_and(|p| !p.exists()), &format!("{png:?}"));
+
+    // 2. With a moved part and 2x speed: output 0..1 s is source 5.5..7.5, output 1..2 s is source 0.5..2.5.
+    //    The overlay at OUTPUT 1.2..1.8 s shows over source 1.4..2.1 only.
+    let seg = |a: f64, b: f64| Range { start: a, end: b, ..Default::default() };
+    let moved = ExportOpts { segments: vec![seg(5.5, 7.5), seg(0.5, 2.5)], ordered: true, speed: 2.0, ..Default::default() };
+    let png2 = make_png("ov2.png");
+    let with = ExportOpts { overlays: vec![Overlay { png: png2.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), from: 1.2, to: 1.8 }], ..moved.clone() };
+    match (ex(&moved), ex(&with)) {
+        (Ok(a), Ok(b)) => {
+            let (pa, pb) = (Path::new(&a.path), Path::new(&b.path));
+            let inside = grey_at(ffmpeg, pb, 1.5, W, 36);
+            let white = inside.as_ref().map(|f| box_mean(f, W, TL)).unwrap_or(0.0);
+            let before = box_diff(&grey_at(ffmpeg, pa, 0.6, W, 36), &grey_at(ffmpeg, pb, 0.6, W, 36), W, TL);
+            let later = box_diff(&grey_at(ffmpeg, pa, 1.9, W, 36), &grey_at(ffmpeg, pb, 1.9, W, 36), W, TL);
+            let len = library::probe(ffmpeg, pb, false).map(|p| p.duration).unwrap_or(0.0);
+            r.check("overlay after cuts, a moved part and 2x speed lands at its output time", white > 200.0 && before < 8.0 && later < 8.0 && near(len, 2.0, 0.25), &format!("white {white:.1} at 1.5 s, off by {before:.1} at 0.6 s and {later:.1} at 1.9 s, length {len:.2}"));
+        }
+        (a, b) => r.check("overlay after cuts, a moved part and 2x speed lands at its output time", false, &format!("{:?} / {:?}", a.err(), b.err())),
+    }
+
+    // 3. A blur box over the top-left quarter from 0 to 2.5 s: less detail inside, the rest as it was.
+    let blur = ExportOpts { blurs: vec![BlurBox { x: 0.0, y: 0.0, w: 0.5, h: 0.5, from: 0.0, to: 2.5, strength: 0.03 }], ..Default::default() };
+    match ex(&blur) {
+        Ok(m) => {
+            let out = Path::new(&m.path);
+            const BW: usize = 320;
+            let (inbox, outbox) = ((8, 8, 152, 82), (176, 100, 312, 172));
+            let (e1, s1) = (grey_at(ffmpeg, out, 1.5, BW, 180), grey_at(ffmpeg, src_file, 1.5, BW, 180));
+            let (e6, s6) = (grey_at(ffmpeg, out, 6.0, BW, 180), grey_at(ffmpeg, src_file, 6.0, BW, 180));
+            let (d_in, d_src) = (box_detail(&e1, BW, inbox), box_detail(&s1, BW, inbox));
+            let (d_out, d_out_src) = (box_detail(&e1, BW, outbox), box_detail(&s1, BW, outbox));
+            let (d_late, d_late_src) = (box_detail(&e6, BW, inbox), box_detail(&s6, BW, inbox));
+            let ratio = |a: f64, b: f64| if b > 0.0 { a / b } else { 0.0 };
+            r.check("blur box lowers the detail inside the box", d_src > 0.3 && ratio(d_in, d_src) < 0.4, &format!("detail {d_in:.2} vs source {d_src:.2}"));
+            r.check("blur box leaves the rest of the picture", (0.75..1.33).contains(&ratio(d_out, d_out_src)), &format!("detail {d_out:.2} vs source {d_out_src:.2}"));
+            r.check("blur box only inside its time range", (0.75..1.33).contains(&ratio(d_late, d_late_src)), &format!("detail at 6 s {d_late:.2} vs source {d_late_src:.2}"));
+        }
+        Err(e) => r.check("blur box lowers the detail inside the box", false, &e),
+    }
+
+    // 4. Fade in and out over 1 s each: first and last frames dark, the middle not; the sound follows.
+    let fades = ExportOpts { fade_in: 1.0, fade_out: 1.0, ..Default::default() };
+    match ex(&fades) {
+        Ok(m) => {
+            let out = Path::new(&m.path);
+            let y = |a: f64, b: f64| signal_stats_at(ffmpeg, out, a, b).map(|v| v.0).unwrap_or(-1.0);
+            let (first, mid, last) = (y(0.0, 0.1), y(1.5, 2.5), y(7.88, 8.0));
+            let streams = library::probe(ffmpeg, out, false).map(|p| p.audio_streams).unwrap_or(0);
+            r.check("fade in and out: first and last frames dark, the middle not", m.kind == "edit" && first >= 0.0 && first < 30.0 && last >= 0.0 && last < 40.0 && mid > 50.0 && streams == 3, &format!("kind={} luma first {first:.1}, middle {mid:.1}, last {last:.1}, {streams} audio streams", m.kind));
+            let db = |a: f64, b: f64| band_db_at(ffmpeg, out, desk, f_desk, a, b).unwrap_or(0.0);
+            let (a0, a_mid, a_end) = (db(0.0, 0.2), db(2.0, 3.0), db(7.8, 7.98));
+            r.check("fade in and out: the sound's level follows", a_mid > -40.0 && a_mid - a0 > 10.0 && a_mid - a_end > 10.0, &format!("desktop tone {a0:.1} / {a_mid:.1} / {a_end:.1} dB"));
+        }
+        Err(e) => r.check("fade in and out: first and last frames dark, the middle not", false, &e),
+    }
+
+    // 5. A failed export still removes its PNG; a missing PNG is refused before ffmpeg runs.
+    let png3 = make_png("ov3.png");
+    let missing_audio = AudioEdit { source: "file".into(), path: odir.join("no-such-file.wav").to_string_lossy().into_owned(), volume: 1.0, ..Default::default() };
+    let bad = ex(&ExportOpts { overlays: vec![Overlay { png: png3.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), from: 0.0, to: 8.0 }], audio: vec![missing_audio], ..Default::default() });
+    r.check("overlay PNG removed when the export fails", bad.is_err() && png3.as_ref().is_some_and(|p| !p.exists()), &format!("{:?}", bad.err()));
+    let gone = ex(&ExportOpts { overlays: vec![Overlay { png: odir.join("never-written.png").to_string_lossy().into_owned(), from: 0.0, to: 8.0 }], ..Default::default() });
+    r.check("missing overlay PNG is refused cleanly", gone.as_ref().is_err_and(|e| e.contains("overlay")), &format!("{:?}", gone.err()));
 }
 
 /// Like `band_db`, over `from`..`to` seconds of the file only, and with two
@@ -1826,7 +2248,7 @@ fn frame_times(ffmpeg: &Path, file: &Path) -> Vec<f64> {
     t
 }
 
-/// Checks of per-range looks: a colour per kept range, blank (black) ranges,
+/// Checks of per-range looks: a color per kept range, blank (black) ranges,
 /// and joins between ranges that touch. The test clip moves from 0 to 3 s and
 /// from 5 to 8 s at 30 fps (a frame every 1/30 s from 0), its desktop track is
 /// a tone at `f_desk`.
@@ -1841,8 +2263,8 @@ fn look_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, f_de
     let piece = |start: f64, end: f64, color: Option<Color>, blank: bool| Range { start, end, color, blank };
     let st = |m: &ClipMeta, a: f64, b: f64| signal_stats_at(ffmpeg, Path::new(&m.path), a, b);
     let desc = |m: &ClipMeta, p: &library::Probe| format!("kind={} dur={:.3} frames={}", m.kind, p.duration, p.frames);
-    // (luma, saturation) of a window: colourful like the source, grey, or black.
-    let colourful = |x: Option<(f64, f64)>| x.is_some_and(|(y, c)| c > 10.0 && y > 30.0);
+    // (luma, saturation) of a window: colorful like the source, grey, or black.
+    let colorful = |x: Option<(f64, f64)>| x.is_some_and(|(y, c)| c > 10.0 && y > 30.0);
     let greyish = |x: Option<(f64, f64)>| x.is_some_and(|(y, c)| c < 1.5 && y > 30.0);
     let blackish = |x: Option<(f64, f64)>| x.is_some_and(|(y, c)| y < 17.5 && c < 0.5);
 
@@ -1857,7 +2279,7 @@ fn look_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, f_de
         && o.segments[0].color == Some(Color { brightness: 1.2, saturation: 0.0, ..Default::default() }) && !o.segments[0].blank
         && o.segments[1].blank && o.segments[1].color == Some(Color::default())
         && o.segments[2].color == Some(Color { saturation: 0.5, ..Default::default() }) && !o.segments[2].blank);
-    r.check("opts JSON with per-range colour and blank", ok, &format!("{:?}", new.map(|o| o.segments)));
+    r.check("opts JSON with per-range color and blank", ok, &format!("{:?}", new.map(|o| o.segments)));
 
     // --- merging
     let ks = |segments: Vec<Range>| kept_ranges(&ExportOpts { segments, ..Default::default() }, 8.0).iter().map(|k| (k.a, k.b, k.blank, is_neutral(&k.color))).collect::<Vec<_>>();
@@ -1867,15 +2289,15 @@ fn look_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, f_de
     let ok = same_look == [(0.0, 2.0, false, true)] && touching == [(0.0, 1.0, false, true), (1.0, 2.0, false, false), (2.0, 3.0, true, true)] && overlap == [(0.0, 1.5, false, true), (1.5, 2.0, false, false)];
     r.check("kept ranges merge only where they look the same", ok, &format!("{same_look:?} / {touching:?} / {overlap:?}"));
 
-    // --- a colour per range: colourful, grey, colourful; the second join touches
+    // --- a color per range: colorful, grey, colorful; the second join touches
     let opts = ExportOpts { segments: vec![piece(0.5, 2.5, None, false), piece(5.5, 6.5, Some(grey.clone()), false), piece(6.5, 7.5, None, false)], ..Default::default() };
     match ex(opts) {
         Ok((m, p)) => {
-            // Result: 0..2 s colourful, 2..3 s grey, 3..4 s colourful.
+            // Result: 0..2 s colorful, 2..3 s grey, 3..4 s colorful.
             let (a, b, c) = (st(&m, 0.2, 1.8), st(&m, 2.1, 2.9), st(&m, 3.1, 3.9));
             let src_b = signal_stats_at(ffmpeg, src_file, 5.6, 6.4);
             let luma_kept = matches!((b, src_b), (Some(x), Some(y)) if near(x.0, y.0, 6.0));
-            let ok = m.kind == "edit" && near(p.duration, 4.0, 0.07) && colourful(a) && greyish(b) && luma_kept && colourful(c);
+            let ok = m.kind == "edit" && near(p.duration, 4.0, 0.07) && colorful(a) && greyish(b) && luma_kept && colorful(c);
             r.check("per-range saturation 0 greys that range only", ok, &format!("{} ranges {a:?} {b:?} {c:?}, source of the grey one {src_b:?}", desc(&m, &p)));
         }
         Err(e) => r.check("per-range saturation 0 greys that range only", false, &e),
@@ -1897,7 +2319,7 @@ fn look_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, f_de
             let gap = band_db_at(ffmpeg, f, 1, f_desk, 1.4, 1.6).zip(band_db_at(ffmpeg, f, 1, f_desk, 0.5, 1.0));
             r.check("no audio gap where ranges touch", gap.is_some_and(|(j, n)| near(j, n, 1.0)), &format!("join, elsewhere {gap:?}"));
             let (a, b) = (st(&m, 0.1, 1.4), st(&m, 1.6, 2.3));
-            r.check("touching ranges each keep their own colour", colourful(a) && greyish(b), &format!("{a:?} then {b:?}"));
+            r.check("touching ranges each keep their own color", colorful(a) && greyish(b), &format!("{a:?} then {b:?}"));
         }
         (Err(e), _) | (_, Err(e)) => r.check("touching ranges join without a repeated or lost frame", false, &e),
     }
@@ -1925,7 +2347,7 @@ fn look_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, f_de
             let t = frame_times(ffmpeg, f);
             let in_blank = t.iter().filter(|&&x| (2.0..3.999).contains(&x)).count();
             let lv = band_db_at(ffmpeg, f, 1, f_desk, 2.2, 3.8);
-            let ok = near(p.duration, 4.5, 0.07) && p.audio_streams == 3 && colourful(a) && blackish(b) && colourful(c) && (58..=61).contains(&in_blank);
+            let ok = near(p.duration, 4.5, 0.07) && p.audio_streams == 3 && colorful(a) && blackish(b) && colorful(c) && (58..=61).contains(&in_blank);
             r.check("blank range is black, as long as the range, with its frames", ok, &format!("{} ranges {a:?} {b:?} {c:?}, {in_blank} frames in the blank 2 s", desc(&m, &p)));
             r.check("blank range keeps its audio", matches!((ref_desk, lv), (Some(x), Some(y)) if near(x, y, 1.0)), &format!("{lv:?} source {ref_desk:?}"));
         }
@@ -1942,7 +2364,7 @@ fn look_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, f_de
         Err(e) => r.check("grey + blank ranges at 2.0x with libx264", false, &e),
     }
 
-    // --- the top-level colour
+    // --- the top-level color
     let two = |c: [Option<Color>; 2]| {
         let [x, y] = c;
         vec![piece(0.5, 2.5, x, false), piece(5.5, 7.5, y, false)]
@@ -1957,25 +2379,25 @@ fn look_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, f_de
     match ex(ExportOpts { color: grey.clone(), segments: two([None, Some(Color::default())]), ..Default::default() }) {
         Ok((m, _)) => {
             let (a, b) = (st(&m, 0.2, 1.8), st(&m, 2.2, 3.8));
-            r.check("a range's own colour replaces the top-level one", greyish(a) && colourful(b), &format!("{a:?} {b:?}"));
+            r.check("a range's own color replaces the top-level one", greyish(a) && colorful(b), &format!("{a:?} {b:?}"));
         }
-        Err(e) => r.check("a range's own colour replaces the top-level one", false, &e),
+        Err(e) => r.check("a range's own color replaces the top-level one", false, &e),
     }
     match ex(ExportOpts { segments: two([Some(grey.clone()), Some(grey.clone())]), ..Default::default() }) {
         Ok((m, _)) => {
             let (a, b) = (st(&m, 0.2, 1.8), st(&m, 2.2, 3.8));
-            r.check("the same own colour on every range greys them all", greyish(a) && greyish(b), &format!("{a:?} {b:?}"));
+            r.check("the same own color on every range greys them all", greyish(a) && greyish(b), &format!("{a:?} {b:?}"));
         }
-        Err(e) => r.check("the same own colour on every range greys them all", false, &e),
+        Err(e) => r.check("the same own color on every range greys them all", false, &e),
     }
 
     // --- the lossless cut is only for a plain range
     match ex(ExportOpts { segments: vec![piece(1.0, 2.5, Some(grey.clone()), false)], ..Default::default() }) {
         Ok((m, p)) => {
             let a = st(&m, 0.1, 1.4);
-            r.check("one range with its own colour is re-encoded", m.kind == "edit" && near(p.duration, 1.5, 0.07) && greyish(a), &format!("{} {a:?}", desc(&m, &p)));
+            r.check("one range with its own color is re-encoded", m.kind == "edit" && near(p.duration, 1.5, 0.07) && greyish(a), &format!("{} {a:?}", desc(&m, &p)));
         }
-        Err(e) => r.check("one range with its own colour is re-encoded", false, &e),
+        Err(e) => r.check("one range with its own color is re-encoded", false, &e),
     }
     match ex(ExportOpts { segments: vec![piece(1.0, 2.5, None, true)], ..Default::default() }) {
         Ok((m, p)) => {
@@ -1984,10 +2406,10 @@ fn look_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, f_de
         }
         Err(e) => r.check("one blank range is re-encoded black", false, &e),
     }
-    // Its own neutral colour replaces a top-level one: nothing left to change.
+    // Its own neutral color replaces a top-level one: nothing left to change.
     match ex(ExportOpts { color: grey.clone(), segments: vec![piece(1.0, 2.5, Some(Color::default()), false)], ..Default::default() }) {
-        Ok((m, p)) => r.check("one range with its own neutral colour uses the lossless cut", m.kind == "trim", &desc(&m, &p)),
-        Err(e) => r.check("one range with its own neutral colour uses the lossless cut", false, &e),
+        Ok((m, p)) => r.check("one range with its own neutral color uses the lossless cut", m.kind == "trim", &desc(&m, &p)),
+        Err(e) => r.check("one range with its own neutral color uses the lossless cut", false, &e),
     }
 }
 
@@ -2078,9 +2500,9 @@ fn ordered_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path) {
             let (a, b, c) = (signal_stats_at(ffmpeg, f, 0.1, 1.4), signal_stats_at(ffmpeg, f, 1.6, 2.9), signal_stats_at(ffmpeg, f, 3.1, 4.3));
             let grey_ok = a.is_some_and(|(y, c)| c < 1.5 && y > 30.0);
             let black_ok = b.is_some_and(|(y, c)| y < 17.5 && c < 0.5);
-            let colour_ok = c.is_some_and(|(y, c)| c > 10.0 && y > 30.0);
+            let color_ok = c.is_some_and(|(y, c)| c > 10.0 && y > 30.0);
             let blank_sound = band_db_at(ffmpeg, f, 0, steps[0], 1.65, 2.85);
-            let ok = near(p.duration, total, 0.07) && grey_ok && black_ok && colour_ok && matches!((refs[0], blank_sound), (Some(x), Some(y)) if near(x, y, 1.5));
+            let ok = near(p.duration, total, 0.07) && grey_ok && black_ok && color_ok && matches!((refs[0], blank_sound), (Some(x), Some(y)) if near(x, y, 1.5));
             r.check("ordered: grey, blank and plain ranges keep their look and sound", ok, &format!("dur {:.3}, {a:?} {b:?} {c:?}, blank range's tone {blank_sound:.1?}", p.duration));
         }
         Err(e) => r.check("ordered: grey, blank and plain ranges keep their look and sound", false, &e),
@@ -2277,7 +2699,7 @@ fn color_formula_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path)
         let opts = ExportOpts { color: c, tracks: vec![], ..Default::default() };
         let got = export(s, &grey, &opts, &mut |_| {}).ok().and_then(|m| signal_stats(ffmpeg, Path::new(&m.path)));
         let ok = got.is_some_and(|(y, _)| near(y, want, 3.0));
-        r.check(&format!("colour formula: {name}"), ok, &format!("luma {:?} expected {want:.1} (source {y0:.1})", got.map(|g| g.0)));
+        r.check(&format!("color formula: {name}"), ok, &format!("luma {:?} expected {want:.1} (source {y0:.1})", got.map(|g| g.0)));
     }
 }
 

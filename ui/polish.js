@@ -1,7 +1,7 @@
 "use strict";
 // Small library and settings fixes from 0.1.11 (loaded after app.js):
 // clip card pictures, the folder shown on a card, the Windows 10 capture hint,
-// and the taskbar icon in the theme's colour.
+// and the taskbar icon in the theme's color.
 
 /** Inline style of a card's picture: the whole frame, centred, letterboxed when it is not 16:9.
  *  Inline so a custom theme's `.thumb` rules cannot crop or shift it. */
@@ -29,9 +29,9 @@ function win10CaptureHint() {
   return `<br><span style="color:var(--warn)">${t("On Windows 10, Windows Graphics Capture draws a yellow border around the screen. Auto uses Desktop Duplication instead.")}</span>`;
 }
 
-/* ---------- taskbar icon in the theme's colour ---------- */
+/* ---------- taskbar icon in the theme's color ---------- */
 
-/** A CSS colour (any syntax the browser knows) as "#rrggbb", or "" if it is not one. */
+/** A CSS color (any syntax the browser knows) as "#rrggbb", or "" if it is not one. */
 function cssColorHex(value) {
   const v = String(value || "").trim();
   if (!v) return "";
@@ -49,7 +49,7 @@ function cssColorHex(value) {
 }
 
 let iconSent = "";
-/** The icon setting and the accent colours the theme, custom colours and custom CSS give now. */
+/** The icon setting and the accent colors the theme, custom colors and custom CSS give now. */
 function themeIconArgs() {
   const on = !!S.settings.icon_theme;
   const css = getComputedStyle(document.documentElement);

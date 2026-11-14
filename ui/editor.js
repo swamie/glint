@@ -4,7 +4,7 @@
 // The edit itself lives in an edit model (editmodel.js, em... functions); the
 // multi-track timeline is timeline.js (mountTimeline). This file previews the
 // model (video, cut skipping, audio levels, added files), runs the side column
-// (speed, colour, export) and the editor's keyboard shortcuts.
+// (speed, color, export) and the editor's keyboard shortcuts.
 // Naming rule: no local may be called `t`, it would hide the translation function t().
 
 /* ---------- editor data ---------- */
@@ -80,10 +80,10 @@ const edFmtVal = (key, x) => (ED_SLIDERS.find((s) => s[0] === key)[4] === "pct" 
 const edSameColor = (a, b) => ED_COLOR_KEYS.every((k) => Math.abs(a[k] - b[k]) < 0.005);
 const edBaseName = (path) => String(path).split(/[\\/]/).pop() || String(path);
 /** Used to tell whether an edit changed the model (so a no-op leaves no undo step). */
-const edState = (m) => JSON.stringify([m.cuts, m.removed, m.audio, m.speed, m.colors, m.blank, ...(m.parts ? [m.parts] : [])]); // the part order only when there are parts
+const edState = (m) => JSON.stringify([m.cuts, m.removed, m.audio, m.speed, m.colors, m.blank, ...(m.parts ? [m.parts] : []), ...(emHasLayers(m) ? [m.overlays, m.fadeIn, m.fadeOut] : [])]); // the part order only when there are parts; overlays and fades (overlays.js) only when there are any
 
 /**
- * What the Colour pane edits. `sels`: the timeline's selected pieces ({ row, seg }),
+ * What the Color pane edits. `sels`: the timeline's selected pieces ({ row, seg }),
  * `sel` its primary one, `now` the playhead. Any row of a segment counts.
  * Returns { segs, shown }: segs = sorted segment indexes, or null for the whole
  * clip (nothing selected); shown = the segment whose values the sliders show
@@ -99,7 +99,7 @@ function edColorTarget(m, sels, sel, now) {
 /** A text field: keys typed there are never shortcuts. Sliders and check boxes are not text fields. */
 const edTextTarget = (node) => !!node?.matches?.('textarea, select, [contenteditable=""], [contenteditable="true"], input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="button"])');
 
-/** CSS filter for the live colour preview, applied in the same order the export uses:
+/** CSS filter for the live color preview, applied in the same order the export uses:
  *  brightness, contrast, saturation, then gamma (an SVG filter, CSS has none). */
 function edFilterCss(col) {
   const f = [];
@@ -110,7 +110,7 @@ function edFilterCss(col) {
   return f.join(" ") || "none";
 }
 
-/** The user's saved colour presets, skipping malformed entries. */
+/** The user's saved color presets, skipping malformed entries. */
 function edUserPresets() {
   const list = S.settings?.color_presets;
   return Array.isArray(list) ? list.filter((p) => p && typeof p.name === "string" && ED_COLOR_KEYS.every((k) => Number.isFinite(p[k]))) : [];
@@ -290,7 +290,13 @@ const edTip = (label, cmd) => { const k = edKeyText(cmd); return k ? `${label} (
 let edPopClose = null; // closes the open pop-up, if any
 let edCap = null;      // the Shortcuts pop-up while it waits for a new key: { key(e) }
 let edFsLeft = -1e9;   // performance.now() when fullscreen was last left (see the Escape rule below)
-document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement) edFsLeft = performance.now(); });
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement) edFsLeft = performance.now();
+  // Watching a clip fullscreen: #modal is the fullscreen element (see P.fullscreen); editor.css styles it by this class.
+  document.getElementById("modal")?.classList.toggle("fs", document.fullscreenElement?.id === "modal");
+});
+/** Set while the viewer goes to the previous or next clip in fullscreen: the player being replaced must not leave fullscreen. */
+let edKeepFull = false;
 
 // The one window key listener of this file. Registered at load time, before
 // app.js adds its own capture listener, so it runs first (and its
@@ -666,8 +672,12 @@ function openClip(id) {
     const arrow = (act, to, label, key, path) => (to ? `<button class="v-nav v-nav-${act}" data-v="${act}" data-sfx="tap" title="${esc(`${t(label)} (${key})`)}" aria-label="${L(label)}"><svg viewBox="0 0 24 24"><path d="${path}"/></svg></button>` : "");
     m.insertAdjacentHTML("beforeend", arrow("prev", near.prev, "Previous clip", "Page Up", "m15 5-7 7 7 7") + arrow("next", near.next, "Next clip", "Page Down", "m9 5 7 7-7 7"));
   }
+  // In fullscreen the arrows lie over the player: the pointer moving over them keeps the controls (and them) up.
+  m.onmousemove = (e) => { if (e.target.closest?.(".v-nav")) S.player?.wake?.(); };
   S.player = mountPlayer(root, c);
   S.player.ed = mountEditor(root, c, S.player);
+  // Text, shapes, drawing, blur boxes and fades on the picture (overlays.js).
+  if (typeof ovMount === "function") { try { S.player.ov = ovMount(root, c, S.player); } catch (e) { console.error("Glint: the overlay tools did not load", e); } }
   // A project: the library's clips beside the editor, to add more (projects.js).
   if (draft && typeof projMountPanel === "function") projMountPanel(root, id);
   if (draft) {
@@ -895,7 +905,7 @@ function mountPlayer(root, c) {
   const heard = (s) => P.editing && (s.kind === "file" || P.trackState === "on");
   /** Sets each element's level from the model for the current moment. */
   function levels(now) {
-    const m = ed(), master = P.muted ? 0 : P.vol;
+    const m = ed(), master = (P.muted ? 0 : P.vol) * (P.ov ? P.ov.fadeGain(now) : 1); // the fade in / out is heard too
     for (const s of P.src.values()) {
       if (s.state !== "on" || !s.a) continue;
       const row = m && heard(s) ? m.audio.find((r) => r.id === s.id) : null;
@@ -935,14 +945,14 @@ function mountPlayer(root, c) {
   }
   P.output = output;
 
-  /* ----- speed and colour preview ----- */
+  /* ----- speed and color preview ----- */
   function applyRate() {
     const r = clamp(P.viewSpeed * (ed() ? P.model.speed : 1), 0.0625, 16);
     v.defaultPlaybackRate = r;
     v.playbackRate = r;
     for (const s of P.src.values()) if (s.a) { s.a.defaultPlaybackRate = r; s.a.playbackRate = r; }
   }
-  // Colour and hiding are per segment, so the preview follows the playhead:
+  // Color and hiding are per segment, so the preview follows the playhead:
   // paint() calls this every frame while playing and after every seek or edit.
   // The DOM is only touched when something changed.
   let shownCss = "", shownExp = "", shownBlank = false, shownSeg = -1;
@@ -958,7 +968,8 @@ function mountPlayer(root, c) {
     const blank = !!m && emBlankAt(m, now); // black picture, the audio plays on
     if (blank !== shownBlank) { shownBlank = blank; box.classList.toggle("e-blank", blank); }
     const seg = m ? emSegmentAt(m, now) : -1;
-    if (seg !== shownSeg) { shownSeg = seg; P.ed?.playheadSeg?.(); } // the Colour pane may show the playhead's segment
+    if (seg !== shownSeg) { shownSeg = seg; P.ed?.playheadSeg?.(); } // the Color pane may show the playhead's segment
+    P.ov?.paint(now); // overlays shown at the playhead, the fade cover
   }
   P.applyColor = applyColor;
 
@@ -1012,7 +1023,7 @@ function mountPlayer(root, c) {
   const volUI = () => {
     el('[data-p="mute"]').innerHTML = P.muted || P.vol === 0 ? PICON.mute : PICON.vol;
     el(".p-vol").value = P.muted ? 0 : P.vol;
-    // The part of the bar left of the knob is drawn in the theme colour (see .p-vol in editor.css).
+    // The part of the bar left of the knob is drawn in the theme color (see .p-vol in editor.css).
     el(".p-vol").style.setProperty("--fill", `${Math.round((P.muted ? 0 : P.vol) * 100)}%`);
   };
   const state = () => {
@@ -1063,7 +1074,12 @@ function mountPlayer(root, c) {
   P.editorFull = () => (document.fullscreenElement ? leaveFull() : root.requestFullscreen().catch((e) => console.warn("Glint: fullscreen refused", e)));
   P.isEditorFull = () => document.fullscreenElement === root;
   // Outside edit mode the video alone goes fullscreen; in edit mode that would hide the timeline.
-  P.fullscreen = () => (P.editing ? P.editorFull() : document.fullscreenElement ? leaveFull() : box.requestFullscreen().catch((e) => console.warn("Glint: fullscreen refused", e)));
+  // The fullscreen element is #modal, not the player (0.1.25): the previous / next arrows live in #modal, so they
+  // are drawn in fullscreen too, and the next clip opens without leaving fullscreen (openClip only replaces
+  // what is inside #modal). editor.css lays it out by `#modal.fs`.
+  P.fullscreen = () => (P.editing ? P.editorFull() : document.fullscreenElement ? leaveFull() : document.getElementById("modal").requestFullscreen().catch((e) => console.warn("Glint: fullscreen refused", e)));
+  /** Show the controls again (the pointer moved over something that is not the player, such as an arrow). */
+  P.wake = () => wake();
   // app.js's prompt (#confirm) and messages (#flash) live outside the viewer, and
   // only the fullscreen element is drawn in fullscreen: move them into it meanwhile.
   function adoptOverlays(on) {
@@ -1139,7 +1155,7 @@ function mountPlayer(root, c) {
     if (P.draft && typeof projDirty === "function") projDirty(P, "marks"); // a project saves them with its edit
   };
 
-  const tlFailHtml = () => `<div class="e-tl-fail">${esc(t("The timeline did not load. Speed, colour, export and the I and O keys still work."))}</div>`;
+  const tlFailHtml = () => `<div class="e-tl-fail">${esc(t("The timeline did not load. Speed, color, export and the I and O keys still work."))}</div>`;
   function mountTl() {
     const host = el(".e-tl");
     if (P.tl || !host) return;
@@ -1161,6 +1177,7 @@ function mountPlayer(root, c) {
         onSelect: (sel, sels) => {
           P.sel = sel || null;
           P.sels = Array.isArray(sels) ? sels.filter((s) => s && Number.isInteger(s.seg)) : P.sel ? [P.sel] : [];
+          if (P.sels.length) P.ov?.tlSelected(); // a segment picked: Delete is the timeline's again
           P.ed?.selChanged?.();
         },
         onAddAudio: () => edPickAudio(),
@@ -1233,6 +1250,7 @@ function mountPlayer(root, c) {
     output(["load", "undo", "redo", "file", "order"].includes(what));
     paint();
     P.ed?.sync(what);
+    P.ov?.sync(what);
     if (P.draft && typeof projDirty === "function") projDirty(P, what); // a project saves its edit (debounced)
   };
   /** Change the model: snapshot, run `fn`, then refresh the timeline and the preview.
@@ -1267,7 +1285,7 @@ function mountPlayer(root, c) {
     return row;
   };
 
-  /** Edit mode: timeline under the video, edit column, and the speed / colour / audio preview.
+  /** Edit mode: timeline under the video, edit column, and the speed / color / audio preview.
    *  Returns a promise of the model (null when leaving edit mode or if it could not be made). */
   P.setEdit = (on) => {
     on = !!on;
@@ -1278,6 +1296,7 @@ function mountPlayer(root, c) {
       if (on) v.pause();
       else { edPopClose?.(); dropTimeline(); }
       if (document.fullscreenElement) leaveFull(); // video-only or editor fullscreen does not fit the other mode
+      P.ov?.setEdit(on);
       applyRate();
       applyColor();
       output(true);
@@ -1304,6 +1323,8 @@ function mountPlayer(root, c) {
   /** Runs one editor shortcut (an ED_KEYS cmd). */
   P.command = (cmd) => {
     const now = tlNow();
+    // Delete and Esc first go to the overlays (a selected text or shape, a drawing tool, a text being typed).
+    if ((cmd === "remove" || cmd === "escape") && !edPopClose && P.ov?.command(cmd)) return;
     switch (cmd) {
       case "play": return P.toggle();
       case "back5": return P.seek(now - edSeekStep(), true);
@@ -1412,6 +1433,7 @@ function mountPlayer(root, c) {
   P.destroy = () => {
     dead = true;
     edPopClose?.();
+    try { P.ov?.destroy(); } catch (e) { console.error("Glint: overlay destroy failed", e); }
     cancelAnimationFrame(raf);
     raf = 0;
     clearTimeout(idle);
@@ -1427,7 +1449,7 @@ function mountPlayer(root, c) {
     P.thumbs = null;
     document.removeEventListener("fullscreenchange", onFullscreen);
     adoptOverlays(false); // now: the caller is about to empty #modal, and they must not go with it
-    if (document.fullscreenElement) document.exitFullscreen().catch((e) => console.warn("Glint: exitFullscreen failed", e));
+    if (document.fullscreenElement && !(edKeepFull && document.fullscreenElement.id === "modal")) document.exitFullscreen().catch((e) => console.warn("Glint: exitFullscreen failed", e));
     v.pause();
     v.removeAttribute("src");
     v.load();
@@ -1552,14 +1574,14 @@ function mountPlayer(root, c) {
   return P;
 }
 
-/* ---------- editor side column: speed, colour, export ---------- */
+/* ---------- editor side column: speed, color, export ---------- */
 function mountEditor(root, c, P) {
   const pane = $(".v-edit", root);
   const speedBtn = $(".e-speed", pane);
   let lastExport = "", lastTarget = "";
   let colorDrag = null; // during a slider gesture: the segments it edits (null = every segment, see target()); false between gestures
   const model = () => P.model;
-  /** What the Colour pane edits now (edColorTarget: the timeline's selection, or the whole clip). */
+  /** What the Color pane edits now (edColorTarget: the timeline's selection, or the whole clip). */
   const target = () => { const m = model(), s = P.selection(); return m ? edColorTarget(m, s.sels, s.sel, P.time()) : { segs: null, shown: 0 }; };
   /** The values the sliders show: the target's (primary) segment. */
   const color = () => P.model?.colors[target().shown] ?? ED_NO_COLOR;
@@ -1576,7 +1598,7 @@ function mountEditor(root, c, P) {
         : t("Applies to: {n} segments", { n: tg.segs.length });
       const shown = m.colors[tg.shown], same = m.colors.every((col) => emSameColor(col, shown));
       html = `<div class="small e-target-line">${esc(line)}</div>`;
-      if (!tg.segs && !same) html += `<div class="small e-note">${esc(t("The segments have different colours. The sliders show the one at the playhead."))}</div>`;
+      if (!tg.segs && !same) html += `<div class="small e-note">${esc(t("The segments have different colors. The sliders show the one at the playhead."))}</div>`;
       if (n > 1) html += `<button type="button" class="btn sm e-all" data-e-act="color-all" ${same ? "disabled" : ""}>${esc(t("Apply to the whole clip"))}</button>`;
     }
     if (html === lastTarget) return;
@@ -1596,7 +1618,7 @@ function mountEditor(root, c, P) {
   function renderColor() {
     const user = edUserPresets(), col = color(), off = model() ? "" : "disabled";
     $(".e-color", pane).innerHTML = `
-      <div class="e-title">${esc(t("Colour"))} <span class="e-tag" hidden>${esc(t("Custom"))}</span></div>
+      <div class="e-title">${esc(t("Color"))} <span class="e-tag" hidden>${esc(t("Custom"))}</span></div>
       <div class="e-target"></div>
       <div class="e-chips">
         ${ED_PRESETS.map((p, i) => `<button type="button" class="e-chip" data-e-chip="b${i}" data-e-preset="b${i}" ${off}>${esc(t(p.name))}</button>`).join("")}
@@ -1631,7 +1653,7 @@ function mountEditor(root, c, P) {
     const m = model();
     if (!m) return;
     const col = { ...color() }; // the target's values as they are now, before the prompt
-    const name = await askText(t("Name this colour preset"), "", t("Save preset"));
+    const name = await askText(t("Name this color preset"), "", t("Save preset"));
     if (!name) return;
     const low = name.toLowerCase();
     if (ED_PRESETS.some((p) => p.name.toLowerCase() === low || t(p.name).toLowerCase() === low)) return flash(t("A built-in preset already has that name"), true);
@@ -1645,7 +1667,7 @@ function mountEditor(root, c, P) {
     flash(t('Saved preset "{name}"', { name }));
   }
   async function deletePreset(name) {
-    if (!(await ask(t('Delete the colour preset "{name}"?', { name }), t("Delete")))) return;
+    if (!(await ask(t('Delete the color preset "{name}"?', { name }), t("Delete")))) return;
     const list = S.settings.color_presets;
     const i = Array.isArray(list) ? list.findIndex((x) => x?.name === name) : -1;
     if (i < 0) return;
@@ -1730,7 +1752,7 @@ function mountEditor(root, c, P) {
     e.target.blur();
     if (colorDrag === false) return;
     colorDrag = false;
-    P.refreshTimeline(); // the timeline may mark segments that have a colour
+    P.refreshTimeline(); // the timeline may mark segments that have a color
     P.edSync("color");
   });
   pane.addEventListener("click", async (e) => {
@@ -1765,7 +1787,7 @@ function mountEditor(root, c, P) {
     fsBtn.title = edTip(label, "fullscreen");
     fsBtn.classList.toggle("on", full);
   }
-  /** The colour target or the shown values changed without an edit (new selection, the playhead crossed a segment). */
+  /** The color target or the shown values changed without an edit (new selection, the playhead crossed a segment). */
   function colorTarget() {
     if (!model() || colorDrag !== false) return; // never move a slider under the pointer
     syncSliders();
@@ -1890,6 +1912,17 @@ async function edExport(withBlur) {
       repIds = picked;
     } else repIds = [id];
   }
+  // Text, shapes and drawings go as transparent PNGs of the clip's size (overlays.js; the backend removes them after the export).
+  if (P.ov && (m.overlays || []).some((o) => o.kind !== "blur")) {
+    try {
+      const overlays = await P.ov.exportPngs();
+      if (overlays.length) opts.overlays = overlays;
+    } catch (e) {
+      console.error("Glint: the overlay pictures could not be made", e);
+      return fail(e);
+    }
+    if (S.open !== id || S.player !== P || S.exports[id]) return; // closed, or exported meanwhile
+  }
   try { await edListen(); }
   catch (e) { edListening = null; console.error("Glint: could not subscribe to export-progress; exporting without a progress bar.", e); }
   S.exports[id] = { pct: 0 };
@@ -1977,7 +2010,10 @@ async function viewerAction(act) {
       // The clip before or after this one. Not while editing: an edit is not thrown away by an arrow.
       if (c.draft || (S.player && S.player.editing) || !$("#confirm").hidden) return;
       const to = viewerNeighbours(id)[act];
-      if (to) openClip(to);
+      if (!to) return;
+      // In fullscreen the next clip takes the screen over: the player that goes does not leave fullscreen.
+      edKeepFull = document.fullscreenElement?.id === "modal";
+      try { openClip(to); } finally { edKeepFull = false; }
     }
     else if (act === "blur-page") { S.page = "blur"; closeClip(); } // closeClip() draws the page
     else if (act === "copy") { await invoke("copy_clip", { id }); flash(t("Clip copied. Paste it anywhere.")); }

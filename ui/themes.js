@@ -1,14 +1,14 @@
 "use strict";
-// Colour themes, shared by the main window and the clip overlay.
+// Color themes, shared by the main window and the clip overlay.
 // A theme is a set of values for the CSS variables in style.css's :root.
-// "glint" is empty: it is the stylesheet's own colours.
+// "glint" is empty: it is the stylesheet's own colors.
 //
-// 0.1.16: the user's custom colours (settings.theme_colors, variable -> "#rrggbb",
+// 0.1.16: the user's custom colors (settings.theme_colors, variable -> "#rrggbb",
 // set with the picker in colorpick.js) go on top of the theme and under the
 // custom CSS. What the user did not set but must follow is derived here
 // (glintDeriveColors): a readable accent-ink and an accent-2 for a new accent,
-// panels and lines for a new background, softer texts for a new text colour.
-// The colour maths is plain functions, testable in Node (module.exports at the end).
+// panels and lines for a new background, softer texts for a new text color.
+// The color maths is plain functions, testable in Node (module.exports at the end).
 const GLINT_W = typeof window !== "undefined" ? window : globalThis;
 
 GLINT_W.GLINT_THEMES = [
@@ -28,16 +28,16 @@ GLINT_W.GLINT_THEMES = [
 
 const GLINT_THEME_VARS = ["bg", "panel", "raised", "raised-2", "line", "line-2", "text", "muted", "dim", "accent", "accent-2", "accent-ink"];
 
-/** style.css's own :root colours (the "glint" theme), the base every theme fills in. */
+/** style.css's own :root colors (the "glint" theme), the base every theme fills in. */
 const GLINT_BASE_COLORS = {
   bg: "#070a10", panel: "#0a0e16", raised: "#0f141e", "raised-2": "#151b27", line: "#19212f", "line-2": "#263043",
   text: "#e8edf6", muted: "#8591a5", dim: "#556073", accent: "#62b6f7", "accent-2": "#8ccbff", "accent-ink": "#051322",
 };
 
-/** The colours a user can pick in Settings → Appearance → Custom colours, in that order (names in colorpick.js). */
+/** The colors a user can pick in Settings → Appearance → Custom colors, in that order (names in colorpick.js). */
 const GLINT_CUSTOM_VARS = ["accent", "bg", "panel", "raised", "line", "text", "muted"];
 
-/* ---------- colour maths ---------- */
+/* ---------- color maths ---------- */
 
 /** "#rgb" / "#rrggbb" (any case, with or without #) -> { r, g, b } 0..255, or null. */
 function glintHexToRgb(hex) {
@@ -54,7 +54,7 @@ function glintRgbToHex({ r, g, b }) {
   return "#" + c(r) + c(g) + c(b);
 }
 
-/** A colour as "#rrggbb" (lower case), or "" if it is not a hex colour. */
+/** A color as "#rrggbb" (lower case), or "" if it is not a hex color. */
 function glintNormHex(hex) {
   const rgb = glintHexToRgb(hex);
   return rgb ? glintRgbToHex(rgb) : "";
@@ -85,14 +85,14 @@ function glintHsvToRgb({ h, s, v }) {
   return { r: (r + m) * 255, g: (g + m) * 255, b: (b + m) * 255 };
 }
 
-/** WCAG relative luminance of a hex colour, 0..1. */
+/** WCAG relative luminance of a hex color, 0..1. */
 function glintLuminance(hex) {
   const rgb = glintHexToRgb(hex) || { r: 0, g: 0, b: 0 };
   const lin = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
   return 0.2126 * lin(rgb.r) + 0.7152 * lin(rgb.g) + 0.0722 * lin(rgb.b);
 }
 
-/** WCAG contrast ratio of two hex colours, 1..21. */
+/** WCAG contrast ratio of two hex colors, 1..21. */
 function glintContrast(a, b) {
   const la = glintLuminance(a), lb = glintLuminance(b);
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
@@ -117,7 +117,7 @@ function glintInkFor(accent) {
   return glintContrast(tinted, accent) >= 4.5 ? tinted : best("#000000", "#ffffff");
 }
 
-/** The theme's full palette: style.css's colours with the theme's own on top. */
+/** The theme's full palette: style.css's colors with the theme's own on top. */
 function glintThemePalette(id) {
   const theme = GLINT_W.GLINT_THEMES.find((x) => x.id === id) || GLINT_W.GLINT_THEMES[0];
   return { ...GLINT_BASE_COLORS, ...theme.vars };
@@ -144,7 +144,7 @@ function glintDeriveColors(palette, colors) {
   const out = { ...user };
   const has = (v) => v in user;
   const set = (v, value) => { if (!has(v)) out[v] = value; };
-  // Accent: a lighter hover colour and an ink that stays readable on it.
+  // Accent: a lighter hover color and an ink that stays readable on it.
   if (has("accent")) {
     set("accent-2", glintMix(user.accent, "#ffffff", 0.3));
     set("accent-ink", glintInkFor(user.accent));
@@ -166,7 +166,7 @@ function glintDeriveColors(palette, colors) {
     text = glintIsDark(bg) ? "#e8edf6" : "#14171c";
     out.text = text;
   }
-  // A new text colour, or a new background (the theme's softer texts were mixed for its own): mix them again.
+  // A new text color, or a new background (the theme's softer texts were mixed for its own): mix them again.
   if (has("text") || out.text || has("bg")) {
     set("muted", glintMix(text, bg, 0.4));
     set("dim", glintMix(text, bg, 0.62));
@@ -176,13 +176,13 @@ function glintDeriveColors(palette, colors) {
   return out;
 }
 
-/** The colour a variable has now: the user's, a derived one, or the theme's. */
+/** The color a variable has now: the user's, a derived one, or the theme's. */
 function glintEffectiveColor(themeId, colors, v) {
   const pal = glintThemePalette(themeId);
   return glintDeriveColors(pal, colors)[v] || pal[v] || "";
 }
 
-/** The CSS for the user's colours over theme `themeId` ("" when none). */
+/** The CSS for the user's colors over theme `themeId` ("" when none). */
 function glintColorsCss(themeId, colors) {
   const d = glintDeriveColors(glintThemePalette(themeId), colors);
   const vars = GLINT_THEME_VARS.filter((v) => d[v]).map((v) => `--${v}: ${d[v]};`).join(" ");
@@ -191,9 +191,9 @@ function glintColorsCss(themeId, colors) {
 
 /* ---------- user presets (0.1.20) ---------- */
 // settings.theme_presets = [{ id, name, base, colors, css }] and settings.theme_preset = the id of
-// the active one ("" = a built-in theme is active: it is always shown in its own colours).
+// the active one ("" = a built-in theme is active: it is always shown in its own colors).
 // settings.theme / theme_colors / custom_css are a MIRROR of what is in force: the active
-// preset's base, colours and CSS, or the built-in theme with no colours and no CSS. Every
+// preset's base, colors and CSS, or the built-in theme with no colors and no CSS. Every
 // change goes through these functions and ends with glintPresetSync, so the overlay, the
 // taskbar icon and the early paint from localStorage read the mirror and need no change.
 // They change the settings object they are given; the UI saves it.
@@ -245,7 +245,7 @@ function glintPresetCreate(s, name, from) {
 const glintPresetFromScreen = (s) => ({ base: s.theme, colors: s.theme_colors, css: s.custom_css });
 
 /**
- * Change the colours and/or the CSS (`patch` = { colors?, css? }). With a user preset
+ * Change the colors and/or the CSS (`patch` = { colors?, css? }). With a user preset
  * active it changes that preset; with a built-in theme active it first makes a preset
  * named `autoName` (numbered if taken) from that theme. Returns { preset, created }.
  */
@@ -304,8 +304,8 @@ function glintPresetDelete(s, id) {
  * Bring loaded settings in line, once at every start (refreshState). The mirror is what was
  * on screen, so it wins and the look never changes here:
  * - drop malformed presets and an active id that no longer exists;
- * - a preset is active: it takes the mirror's base, colours and CSS (they match after any save);
- * - a built-in theme is active but colours or CSS are set (settings from before 0.1.20, or
+ * - a preset is active: it takes the mirror's base, colors and CSS (they match after any save);
+ * - a built-in theme is active but colors or CSS are set (settings from before 0.1.20, or
  *   changed by an older Glint): they become a new active preset named `name`.
  * Returns true when the settings changed and should be saved.
  */
@@ -328,7 +328,7 @@ function glintPresetMigrate(s, name) {
 /* ---------- applying ---------- */
 
 let glintLastTheme = "glint";
-/** The custom colours in force: the settings' once they are loaded, else the ones remembered from the last run. */
+/** The custom colors in force: the settings' once they are loaded, else the ones remembered from the last run. */
 function glintCurrentColors() {
   try { if (typeof S !== "undefined" && S && S.settings) return S.settings.theme_colors || {}; } catch {}
   try { return JSON.parse(localStorage.getItem("glint.colors") || "{}") || {}; } catch { return {}; }
@@ -346,7 +346,7 @@ function glintSheet(id) {
 }
 
 /**
- * Apply a theme by id, then the user's custom colours (`colors`; left out =
+ * Apply a theme by id, then the user's custom colors (`colors`; left out =
  * the ones in force), then the user's own CSS on top of both.
  */
 GLINT_W.applyGlintTheme = (id, css, colors) => {
@@ -354,17 +354,17 @@ GLINT_W.applyGlintTheme = (id, css, colors) => {
   glintLastTheme = theme.id;
   if (colors === undefined || colors === null) colors = glintCurrentColors();
   colors = glintCleanColors(colors);
-  // Three <style> elements at the end of <head>: theme, colours, then the user's CSS
+  // Three <style> elements at the end of <head>: theme, colors, then the user's CSS
   // later in the cascade, so it can override both. (Inline styles on <html> would beat the user's rules.)
   const vars = GLINT_THEME_VARS.filter((v) => theme.vars[v]).map((v) => `--${v}: ${theme.vars[v]};`).join(" ");
   glintSheet("theme-css").textContent = vars ? `:root { ${vars} }` : "";
   glintSheet("colors-css").textContent = glintColorsCss(theme.id, colors);
   glintSheet("custom-css").textContent = css || "";
-  // Remembered so the next start paints in the right colours before settings have loaded.
+  // Remembered so the next start paints in the right colors before settings have loaded.
   try { localStorage.setItem("glint.theme", theme.id); localStorage.setItem("glint.css", css || ""); localStorage.setItem("glint.colors", JSON.stringify(colors)); } catch {}
 };
 
-/** Live preview while a colour is being picked: only the colours sheet changes, nothing is remembered. */
+/** Live preview while a color is being picked: only the colors sheet changes, nothing is remembered. */
 GLINT_W.glintPreviewColors = (colors) => {
   const el = document.getElementById("colors-css");
   if (el) el.textContent = glintColorsCss(glintLastTheme, colors);

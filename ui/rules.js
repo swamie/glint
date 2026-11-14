@@ -1,6 +1,6 @@
 "use strict";
 // 0.1.24: Render rules. A rule is a name and a row of blocks (steps) run in order on a clip with one
-// click: Colour (a look), Blur, Upscale, Compress (to N MB), GIF, Copy. Saved in S.settings.rules;
+// click: Color (a look), Blur, Upscale, Compress (to N MB), GIF, Copy. Saved in S.settings.rules;
 // the backend (src-tauri/src/rules.rs) runs them as jobs of kind "rule" (command rules_run).
 //
 // The builder looks and drags like the clip-name builder (naming.js / naming.css: its classes are reused,
@@ -81,13 +81,13 @@ function rlFreeName(names, base = "Render rule {n}", tr = (s, p) => s.replace("{
 
 /* ---------- words (translated) ---------- */
 const rlTr = (s, p) => (typeof t === "function" ? t(s, p) : String(s).replace(/\{(\w+)\}/g, (_, k) => (p && k in p ? p[k] : `{${k}}`)));
-const rlKindLabel = (k) => ({ color: t("Colour"), blur: t("Blur"), upscale: t("Upscale"), compress: t("Compress"), gif: t("GIF"), copy: t("Copy") }[k] || k);
+const rlKindLabel = (k) => ({ color: t("Color"), blur: t("Blur"), upscale: t("Upscale"), compress: t("Compress"), gif: t("GIF"), copy: t("Copy") }[k] || k);
 /** A look's name to show: the built-in looks are translated, the user's own are not. */
 const rlLookName = (name) => (typeof ED_PRESETS !== "undefined" && ED_PRESETS.some((p) => p.name === name) ? rlTr(name) : name);
-/** One block in words: "Colour: Vivid", "Blur", "Upscale to 4K", "Compress to 50 MB", "GIF 480 px, 20 fps", "Copy". */
+/** One block in words: "Color: Vivid", "Blur", "Upscale to 4K", "Compress to 50 MB", "GIF 480 px, 20 fps", "Copy". */
 function rlWords(st) {
   switch (st.kind) {
-    case "color": return t("Colour: {look}", { look: rlLookName(st.look) });
+    case "color": return t("Color: {look}", { look: rlLookName(st.look) });
     case "upscale": return t("Upscale to {target}", { target: rlHeight(+st.upscale?.height || 2160) });
     case "compress": return t("Compress to {n} MB", { n: st.mb });
     case "gif": {
@@ -98,7 +98,7 @@ function rlWords(st) {
     default: return rlKindLabel(st.kind);
   }
 }
-/** What a rule does: "Colour: Vivid → Blur → Compress to 50 MB → Copy". */
+/** What a rule does: "Color: Vivid → Blur → Compress to 50 MB → Copy". */
 const rlDescribe = (rule) => (rule?.steps?.length ? rule.steps.map(rlWords).join(" → ") : t("No blocks yet"));
 
 /* ---------- state ---------- */
@@ -120,7 +120,7 @@ const rlById = (id) => rlList().find((r) => r.id === id) || null;
 const rlLast = () => ({ gif: S.settings.gif, upscale: S.settings.upscale });
 const rlNewId = () => "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const rlHasBlur = (rule) => !!rule?.steps?.some((s) => s.kind === "blur");
-/** The looks a Colour block can use: the editor's built-in ones (not "None") and the user's own. */
+/** The looks a Color block can use: the editor's built-in ones (not "None") and the user's own. */
 function rlLooks() {
   const builtin = (typeof ED_PRESETS !== "undefined" ? ED_PRESETS : []).filter((p) => p.name !== "None").map((p) => p.name);
   const mine = (typeof edUserPresets === "function" ? edUserPresets() : (S.settings.color_presets || [])).map((p) => p.name).filter((n) => !builtin.includes(n));
@@ -161,7 +161,7 @@ function renderRulesPage() {
       ${list.length ? `<div class="head-actions"><button class="btn primary" data-rlp="new">${ICON.plus}${esc(t("New rule"))}</button></div>` : ""}
     </div>`;
   const empty = `<div class="empty rl-empty"><h2>${esc(t("No render rules yet"))}</h2>
-      <p>${esc(t("A render rule does several things to a clip in one go, for example a colour look, Blur and a compress to 50 MB."))}</p>
+      <p>${esc(t("A render rule does several things to a clip in one go, for example a color look, Blur and a compress to 50 MB."))}</p>
       <p>${esc(t("Build one from blocks here, then run it from a clip's right-click menu, the viewer, or the editor's Export box."))}</p>
       <button class="btn primary" data-rlp="new">${ICON.plus}${esc(t("New rule"))}</button></div>`;
   $("#view").innerHTML = head + (list.length ? `<div class="rl-list">${list.map(rlCardHtml).join("")}</div>` : empty);
@@ -219,7 +219,7 @@ function rlOptsHtml(rule, i) {
     body = sel("look", (known ? "" : opt(st.look, t("{name} (no longer exists)", { name: st.look }), st.look))
       + builtin.map((n) => opt(n, rlTr(n), st.look)).join("")
       + (mine.length ? `<optgroup label="${esc(t("Your presets"))}">${mine.map((n) => opt(n, n, st.look)).join("")}</optgroup>` : ""), t("Look"))
-      + `<span class="small">${esc(t("The editor's colour looks. Make your own in the editor's Colour panel."))}</span>`;
+      + `<span class="small">${esc(t("The editor's color looks. Make your own in the editor's {link}.")).replace("{link}", () => `<a href="#" class="rl-link" data-rl-colorpanel>${esc(t("color panel"))}</a>`)}</span>`;
   } else if (st.kind === "compress") {
     body = `<label class="rl-opt"><span>${esc(t("Size"))}</span><input class="field rl-mb" type="number" min="${RL_MIN_MB}" max="${RL_MAX_MB}" step="1" data-rl-opt="mb" value="${+st.mb || 50}" aria-label="${esc(t("Size in MB"))}"><span>MB</span></label>`
       + `<span class="rl-quick">${RL_MB_QUICK.map((n) => `<button type="button" class="btn sm${+st.mb === n ? " on" : ""}" data-rl-mb="${n}">${n}</button>`).join("")}</span>`
@@ -383,14 +383,14 @@ async function rulesRun(id, ids) {
 
 /* ---------- the Renders list and the end of a job ---------- */
 
-/** jobs.js: the status line of a rule's row ("Colour 40 %", "Blur…", "Compressing 70 %"). "" = the default. */
+/** jobs.js: the status line of a rule's row ("Color 40 %", "Blur…", "Compressing 70 %"). "" = the default. */
 function rulesJobLine(r) {
   const pct = Math.floor(+r.pct || 0);
   if (r.state === "queued") return t("Waiting to run the render rule");
   if (r.state === "done") return t("Render rule finished");
   if (r.state !== "running") return "";
   switch (r.job?.stage) {
-    case "color": return t("Colour {pct} %", { pct });
+    case "color": return t("Color {pct} %", { pct });
     case "blur": return pct < 1 ? t("Blur…") : t("Blur {pct} %", { pct });
     case "upscale": return t("Upscaling {pct} %", { pct });
     case "compress": return t("Compressing {pct} %", { pct });
@@ -628,3 +628,23 @@ function rlDragEnd(drop) {
 }
 
 if (typeof module !== "undefined") module.exports = { rlFixOrder, rlFree, rlNewStep, rlMove, rlInsert, rlWords, rlDescribe, rlFreeName, rlDropResult, rlHeight, RL_WHY_GIF, RL_WHY_COPY, RL_WHY_ONCE, RL_WHY_UNKNOWN };
+
+/* "…the editor's color panel" in a Color block's options: opens the newest clip in the editor at its Color section (0.1.25). */
+function rlOpenColorPanel() {
+  const newest = (S.clips || []).filter((c) => c && !c.draft).sort((a, b) => (b.created || 0) - (a.created || 0))[0];
+  if (!newest) return flash(t("Save or import a clip first: the color panel is in the editor."), true);
+  openClip(newest.id);
+  const P = S.player;
+  if (!P) return;
+  P.setEdit(true);
+  const show = () => document.querySelector("#modal .e-color")?.scrollIntoView({ block: "center" });
+  Promise.resolve(P.whenModel?.()).then(() => setTimeout(show, 60)).catch(() => {});
+}
+if (typeof document !== "undefined") {
+  document.addEventListener("click", (e) => {
+    const link = e.target.closest?.("[data-rl-colorpanel]");
+    if (!link) return;
+    e.preventDefault();
+    try { rlOpenColorPanel(); } catch (err) { fail(err); }
+  });
+}

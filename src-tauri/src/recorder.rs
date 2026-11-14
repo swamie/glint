@@ -696,7 +696,7 @@ fn border_clean_set(monitor: u32, clean: bool) -> bool {
 /// The ffmpeg command line of the capture.
 ///
 /// `sw`: hand the frames to a hardware encoder through system memory instead of
-/// straight from the GPU. Slower (one copy and a colour conversion on the CPU per
+/// straight from the GPU. Slower (one copy and a color conversion on the CPU per
 /// frame), but it is the form every encoder accepts: some cannot take the capture's
 /// GPU frames at all (seen with AMD's AMF on a Radeon 680M, which stops with an
 /// "unknown error" on the first frame).

@@ -5,8 +5,8 @@
 //! How a GIF is made (`make`): the whole clip, at `fps` (never above the
 //! clip's own rate) and `width` (lanczos, never wider than the clip), with
 //! ffmpeg's own palette filters in two runs:
-//! 1. `palettegen` reads the clip once and writes the best 256 colours for it
-//!    (`stats_mode=diff`: the colours of what moves count most);
+//! 1. `palettegen` reads the clip once and writes the best 256 colors for it
+//!    (`stats_mode=diff`: the colors of what moves count most);
 //! 2. `paletteuse` draws every frame with that palette (ordered dither, only
 //!    the changed rectangle of each frame stored, which keeps files small).
 //!
@@ -77,7 +77,7 @@ const MIN_FPS: u32 = 10;
 const MIN_WIDTH: u32 = 160;
 /// Makes of one GIF at most (the first and the smaller ones).
 const ROUNDS: usize = 4;
-/// Share of the progress the palette run takes (it only decodes and counts colours).
+/// Share of the progress the palette run takes (it only decodes and counts colors).
 const PALETTE_SHARE: f32 = 0.4;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;

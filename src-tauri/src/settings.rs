@@ -13,7 +13,7 @@ pub struct Keybind {
     pub win: bool,
     /// KeyboardEvent.code of the main key, e.g. "F8", "KeyG", "Numpad5".
     pub key: String,
-    /// "clip" | "toggle" | "show" | "monitor" (switch the capture monitor: to `monitor`, or to the next one when that is -1)
+    /// "clip" | "toggle" | "show" | "edit" (open the newest clip in the editor) | "monitor" (switch the capture monitor: to `monitor`, or to the next one when that is -1)
     pub action: String,
     /// Clip length for the "clip" action.
     pub seconds: u32,
@@ -146,7 +146,7 @@ impl Default for BlurSettings {
     }
 }
 
-/// A named colour correction the user saved in the editor. 1.0 = unchanged.
+/// A named color correction the user saved in the editor. 1.0 = unchanged.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct ColorPreset {
@@ -164,7 +164,7 @@ impl Default for ColorPreset {
 }
 
 /// A theme preset the user made (Settings → Appearance): a built-in theme (`base`, an id
-/// in ui/themes.js) with the user's own colours (variable -> "#rrggbb") and CSS on top.
+/// in ui/themes.js) with the user's own colors (variable -> "#rrggbb") and CSS on top.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct ThemePreset {
@@ -240,16 +240,16 @@ pub struct Settings {
     pub toast_length: bool,
     pub toast_game: bool,
     pub toast_mic: bool,
-    /// Colour theme id (see ui/themes.js) and the user's own CSS, applied after it.
+    /// Color theme id (see ui/themes.js) and the user's own CSS, applied after it.
     pub theme: String,
     pub custom_css: String,
-    /// Colour the taskbar and tray icon with the theme's accent. The UI stores the
-    /// accent colours it computed (`--accent`, `--accent-2`, "#rrggbb") so the
+    /// Color the taskbar and tray icon with the theme's accent. The UI stores the
+    /// accent colors it computed (`--accent`, `--accent-2`, "#rrggbb") so the
     /// icon is right at the next start before the window has loaded.
     pub icon_theme: bool,
     pub icon_accent: String,
     pub icon_accent_2: String,
-    /// The user's own colours from Settings → Appearance → Custom colours: theme
+    /// The user's own colors from Settings → Appearance → Custom colors: theme
     /// variable name ("accent", "bg", ...) -> "#rrggbb". Applied on top of the
     /// theme and under `custom_css` (ui/themes.js), in the window and the overlay.
     pub theme_colors: std::collections::BTreeMap<String, String>,
@@ -262,12 +262,14 @@ pub struct Settings {
     /// ids and "p:<preset id>". Tiles not listed follow in their usual order (colorpick.js prTileOrder).
     pub theme_order: Vec<String>,
     pub theme_preset: String,
-    /// Library folder colours: folder name -> "#rrggbb" (right-click a folder → Colour).
-    /// Renaming a folder carries its colour along, deleting it drops it (`carry_folder_color`).
+    /// Library folder colors: folder name -> "#rrggbb" (right-click a folder → Color).
+    /// Renaming a folder carries its color along, deleting it drops it (`carry_folder_color`).
     pub folder_colors: std::collections::BTreeMap<String, String>,
     /// Which kind tags clip cards show ("import", "trim", "edit", "blur", "discord", ...). Empty = none
     /// (0.1.21 removed the tags; 0.1.24 brought them back as a choice).
     pub card_tags: Vec<String>,
+    /// How visible the previous / next clip arrows are in a fullscreen clip, in percent (20..=100).
+    pub nav_opacity: u32,
     /// Ask GitHub once a day whether a newer Glint has been released.
     pub update_check: bool,
     /// Install a waiting update without being asked, while no game is running, Glint's
@@ -282,7 +284,7 @@ pub struct Settings {
     /// When the top bar's renders button shows: "auto" (while something is
     /// rendering), "always" or "never".
     pub renders_button: String,
-    /// The user's own colour-correction presets for the editor.
+    /// The user's own color-correction presets for the editor.
     pub color_presets: Vec<ColorPreset>,
     /// Show the library's 'Main folder' chip even when no clip sits loose in the clips folder.
     pub show_empty_main: bool,
@@ -366,6 +368,7 @@ impl Default for Settings {
             theme_preset: String::new(),
             folder_colors: Default::default(),
             card_tags: Vec::new(),
+            nav_opacity: 60,
             update_check: true,
             update_auto: true,
             language: "en".into(),
@@ -425,7 +428,7 @@ impl Settings {
             .clamp(5, 3600)
     }
 
-    /// A library folder was renamed (`to` = Some) or deleted (None): its colour follows it or
+    /// A library folder was renamed (`to` = Some) or deleted (None): its color follows it or
     /// goes. Names match ignoring letter case, as folder names do on Windows. True if it had one.
     pub fn carry_folder_color(&mut self, from: &str, to: Option<&str>) -> bool {
         let Some(key) = self.folder_colors.keys().find(|k| k.to_lowercase() == from.to_lowercase()).cloned() else { return false };

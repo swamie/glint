@@ -33,7 +33,7 @@ body {
 button, input, select { font: inherit; color: inherit; }
 svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 /* Selected text takes the theme's accent instead of the system blue. A third of it over the dark
-   page keeps the text readable whether the accent is a colour or white (the Mono theme). */
+   page keeps the text readable whether the accent is a color or white (the Mono theme). */
 ::selection { background: color-mix(in srgb, var(--accent) 32%, transparent); color: var(--text); }
 ::-webkit-scrollbar { width: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 6px; border: 2px solid var(--bg); }
@@ -100,8 +100,8 @@ kbd { font: 600 11px var(--sans); padding: 2px 6px; border-radius: 5px; backgrou
 #btn-clip .kc { display: inline-grid; place-items: center; flex: none; min-width: 20px; height: 20px; padding: 0 5px; box-sizing: border-box;
   font: 700 10.5px/1 var(--sans); color: var(--text); border-radius: 5px;
   background: color-mix(in srgb, var(--raised-2) 86%, #fff);
-  /* One edge colour all round, the bottom edge thicker: it used to be darker than the button under it,
-     so the keycap seemed to lose its colour at the bottom (the owner's report, 0.1.24). */
+  /* One edge color all round, the bottom edge thicker: it used to be darker than the button under it,
+     so the keycap seemed to lose its color at the bottom (the owner's report, 0.1.24). */
   border: 1px solid color-mix(in srgb, var(--line-2) 55%, var(--text)); border-bottom-width: 2px; }
 #btn-clip:not(:disabled):active .kc { border-bottom-width: 1px; margin-top: 1px; }
 #btn-clip:disabled .kc { color: var(--muted); }
@@ -411,14 +411,14 @@ body.has-sel .flash { bottom: 94px; }
 .dur-row .field { width: 74px; }
 .dur-note { margin: 0 0 16px; }
 .dur-note.bad { color: var(--warn); }
-/* The new folder prompt: a row of colours under the name. */
+/* The new folder prompt: a row of colors under the name. */
 .nf-label { margin: -6px 0 7px; }
 .nf-colors { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
 .nf-colors .fc-sw { width: 26px; height: 26px; padding: 0; border-radius: 50%; border: 2px solid transparent; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25); cursor: pointer; }
 .nf-colors .fc-sw:hover { border-color: var(--muted); background-clip: padding-box; }
 .nf-colors .fc-sw.on { border-color: var(--text); background-clip: padding-box; }
 .nf-colors .fc-sw:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-/* "No colour": an empty ring with a stroke through it. */
+/* "No color": an empty ring with a stroke through it. */
 .nf-colors .fc-none { background: linear-gradient(to top right, transparent 46%, var(--muted) 46%, var(--muted) 54%, transparent 54%) var(--raised); box-shadow: inset 0 0 0 1px var(--line-2); }
 /* Settings → Appearance → Tags on clips. */
 .tag-kinds { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 420px; }
@@ -426,6 +426,10 @@ body.has-sel #view { padding-bottom: 92px; }
 
 /* ---------- right-click menu ---------- */
 .menu.ctx { overflow: visible; max-height: none; min-width: 200px; }
+/* Cut / Copy / Paste on a text box (app.js textMenuOpen): above prompts, dialogs and the flash message. */
+.menu.text-menu { z-index: 1300; min-width: 150px; }
+.menu.text-menu button:disabled { opacity: .45; cursor: default; }
+.menu.text-menu button:disabled:hover { background: none; }
 /* A menu's header ("5 selected", a part's name): one item's height (30 px, its text centred, so the
    space above and below is even) with the separator under it, drawn like .menu hr (4 px in from each
    side, 5 px to the next item). 4 + 5 px puts the text on the items' left edge, where their icons start. */
@@ -449,18 +453,18 @@ body.has-sel #view { padding-bottom: 92px; }
 .nav-item.ghost { color: var(--muted); }
 .nav-item span.label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 body.moving-clips .nav-item[data-folder] { box-shadow: inset 0 0 0 1px var(--accent); }
-/* A folder's own colour (right-click a folder → Colour; app.js fcDeco sets --fc): its icon, and a thin
+/* A folder's own color (right-click a folder → Color; app.js fcDeco sets --fc): its icon, and a thin
    bar inside its left edge, in the sidebar, on its chip and in Move to menus. Inside the element, so
    no size changes (the chip rows' one-line fit, library2.js, measures the same widths). */
 .fcol > svg:first-child { color: var(--fc); }
 .nav-item.fcol, .chip.fcol, .menu button.fcol { box-shadow: inset 3px 0 0 var(--fc); }
 .nav-item.active.fcol > svg:first-child, .chip.active.fcol > svg:first-child { color: inherit; }
-/* The active folder is lit in its own colour instead of the accent (--fc-ink: readable text on it, app.js fcInk).
-   Only colours change, so the chip widths the one-line fit measures stay the same. */
+/* The active folder is lit in its own color instead of the accent (--fc-ink: readable text on it, app.js fcInk).
+   Only colors change, so the chip widths the one-line fit measures stay the same. */
 .chip.active.fcol, .chip.active.fcol:hover { background: var(--fc); border-color: var(--fc); color: var(--fc-ink, var(--accent-ink)); }
 .nav-item.active.fcol, .nav-item.active.fcol:hover { background: var(--fc); color: var(--fc-ink, var(--accent-ink)); }
 .nav-item.active.fcol .badge { background: color-mix(in srgb, var(--fc-ink, #000) 18%, transparent); color: var(--fc-ink, var(--accent-ink)); }
-/* The Colour submenu: a row of swatches, then Custom… and No colour. */
+/* The Color submenu: a row of swatches, then Custom… and No color. */
 .menu .fc-row { display: grid; grid-template-columns: repeat(4, 26px); gap: 7px; padding: 6px 9px 8px; }
 .menu .fc-row .fc-sw { width: 26px; height: 26px; padding: 0; border-radius: 50%; border: 2px solid transparent; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25); }
 .menu .fc-row .fc-sw:hover { border-color: var(--muted); background-clip: padding-box; }

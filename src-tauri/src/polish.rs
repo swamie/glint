@@ -1,6 +1,6 @@
 //! Small fixes from 0.1.11 user reports:
 //! - the capture method "auto" on Windows 10 (no yellow Graphics Capture border),
-//! - the taskbar / tray icon in the theme's accent colour,
+//! - the taskbar / tray icon in the theme's accent color,
 //! - a one-time repair of library thumbnails made with the wrong proportions,
 //! and their self-test (`glint.exe --polish-test report.txt`).
 use crate::core::Core;
@@ -41,10 +41,10 @@ pub fn pick_method_border(wanted: &str, has_wgc: bool, build: u32, border_ok: bo
     }
 }
 
-/* ---------- taskbar icon in the theme's colour ---------- */
+/* ---------- taskbar icon in the theme's color ---------- */
 
 static STOCK_PNG: &[u8] = include_bytes!("../icons/icon.png");
-/// The three colours the stock icon is drawn with: the dark tile, the big star, the small star.
+/// The three colors the stock icon is drawn with: the dark tile, the big star, the small star.
 const TILE: [f32; 3] = [10.0, 15.0, 24.0];
 const STAR: [f32; 3] = [98.0, 182.0, 247.0];
 const SPARK: [f32; 3] = [190.0, 226.0, 255.0];
@@ -85,8 +85,8 @@ pub fn stock_rgba() -> Option<(Vec<u8>, u32, u32)> {
     (rgba.len() == (w * h * 4) as usize).then_some((rgba, w, h))
 }
 
-/// Recolour the icon's stars: every pixel is read as the dark tile plus some
-/// amount of the big star's colour and of the small star's (that is how the
+/// Recolor the icon's stars: every pixel is read as the dark tile plus some
+/// amount of the big star's color and of the small star's (that is how the
 /// anti-aliased edges were drawn), and redrawn with `accent` for the big star
 /// and `accent2` (or a lighter `accent`) for the small one. The tile and the
 /// alpha channel stay as they are.
@@ -114,8 +114,8 @@ pub fn recolor(rgba: &[u8], accent: [u8; 3], accent2: Option<[u8; 3]>) -> Vec<u8
         if a + l < 0.004 {
             continue; // the tile itself (and fully transparent corners): unchanged
         }
-        // Move the pixel by the change of each star colour, in proportion: whatever
-        // the three-colour reading does not explain stays as it was.
+        // Move the pixel by the change of each star color, in proportion: whatever
+        // the three-color reading does not explain stays as it was.
         for i in 0..3 {
             px[i] = (px[i] as f32 + a * (a_new[i] - STAR[i]) + l * (s_new[i] - SPARK[i])).round().clamp(0.0, 255.0) as u8;
         }
@@ -172,7 +172,7 @@ pub fn scale_rgba(rgba: &[u8], w: u32, h: u32, n: u32) -> Vec<u8> {
 
 /// The window's own icons, set straight through Win32. Tauri's `set_icon` only
 /// changes the SMALL icon (title bar, Alt+Tab): the taskbar button draws the BIG
-/// one, which stayed the exe's icon. That is why the taskbar showed the old colour.
+/// one, which stayed the exe's icon. That is why the taskbar showed the old color.
 /// Both are made at the sizes Windows asks for. Returns whether both were set.
 #[cfg(windows)]
 fn set_window_icons(hwnd: isize, rgba: &[u8], w: u32, h: u32) -> bool {
@@ -246,7 +246,7 @@ pub fn apply_icon(app: &tauri::AppHandle, s: &Settings) {
     apply_icon_with(app, s, false);
 }
 
-/// Store the icon setting and colours the UI computed (an accent that is not a colour keeps the stored one).
+/// Store the icon setting and colors the UI computed (an accent that is not a color keeps the stored one).
 fn store_icon(core: &Core, on: bool, accent: String, accent2: String) -> Settings {
     let mut s = core.settings.lock().unwrap();
     s.icon_theme = on;
@@ -257,7 +257,7 @@ fn store_icon(core: &Core, on: bool, accent: String, accent2: String) -> Setting
     s.clone()
 }
 
-/// The UI computed the theme's colours (or the setting was turned off): store and show them.
+/// The UI computed the theme's colors (or the setting was turned off): store and show them.
 #[tauri::command]
 pub fn set_app_icon(app: tauri::AppHandle, core: tauri::State<'_, Arc<Core>>, on: bool, accent: String, accent2: String) {
     let s = store_icon(&core, on, accent, accent2);
@@ -414,7 +414,7 @@ impl Report {
     }
 }
 
-/// The most common colour among the icon's opaque pixels that are not the dark tile.
+/// The most common color among the icon's opaque pixels that are not the dark tile.
 fn dominant_star(rgba: &[u8]) -> Option<[u8; 3]> {
     let mut counts: std::collections::HashMap<[u8; 3], usize> = Default::default();
     for p in rgba.chunks_exact(4).filter(|p| p[3] == 255) {
@@ -486,10 +486,10 @@ pub fn self_test(report_path: &str) {
         Some((stock, w, h)) => {
             r.check("stock icon decodes", w == 256 && h == 256, &format!("{w}x{h}"));
             let star = dominant_star(&stock);
-            r.check("stock star colour found", star == Some([98, 182, 247]), &format!("{star:?}"));
+            r.check("stock star color found", star == Some([98, 182, 247]), &format!("{star:?}"));
             let same = recolor(&stock, [98, 182, 247], Some([190, 226, 255]));
             let diff = stock.iter().zip(&same).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
-            r.check("recolour to the stock colours changes nothing", diff <= 2, &format!("largest change {diff}"));
+            r.check("recolor to the stock colors changes nothing", diff <= 2, &format!("largest change {diff}"));
             for (name, accent) in [("crimson", "#ff5c6c"), ("emerald", "#4ade80"), ("gold", "#f2c94c"), ("mono", "#f2f2f2"), ("amethyst", "rgb(178, 140, 255)")] {
                 let acc = parse_color(accent).unwrap_or([0, 0, 0]);
                 let out = recolor(&stock, acc, None);
@@ -511,8 +511,8 @@ pub fn self_test(report_path: &str) {
             r.check("setting off: stock icon", themed_rgba(&s).is_none(), "");
             s.icon_theme = true;
             r.check("setting on: themed icon", themed_rgba(&s).is_some_and(|(px, ww, hh)| ww == w && hh == h && dominant_star(&px).is_some_and(|d| near(d, [255, 92, 108], 3))), "");
-            s.icon_accent = "not a colour".into();
-            r.check("setting on with no colour yet: stock icon", themed_rgba(&s).is_none(), "");
+            s.icon_accent = "not a color".into();
+            r.check("setting on with no color yet: stock icon", themed_rgba(&s).is_none(), "");
             // 0.1.18: the window's big and small icons are made at the sizes Windows asks for.
             let crimson = recolor(&stock, [255, 92, 108], None);
             for n in [16u32, 20, 24, 32, 48, 64] {
@@ -521,19 +521,26 @@ pub fn self_test(report_path: &str) {
                 let (tx, ty) = (n * 40 / 256, n * 215 / 256); // bare tile, below-left of the big star's tips
                 let mid = &px[((ty * n + tx) * 4) as usize..((ty * n + tx) * 4 + 3) as usize];
                 let dom = dominant_star(&px);
-                r.check(&format!("icon at {n} px: right size, corner kept, tile and star colours"), px.len() == (n * n * 4) as usize && corner_clear && near([mid[0], mid[1], mid[2]], [10, 15, 24], 6) && dom.is_some_and(|d| near(d, [255, 92, 108], 24)), &format!("corner alpha {}, tile {mid:?}, dominant {dom:?}", px[3]));
+                r.check(&format!("icon at {n} px: right size, corner kept, tile and star colors"), px.len() == (n * n * 4) as usize && corner_clear && near([mid[0], mid[1], mid[2]], [10, 15, 24], 6) && dom.is_some_and(|d| near(d, [255, 92, 108], 24)), &format!("corner alpha {}, tile {mid:?}, dominant {dom:?}", px[3]));
             }
             let flat = vec![200u8, 100, 50, 255].repeat(4);
-            r.check("scaling a flat colour keeps it; transparent stays transparent", scale_rgba(&flat, 2, 2, 1) == vec![200, 100, 50, 255] && scale_rgba(&[9, 9, 9, 0, 9, 9, 9, 0], 2, 1, 1)[3] == 0 && scale_rgba(&[], 0, 0, 4).len() == 64, "");
+            r.check("scaling a flat color keeps it; transparent stays transparent", scale_rgba(&flat, 2, 2, 1) == vec![200, 100, 50, 255] && scale_rgba(&[9, 9, 9, 0, 9, 9, 9, 0], 2, 1, 1)[3] == 0 && scale_rgba(&[], 0, 0, 4).len() == 64, "");
             let half = [255u8, 0, 0, 255, 0, 0, 255, 0]; // a red pixel beside a fully transparent blue one
             let s1 = scale_rgba(&half, 2, 1, 1);
-            r.check("a transparent pixel adds no colour to its neighbour", s1[0] == 255 && s1[2] == 0 && (127..=128).contains(&s1[3]), &format!("{s1:?}"));
+            r.check("a transparent pixel adds no color to its neighbour", s1[0] == 255 && s1[2] == 0 && (127..=128).contains(&s1[3]), &format!("{s1:?}"));
             // The Windows part on a hidden window of our own: never shown, destroyed again.
             #[cfg(windows)]
             r.check("Win32 icons set on a hidden window (big and small)", icon_on_hidden_window(&crimson, w, h), "");
         }
     }
-    r.check("colour parsing", parse_color("#abc") == Some([170, 187, 204]) && parse_color(" #62B6F7 ") == Some([98, 182, 247]) && parse_color("rgb(1, 2, 3)") == Some([1, 2, 3]) && parse_color("blue").is_none(), "");
+    {
+        // The main window's frame subclass (win::calm_frame): which messages it answers itself.
+        let m = crate::win::frame_message;
+        r.check("frame: the themed caption and frame draws are swallowed", m(0x00AE, 5) == (Some(0), 5) && m(0x00AF, 7) == (Some(0), 7), "");
+        r.check("frame: activation is passed on without a repaint of the frame (lParam -1)", m(0x0086, 0) == (None, -1), "");
+        r.check("frame: every other message passes unchanged", m(0x0005, 42) == (None, 42) && m(0x0083, 9) == (None, 9) && m(0x0085, 1) == (None, 1), "");
+    }
+    r.check("color parsing", parse_color("#abc") == Some([170, 187, 204]) && parse_color(" #62B6F7 ") == Some([98, 182, 247]) && parse_color("rgb(1, 2, 3)") == Some([1, 2, 3]) && parse_color("blue").is_none(), "");
 
     // 3. Thumbnails (needs ffmpeg).
     r.check("redo: missing thumbnail", thumb_needs_redo(None, Some(16.0 / 9.0)), "");

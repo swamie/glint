@@ -51,3 +51,7 @@
 .rl-v-row .field { flex: 1; min-width: 0; }
 .rl-after { display: flex; align-items: center; gap: 8px; }
 .rl-after .field { flex: 1; min-width: 0; height: 32px; }
+
+/* A link inside a block's options (to the editor's color panel). */
+.rl-link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.rl-link:hover { color: var(--text); }

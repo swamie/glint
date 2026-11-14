@@ -280,18 +280,18 @@ pub fn folders_test(report_path: &str) {
     check("delete folder moves clips out and removes it", core.delete_folder("Second").is_ok() && !root.join("Second").exists() && root.join("b.mp4").is_file() && get("b").folder.is_empty());
     check("move back to the main folder is a no-op there", core.move_clips(&ids(&["a"]), "") == Ok(0));
 
-    // Folder colours (0.1.18): a renamed folder keeps its colour, a deleted one drops it.
+    // Folder colors (0.1.18): a renamed folder keeps its color, a deleted one drops it.
     {
         let colors = || core.settings().folder_colors;
         let _ = core.create_folder("Painted");
         core.settings.lock().unwrap().folder_colors = [("painted", "#e5484d"), ("Elsewhere", "#30a46c")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        check("rename folder keeps its colour (letter case ignored)", core.rename_folder("Painted", "Brushed").is_ok() && colors().get("Brushed").map(String::as_str) == Some("#e5484d") && !colors().contains_key("painted"));
-        check("the colour is saved under the new name", crate::settings::Settings::load().folder_colors.get("Brushed").map(String::as_str) == Some("#e5484d"));
-        check("delete folder drops its colour, the others stay", core.delete_folder("Brushed").is_ok() && !colors().contains_key("Brushed") && colors().get("Elsewhere").map(String::as_str) == Some("#30a46c"));
+        check("rename folder keeps its color (letter case ignored)", core.rename_folder("Painted", "Brushed").is_ok() && colors().get("Brushed").map(String::as_str) == Some("#e5484d") && !colors().contains_key("painted"));
+        check("the color is saved under the new name", crate::settings::Settings::load().folder_colors.get("Brushed").map(String::as_str) == Some("#e5484d"));
+        check("delete folder drops its color, the others stay", core.delete_folder("Brushed").is_ok() && !colors().contains_key("Brushed") && colors().get("Elsewhere").map(String::as_str) == Some("#30a46c"));
         let _ = core.create_folder("Kept");
         let _ = std::fs::write(root.join("Kept").join("stray.txt"), b"x");
         core.settings.lock().unwrap().folder_colors.insert("Kept".into(), "#3e63dd".into());
-        check("a folder kept by delete keeps its colour", core.delete_folder("Kept").is_err() && colors().contains_key("Kept"));
+        check("a folder kept by delete keeps its color", core.delete_folder("Kept").is_err() && colors().contains_key("Kept"));
         check("a second rename leaves one entry, under the newest name", core.rename_folder("Kept", "Kept2").is_ok() && colors().len() == 2 && colors().contains_key("Kept2") && !colors().contains_key("Kept"));
         let _ = std::fs::remove_dir_all(root.join("Kept2"));
         core.settings.lock().unwrap().folder_colors.clear();

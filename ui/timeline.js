@@ -275,7 +275,7 @@ function tlPeakMax(peaks, i0, i1) {
   return mx > 1 ? 1 : mx;
 }
 
-/** Hue (0..360) of a "#rgb", "#rrggbb" or "rgb(...)" colour, or null. */
+/** Hue (0..360) of a "#rgb", "#rrggbb" or "rgb(...)" color, or null. */
 function tlHue(color) {
   const s = String(color || "").trim();
   let r, g, b, mm;
@@ -1016,7 +1016,7 @@ function mountTimeline(host, opts) {
     return true;
   }
 
-  /* ----- colours ----- */
+  /* ----- colors ----- */
   function colors() {
     const cs = getComputedStyle(document.documentElement);
     const C = {};

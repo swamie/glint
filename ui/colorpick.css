@@ -1,4 +1,4 @@
-/* Settings → Appearance → Custom colours (colorpick.js): the rows and Glint's own colour picker. */
+/* Settings → Appearance → Custom colors (colorpick.js): the rows and Glint's own color picker. */
 
 .cp-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 13px 18px 9px; border-bottom: 1px solid var(--line); }
 .cp-head .name { font-weight: 600; }
@@ -11,7 +11,7 @@
 .cp-swatch:focus-visible { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
 .cp-swatch.mine { border-color: var(--text); }
 
-/* 0.1.20: the user's presets among the theme tiles, "+ New preset", and the "Customise colours" box. */
+/* 0.1.20: the user's presets among the theme tiles, "+ New preset", and the "Customise colors" box. */
 .theme .tp-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .theme.tp-new { justify-content: center; background: transparent; color: var(--muted); border-style: dashed; font-weight: 600; }
 .theme.tp-new b { font-size: 17px; line-height: 1; font-weight: 500; }

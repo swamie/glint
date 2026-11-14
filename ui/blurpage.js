@@ -203,11 +203,11 @@ function renderBlur() {
       ${row(t("Interpolated frame rate"), t("Frames per second to invent, as a multiplier (5x turns your {src} fps clips into {out} fps) or a number; low values leave visible copies, higher is smoother but renders slower.", { src, out: src * 5 }), select("blur.interpolated_fps", rateOpts(["2x", "3x", "4x", "5x", "8x", "10x", "480", "600", "960", "1200"], b.interpolated_fps)))}
     </div>
 
-    ${group("look", t("Trail brightness and colour"), t("Gamma and colour filters"), b.filters ? t("Filters on") : "", `
+    ${group("look", t("Trail brightness and color"), t("Gamma and color filters"), b.filters ? t("Filters on") : "", `
       ${row(t("Gamma"), t("Brightness of the streaks: 1 is a plain mix, higher makes faint trails and highlights glow, lower makes them darker and thinner."), slider("blur.gamma", t("Gamma"), 0.2, 4, 0.1, 0.1, 10))}
       ${row(t("Filters"), t("Applies the brightness, saturation and contrast below to the finished video."), toggle("blur.filters"))}
       ${row(t("Brightness"), t("1 leaves the picture as it is; above 1 lifts everything, dark areas included, below 1 darkens it."), slider("blur.brightness", t("Brightness"), 0, 2, 0.05, 0, 10))}
-      ${row(t("Saturation"), t("1 leaves colours as they are; 0 is black and white, above 1 is more vivid."), slider("blur.saturation", t("Saturation"), 0, 2, 0.05, 0, 10))}
+      ${row(t("Saturation"), t("1 leaves colors as they are; 0 is black and white, above 1 is more vivid."), slider("blur.saturation", t("Saturation"), 0, 2, 0.05, 0, 10))}
       ${row(t("Contrast"), t("1 leaves the picture as it is; above 1 makes bright parts brighter while black stays black."), slider("blur.contrast", t("Contrast"), 0, 2, 0.05, 0, 10))}`)}
 
     ${group("interp", t("Interpolation quality"), t("How the in-between frames are made"), b.interpolate ? String(b.interpolation_method || "svp").toUpperCase() : t("Interpolation off"), `
@@ -277,7 +277,7 @@ const BP = {
   vt: 0, // video time in seconds (keeps running across re-renders)
   view: null, // the #view element the listeners are on
   panes: null, // { src, out } canvas state
-  col: null, // theme colours
+  col: null, // theme colors
   colAt: 0,
   lastKey: "",
   lut: null, // gamma tables
@@ -533,7 +533,7 @@ function bpFrame() {
   S0.ctx.setTransform(S0.dpr, 0, 0, S0.dpr, 0, 0);
   bpDrawScene(S0.ctx, S0.w, S0.h, kSrc / BP.src);
 
-  // With these settings: add each frame in at its weight ("lighter" sums colour and coverage).
+  // With these settings: add each frame in at its weight ("lighter" sums color and coverage).
   const O = P.out, a = O.accCtx;
   a.setTransform(1, 0, 0, 1, 0, 0);
   a.globalCompositeOperation = "source-over"; a.globalAlpha = 1;
@@ -548,7 +548,7 @@ function bpFrame() {
     ? { br: bpClamp(c.brightness, 0, 10, 1) - 1, ct: bpClamp(c.contrast, 0, 10, 1), sat: bpClamp(c.saturation, 0, 10, 1) } : null;
   O.ctx.setTransform(1, 0, 0, 1, 0, 0);
   if (gamma === 1 && !f) {
-    // Plain weighted average: background * (1 - coverage) + colour * coverage.
+    // Plain weighted average: background * (1 - coverage) + color * coverage.
     O.ctx.drawImage(O.bg, 0, 0);
     O.ctx.drawImage(O.acc, 0, 0);
   } else bpPixels(O, gamma, f);

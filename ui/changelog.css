@@ -34,7 +34,7 @@
 .wn-grp li { margin: 3px 0; color: var(--muted); font-size: 13.5px; line-height: 1.5; letter-spacing: -.02em; word-spacing: -.03em; }
 .wn-grp li::marker { color: var(--dim); }
 
-/* Clip cards: the tag of a clip made by Compress for Discord, in Discord's own colour. */
+/* Clip cards: the tag of a clip made by Compress for Discord, in Discord's own color. */
 .thumb .tag.tag-discord { background: #5865f2; color: #fff; }
 
 /* The clip menu's Compress for Discord submenu: the hint under the sizes. */

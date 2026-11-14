@@ -40,7 +40,7 @@ const IMP_ICON = {
 };
 
 /**
- * A one-colour mark before each source's name (currentColor), by source id (import.rs `sources`).
+ * A one-color mark before each source's name (currentColor), by source id (import.rs `sources`).
  * nvidia, steelseries: path data from the Simple Icons set (simple-icons@13.21.0, CC0 1.0; the
  * marks themselves are their owners' trademarks, shown only to name the program).
  * Simple Icons has no Medal or Overwolf/Outplayed mark, so those two are plain neutral glyphs
@@ -48,13 +48,15 @@ const IMP_ICON = {
  */
 const IMP_LOGO = {
   shadowplay: '<svg class="imp-logo" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" stroke="none" d="M8.948 8.798v-1.43a6.7 6.7 0 0 1 .424-.018c3.922-.124 6.493 3.374 6.493 3.374s-2.774 3.851-5.75 3.851c-.398 0-.787-.062-1.158-.185v-4.346c1.528.185 1.837.857 2.747 2.385l2.04-1.714s-1.492-1.952-4-1.952a6.016 6.016 0 0 0-.796.035m0-4.735v2.138l.424-.027c5.45-.185 9.01 4.47 9.01 4.47s-4.08 4.964-8.33 4.964c-.37 0-.733-.035-1.095-.097v1.325c.3.035.61.062.91.062 3.957 0 6.82-2.023 9.593-4.408.459.371 2.34 1.263 2.73 1.652-2.633 2.208-8.772 3.984-12.253 3.984-.335 0-.653-.018-.971-.053v1.864H24V4.063zm0 10.326v1.131c-3.657-.654-4.673-4.46-4.673-4.46s1.758-1.944 4.673-2.262v1.237H8.94c-1.528-.186-2.73 1.245-2.73 1.245s.68 2.412 2.739 3.11M2.456 10.9s2.164-3.197 6.5-3.533V6.201C4.153 6.59 0 10.653 0 10.653s2.35 6.802 8.948 7.42v-1.237c-4.84-.6-6.492-5.936-6.492-5.936z"/></svg>',
+  // Medal: the drawn medal below is only the stand-in for when Medal's own icon cannot load (impMedalLogo).
   medal: '<svg class="imp-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h3l1.6 5.2M16 3h-3l-1 3.2"/><circle cx="12" cy="15" r="5.5"/><path d="m12 12.4.9 1.8 2 .3-1.45 1.4.35 2-1.8-.95-1.8.95.35-2-1.45-1.4 2-.3z"/></svg>',
-  outplayed: '<svg class="imp-logo" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M10 8.6v6.8l5.4-3.4z" fill="currentColor"/></svg>',
+  // Outplayed's mark: a skull wearing a small crown (the owner sent the picture, 0.1.25).
+  outplayed: '<svg class="imp-logo imp-logo-fill" viewBox="0 0 24 24" aria-hidden="true"><path fill-rule="evenodd" d="M12 7.300c-4.500 0-7.700 2.800-7.700 6.500 0 2 .900 3.600 2.400 4.600v1.300c0 .900.700 1.600 1.600 1.600h7.400c.900 0 1.600-.700 1.600-1.600v-1.300c1.500-1 2.400-2.600 2.400-4.600 0-3.700-3.200-6.500-7.700-6.500zM9.200 12.200a2.100 2.100 0 1 1 0 4.200 2.100 2.100 0 0 1 0-4.200zm5.600 0a2.100 2.100 0 1 1 0 4.200 2.100 2.100 0 0 1 0-4.200z"/><path d="m3.300 7.300.300-4.700 2.300 2.300 1.700-3.400 1.500 3.300 2.500-1.900-.800 4.200z"/></svg>',
   steelseries: '<svg class="imp-logo" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" stroke="none" d="M14.08008 0c-1.00234 0-1.8125.80893-1.8125 1.8086v2.57226c-4.01871.7444-7.19505 3.9119-7.93946 7.91992H1.8125c-1.001 0-1.8125.80698-1.8125 1.80664 0 .99833.8115 1.8086 1.8125 1.8086h2.51563C5.18077 20.5094 9.22875 24 14.08008 24 19.54884 24 24 19.56148 24 14.10742c0-4.83662-3.50067-8.87524-8.10742-9.72656V1.80859C15.89258.80893 15.08108 0 14.08008 0ZM4.69336 3.17578c-1.00368 0-1.8164.80955-1.8164 1.81055 0 .99966.81272 1.8125 1.8164 1.8125 1.001 0 1.8164-.81284 1.8164-1.8125 0-1.001-.8154-1.81055-1.8164-1.81055zm9.38672 4.65625c3.46809 0 6.29297 2.81398 6.29297 6.2754 0 3.46006-2.82488 6.27734-6.29297 6.27734-3.46943 0-6.29297-2.81728-6.29297-6.27735 0-3.4614 2.82354-6.27539 6.29297-6.27539zm-.01758 2.4043c-2.14634 0-3.89258 1.73986-3.89258 3.88086S11.91616 18 14.0625 18c2.14634 0 3.89258-1.74182 3.89258-3.88281 0-2.141-1.74624-3.88086-3.89258-3.88086zm0 2.7168c.6455 0 1.16797.51989 1.16797 1.16406 0 .64283-.52246 1.16797-1.16797 1.16797-.64417 0-1.16992-.52514-1.16992-1.16797 0-.64417.52575-1.16407 1.16992-1.16407z"/></svg>',
 };
 /**
  * Medal's own icon, from its brand page (medal.tv/brand), used as that page allows: to name Medal
- * in a list of apps, the files as they are (`ui/logos/medal-icon-*.svg`, never recoloured or
+ * in a list of apps, the files as they are (`ui/logos/medal-icon-*.svg`, never recolored or
  * stretched), the white one on a dark background and the black one on a light one. Medal's logos
  * are trademarks of Medal B.V.; Glint is not sponsored or endorsed by Medal. If the file does not
  * load, the drawn medal in IMP_LOGO takes its place.

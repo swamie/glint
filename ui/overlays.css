@@ -1,0 +1,52 @@
+/* Editor overlays (overlays.js): the layer over the shown picture, the tool bar, the side panel. */
+
+/* The layer covers the picture exactly (its place is set by overlays.js), under the player's controls. */
+.ov-layer { position: absolute; z-index: 1; overflow: hidden; touch-action: none; cursor: pointer; }
+.ov-layer[hidden], .ov-bar[hidden], .ov-edit[hidden] { display: none; }
+.ov-layer.drawing { cursor: crosshair; }
+.ov-layer > canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.ov-blurs, .ov-blurs > div, .ov-fade { position: absolute; pointer-events: none; }
+.ov-blurs { inset: 0; }
+.ov-fade { inset: 0; background: #000; opacity: 0; }
+.ov-edit { position: absolute; z-index: 2; margin: 0; padding: 0; border: 1px dashed var(--accent); border-radius: 2px; background: rgba(0, 0, 0, .15); outline: 0; resize: none; overflow: hidden; white-space: pre; caret-color: #fff; }
+/* While a drawing tool is on, the controls' shaded strip lets the pointer through to the picture. */
+.player.ov-drawing .p-ui { pointer-events: none; }
+.player.ov-drawing .p-ui .p-bar, .player.ov-drawing .p-ui .p-row { pointer-events: auto; }
+
+/* Tool bar over the top edge of the picture (edit mode only). */
+.ov-bar { position: absolute; z-index: 3; top: 8px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 9px; background: rgba(7, 10, 16, .78); border: 1px solid rgba(255, 255, 255, .12); max-width: calc(100% - 16px); flex-wrap: wrap; justify-content: center; }
+.ov-tool { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: rgba(255, 255, 255, .82); cursor: pointer; }
+.ov-tool svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ov-tool:hover:not(:disabled) { background: rgba(255, 255, 255, .1); color: #fff; }
+.ov-tool.on { background: var(--accent); color: var(--accent-ink, #fff); }
+.ov-tool:disabled { opacity: .35; cursor: default; }
+.ov-sep { width: 1px; height: 18px; margin: 0 3px; background: rgba(255, 255, 255, .16); }
+
+/* Side panel sections. */
+.e-ov .ov-row, .e-fade .ov-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; font-size: 12px; color: var(--muted); }
+.e-ov .ov-row > span:first-child, .e-fade .ov-row > span:first-child { min-width: 64px; }
+.ov-swatches { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.ov-sw { width: 20px; height: 20px; padding: 0; border-radius: 50%; border: 1px solid var(--line-2); background: var(--sw); cursor: pointer; }
+.ov-sw.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ov-pick { width: 26px; height: 22px; padding: 0; border: 1px solid var(--line-2); border-radius: 5px; background: var(--raised); cursor: pointer; }
+.e-ov .ov-style { margin-top: 2px; }
+.e-ov select { min-width: 120px; }
+.ov-when { display: flex; flex-direction: column; gap: 7px; padding: 8px; border-radius: 8px; background: var(--raised); border: 1px solid var(--line); }
+.ov-time { width: 64px; padding: 3px 6px; font: 600 12px var(--mono); }
+.ov-dash { color: var(--dim); }
+.ov-rbar { position: relative; height: 18px; border-radius: 4px; background: var(--raised-2); cursor: pointer; touch-action: none; }
+.ov-rsel { position: absolute; top: 0; bottom: 0; min-width: 4px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 45%, transparent); border: 1px solid var(--accent); cursor: grab; }
+.ov-rsel > i { position: absolute; top: -1px; bottom: -1px; width: 8px; background: var(--accent); cursor: ew-resize; }
+.ov-rsel > i[data-ov-end="from"] { left: -1px; border-radius: 4px 0 0 4px; }
+.ov-rsel > i[data-ov-end="to"] { right: -1px; border-radius: 0 4px 4px 0; }
+.ov-rnow { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text); pointer-events: none; }
+.ov-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.ov-list { display: flex; flex-direction: column; gap: 2px; max-height: 180px; overflow-y: auto; }
+.ov-item { display: flex; align-items: center; gap: 7px; min-height: 26px; padding: 2px 7px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text); font-size: 12px; text-align: left; cursor: pointer; }
+.ov-item:hover { background: var(--raised); }
+.ov-item.on { background: color-mix(in srgb, var(--accent) 16%, transparent); border-color: var(--accent); }
+.ov-ik svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; display: block; }
+.ov-in { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-it { flex: 0 0 auto; font: 11px var(--mono); color: var(--muted); }
+.ov-fades { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.ov-num { width: 58px; padding: 3px 6px; }

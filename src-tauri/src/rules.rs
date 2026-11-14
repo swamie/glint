@@ -1,4 +1,4 @@
-//! Render rules (0.1.24): a named chain of steps (colour look, Blur, upscale,
+//! Render rules (0.1.24): a named chain of steps (color look, Blur, upscale,
 //! compress, GIF, copy) run on a clip with one click.
 //!
 //! A rule lives in `Settings::rules` (the UI edits it, ui/rules.js). Running it
@@ -91,7 +91,7 @@ pub const BUILTIN_LOOKS: &[(&str, [f32; 4])] = &[
     ("Black and white", [1.0, 1.12, 0.0, 1.0]),
 ];
 
-/// The colour of look `name`: a built-in look first, then the user's own presets.
+/// The color of look `name`: a built-in look first, then the user's own presets.
 pub fn look_color(s: &Settings, name: &str) -> Option<Color> {
     let mk = |v: [f32; 4]| Color { brightness: v[0], contrast: v[1], saturation: v[2], gamma: v[3] };
     if let Some((_, v)) = BUILTIN_LOOKS.iter().find(|(n, _)| *n == name) {
@@ -149,7 +149,7 @@ pub fn fix_order(steps: &[Step]) -> (Vec<Step>, Option<&'static str>) {
 /// The name of a step kind, as the page and error messages say it.
 pub fn kind_label(kind: &str) -> &'static str {
     match kind {
-        "color" => "Colour",
+        "color" => "Color",
         "blur" => "Blur",
         "upscale" => "Upscale",
         "compress" => "Compress",
@@ -164,10 +164,10 @@ fn height_words(h: u32) -> String {
     crate::upscale::label(h)
 }
 
-/// One step in words: "Colour: Vivid", "Blur", "Upscale to 4K", "Compress to 50 MB", "GIF 480 px, 20 fps", "Copy".
+/// One step in words: "Color: Vivid", "Blur", "Upscale to 4K", "Compress to 50 MB", "GIF 480 px, 20 fps", "Copy".
 pub fn step_words(st: &Step) -> String {
     match st.kind.as_str() {
-        "color" => format!("Colour: {}", st.look),
+        "color" => format!("Color: {}", st.look),
         "upscale" => format!("Upscale to {}", height_words(st.upscale.height)),
         "compress" => format!("Compress to {} MB", st.mb),
         "gif" => {
@@ -179,7 +179,7 @@ pub fn step_words(st: &Step) -> String {
     }
 }
 
-/// What a rule does, in words: "Colour: Vivid → Blur → Compress to 50 MB → Copy".
+/// What a rule does, in words: "Color: Vivid → Blur → Compress to 50 MB → Copy".
 pub fn describe(rule: &Rule) -> String {
     if rule.steps.is_empty() {
         return "No blocks yet".into();
@@ -198,7 +198,7 @@ pub fn check(s: &Settings, rule: &Rule) -> Result<(), String> {
     }
     for st in &rule.steps {
         match st.kind.as_str() {
-            "color" if look_color(s, &st.look).is_none() => return Err(format!("The colour look \"{}\" no longer exists. Pick another one in the rule.", st.look)),
+            "color" if look_color(s, &st.look).is_none() => return Err(format!("The color look \"{}\" no longer exists. Pick another one in the rule.", st.look)),
             "compress" if !(compress::MIN_MB..=compress::MAX_MB).contains(&st.mb) => return Err(format!("Pick a size from {} to {} MB", compress::MIN_MB, compress::MAX_MB)),
             _ => {}
         }
@@ -325,11 +325,11 @@ fn sv(a: &[&str]) -> Vec<String> {
     a.iter().map(|s| s.to_string()).collect()
 }
 
-/// The colour step: the editor's export of look `look` on the whole clip (same
+/// The color step: the editor's export of look `look` on the whole clip (same
 /// filter, same encoder choice and fallback); sound copied with its track titles.
 /// Ok(None) when the look changes nothing.
 fn color_step(tools: &Tools, cur: &Path, out: &Path, look: &str, cancel: &AtomicBool, report: &mut dyn FnMut(f32)) -> Result<Option<PathBuf>, String> {
-    let c = look_color(&tools.settings, look).ok_or_else(|| format!("the colour look \"{look}\" no longer exists"))?;
+    let c = look_color(&tools.settings, look).ok_or_else(|| format!("the color look \"{look}\" no longer exists"))?;
     let Some(vf) = editor::look_filter(&tools.ffmpeg, cur, &c) else { return Ok(None) };
     let duration = library::probe(&tools.ffmpeg, cur, false).map(|p| p.duration).unwrap_or(0.0);
     let titles = track_titles(&tools.ffmpeg, cur);
@@ -353,7 +353,7 @@ fn color_step(tools: &Tools, cur: &Path, out: &Path, look: &str, cancel: &Atomic
     let mut res = run_ff(&tools.ffmpeg, &build(&enc), duration, cancel, &mut |f| report(f as f32 * 100.0));
     if res.is_err() && !cancel.load(Ordering::SeqCst) && enc != "x264" {
         // A busy hardware encoder (the recorder and a game hold its sessions): the CPU always works.
-        util::log(&format!("rules: colour step: {enc} failed ({}), retrying with libx264", res.as_ref().err().map(String::as_str).unwrap_or("")));
+        util::log(&format!("rules: color step: {enc} failed ({}), retrying with libx264", res.as_ref().err().map(String::as_str).unwrap_or("")));
         let _ = fs::remove_file(out);
         res = run_ff(&tools.ffmpeg, &build("x264"), duration, cancel, &mut |f| report(f as f32 * 100.0));
     }
@@ -730,7 +730,7 @@ fn pure_checks(r: &mut Report) {
     // Words.
     let rule = Rule { id: "r1".into(), name: "Render rule 1".into(), steps: vec![Step { kind: "color".into(), look: "Vivid".into(), ..Default::default() }, Step::of("blur"), Step { kind: "compress".into(), mb: 50, ..Default::default() }, Step::of("copy")] };
     let w = describe(&rule);
-    r.check("words: Colour: Vivid → Blur → Compress to 50 MB → Copy", w == "Colour: Vivid → Blur → Compress to 50 MB → Copy", &w);
+    r.check("words: Color: Vivid → Blur → Compress to 50 MB → Copy", w == "Color: Vivid → Blur → Compress to 50 MB → Copy", &w);
     let up = Step { kind: "upscale".into(), upscale: UpscaleOpts { height: 2160, ..Default::default() }, ..Default::default() };
     let up2 = Step { kind: "upscale".into(), upscale: UpscaleOpts { height: 1440, ..Default::default() }, ..Default::default() };
     let g = Step { kind: "gif".into(), gif: GifOpts { width: 480, fps: 15, max_mb: 10, ..Default::default() }, ..Default::default() };
@@ -743,7 +743,7 @@ fn pure_checks(r: &mut Report) {
     let bad = Rule { steps: steps_of(&["gif", "blur"]), ..Default::default() };
     r.check("check: an order that cannot work is refused with its reason", check(&s, &bad).err().as_deref() == Some(WHY_GIF), "");
     let gone = Rule { steps: vec![Step { kind: "color".into(), look: "Not a look".into(), ..Default::default() }], ..Default::default() };
-    r.check("check: a colour look that no longer exists is refused", check(&s, &gone).is_err_and(|e| e.contains("Not a look")), "");
+    r.check("check: a color look that no longer exists is refused", check(&s, &gone).is_err_and(|e| e.contains("Not a look")), "");
     let tiny = Rule { steps: vec![Step { kind: "compress".into(), mb: 2, ..Default::default() }], ..Default::default() };
     r.check("check: a size under 5 MB is refused", check(&s, &tiny).is_err(), "");
     let mut s2 = Settings::default();
@@ -929,12 +929,12 @@ fn media_checks(r: &mut Report) {
     let no_cancel = AtomicBool::new(false);
     let vivid = Step { kind: "color".into(), look: "Vivid".into(), ..Default::default() };
 
-    // 1. Colour alone: the same picture as the editor's export of that look; sound and titles kept.
+    // 1. Color alone: the same picture as the editor's export of that look; sound and titles kept.
     {
         let tag = "rule-test-color";
         let _g = TmpGuard(tag.into());
         let res = run_steps(&tools, &[vivid.clone()], &small, tag, &no_cancel, &mut |_| {}, &mut |_| {});
-        r.check("colour step runs", res.is_ok(), res.as_ref().err().map(String::as_str).unwrap_or(""));
+        r.check("color step runs", res.is_ok(), res.as_ref().err().map(String::as_str).unwrap_or(""));
         if let Ok(o) = &res {
             let meta = library::register(&ffmpeg, &small, "small", "Test Game", "clip");
             let opts = editor::ExportOpts { color: look_color(&s, "Vivid").unwrap_or_default(), ..Default::default() };
@@ -942,26 +942,26 @@ fn media_checks(r: &mut Report) {
                 Ok(ed) => {
                     let (a, b, src) = (frame_rgb(&ffmpeg, &o.file, 2.0), frame_rgb(&ffmpeg, Path::new(&ed.path), 2.0), frame_rgb(&ffmpeg, &small, 2.0));
                     let (same, changed) = (mean_diff(&a, &b), mean_diff(&a, &src));
-                    r.line(&format!("INFO colour step vs editor export: mean difference {same:.2}; vs the source {changed:.2} (0..255)"));
-                    r.check("colour step looks the same as the editor's export of the look", same < 2.0, &format!("{same:.2}"));
-                    r.check("colour step changed the picture", changed > 1.0, &format!("{changed:.2}"));
+                    r.line(&format!("INFO color step vs editor export: mean difference {same:.2}; vs the source {changed:.2} (0..255)"));
+                    r.check("color step looks the same as the editor's export of the look", same < 2.0, &format!("{same:.2}"));
+                    r.check("color step changed the picture", changed > 1.0, &format!("{changed:.2}"));
                     let _ = fs::remove_file(&ed.path);
                     let _ = fs::remove_file(&ed.thumb);
                 }
                 Err(e) => r.check("editor export of the same look", false, &e),
             }
             let p = library::probe(&ffmpeg, &o.file, false).unwrap_or_default();
-            r.check("colour step keeps both audio tracks and their titles", p.audio_streams == 2 && track_titles(&ffmpeg, &o.file) == titles, &format!("{} tracks {:?}", p.audio_streams, track_titles(&ffmpeg, &o.file)));
+            r.check("color step keeps both audio tracks and their titles", p.audio_streams == 2 && track_titles(&ffmpeg, &o.file) == titles, &format!("{} tracks {:?}", p.audio_streams, track_titles(&ffmpeg, &o.file)));
             let sp = library::probe(&ffmpeg, &small, false).unwrap_or_default();
-            r.check("colour step keeps the length", (p.duration - sp.duration).abs() < 0.2, &format!("{:.2} vs {:.2}", p.duration, sp.duration));
+            r.check("color step keeps the length", (p.duration - sp.duration).abs() < 0.2, &format!("{:.2} vs {:.2}", p.duration, sp.duration));
         }
         let none = Step { kind: "color".into(), look: "None".into(), ..Default::default() };
         let res = run_steps(&tools, &[none], &small, tag, &no_cancel, &mut |_| {}, &mut |_| {});
-        r.check("colour step with the look None is skipped", res.as_ref().is_ok_and(|o| !o.made && o.skipped == ["color"] && o.file == small), "");
+        r.check("color step with the look None is skipped", res.as_ref().is_ok_and(|o| !o.made && o.skipped == ["color"] && o.file == small), "");
     }
-    r.check("colour: no temporary files left", tmp_files("rule-test-color").is_empty(), "");
+    r.check("color: no temporary files left", tmp_files("rule-test-color").is_empty(), "");
 
-    // 2. Colour → Blur (stand-in) → Compress → Copy on the big clip: progress, stages, size.
+    // 2. Color → Blur (stand-in) → Compress → Copy on the big clip: progress, stages, size.
     if big_size > compress::limit_bytes(5) {
         let tag = "rule-test-chain";
         let steps = vec![vivid.clone(), Step::of("blur"), Step { kind: "compress".into(), mb: 5, ..Default::default() }, Step::of("copy")];
@@ -973,7 +973,7 @@ fn media_checks(r: &mut Report) {
             let res = run_steps(&tools, &steps, &big, tag, &no_cancel, &mut |p| pcts.push(p), &mut |k| stages.push(k.to_string()));
             if let Ok(o) = &res {
                 let size = fs::metadata(&o.file).map(|m| m.len()).unwrap_or(u64::MAX);
-                r.line(&format!("INFO colour + blur stand-in + compress to 5 MB: {} in {:.1} s", compress::fmt_size(size), t0.elapsed().as_secs_f64()));
+                r.line(&format!("INFO color + blur stand-in + compress to 5 MB: {} in {:.1} s", compress::fmt_size(size), t0.elapsed().as_secs_f64()));
                 r.check("chain: the result is at or under 5 MB", size <= compress::limit_bytes(5), &compress::fmt_size(size));
                 r.check("chain: the result is an MP4 with sound", format_name(&ffmpeg, &o.file).contains("mp4") && library::probe(&ffmpeg, &o.file, false).is_some_and(|p| p.audio_streams == 1 && p.video_streams == 1), "");
                 r.check("chain: ends with Copy, nothing skipped", o.copy && o.made && !o.gif && o.skipped.is_empty(), &format!("{o:?}"));
@@ -982,7 +982,7 @@ fn media_checks(r: &mut Report) {
             }
             res
         };
-        r.check("chain: colour, blur stand-in, compress, copy succeed", res.is_ok(), res.as_ref().err().map(String::as_str).unwrap_or(""));
+        r.check("chain: color, blur stand-in, compress, copy succeed", res.is_ok(), res.as_ref().err().map(String::as_str).unwrap_or(""));
         r.check("chain: the Blur step ran (stand-in, blur-cli never started)", calls.load(Ordering::SeqCst) == 1, "");
         r.check("chain: stages in order", stages == ["color", "blur", "compress", "copy"], &format!("{stages:?}"));
         r.check("chain: progress never goes back and ends at 100", pcts.windows(2).all(|w| w[1] >= w[0]) && pcts.last() == Some(&100.0), "");
@@ -1001,9 +1001,9 @@ fn media_checks(r: &mut Report) {
         r.check("skip: upscale to its own height and compress to 500 MB are both skipped", res.as_ref().is_ok_and(|o| !o.made && o.skipped == ["upscale", "compress"] && o.file == small), &format!("{res:?}"));
     }
 
-    // 4. Cancel: in the colour step, in the Blur step, in the compress step.
+    // 4. Cancel: in the color step, in the Blur step, in the compress step.
     for (what, steps, at) in [
-        ("colour", vec![vivid.clone(), Step { kind: "compress".into(), mb: 5, ..Default::default() }], 5.0f32),
+        ("color", vec![vivid.clone(), Step { kind: "compress".into(), mb: 5, ..Default::default() }], 5.0f32),
         ("blur", vec![Step::of("blur"), Step { kind: "compress".into(), mb: 5, ..Default::default() }], 20.0),
         ("compress", vec![vivid.clone(), Step { kind: "compress".into(), mb: 5, ..Default::default() }], 60.0),
     ] {

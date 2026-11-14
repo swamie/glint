@@ -87,6 +87,8 @@ pub struct Core {
     sample: Mutex<Sample>,
     /// When each keybind last fired, to drop the second copy of one press.
     last_hotkey: Mutex<HashMap<String, std::time::Instant>>,
+    /// The clip the "edit" keybind wants open in the editor, until the page takes it (	ake_pending_edit).
+    pending_edit: Mutex<Option<String>>,
     pub games: Mutex<games::Games>,
     playing: Mutex<Option<Playing>>,
     pub jobs: crate::jobs::Jobs,
@@ -239,6 +241,7 @@ impl Core {
             app: OnceLock::new(),
             sample: Mutex::new(Sample { t: util::now_secs(), frames: HashMap::new(), cpu: 0.0, cpu_pct: 0.0 }),
             last_hotkey: Mutex::new(HashMap::new()),
+            pending_edit: Mutex::new(None),
             games: Mutex::new(games),
             playing: Mutex::new(None),
             jobs: crate::jobs::Jobs::new(),
@@ -562,6 +565,11 @@ impl Core {
         }
     }
 
+    /// The clip the "edit" keybind asked for, handed out once.
+    pub fn take_pending_edit(&self) -> Option<String> {
+        self.pending_edit.lock().unwrap().take()
+    }
+
     pub fn on_hotkey(self: &Arc<Self>, id: &str) {
         let bind = self.settings.lock().unwrap().keybinds.iter().find(|k| k.id == id).cloned();
         let Some(b) = bind else { return };
@@ -589,6 +597,21 @@ impl Core {
                 if let Some(app) = self.app.get() {
                     crate::app::show_main(app);
                 }
+            }
+            // "Edit the last clip" (0.1.25): bring Glint up with the newest clip open in the editor.
+            // The page takes the clip's id itself (`take_pending_edit`): on "edit-last" when the
+            // window is open, or when it starts if this key had to open it.
+            "edit" => {
+                let newest = self.lib.lock().unwrap().visible().into_iter().max_by_key(|c| c.created).map(|c| c.id);
+                let Some(id) = newest else {
+                    self.toast("No clip to edit yet", "Save a clip first");
+                    return;
+                };
+                *self.pending_edit.lock().unwrap() = Some(id);
+                if let Some(app) = self.app.get() {
+                    crate::app::show_main(app);
+                }
+                self.emit("edit-last", ());
             }
             // Switch the capture monitor: to the keybind's own monitor, or with -1 to
             // the next one in Windows' list. Clip keybinds set to "capture monitor",
@@ -751,7 +774,7 @@ impl Core {
         }
         lib.save();
         drop(lib);
-        // The folder keeps its colour under its new name.
+        // The folder keeps its color under its new name.
         let mut s = self.settings.lock().unwrap();
         if s.carry_folder_color(from, Some(&to)) {
             s.save();
@@ -769,7 +792,7 @@ impl Core {
         let ids: Vec<String> = self.lib.lock().unwrap().clips.iter().filter(|c| c.folder.eq_ignore_ascii_case(name)).map(|c| c.id.clone()).collect();
         self.move_clips(&ids, "")?;
         std::fs::remove_dir(&dir).map_err(|_| "The clips were moved out, but the folder still holds other files, so it was kept".to_string())?;
-        // A folder that is gone loses its colour (a kept one keeps it).
+        // A folder that is gone loses its color (a kept one keeps it).
         let mut s = self.settings.lock().unwrap();
         if s.carry_folder_color(name, None) {
             s.save();

@@ -20,7 +20,7 @@
 //              volume: the row's own level, 0..EM_MAX_GAIN; muted silences the whole row
 //              file rows: the file's audio from trimStart, `length` seconds
 //              long, placed so it starts at source time `offset`
-//   colors     one colour correction per segment: { brightness, contrast, saturation, gamma }, 1 = unchanged
+//   colors     one color correction per segment: { brightness, contrast, saturation, gamma }, 1 = unchanged
 //   blank      one flag per segment: true = the picture is black there while the audio plays on
 //   speed      export speed, 0.25..4
 //   marks      bookmarks: sorted source times, none closer than EM_MARK_GAP. Only there
@@ -32,6 +32,10 @@
 //              Then every time above is a TIMELINE second: the parts laid end to end in
 //              display order; emToSrc / emFromSrc convert. Without parts timeline = source.
 //              A part border is always a cut, and a locked one (emCutLocked).
+//   overlays   things on the picture (ui/overlays.js), bottom to top: { id, kind, from, to, ... }
+//              kind: text, rect, ellipse, line, arrow, pen, blur. from / to: timeline seconds it
+//              is on screen; positions are fractions (0..1) of the picture.
+//   fadeIn, fadeOut  seconds of the RESULT that fade from / to black (picture and sound); 0 = off
 
 const EM_MIN_SEG = 0.1; // shortest segment a split or a drag may leave, seconds
 const EM_MAX_GAIN = 2;
@@ -63,6 +67,9 @@ function emNew(duration, tracks) {
     speed: 1,
     marks: [],
     parts: null,
+    overlays: [],
+    fadeIn: 0,
+    fadeOut: 0,
     undo: [],
     redo: [],
   };
@@ -84,9 +91,14 @@ function emSegmentAt(m, t) {
 /* ---------- undo ---------- */
 
 // The part order is in the snapshot only when there are parts, so a normal clip's snapshots are as before.
-const emState = (m) => JSON.stringify({ cuts: m.cuts, removed: m.removed, audio: m.audio, speed: m.speed, colors: m.colors, blank: m.blank, ...(m.parts ? { parts: m.parts } : {}) });
+// Overlays and fades likewise, only when there are any.
+const emHasLayers = (m) => !!((m.overlays && m.overlays.length) || m.fadeIn > 0 || m.fadeOut > 0);
+const emState = (m) => JSON.stringify({ cuts: m.cuts, removed: m.removed, audio: m.audio, speed: m.speed, colors: m.colors, blank: m.blank, ...(m.parts ? { parts: m.parts } : {}), ...(emHasLayers(m) ? { ov: m.overlays || [], fi: m.fadeIn || 0, fo: m.fadeOut || 0 } : {}) });
 function emRestore(m, json) {
   const s = JSON.parse(json);
+  m.overlays = Array.isArray(s.ov) ? s.ov : [];
+  m.fadeIn = +s.fi || 0;
+  m.fadeOut = +s.fo || 0;
   if (m.parts && Array.isArray(s.parts)) {
     // The bookmarks are not in the snapshot but move with their part: keep each at its place in its part.
     const P0 = emParts(m);
@@ -199,7 +211,7 @@ function emTrimEnd(m, t) {
 // emSetTrimEnd move the inner edge of that run to a time:
 //   inward   everything the edge passes is cut out and joins the run: kept segments (split at the
 //            new edge) and segments already cut out in the middle alike;
-//   outward  the run's segments come back in order, each with the state it had (levels, colour,
+//   outward  the run's segments come back in order, each with the state it had (levels, color,
 //            hidden video); the segment under the new edge is split, its outer part stays cut out.
 // So a part cut out in the middle stays cut out until the edge passes it; once a released drag has
 // swallowed it, it is part of the trim and dragging back out gives it back (undo restores it as it was).
@@ -214,7 +226,7 @@ function emTrimBounds(m) {
   return { start: edges[f], end: edges[l + 1] };
 }
 
-/** True if segments `a` and `b` look the same everywhere: cut out or not, colour, hidden video, level on every row. */
+/** True if segments `a` and `b` look the same everywhere: cut out or not, color, hidden video, level on every row. */
 function emSameSeg(m, a, b) {
   return !!m.removed[a] === !!m.removed[b] && !!m.blank[a] === !!m.blank[b] && emSameColor(m.colors[a], m.colors[b]) &&
     m.audio.every((r) => Math.abs((r.gains[a] ?? 1) - (r.gains[b] ?? 1)) < 1e-9);
@@ -301,7 +313,7 @@ function emSegPaste(m, s) {
   for (const r of m.audio) r.gains = g.has(r.id) ? g.get(r.id).slice() : m.removed.map(() => 1);
 }
 
-/** Back to one whole, kept segment (one per part: the part borders stay). Row levels and files stay; the first segment's colour becomes the clip's. */
+/** Back to one whole, kept segment (one per part: the part borders stay). Row levels and files stay; the first segment's color becomes the clip's. */
 function emResetCuts(m) {
   const keep = emLockedTimes(m);
   m.cuts = keep.slice();
@@ -422,7 +434,7 @@ function emSetPartRemoved(m, i, removed) {
 
 /**
  * Move the part at display index `from` to display index `to`. Its segments (cuts, cut out,
- * colour, hidden video, every row's levels) and bookmarks go with it; file rows stay where they
+ * color, hidden video, every row's levels) and bookmarks go with it; file rows stay where they
  * are on the timeline. Returns true if the order changed. Does not snapshot.
  */
 function emMovePart(m, from, to) {
@@ -438,6 +450,16 @@ function emMovePart(m, from, to) {
   for (const x of m.marks || []) { const g = groups[emPartAt(m, x)]; if (g) g.marks.push(x - g.p.at); }
   const order = groups.slice();
   order.splice(to, 0, order.splice(from, 1)[0]);
+  // An overlay wholly inside one part moves with that part (one across a border stays where it is).
+  const newAt = new Map();
+  { let a = 0; for (const g of order) { newAt.set(g.p.i, a); a += g.p.len; } }
+  for (const o of m.overlays || []) {
+    const p = P.find((q) => o.from >= q.at - EM_EPS && o.to <= q.end + EM_EPS);
+    if (!p) continue;
+    const d = newAt.get(p.i) - p.at;
+    o.from += d;
+    o.to += d;
+  }
   const cuts = [], removed = [], colors = [], blank = [], gains = m.audio.map(() => []), marks = [];
   let at = 0;
   order.forEach((g, k) => {
@@ -503,7 +525,7 @@ function emAppendTo(o, D, parts, firstTitle) {
  * The project's draft got longer: clips were added at its end. `starts` = source second where each
  * new clip starts (the first is the old draft's length), `titles` their names, `end` = the new
  * draft's length. The new clips become parts at the END of the display order, each one kept, with
- * neutral colour and full level on every row; nothing that was there moves (cuts, order, levels,
+ * neutral color and full level on every row; nothing that was there moves (cuts, order, levels,
  * file rows, bookmarks). A model without parts first becomes one part (its title: `firstTitle`).
  * Undo snapshots get the same new parts, so undo still works across the add. Returns true if
  * parts were added. Does not snapshot.
@@ -527,7 +549,7 @@ function emAddParts(m, starts, titles, end, firstTitle) {
 const EM_STATE_V = 1;
 /**
  * The edit as plain data, to save with a project and give back to emStateLoad: cuts, order, cut-out
- * parts, levels, added audio rows, colours, hidden video, speed, bookmarks (timeline seconds), and
+ * parts, levels, added audio rows, colors, hidden video, speed, bookmarks (timeline seconds), and
  * `joins` (where each source clip after the first starts, as the caller passes them). `undo` keeps
  * the undo history too (only for a reload in the same session; it is not worth saving to disk).
  */
@@ -537,6 +559,7 @@ function emStateSave(m, joins, undo) {
     cuts: m.cuts, removed: m.removed, colors: m.colors, blank: m.blank, speed: m.speed,
     audio: m.audio.map((r) => (r.kind === "track" ? { id: r.id, kind: "track", index: r.index, title: r.title, volume: r.volume, muted: r.muted, gains: r.gains } : r)),
     parts: m.parts, marks: m.marks || [],
+    overlays: m.overlays || [], fadeIn: m.fadeIn || 0, fadeOut: m.fadeOut || 0,
   };
   if (undo) { s.undo = m.undo.slice(); s.redo = m.redo.slice(); }
   return JSON.parse(JSON.stringify(s));
@@ -559,8 +582,14 @@ function emStateOk(s) {
     if (!Array.isArray(s.parts) || s.parts.length < 1 || !s.parts.every((p) => p && num(p.src) && num(p.len) && p.len > 0 && typeof p.title === "string")) return false;
     if (Math.abs(s.parts.reduce((a, p) => a + p.len, 0) - D) > 1e-3) return false;
   }
+  // Overlays and fades (0.1.25) are optional: a state saved before them has none.
+  if (s.overlays != null && !(Array.isArray(s.overlays) && s.overlays.every(emOverlayOk))) return false;
+  if ((s.fadeIn != null && !(num(s.fadeIn) && s.fadeIn >= 0)) || (s.fadeOut != null && !(num(s.fadeOut) && s.fadeOut >= 0))) return false;
   return true;
 }
+/** An overlay as saved: an object with a known kind and a finite time range (its own fields are checked by overlays.js). */
+const EM_OVERLAY_KINDS = ["text", "rect", "ellipse", "line", "arrow", "pen", "blur"];
+const emOverlayOk = (o) => !!o && typeof o === "object" && EM_OVERLAY_KINDS.includes(o.kind) && typeof o.id === "string" && Number.isFinite(o.from) && Number.isFinite(o.to);
 
 /**
  * Put saved state `s` (emStateSave) on `m`, a fresh model of the project's draft (emNew with the
@@ -595,6 +624,9 @@ function emStateLoad(m, s) {
   m.speed = s.speed;
   m.audio = [...tracks, ...files];
   m.parts = Array.isArray(s.parts) && s.parts.length > 1 ? s.parts.map((p) => ({ src: p.src, len: p.len, title: p.title })) : null;
+  m.overlays = Array.isArray(s.overlays) ? JSON.parse(JSON.stringify(s.overlays)) : [];
+  m.fadeIn = +s.fadeIn || 0;
+  m.fadeOut = +s.fadeOut || 0;
   emSetMarks(m, s.marks);
   // The undo history only when the rows are the same ones (their paths are refreshed).
   const keep = (list) => (sameTracks && Array.isArray(list) ? list.filter((x) => typeof x === "string").map((json) => {
@@ -662,18 +694,18 @@ function emPlayable(m, t) {
   return null;
 }
 
-/* ---------- picture: colour and hiding, per segment ---------- */
+/* ---------- picture: color and hiding, per segment ---------- */
 
 const emSameColor = (a, b = emNoColor()) => EM_COLOR_KEYS.every((k) => Math.abs((a?.[k] ?? 1) - (b?.[k] ?? 1)) < 0.005);
 
-/** The colour correction in force at source time `t`. */
+/** The color correction in force at source time `t`. */
 const emColorAt = (m, t) => m.colors[emSegmentAt(m, t)] || emNoColor();
 /** True if the picture is hidden (black) at source time `t`. */
 const emBlankAt = (m, t) => !!m.blank[emSegmentAt(m, t)];
 
 /**
- * Change the colour correction of some segments. `segs`: segment indexes, or
- * null for every segment (the whole clip). `change`: any of the four colour
+ * Change the color correction of some segments. `segs`: segment indexes, or
+ * null for every segment (the whole clip). `change`: any of the four color
  * keys; keys left out keep their value.
  */
 function emSetColor(m, segs, change) {
@@ -876,7 +908,7 @@ function emPlaceFile(m, id, change) {
 /** True if no audio row differs from the clip as recorded (so the export can keep the original tracks). */
 const emAudioUntouched = (m) => m.audio.every((r) => r.kind === "track" && !r.muted && Math.abs(r.volume - 1) < 0.005 && r.gains.every((g, i) => m.removed[i] || Math.abs(g - 1) < 0.005));
 /** True if the edit is nothing but one kept range (one in the source too): the export can cut it without re-encoding. */
-const emIsPlainCut = (m) => emKept(m).length === 1 && (!m.parts || emSrcSpans(m, emKept(m)[0].start, emKept(m)[0].end).length === 1) && Math.abs(m.speed - 1) < 0.005 && emPieces(m).every((p) => !p.blank && emSameColor(p.color)) && emAudioUntouched(m);
+const emIsPlainCut = (m) => !emHasLayers(m) && emKept(m).length === 1 &&(!m.parts || emSrcSpans(m, emKept(m)[0].start, emKept(m)[0].end).length === 1) && Math.abs(m.speed - 1) < 0.005 && emPieces(m).every((p) => !p.blank && emSameColor(p.color)) && emAudioUntouched(m);
 /** True if the result would differ from the source at all. */
 const emChanged = (m) => !(emIsPlainCut(m) && m.removed.every((r) => !r));
 
@@ -885,10 +917,10 @@ const emRound = (x) => Math.round(x * 1000) / 1000;
 /**
  * The `opts` for the `export_clip` command.
  *   segments  the kept source ranges, in order: { start, end }, plus
- *             `color` when the kept parts do not all share one colour
+ *             `color` when the kept parts do not all share one color
  *             correction (it then replaces the top-level `color` for that
  *             range) and `blank: true` where the picture is hidden (black)
- *   color     the colour correction of the whole result when every kept part
+ *   color     the color correction of the whole result when every kept part
  *             shares it; neutral when the ranges carry their own
  *   audio     [] = keep the clip's audio tracks as recorded. Otherwise one
  *             entry per row that is heard, mixed into ONE track:
@@ -949,12 +981,38 @@ function emToOpts(m) {
     segments,
     ...(ordered ? { ordered: true } : {}),
     audio,
+    ...emLayerOpts(m),
   };
+}
+
+/**
+ * Timeline range [from, to] -> the OUTPUT seconds it covers in the finished clip (cut-out parts
+ * gone, speed applied), as the export's overlays, blurs and fades count them. null when nothing
+ * of it is kept.
+ */
+function emOutRange(m, from, to) {
+  const sp = m.speed || 1;
+  const a = emSrcToOut(m, Math.max(0, Math.min(m.duration, +from || 0))) / sp;
+  const b = emSrcToOut(m, Math.max(0, Math.min(m.duration, +to || 0))) / sp;
+  return b - a > 0.001 ? { from: emRound(a), to: emRound(b) } : null;
+}
+/** The export's blur boxes and fades (the overlay PNGs are added by ui/overlays.js). Keys only when there are any. */
+function emLayerOpts(m) {
+  const out = {}, r4 = (x) => Math.round(x * 10000) / 10000, total = emOutDuration(m);
+  const blurs = (m.overlays || []).filter((o) => o.kind === "blur").map((o) => {
+    const r = emOutRange(m, o.from, o.to);
+    return r && { x: r4(o.x), y: r4(o.y), w: r4(o.w), h: r4(o.h), from: r.from, to: r.to, strength: r4(o.strength) };
+  }).filter(Boolean);
+  if (blurs.length) out.blurs = blurs;
+  if (m.fadeIn > 0) out.fade_in = emRound(Math.min(m.fadeIn, total / 2));
+  if (m.fadeOut > 0) out.fade_out = emRound(Math.min(m.fadeOut, total / 2));
+  return out;
 }
 
 // Lets the functions be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { EM_MIN_SEG, EM_MAX_GAIN, EM_EPS, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emTrimBounds, emSameSeg, emSetTrimStart, emSetTrimEnd, emSegCopy, emSegPaste, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emTrackRow, emGameHidden, emRowHint, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts,
     emSetParts, emParts, emPartAt, emToSrc, emFromSrc, emSrcSpans, emMovePart, emCutLocked, emLockedTimes, emPartSegs, emPartRemoved, emSetPartRemoved, emReordered, emState, emRestore,
-    emAddParts, emNewParts, emStateSave, emStateOk, emStateLoad, EM_STATE_V };
+    emAddParts, emNewParts, emStateSave, emStateOk, emStateLoad, EM_STATE_V,
+    emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS };
 }

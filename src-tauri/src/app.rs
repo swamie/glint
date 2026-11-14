@@ -32,12 +32,25 @@ pub fn show_main(app: &AppHandle) {
             .inner_size(1320.0, 840.0)
             .min_inner_size(980.0, 620.0)
             .decorations(false)
+            // What shows for a moment where the window has grown and the page has not painted yet: dark, not white.
+            .background_color(tauri::window::Color(7, 10, 16, 255))
             .center()
             .build();
+        if let Ok(w) = &built {
+            // No classic caption flashing in while the window is resized fast (win::calm_frame).
+            if let Ok(h) = w.hwnd() {
+                let hwnd = h.0 as isize;
+                let _ = app.run_on_main_thread(move || {
+                    if !win::calm_frame(hwnd) {
+                        util::log("window: the frame subclass was refused");
+                    }
+                });
+            }
+        }
         if built.is_ok() {
             let zoom = app.state::<Arc<Core>>().settings().ui_zoom;
             apply_zoom(&app, zoom);
-            crate::polish::apply_icon(&app, &app.state::<Arc<Core>>().settings()); // the theme-coloured icon, if on
+            crate::polish::apply_icon(&app, &app.state::<Arc<Core>>().settings()); // the theme-colored icon, if on
         }
     });
 }
@@ -60,10 +73,10 @@ pub struct Toast {
     pub scale: u32,
     /// Seconds on screen.
     pub secs: f32,
-    /// Colour theme id and the user's CSS, so the overlay matches the app.
+    /// Color theme id and the user's CSS, so the overlay matches the app.
     pub theme: String,
     pub css: String,
-    /// The user's custom colours (`settings.theme_colors`), applied between the two.
+    /// The user's custom colors (`settings.theme_colors`), applied between the two.
     pub colors: std::collections::BTreeMap<String, String>,
 }
 
@@ -444,7 +457,7 @@ fn editor_audio_tracks(core: St, id: String) -> Result<Vec<crate::editor::AudioT
     crate::editor::audio_tracks(&core.settings(), &meta)
 }
 
-/// Export an edited copy of a clip (trim, speed, colour, audio mix). Progress
+/// Export an edited copy of a clip (trim, speed, color, audio mix). Progress
 /// is sent as "export-progress" events: { id, pct }.
 #[tauri::command(async)]
 fn export_clip(core: St, id: String, opts: crate::editor::ExportOpts) -> Result<ClipMeta, String> {
@@ -472,6 +485,19 @@ fn replace_clips(core: St, id: String, ids: Vec<String>, adopt: bool) -> Result<
     Ok(done)
 }
 
+/// The clip a keybind asked to open in the editor ("Edit the last clip"), once: the page asks for it
+/// when it hears "edit-last" and when it starts (the key may have opened the window).
+#[tauri::command(async)]
+fn take_pending_edit(core: St) -> Option<String> {
+    core.take_pending_edit()
+}
+
+/// The text on the clipboard, for Paste in Glint's own menu on a text box ("" when there is none).
+#[tauri::command(async)]
+fn clipboard_text() -> String {
+    clipboard_win::get_clipboard_string().unwrap_or_default()
+}
+
 /// Loudness outlines of the clip's audio streams, for the timeline's waveforms.
 #[tauri::command(async)]
 fn editor_waveforms(core: St, id: String) -> Result<Vec<crate::editor::Waveform>, String> {
@@ -490,6 +516,12 @@ fn editor_thumbs(core: St, id: String, count: u32) -> Result<Vec<String>, String
 #[tauri::command(async)]
 fn editor_audio_info(core: St, path: String) -> Result<crate::editor::AudioInfo, String> {
     crate::editor::audio_info(&core.settings(), &path)
+}
+
+/// The editor's text / shapes / drawing picture (PNG data URL) as a temp file for `export_clip`'s overlays.
+#[tauri::command(async)]
+fn editor_overlay_png(data: String) -> Result<String, String> {
+    crate::editor::save_overlay_png(&data)
 }
 
 #[tauri::command(async)]
@@ -867,6 +899,7 @@ pub fn run(minimized: bool) {
             editor_waveforms,
             editor_thumbs,
             editor_audio_info,
+            editor_overlay_png,
             pick_audio_file,
             update_state,
             update_check,
@@ -882,6 +915,8 @@ pub fn run(minimized: bool) {
             pick_import_folder,
             export_clip,
             replace_clips,
+            take_pending_edit,
+            clipboard_text,
             blur_clip,
             compress_clip,
             crate::compress::compress_plan,
@@ -927,7 +962,7 @@ pub fn run(minimized: bool) {
             let _ = app.asset_protocol_scope().allow_directory(library::thumbs_dir(), true);
             let _ = app.asset_protocol_scope().allow_directory(crate::games::icons_dir(), true);
             build_tray(&handle, core.clone())?;
-            crate::polish::apply_icon(&handle, &core.settings()); // tray icon in the theme's colour, if on
+            crate::polish::apply_icon(&handle, &core.settings()); // tray icon in the theme's color, if on
             crate::polish::spawn_thumb_repair(core.clone());
             crate::icons::fill_in_background(core.clone()); // icons for games that have none (imported ones)
             core.watch();
