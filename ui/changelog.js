@@ -27,6 +27,13 @@ const wnReleases = () => [
     ],
   },
   {
+    version: "0.1.27", date: "2026-11-15",
+    fixed: [
+      t("In a window that was not maximized, the editor's player controls (play, the seek bar, volume, speed) did not react to clicks."),
+      t("The hover sound no longer repeats while the pointer rests on a clip and the list is redrawn."),
+    ],
+  },
+  {
     version: "0.1.26", date: "2026-11-15",
     new: [
       t("Editor: a Canvas for vertical videos. Pick 9:16 (TikTok, Shorts, Reels), 1:1, 4:5 or your own size, then choose which parts of the picture show and where: the gameplay in the middle, the kill feed zoomed above, the health bar below. Behind them is the clip blurred, black or a color."),

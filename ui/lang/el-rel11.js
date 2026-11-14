@@ -161,4 +161,6 @@ glintAddLanguage("el", "Ελληνικά", {
   "All audio": "Όλος ο ήχος",
   "Everything you hear on the output device chosen below": "Ό,τι ακούτε από τη συσκευή εξόδου που επιλέγετε παρακάτω",
   "Your voice, saved as its own track": "Η φωνή σας, αποθηκευμένη ως ξεχωριστό κομμάτι ήχου",
+  "In a window that was not maximized, the editor's player controls (play, the seek bar, volume, speed) did not react to clicks.": "Σε παράθυρο που δεν ήταν μεγιστοποιημένο, τα χειριστήρια αναπαραγωγής του επεξεργαστή (αναπαραγωγή, γραμμή αναζήτησης, ένταση, ταχύτητα) δεν αντιδρούσαν στα κλικ.",
+  "The hover sound no longer repeats while the pointer rests on a clip and the list is redrawn.": "Ο ήχος αιώρησης δεν επαναλαμβάνεται πλέον όταν ο δείκτης μένει πάνω σε ένα κλιπ και η λίστα σχεδιάζεται ξανά.",
 });
