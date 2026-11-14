@@ -59,4 +59,5 @@ glintAddLanguage("el", "Ελληνικά", {
   "Back {n} seconds": "{n} δευτερόλεπτα πίσω",
   "Forward {n} seconds": "{n} δευτερόλεπτα μπροστά",
   "Right-click to change the step": "Δεξί κλικ για αλλαγή του βήματος",
+  "Import shows Medal's own logo, used as Medal's brand page allows.": "Η Εισαγωγή δείχνει το πραγματικό λογότυπο του Medal, όπως επιτρέπει η σελίδα επωνυμίας του Medal.",
 });

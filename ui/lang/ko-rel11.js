@@ -59,4 +59,5 @@ glintAddLanguage("ko", "한국어", {
   "Back {n} seconds": "{n}초 뒤로",
   "Forward {n} seconds": "{n}초 앞으로",
   "Right-click to change the step": "우클릭하면 간격을 바꿀 수 있어요",
+  "Import shows Medal's own logo, used as Medal's brand page allows.": "가져오기 창에 Medal의 실제 로고가 표시돼요. Medal 브랜드 페이지가 허용하는 방식대로 사용해요.",
 });

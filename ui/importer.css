@@ -110,3 +110,7 @@
 .imp-prog { height: 7px; border-radius: 4px; }
 .imp-run-line { margin: 8px 0 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .imp-run .imp-hint { margin: 0; }
+
+/* A product's own logo file (ui/logos): shown whole, in its own colour, never tinted or stretched. */
+.imp-logo.imp-logo-brand { width: 22px; height: 15px; object-fit: contain; opacity: 1; }
+.imp-name-wrap.logo:has(.imp-logo-brand) input.imp-name { padding-left: 38px; }

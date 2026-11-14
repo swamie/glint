@@ -192,6 +192,8 @@ Library → Import brings in clips recorded by NVIDIA ShadowPlay / NVIDIA app, M
 
 **Where imported clips go.** The import dialog asks: a folder for each game, one folder you name (the source's name by default), or no folder. Clips left where they are (not copied) are filed in a library folder by name only: Glint never moves, renames or changes another program's files, also not with "Sort by game" or when you move the clip to another folder.
 
+**Logos in the import dialog.** Each program has a small mark in front of its name. NVIDIA's and SteelSeries' come from the Simple Icons set (CC0). Medal's is Medal's own icon from [medal.tv/brand](https://medal.tv/brand), used as that page allows: unchanged, white on a dark window and black on a light one (`ui/logos`). Outplayed has no published logo to use, so it has a neutral sign. All of these marks are trademarks of their owners; Glint is not sponsored or endorsed by any of them, and the files in `ui/logos` are not part of Glint's own code.
+
 ## Compress for Discord
 
 Right-click a clip → Compress for Discord → 10, 20, 50 or 500 MB (the size used last is listed first). Glint re-encodes a copy with ffmpeg (x264, two passes, so the size is hit rather than guessed), shrinking the picture and frame rate only as far as the size needs: a short clip keeps 1440p60, a long one may come down to 720p30. The copy is saved beside the original as "… (Discord 10MB).mp4", tagged Discord in the library, and put on the clipboard ready to paste. It runs in the background queue with the Blur renders, one compression at a time; a clip already under the size is refused, and one too long for the size is refused with the length that would fit.

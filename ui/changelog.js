@@ -14,6 +14,14 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.19", date: "2026-11-14",
+    new: [],
+    improved: [
+      t("Import shows Medal's own logo, used as Medal's brand page allows."),
+    ],
+    fixed: [],
+  },
+  {
     version: "0.1.18", date: "2026-11-14",
     new: [
       t("The installer is now a normal Windows setup window: choose the folder and what to install, watch the progress, and cancel at any time. Removing Glint has its own small window too."),

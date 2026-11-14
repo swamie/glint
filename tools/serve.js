@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const root = process.argv[2];
 const testVideo = path.join(__dirname, "player_test.mp4");
-const types = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".png": "image/png", ".jpg": "image/jpeg", ".mp4": "video/mp4" };
+const types = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".png": "image/png", ".jpg": "image/jpeg", ".svg": "image/svg+xml", ".mp4": "video/mp4" };
 http.createServer((req, res) => {
   const rel = decodeURIComponent(req.url.split("?")[0]);
   const file = rel === "/__test.mp4" ? testVideo : path.join(root, rel === "/" ? "index.html" : rel);
