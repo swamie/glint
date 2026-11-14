@@ -90,18 +90,16 @@ const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 /// Compress jobs running at once (their own lane, not counted against `blur_parallel`).
 const COMPRESS_PARALLEL: usize = 1;
 
-/// True for jobs of the compress lane; every other kind is a Blur render.
-fn is_compress(kind: &str) -> bool {
-    kind == "compress"
-}
-
 /// "Edit together" jobs running at once (join.rs; their own lane too).
 const JOIN_PARALLEL: usize = 1;
 
 /// The lane of a job kind: 0 Blur, 1 compress, 2 join ("Edit together").
+/// Since 0.1.24 the compress lane also takes "gif" (gif.rs), "upscale"
+/// (upscale.rs) and "rule" (a render rule, rules.rs): one of them at a time,
+/// beside the Blur renders. Only kind "blur" sends "blur-progress".
 fn lane_of(kind: &str) -> usize {
     match kind {
-        "compress" => 1,
+        "compress" | "gif" | "upscale" | "rule" => 1,
         "join" => 2,
         _ => 0,
     }
@@ -203,7 +201,7 @@ impl Jobs {
                 return Err("Glint is closing".into());
             }
             if st.list.iter().any(|j| j.clip_id == clip_id && j.kind == kind && !j.ended()) {
-                return Err(if is_compress(kind) { "That clip is already being compressed".into() } else { "That clip is already rendering".into() });
+                return Err(match kind { "compress" => "That clip is already being compressed", "gif" => "A GIF of that clip is already being made", "upscale" => "That clip is already being upscaled", "rule" => "That clip is already going through a render rule", _ => "That clip is already rendering" }.into());
             }
             let job = Job { id: util::new_id(), clip_id: clip_id.into(), title: title.into(), kind: kind.into(), state: "queued".into(), queued: util::unix_ms(), ..Default::default() };
             st.tasks.insert(job.id.clone(), Task { cancel: Arc::new(AtomicBool::new(false)), run: Some(run), last_emit: None });

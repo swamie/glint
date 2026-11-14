@@ -14,7 +14,7 @@ if (!window.__TAURI__) {
       clips_dir: "C:\\Users\\you\\Videos\\Glint", game_folders: false, clip_name: [{ kind: "game" }, { kind: "date" }, { kind: "time" }], monitor: 0, height: 0, fps: 60, quality: "high", bitrate: 0, encoder: "auto", method: "auto", buffer: "mixed", buffer_ram_secs: 30, buffer_dir: "",
       cursor: true, desktop_audio: true, mic: true, mic_denoise: false, game_audio: false, record_on_start: true, sound: true, sound_name: "chirp", sound_volume: 40, sound_file: "",
       toast: true, toast_pos: "tr", toast_opacity: 96, toast_scale: 100, toast_secs: 3.5, toast_length: true, toast_game: true, toast_mic: true,
-      ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", icon_theme: false, icon_accent: "", icon_accent_2: "", discord_rpc: false, discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true, update_check: true, update_auto: true,
+      ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", icon_theme: false, icon_accent: "", icon_accent_2: "", card_tags: [], theme_order: [], gif: { width: 480, fps: 20, max_mb: 0, copy: false }, upscale: { height: 2160, filter: "sharp", quality: "high", encoder: "auto" }, rules: [], rules_after_export: "", discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true, update_check: true, update_auto: true,
       compress_mb: 10, ui_sounds: false, ui_sounds_hover: false, ui_sounds_volume: 50,
       compress: { sizes: [10, 20, 50, 500], preset: "veryfast", audio_kbps: 0, max_height: 0, max_fps: 0, audio: "first", dest: "beside", dest_dir: "", copy: true }, theme_colors: {}, theme_presets: [{ id: "tp-mock1", name: "Night pink", base: "midnight", colors: { accent: "#ff7ab8" }, css: "" }], theme_preset: "", folder_colors: { "Best of": "#e5484d" },
       ffmpeg_path: "", blur_path: "",
@@ -306,6 +306,112 @@ if (!window.__TAURI__) {
             if (/noaudio/.test(args.path)) throw "That file has no audio in it";
             return { path: "/__test.mp4", title: args.path.split(/[\\/]/).pop().replace(/\.[^.]+$/, ""), duration: 8, per_second: 50, peaks: Array.from({ length: 400 }, (_, i) => Math.abs(Math.sin(i / 5)) * 0.8) };
           case "pick_audio_file": return "C:\\Music\\victory.mp3";
+          // Upscale for YouTube (upscale.rs): one job each, refused like the backend; 4 s each, then "clip-upscaled".
+          case "upscale_clips": {
+            const h = args.opts?.height || 2160, label = h === 2160 ? "4K" : `${h}p`;
+            const made = [];
+            let first = "";
+            for (const id of args.ids || []) {
+              const src = clips.find((x) => x.id === id);
+              const why = !src ? "Clip not found" : jobs.some((j) => j.clip_id === id && j.kind === "upscale" && ["queued", "running"].includes(j.state)) ? "That clip is already being upscaled"
+                : (src.height || 1080) >= h ? `This clip is already ${src.height || 1080}p, as tall as ${label} or taller, so upscaling would not help` : "";
+              if (why) { first = first || why; continue; }
+              const job = { id: "j" + Date.now() + jobs.length, clip_id: id, title: src.title, kind: "upscale", state: "running", stage: args.opts?.encoder === "x264" ? "x264" : "nvenc", pct: 0, message: "", result_id: "", queued: Date.now() };
+              jobs.push(job);
+              made.push({ ...job, state: "queued" });
+              const tick = setInterval(() => {
+                if (job.state !== "running") return clearInterval(tick);
+                job.pct = Math.min(100, job.pct + 5);
+                if (job.pct >= 100) {
+                  clearInterval(tick);
+                  if (window.__mockUpscaleFails) { job.state = "error"; job.message = "Could not upscale the clip: No capable devices found"; }
+                  else {
+                    const w = Math.round(((src.width || 1920) * h) / (src.height || 1080) / 2) * 2, size = Math.round((src.size || 50e6) * 4);
+                    const clip = { ...src, id: "u" + Date.now(), title: `${src.title} (${label})`, kind: "upscale", width: w, height: h, size, created: Date.now(), path: (src.path || "C:\\clip.mp4").replace(/(\.[^.\\]+)?$/, ` (${label}).mp4`) };
+                    clips.push(clip);
+                    job.state = "done";
+                    job.result_id = clip.id;
+                    window.__mockEmit("clips-changed", clip.id);
+                    window.__mockEmit("clip-upscaled", { clip, size, encoder: job.stage, secs: 4, job_id: job.id, source: id });
+                  }
+                }
+                window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
+              }, 200);
+            }
+            if (!made.length && first) throw first;
+            window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
+            return made;
+          }
+          case "gif_export": {
+            // gif.rs: one job per clip, 2 s of progress, then "gif-done". window.__mockGifOver = true: over its limit.
+            const made = [];
+            for (const id of args.ids || []) {
+              const src = clips.find((x) => x.id === id);
+              if (!src) { made.missing = true; continue; }
+              if (jobs.some((x) => x.clip_id === id && x.kind === "gif" && ["queued", "running"].includes(x.state))) continue;
+              const j = { id: "g" + Date.now() + made.length, clip_id: id, title: src.title, kind: "gif", state: "running", pct: 0, message: "", result_id: "", queued: Date.now(), stage: "" };
+              jobs.push(j);
+              made.push({ ...j });
+              const over = !!window.__mockGifOver && args.opts?.max_mb > 0;
+              const tick = setInterval(() => {
+                if (j.state !== "running") { clearInterval(tick); return; }
+                j.pct = Math.min(100, j.pct + 10);
+                if (over && j.pct >= 90) j.stage = "smaller";
+                if (j.pct >= 100) {
+                  clearInterval(tick);
+                  const path = (src.path || "C:\\Users\\you\\Videos\\Glint\\clip.mp4").replace(/[^\\]*$/, `${src.title}.gif`);
+                  const size = over ? (args.opts.max_mb + 3) * 1e6 : 3.2e6;
+                  j.state = "done";
+                  j.result_id = path;
+                  if (over) j.stage = "over";
+                  window.__mockEmit("gif-done", { path, size, source: id, job_id: j.id, copied: !!args.opts?.copy, over, max_mb: args.opts?.max_mb || 0 });
+                }
+                window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
+              }, 200);
+            }
+            if (!made.length) throw made.missing ? "Clip not found" : "A GIF of that clip is already being made";
+            window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
+            return made;
+          }
+          case "rules_run": {
+            // rules.rs: one job of kind "rule" per clip, each step about a second (stage = its kind), then "rule-done".
+            // A refused clip comes back unqueued (id "", state "error"). window.__mockRuleFail = true: the last step fails.
+            const rule = (state.settings.rules || []).find((r) => r.id === args.rule);
+            if (!rule) throw "That render rule no longer exists";
+            if (!rule.steps?.length) throw "This rule has no blocks yet. Add one first.";
+            if (rule.steps.some((st) => st.kind === "blur") && !state.blur) throw "blur-cli.exe was not found. Install Blur or set its path under Blur settings.";
+            const out = [];
+            for (const id of args.ids || []) {
+              const src = clips.find((x) => x.id === id);
+              if (!src) { out.push({ id: "", clip_id: id, kind: "rule", state: "error", message: "Clip not found", pct: 0, title: "", result_id: "", queued: 0, stage: "" }); continue; }
+              if (jobs.some((x) => x.clip_id === id && x.kind === "rule" && ["queued", "running"].includes(x.state))) { out.push({ id: "", clip_id: id, kind: "rule", state: "error", message: "That clip is already going through a render rule", pct: 0, title: src.title, result_id: "", queued: 0, stage: "" }); continue; }
+              const j = { id: "r" + Date.now() + out.length, clip_id: id, title: src.title, kind: "rule", state: "running", pct: 0, message: "", result_id: "", queued: Date.now(), stage: rule.steps[0].kind };
+              jobs.push(j);
+              out.push({ ...j });
+              const per = 100 / rule.steps.length;
+              const tick = setInterval(() => {
+                if (j.state !== "running") { clearInterval(tick); return; }
+                j.pct = Math.min(100, j.pct + per / 5);
+                const k = Math.min(rule.steps.length - 1, Math.floor(j.pct / per - 1e-6));
+                j.stage = rule.steps[k].kind;
+                if (window.__mockRuleFail && k === rule.steps.length - 1) { clearInterval(tick); j.state = "error"; j.message = `${j.stage}: ffmpeg stopped with exit code 1`; }
+                else if (j.pct >= 100) {
+                  clearInterval(tick);
+                  const gif = rule.steps.some((st) => st.kind === "gif");
+                  const copied = rule.steps.some((st) => st.kind === "copy");
+                  const made = gif ? null : { ...src, id: "rr" + Date.now(), title: `${src.title} (${rule.name})`, kind: "rule", created: Date.now() };
+                  if (made) { clips.push(made); window.__mockEmit("clips-changed", made.id); }
+                  j.state = "done";
+                  j.result_id = made ? made.id : "";
+                  window.__mockEmit("rule-done", { job_id: j.id, source: id, rule: rule.id, name: rule.name, clip: made, path: (src.path || "C:\\clip.mp4").replace(/[^\\]*$/, `${src.title} (${rule.name}).${gif ? "gif" : "mp4"}`), size: 4.2e6, gif, copied, skipped: [], nothing: false, over_limit: false });
+                }
+                window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
+              }, 200);
+            }
+            if (!out.some((j) => j.id)) throw out[0]?.message || "No clip was picked";
+            window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
+            return out;
+          }
           case "export_clip": {
             const src = clips.find((x) => x.id === args.id) || drafts.find((x) => x.id === args.id);
             if (!src) throw "Clip not found";

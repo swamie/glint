@@ -14,6 +14,28 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.24", date: "2026-11-15",
+    new: [
+      t("Render rules: build a chain of steps from blocks (a colour look, Blur, upscale, compress to a size, GIF, copy) and run it on a clip with one click, from the right-click menu, the viewer, or right after Export in the editor. Make them under Tools → Render rules."),
+      t("Export as GIF: right-click a clip to make a GIF of it. You pick the size, the frames a second and an optional size limit; the GIF is saved beside the clip."),
+      t("Upscale for YouTube: right-click a clip to save a 1080p, 1440p or 4K copy, sharp or smooth, so YouTube gives it more bitrate. It runs on your graphics card when it can."),
+      t("Clip keys can save any length: choose Custom… on the Keybinds page and type minutes and seconds."),
+      t("Tags on clip cards are back as a choice: under Settings → Appearance, pick which kinds (import, trim, edit, Blur, Discord and more) get a tag. None by default."),
+      t("A new folder can get its colour right away, in the same box as its name."),
+      t("Drag the theme tiles under Settings → Appearance to put them in your own order."),
+      t("In the editor, drag the bar under the tracks to make them taller. Double-click it to reset."),
+    ],
+    improved: [
+      t("Blur shows its progress from the start. Before, Blur's percent only reached Glint near the end, so a render sat on “Starting Blur…” for most of its time. Clips that need preparing for Blur are also ready sooner."),
+      t("Every dropdown opens Glint's own list, in the style of the right-click menu, with mouse and keyboard."),
+      t("The key on the clip button keeps its edge at the bottom instead of fading into the button."),
+      t("Discord Rich Presence is removed."),
+    ],
+    fixed: [
+      t("The editor left empty space under the tracks, and with many tracks its toolbar scrolled away."),
+    ],
+  },
+  {
     version: "0.1.23", date: "2026-11-15",
     new: [
       t("Export can replace the clip instead of saving a new one beside it. Tick “Replace the original clip” in the editor's Export box: the original goes to the Recycle Bin and the export takes its name, date and favourite. Glint remembers the choice."),

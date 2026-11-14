@@ -1,0 +1,53 @@
+/* 0.1.24: Render rules (rules.js). The block row reuses the clip-name builder's look (naming.css: .nm-used,
+   .nm-block, .nm-grip, .nm-x, .nm-add, .nm-ghost, .nm-mark); only what differs is here. Theme variables only. */
+
+.rl-list { display: flex; flex-direction: column; gap: 10px; max-width: 860px; }
+.rl-card { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.rl-card.open { border-color: var(--line-2); }
+.rl-head { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 16px; background: none; border: 0; color: var(--text); text-align: left; cursor: pointer; border-radius: 10px; }
+.rl-head:hover { background: var(--raised); }
+.rl-head:focus-visible { outline: 0; box-shadow: inset 0 0 0 1px var(--accent); }
+.rl-icon svg { width: 20px; height: 20px; color: var(--accent); flex: none; }
+.rl-head-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.rl-name { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rl-words { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rl-count { color: var(--dim); font-size: 12px; white-space: nowrap; }
+.rl-chev { color: var(--muted); font-weight: 400; }
+.rl-body { display: flex; flex-direction: column; gap: 10px; padding: 4px 16px 16px; border-top: 1px solid var(--line); padding-top: 14px; }
+.rl-name-row { display: flex; align-items: center; gap: 10px; }
+.rl-name-in { width: min(340px, 100%); }
+.rl-hint { line-height: 1.45; }
+.rl-bad { color: var(--danger); }
+
+.rl-builder { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.rl-block { cursor: grab; }
+.rl-block.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.rl-step-no { display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 999px; background: var(--line-2); color: var(--muted); font-size: 11px; font-weight: 700; }
+.rl-block.k-color .rl-step-no, .rl-add.k-color b { color: var(--accent); }
+.rl-arrow { color: var(--dim); font-size: 12px; }
+.rl-why { color: var(--warn); }
+.rl-why[hidden] { display: none; }
+
+.rl-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 12px; background: var(--raised); border: 1px solid var(--line-2); border-radius: var(--radius); }
+.rl-opts-title { font-size: 12.5px; }
+.rl-opt { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.rl-opt .field { height: 30px; color: var(--text); }
+.rl-mb { width: 90px; }
+.rl-quick { display: inline-flex; gap: 4px; }
+.rl-quick .btn { height: 26px; padding: 0 9px; font-size: 12px; }
+.rl-quick .btn.on { border-color: var(--accent); color: var(--accent); }
+
+.rl-empty p { margin: 8px 0; line-height: 1.45; }
+.rl-empty .btn { margin-top: 14px; }
+
+/* While dragging: the reason an order would be changed, beside the pointer. */
+.rl-drag-tip { position: fixed; left: 0; top: 0; z-index: 62; max-width: 280px; padding: 6px 10px; border-radius: var(--radius); background: var(--raised-2); border: 1px solid var(--warn); color: var(--text); font-size: 12px; pointer-events: none; box-shadow: 0 10px 26px rgba(0, 0, 0, .5); }
+.rl-drag-tip[hidden] { display: none; }
+.nm-mark.rl-mark-bad { background: var(--warn); }
+
+/* The viewer's side panel and the editor's Export box. */
+.rl-v { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.rl-v-row { display: flex; gap: 6px; }
+.rl-v-row .field { flex: 1; min-width: 0; }
+.rl-after { display: flex; align-items: center; gap: 8px; }
+.rl-after .field { flex: 1; min-width: 0; height: 32px; }

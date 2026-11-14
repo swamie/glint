@@ -43,3 +43,8 @@
 .cpk-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
 .cpk-dot { width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--line-2); }
 .cpk-tip { font-size: 11px; color: var(--dim); text-align: right; }
+
+/* Dragging a theme tile to another place (colorpick.js prDrag). */
+.theme.tp-dragging { opacity: .6; outline: 2px dashed var(--accent); outline-offset: 2px; }
+body.tp-reordering, body.tp-reordering * { cursor: grabbing !important; }
+body.tp-reordering .theme { transition: none; }

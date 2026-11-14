@@ -94,7 +94,7 @@ function jobsClipTitle(clipId, fallback) {
 
 /** Every row, newest first: { key, kind, title, state, pct, message, job }. */
 function jobsRows() {
-  const rows = jobsList.map((j) => ({ key: j.id, kind: j.kind === "compress" || j.kind === "join" ? j.kind : "blur", title: jobsClipTitle(j.clip_id, j.title), state: j.state, pct: +j.pct || 0, message: j.message || "", start: +j.queued || 0, job: j }));
+  const rows = jobsList.map((j) => ({ key: j.id, kind: ["compress", "join", "gif", "upscale", "rule"].includes(j.kind) ? j.kind : "blur", title: jobsClipTitle(j.clip_id, j.title), state: j.state, pct: +j.pct || 0, message: j.message || "", start: +j.queued || 0, job: j }));
   for (const [id, x] of jobsExports) rows.push({ key: "export:" + id, kind: "export", title: jobsClipTitle(id, ""), state: x.pct >= 100 ? "exported" : "exporting", pct: x.pct, message: "", start: x.start, job: null });
   return rows.sort((a, b) => b.start - a.start);
 }
@@ -151,7 +151,7 @@ function jobsRenderButton(rows) {
   const btn = jobsButton(slot);
   const overall = active.length ? Math.round(active.reduce((s, r) => s + (r.state === "queued" ? 0 : r.pct), 0) / active.length) : 0;
   // "rendering" while only renders and exports run; "working" once a compression is among them.
-  const rendering = active.every((r) => r.kind !== "compress" && r.kind !== "join");
+  const rendering = active.every((r) => r.kind === "blur" || r.kind === "export");
   const label = !active.length ? t("Renders") : rendering ? t("{n} rendering", { n: active.length }) : t("{n} working", { n: active.length });
   const bad = !active.length && jobsUnseen && jobsList.some((j) => j.state === "error" && !jobsSeen.has(j.id));
   const fresh = !active.length && jobsUnseen;
@@ -179,6 +179,10 @@ function jobsStateLine(r) {
     if (r.state === "running") return t("Preparing for the editor {pct} %", { pct });
     if (r.state === "done") return t("Ready for the editor");
   }
+  // GIF exports, upscales and render rules word their own lines: gifJobLine / upscaleJobLine /
+  // rulesJobLine(row) in gif.js, upscale.js and rules.js return the text, or "" to leave it to the lines below.
+  const own = { gif: "gifJobLine", upscale: "upscaleJobLine", rule: "rulesJobLine" }[r.kind];
+  if (own && typeof window[own] === "function") { const line = window[own](r); if (line) return line; }
   switch (r.state) {
     case "queued": return squeeze ? t("Waiting to compress for Discord") : t("Waiting");
     // A Blur render before its first percent: what it does, not "0 %" (app.js blurWaitText).
@@ -206,7 +210,7 @@ function jobsRowEl(r) {
   // Backend jobs (Blur and compress) can be cancelled and their result opened; export rows only follow along.
   if (r.job && (r.state === "queued" || r.state === "running")) act = `<button type="button" class="btn sm jobs-act" data-j-cancel="${esc(r.job.id)}">${esc(t("Cancel"))}</button>`;
   // "Edit together" makes no library clip: its draft opens in the editor by itself (join.js), so no Open.
-  else if (r.job && r.state === "done" && r.job.result_id && r.kind !== "join") act = `<button type="button" class="btn sm jobs-act" data-j-open="${esc(r.job.result_id)}">${esc(t("Open"))}</button>`;
+  else if (r.job && r.state === "done" && r.job.result_id && r.kind !== "join" && r.kind !== "gif") act = `<button type="button" class="btn sm jobs-act" data-j-open="${esc(r.job.result_id)}">${esc(t("Open"))}</button>`;
   const el = document.createElement("div");
   el.className = `jobs-row jobs-st-${r.state}`;
   el.innerHTML = `<div class="jobs-main">

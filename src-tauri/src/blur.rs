@@ -4,6 +4,7 @@
 use crate::library;
 use crate::settings::{BlurSettings, Settings};
 use crate::util;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -314,7 +315,67 @@ fn stage_input(ffmpeg: Option<&Path>, encoder: &str, issue: Option<String>, inpu
 }
 
 /// Run blur-cli on `link` (its config sits beside it) until it finishes, stalls or is cancelled.
+///
+/// blur-cli writes its "12.3% complete" lines (two short ones a second)
+/// through a buffer that, when the output is a pipe, is only handed on when
+/// it is full or the program ends (measured with `--blur-start-test`: all 40
+/// lines of a 20 s render arrived in the same instant, as it ended; through a
+/// console the first came 1.6 s after the start). That was most of "Blur
+/// takes long to start": the job showed "Starting Blur…" until then. So
+/// blur-cli gets a console of its own, without a window (CREATE_NO_WINDOW, as
+/// every tool Glint starts), where nothing is held back, and Glint reads that
+/// console's last lines (`console::run`). The pipe stays as the fallback.
 fn run_blur(blur_cli: &Path, link: &Path, output: &Path, cancel: &AtomicBool, progress: &mut impl FnMut(f32)) -> Result<(), String> {
+    run_blur_seen(blur_cli, link, output, cancel, progress, &mut |_| {})
+}
+
+/// `run_blur`; `seen` gets each console line as it appears or changes (for `--blur-start-test`).
+fn run_blur_seen(blur_cli: &Path, link: &Path, output: &Path, cancel: &AtomicBool, progress: &mut impl FnMut(f32), seen: &mut dyn FnMut(&str)) -> Result<(), String> {
+    if console::usable() {
+        let args = [OsStr::new("-i"), link.as_os_str(), OsStr::new("-o"), output.as_os_str()];
+        let mut shown = -1.0f32;
+        match console::run(blur_cli, &args, cancel, &mut |fresh| {
+            for row in fresh {
+                seen(row);
+            }
+            if let Some(p) = fresh.iter().rev().find_map(|r| percent_of(r)) {
+                if p > shown {
+                    shown = p;
+                    progress(p);
+                }
+            }
+        }) {
+            Ok(console::Outcome::Cancelled) => {
+                let _ = fs::remove_file(output);
+                return Err(CANCELLED.into());
+            }
+            Ok(console::Outcome::Stalled) => {
+                let _ = fs::remove_file(output);
+                return Err("Blur stopped responding and was cancelled".into());
+            }
+            Ok(console::Outcome::Exited(code, tail)) => {
+                if code != 0 || !output.is_file() {
+                    return Err(format!("Blur render failed: {tail}"));
+                }
+                return Ok(());
+            }
+            // Not started that way: the pipe below.
+            Err(e) => util::log(&format!("blur: no console for blur-cli ({e}); reading its output through a pipe")),
+        }
+    }
+    run_blur_piped(blur_cli, link, output, cancel, progress)
+}
+
+/// The percent in a line blur-cli prints ("12.3% complete (15/131, 29.07 fps)").
+fn percent_of(line: &str) -> Option<f32> {
+    let at = line.find("% complete")?;
+    let head = &line[..at];
+    let start = head.rfind(|c: char| !(c.is_ascii_digit() || c == '.')).map(|i| i + 1).unwrap_or(0);
+    head[start..].parse::<f32>().ok().filter(|p| p.is_finite() && (0.0..=100.0).contains(p))
+}
+
+/// `run_blur` through a pipe: progress arrives late (see `run_blur`).
+fn run_blur_piped(blur_cli: &Path, link: &Path, output: &Path, cancel: &AtomicBool, progress: &mut impl FnMut(f32)) -> Result<(), String> {
     let mut child = util::hidden_cmd(blur_cli)
         .arg("-i")
         .arg(link)
@@ -383,6 +444,245 @@ fn run_blur(blur_cli: &Path, link: &Path, output: &Path, cancel: &AtomicBool, pr
         return Err(format!("Blur render failed: {tail}"));
     }
     Ok(())
+}
+
+/// blur-cli in a console of its own that has no window, and that console's
+/// last lines read back (see `run_blur`). Glint, which has no console, attaches
+/// to it for a moment every 300 ms, reads the lines at the cursor and lets go.
+mod console {
+    use std::ffi::{c_void, OsStr};
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    type Handle = *mut c_void;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct Coord {
+        x: i16,
+        y: i16,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct BufferInfo {
+        size: Coord,
+        cursor: Coord,
+        attributes: u16,
+        window: [i16; 4],
+        max_window: Coord,
+    }
+
+    #[repr(C)]
+    struct StartupInfo {
+        cb: u32,
+        reserved: *mut u16,
+        desktop: *mut u16,
+        title: *mut u16,
+        x: u32,
+        y: u32,
+        x_size: u32,
+        y_size: u32,
+        x_chars: u32,
+        y_chars: u32,
+        fill: u32,
+        flags: u32,
+        show_window: u16,
+        reserved2_len: u16,
+        reserved2: *mut u8,
+        std_input: Handle,
+        std_output: Handle,
+        std_error: Handle,
+    }
+
+    #[repr(C)]
+    struct ProcessInfo {
+        process: Handle,
+        thread: Handle,
+        pid: u32,
+        tid: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateProcessW(app: *const u16, cmd: *mut u16, pa: *const c_void, ta: *const c_void, inherit: i32, flags: u32, env: *const c_void, cwd: *const u16, si: *const StartupInfo, pi: *mut ProcessInfo) -> i32;
+        fn WaitForSingleObject(h: Handle, ms: u32) -> u32;
+        fn GetExitCodeProcess(h: Handle, code: *mut u32) -> i32;
+        fn CloseHandle(h: Handle) -> i32;
+        fn GetConsoleCP() -> u32;
+        fn AttachConsole(pid: u32) -> i32;
+        fn FreeConsole() -> i32;
+        fn GetStdHandle(which: u32) -> Handle;
+        fn SetStdHandle(which: u32, h: Handle) -> i32;
+        fn CreateFileW(name: *const u16, access: u32, share: u32, sa: *const c_void, disposition: u32, flags: u32, template: Handle) -> Handle;
+        fn GetConsoleScreenBufferInfo(h: Handle, info: *mut BufferInfo) -> i32;
+        fn ReadConsoleOutputCharacterW(h: Handle, buf: *mut u16, len: u32, at: Coord, read: *mut u32) -> i32;
+        fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32) -> i32;
+    }
+
+    /// While Glint is attached to Blur's console (a few milliseconds at a time) it is a member of
+    /// that console: a Ctrl+C or Ctrl+Break event raised there (a program stopping its helpers that
+    /// way) would reach Glint too, and the default handler ends the process. This one takes those
+    /// two events and does nothing. Added by the lead in review; registered once, before the first attach.
+    unsafe extern "system" fn ignore_ctrl(event: u32) -> i32 {
+        i32::from(event <= 1) // CTRL_C_EVENT = 0, CTRL_BREAK_EVENT = 1: handled; the rest go on as usual
+    }
+    static CTRL_GUARD: std::sync::Once = std::sync::Once::new();
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    /// STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE.
+    const STD: [u32; 3] = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
+    /// Lines read: the cursor's and the ones above it.
+    const ROWS: i16 = 6;
+    /// A process can be attached to one console at a time: renders running side by side take turns.
+    static ATTACH: Mutex<()> = Mutex::new(());
+
+    pub enum Outcome {
+        /// Exit code and the last line it printed.
+        Exited(u32, String),
+        Cancelled,
+        Stalled,
+    }
+
+    /// True when Glint has no console of its own (the app, not a build started from a terminal), so it can attach to another.
+    pub fn usable() -> bool {
+        let _turn = ATTACH.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { GetConsoleCP() == 0 }
+    }
+
+    /// One argument as CreateProcess's command line wants it.
+    fn quote(arg: &OsStr) -> Vec<u16> {
+        let (q, bs) = (u16::from(b'"'), u16::from(b'\\'));
+        let s: Vec<u16> = arg.encode_wide().collect();
+        if !s.is_empty() && !s.iter().any(|&c| c == u16::from(b' ') || c == u16::from(b'\t') || c == q) {
+            return s;
+        }
+        let mut out = vec![q];
+        let mut run = 0usize;
+        for &c in &s {
+            if c == bs {
+                run += 1;
+                continue;
+            }
+            let n = if c == q { run * 2 + 1 } else { run };
+            out.extend(std::iter::repeat(bs).take(n));
+            run = 0;
+            out.push(c);
+        }
+        out.extend(std::iter::repeat(bs).take(run * 2));
+        out.push(q);
+        out
+    }
+
+    /// The lines at and above the cursor of process `pid`'s console, or None when it cannot be read (yet).
+    fn read_rows(pid: u32) -> Option<Vec<String>> {
+        let _turn = ATTACH.lock().unwrap_or_else(|e| e.into_inner());
+        CTRL_GUARD.call_once(|| unsafe {
+            SetConsoleCtrlHandler(Some(ignore_ctrl), 1);
+        });
+        unsafe {
+            let saved = STD.map(|n| GetStdHandle(n));
+            if AttachConsole(pid) == 0 {
+                return None;
+            }
+            let name: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+            // GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING.
+            let h = CreateFileW(name.as_ptr(), 0xC000_0000, 3, std::ptr::null(), 3, 0, std::ptr::null_mut());
+            let mut rows = None;
+            if !h.is_null() && h as isize != -1 {
+                let mut info = BufferInfo::default();
+                if GetConsoleScreenBufferInfo(h, &mut info) != 0 && info.size.x > 0 {
+                    let width = info.size.x as usize;
+                    let mut buf = vec![0u16; width];
+                    let mut out = Vec::new();
+                    for y in (info.cursor.y - ROWS).max(0)..=info.cursor.y {
+                        let mut n = 0u32;
+                        if ReadConsoleOutputCharacterW(h, buf.as_mut_ptr(), width as u32, Coord { x: 0, y }, &mut n) != 0 {
+                            out.push(String::from_utf16_lossy(&buf[..(n as usize).min(width)]).trim_end().to_string());
+                        }
+                    }
+                    rows = Some(out);
+                }
+                CloseHandle(h);
+            }
+            FreeConsole();
+            for (n, h) in STD.iter().zip(saved) {
+                SetStdHandle(*n, h);
+            }
+            rows
+        }
+    }
+
+    /// Run `exe args` in a console without a window until it ends, stalls (nothing new for 180 s) or `cancel` is set.
+    /// `fresh` gets the lines that appeared or changed since the last look, top to bottom.
+    pub fn run(exe: &Path, args: &[&OsStr], cancel: &AtomicBool, fresh: &mut dyn FnMut(&[String])) -> Result<Outcome, String> {
+        let mut cmd = quote(exe.as_os_str());
+        for a in args {
+            cmd.push(u16::from(b' '));
+            cmd.extend(quote(a));
+        }
+        cmd.push(0);
+        let mut si: StartupInfo = unsafe { std::mem::zeroed() };
+        si.cb = std::mem::size_of::<StartupInfo>() as u32;
+        let mut pi: ProcessInfo = unsafe { std::mem::zeroed() };
+        // No STARTF_USESTDHANDLES: the program writes to its new console, not to a pipe.
+        let ok = unsafe { CreateProcessW(std::ptr::null(), cmd.as_mut_ptr(), std::ptr::null(), std::ptr::null(), 0, CREATE_NO_WINDOW, std::ptr::null(), std::ptr::null(), &si, &mut pi) };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        unsafe { CloseHandle(pi.thread) };
+        let mut last: Vec<String> = Vec::new();
+        let mut changed = Instant::now();
+        let mut readable = false;
+        let outcome = loop {
+            if cancel.load(Ordering::SeqCst) {
+                super::kill_tree(pi.pid);
+                unsafe { WaitForSingleObject(pi.process, 10_000) };
+                break Outcome::Cancelled;
+            }
+            let ended = unsafe { WaitForSingleObject(pi.process, 300) } == 0;
+            if let Some(rows) = read_rows(pi.pid) {
+                readable = true;
+                if rows != last {
+                    changed = Instant::now();
+                    let new: Vec<String> = rows.iter().filter(|r| !r.is_empty() && !last.contains(r)).cloned().collect();
+                    if !new.is_empty() {
+                        fresh(&new);
+                    }
+                    last = rows;
+                }
+            }
+            if ended {
+                let mut code = 1u32;
+                unsafe { GetExitCodeProcess(pi.process, &mut code) };
+                let tail = last.iter().rev().find(|r| !r.is_empty()).cloned().unwrap_or_default();
+                break Outcome::Exited(code, tail);
+            }
+            // Only once the console could be read: otherwise silence says nothing.
+            if readable && changed.elapsed() > Duration::from_secs(180) {
+                super::kill_tree(pi.pid);
+                unsafe { WaitForSingleObject(pi.process, 10_000) };
+                break Outcome::Stalled;
+            }
+        };
+        unsafe { CloseHandle(pi.process) };
+        Ok(outcome)
+    }
+
+    /// Checks of the command-line quoting for `--blur-start-test`: (name, ok, detail).
+    pub fn self_checks() -> Vec<(String, bool, String)> {
+        let cases = [("plain", "plain"), (r"C:\Glint Clips\a b.mp4", r#""C:\Glint Clips\a b.mp4""#), (r"C:\x y\", r#""C:\x y\\""#), ("", r#""""#), (r#"say "hi""#, r#""say \"hi\"""#)];
+        cases
+            .iter()
+            .map(|(arg, want)| {
+                let got = String::from_utf16_lossy(&quote(OsStr::new(arg)));
+                (format!("console: {arg:?} is passed as {want}"), got == *want, got)
+            })
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -494,13 +794,18 @@ fn stage_encoders(wanted: &str) -> &'static [&'static str] {
 }
 
 /// Near-transparent settings: Blur re-encodes the result anyway, so this
-/// generation must not show.
+/// generation must not show. The fastest presets with a lower quantiser: the
+/// file is temporary, so only time and quality count (`--blur-start-test` with
+/// GLINT_BLUR_START_VARIANTS, a 10.2 s 1080p 144 fps trim, PSNR against a
+/// lossless copy: NVENC p4 cq 16 3.5 s 60.8 dB -> p1 cq 14 2.7 s 61.7 dB;
+/// x264 veryfast crf 14 7.9 s 47.8 dB -> ultrafast crf 12 4.4 s 58.7 dB).
+/// AMF and QSV are as in 0.1.23 (not measurable on this PC).
 fn stage_codec(enc: &str) -> &'static [&'static str] {
     match enc {
-        "nvenc" => &["-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq", "-rc", "vbr", "-cq", "16", "-b:v", "0", "-bf", "0"],
+        "nvenc" => &["-c:v", "h264_nvenc", "-preset", "p1", "-tune", "hq", "-rc", "vbr", "-cq", "14", "-b:v", "0", "-bf", "0"],
         "amf" => &["-c:v", "h264_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "16", "-qp_p", "16"],
         "qsv" => &["-c:v", "h264_qsv", "-preset", "medium", "-global_quality", "16"],
-        _ => &["-c:v", "libx264", "-preset", "veryfast", "-crf", "14"],
+        _ => &["-c:v", "libx264", "-preset", "ultrafast", "-crf", "12"],
     }
 }
 
@@ -567,34 +872,54 @@ fn frame_on_screen(ffprobe: &Path, file: &Path, origin: f64) -> Option<f64> {
 /// frame on screen at the start is pinned there and everything before it is
 /// dropped. The audio comes from a second, normal reading of the same file:
 /// ffmpeg applies audio edit lists to the sample.
-fn stage_retimed(ffmpeg: &Path, encoder: &str, input: &Path, out: &Path, cancel: &AtomicBool) -> Result<(), String> {
-    let ffprobe = library::ffprobe_for(ffmpeg).ok_or("ffprobe.exe was not found")?;
-    let t = probe_timing(&ffprobe, input).unwrap_or_default();
+/// What `stage_retimed` runs ffmpeg with, worked out once per clip.
+struct StagePlan {
+    graph: String,
+    titles: Vec<String>,
+    origin: f64,
+}
+
+fn stage_plan(ffprobe: &Path, input: &Path) -> StagePlan {
+    let t = probe_timing(ffprobe, input).unwrap_or_default();
     let rate = [&t.r_rate, &t.avg_rate].into_iter().find(|r| rate_of(r).is_some()).cloned().unwrap_or_else(|| "60".into());
     let origin = t.origin;
-    let first = frame_on_screen(&ffprobe, input, origin).unwrap_or(origin);
+    let first = frame_on_screen(ffprobe, input, origin).unwrap_or(origin);
     // Half a millisecond early so rounding never drops the frame itself.
     let graph = format!("select='gte(t\\,{:.6})',setpts='if(eq(N\\,0)\\,{origin:.6}/TB\\,PTS)',fps={rate}", first - 0.0005);
-    let (_, titles) = stream_summary(&ffprobe, input);
+    let (_, titles) = stream_summary(ffprobe, input);
+    StagePlan { graph, titles, origin }
+}
+
+/// The ffmpeg command that writes the re-timed copy: `decode` goes before the video input,
+/// `codec` holds the video encoder's arguments.
+fn stage_cmd(ffmpeg: &Path, input: &Path, out: &Path, plan: &StagePlan, decode: &[&str], codec: &[&str]) -> std::process::Command {
+    let mut cmd = util::hidden_cmd(ffmpeg);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-copyts"]);
+    if is_mov(input) {
+        cmd.args(["-advanced_editlist", "0"]);
+    }
+    // Input options belong to the next -i only: the audio input is read normally, edit lists applied.
+    cmd.args(decode).arg("-i").arg(input).arg("-i").arg(input);
+    cmd.args(["-map", "0:v:0", "-map", "1:a?", "-dn", "-sn", "-vf", &plan.graph]).args(codec);
+    // The fps filter made the rate constant; `-fps_mode cfr` here dropped frames next to a long gap under -copyts.
+    cmd.args(["-fps_mode", "passthrough", "-c:a", "copy", "-map_metadata", "1"]);
+    // ffmpeg reads an MP4 track name back as the tag "name", which it does not write out again.
+    for (i, title) in plan.titles.iter().enumerate().filter(|(_, t)| !t.is_empty()) {
+        cmd.arg(format!("-metadata:s:a:{i}")).arg(format!("title={title}"));
+    }
+    if plan.origin.abs() > 1e-6 {
+        cmd.args(["-output_ts_offset", &format!("{:.6}", -plan.origin)]);
+    }
+    cmd.arg(out);
+    cmd
+}
+
+fn stage_retimed(ffmpeg: &Path, encoder: &str, input: &Path, out: &Path, cancel: &AtomicBool) -> Result<(), String> {
+    let ffprobe = library::ffprobe_for(ffmpeg).ok_or("ffprobe.exe was not found")?;
+    let plan = stage_plan(&ffprobe, input);
     let mut last = String::new();
     for enc in stage_encoders(encoder) {
-        let mut cmd = util::hidden_cmd(ffmpeg);
-        cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-copyts"]);
-        if is_mov(input) {
-            cmd.args(["-advanced_editlist", "0"]);
-        }
-        cmd.arg("-i").arg(input).arg("-i").arg(input);
-        cmd.args(["-map", "0:v:0", "-map", "1:a?", "-dn", "-sn", "-vf", &graph]).args(stage_codec(enc));
-        // The fps filter made the rate constant; `-fps_mode cfr` here dropped frames next to a long gap under -copyts.
-        cmd.args(["-fps_mode", "passthrough", "-c:a", "copy", "-map_metadata", "1"]);
-        // ffmpeg reads an MP4 track name back as the tag "name", which it does not write out again.
-        for (i, title) in titles.iter().enumerate().filter(|(_, t)| !t.is_empty()) {
-            cmd.arg(format!("-metadata:s:a:{i}")).arg(format!("title={title}"));
-        }
-        if origin.abs() > 1e-6 {
-            cmd.args(["-output_ts_offset", &format!("{:.6}", -origin)]);
-        }
-        cmd.arg(out);
+        let cmd = stage_cmd(ffmpeg, input, out, &plan, &[], stage_codec(enc));
         match run_cancellable(cmd, cancel) {
             Ok(()) if fs::metadata(out).is_ok_and(|m| m.len() > 0) => {
                 // "copy dates" in Blur takes the input's file time.
@@ -945,5 +1270,247 @@ fn run_sync_test(r: &mut Report, dir: &Path) {
         let ad = streams.iter().find(|s| s.0 == "audio").map(|s| s.1).unwrap_or(0.0);
         r.check("Blur's result: video as long as the audio", (vd - ad).abs() < 0.05, &format!("video {vd:.3} audio {ad:.3}"));
         r.check("Blur's result keeps three audio tracks", streams.iter().filter(|s| s.0 == "audio").count() == 3, "");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Self-test: `glint.exe --blur-start-test <report.txt>`: where the wait before
+// Blur's first percent goes, on a short synthetic 1080p clip.
+
+/// One blur-cli run with a time on every line it prints: (lines as (seconds, text), seconds to the
+/// first "% complete", seconds in all, ok).
+fn timed_blur(blur_cli: &Path, input: &Path, output: &Path) -> (Vec<(f64, String)>, Option<f64>, f64, bool) {
+    let t0 = Instant::now();
+    let child = util::hidden_cmd(blur_cli).arg("-i").arg(input).arg("-o").arg(output).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
+    let Ok(mut child) = child else { return (vec![(0.0, "could not start blur-cli".into())], None, 0.0, false) };
+    let (tx, rx) = std::sync::mpsc::channel::<(f64, String)>();
+    let pipes: Vec<Box<dyn Read + Send>> = [child.stdout.take().map(|o| Box::new(o) as Box<dyn Read + Send>), child.stderr.take().map(|e| Box::new(e) as Box<dyn Read + Send>)].into_iter().flatten().collect();
+    for (k, mut pipe) in pipes.into_iter().enumerate() {
+        let tx = tx.clone();
+        let tag = if k == 0 { "out" } else { "err" };
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            let mut line = String::new();
+            while let Ok(n) = pipe.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                for ch in String::from_utf8_lossy(&buf[..n]).chars() {
+                    if ch == '\n' || ch == '\r' {
+                        if !line.trim().is_empty() {
+                            let _ = tx.send((t0.elapsed().as_secs_f64(), format!("[{tag}] {}", line.trim())));
+                        }
+                        line.clear();
+                    } else {
+                        line.push(ch);
+                    }
+                }
+            }
+        });
+    }
+    drop(tx);
+    let mut lines = Vec::new();
+    loop {
+        match rx.recv_timeout(Duration::from_secs(120)) {
+            Ok(l) => lines.push(l),
+            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {
+                kill_tree(child.id());
+                lines.push((t0.elapsed().as_secs_f64(), "killed: no output for 120 s".into()));
+                break;
+            }
+        }
+    }
+    let ok = child.wait().is_ok_and(|s| s.success()) && output.is_file();
+    let first = lines.iter().find(|l| l.1.contains("% complete")).map(|l| l.0);
+    (lines, first, t0.elapsed().as_secs_f64(), ok)
+}
+
+/// `vspipe --info` on a script that only opens `file` the way Blur's script does (BestSource, no
+/// cache): how long Blur's reading-in of the clip takes before any frame is made.
+fn time_index(blur_cli: &Path, file: &Path, dir: &Path) -> Result<f64, String> {
+    let vspipe = blur_cli.parent().ok_or("no folder")?.join("lib").join("vapoursynth").join("vspipe.exe");
+    if !vspipe.is_file() {
+        return Err(format!("{} not found", vspipe.display()));
+    }
+    let script = dir.join("index.vpy");
+    let src = file.to_string_lossy().replace('\\', "/");
+    fs::write(&script, format!("from vapoursynth import core\ncore.bs.VideoSource(source=r\"{src}\", cachemode=0).set_output()\n")).map_err(|e| e.to_string())?;
+    let t0 = Instant::now();
+    let out = util::hidden_cmd(&vspipe).arg("--info").arg(&script).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).output().map_err(|e| e.to_string())?;
+    let secs = t0.elapsed().as_secs_f64();
+    if out.status.success() { Ok(secs) } else { Err(util::last_lines(&out.stderr, 3)) }
+}
+
+/// PSNR (dB, "inf" as 99) of `a` against `b`, frame by frame.
+fn psnr(ffmpeg: &Path, a: &Path, b: &Path) -> Option<f64> {
+    let out = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-nostats", "-nostdin", "-i"]).arg(a).arg("-i").arg(b).args(["-lavfi", "[0:v][1:v]psnr", "-f", "null", "-"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stderr).into_owned();
+    let v = text.lines().rev().find_map(|l| l.split("average:").nth(1).and_then(|r| r.split_whitespace().next()).map(str::to_string))?;
+    if v == "inf" { Some(99.0) } else { v.parse().ok() }
+}
+
+/// The re-timed copy made several ways: time, and quality against a lossless one.
+fn stage_variants(r: &mut Report, ffmpeg: &Path, ffprobe: &Path, input: &Path, dir: &Path) {
+    let plan = stage_plan(ffprobe, input);
+    let reference = dir.join("ref.mp4");
+    let t0 = Instant::now();
+    let ok = run_cancellable(stage_cmd(ffmpeg, input, &reference, &plan, &[], &["-c:v", "libx264", "-preset", "ultrafast", "-qp", "0"]), &AtomicBool::new(false));
+    r.line(&format!("TIME lossless reference: {:.2} s ({ok:?})", t0.elapsed().as_secs_f64()));
+    let t0 = Instant::now();
+    let _ = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-loglevel", "error", "-nostdin", "-i"]).arg(input).args(["-map", "0:v:0", "-f", "null", "-"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    r.line(&format!("TIME decode only (software): {:.2} s", t0.elapsed().as_secs_f64()));
+    let t0 = Instant::now();
+    let _ = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-loglevel", "error", "-nostdin", "-hwaccel", "cuda", "-i"]).arg(input).args(["-map", "0:v:0", "-f", "null", "-"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    r.line(&format!("TIME decode only (cuda): {:.2} s", t0.elapsed().as_secs_f64()));
+    let nv = |preset: &'static str, tune: &'static str| -> Vec<&'static str> { vec!["-c:v", "h264_nvenc", "-preset", preset, "-tune", tune, "-rc", "vbr", "-cq", "16", "-b:v", "0", "-bf", "0"] };
+    let variants: Vec<(&str, Vec<&str>, Vec<&str>)> = vec![
+        ("nvenc p4 hq (0.1.23)", vec![], nv("p4", "hq")),
+        ("nvenc p1 hq", vec![], nv("p1", "hq")),
+        ("nvenc p1 hq cq 14", vec![], vec!["-c:v", "h264_nvenc", "-preset", "p1", "-tune", "hq", "-rc", "vbr", "-cq", "14", "-b:v", "0", "-bf", "0"]),
+        ("x264 veryfast crf 14 (0.1.23)", vec![], vec!["-c:v", "libx264", "-preset", "veryfast", "-crf", "14"]),
+        ("x264 ultrafast crf 12", vec![], vec!["-c:v", "libx264", "-preset", "ultrafast", "-crf", "12"]),
+        ("x264 ultrafast crf 10", vec![], vec!["-c:v", "libx264", "-preset", "ultrafast", "-crf", "10"]),
+    ];
+    for (k, (name, decode, codec)) in variants.iter().enumerate() {
+        let out = dir.join(format!("v{k}.mp4"));
+        let t0 = Instant::now();
+        let res = run_cancellable(stage_cmd(ffmpeg, input, &out, &plan, decode, codec), &AtomicBool::new(false));
+        let secs = t0.elapsed().as_secs_f64();
+        let q = psnr(ffmpeg, &out, &reference).map(|v| format!("{v:.2} dB")).unwrap_or("?".into());
+        let mb = fs::metadata(&out).map(|m| m.len() as f64 / 1e6).unwrap_or(0.0);
+        let synced = res.is_ok() && sync_issue(ffprobe, &out).is_none();
+        r.line(&format!("TIME stage {name}: {secs:.2} s, PSNR {q}, {mb:.1} MB, clean {synced} {}", res.err().unwrap_or_default()));
+    }
+}
+
+pub fn start_self_test(report_path: &str) {
+    let mut r = Report { path: PathBuf::from(report_path), failed: 0 };
+    let _ = fs::remove_file(&r.path);
+    if std::env::var_os("GLINT_DATA_DIR").is_none() {
+        r.check("refused", false, "set GLINT_DATA_DIR so the real library and settings are never touched");
+        return;
+    }
+    let dir = util::tmp_dir().join(format!("blur-start-test-{}", util::new_id()));
+    let _ = fs::create_dir_all(&dir);
+    let started = Instant::now();
+    run_start_test(&mut r, &dir);
+    if std::env::var_os("GLINT_KEEP_TEST_FILES").is_none() {
+        let _ = fs::remove_dir_all(&dir);
+    }
+    let failed = r.failed;
+    r.line(&format!("DONE failed={failed} secs={:.1}", started.elapsed().as_secs_f64()));
+}
+
+fn run_start_test(r: &mut Report, dir: &Path) {
+    for (line, want) in [("12.3% complete (15/131, 29.07 fps)", Some(12.3)), ("100.0% complete (131/131)", Some(100.0)), ("0.8% complete (1/131)", Some(0.8)), ("Rendering 'in'", None), ("render finished in 4.73s", None)] {
+        let got = percent_of(line);
+        r.check(&format!("percent read from {line:?}"), got.zip(want).map_or(got.is_none() && want.is_none(), |(g, w)| (g - w).abs() < 1e-4), &format!("{got:?}"));
+    }
+    for (name, ok, detail) in console::self_checks() {
+        r.check(&name, ok, &detail);
+    }
+    let s = Settings::load();
+    let (Some(ffmpeg), Some(ffprobe)) = (util::find_exe(&s.ffmpeg_path, "ffmpeg"), util::find_exe("", "ffprobe")) else {
+        return r.check("ffmpeg and ffprobe found", false, "");
+    };
+    let secs = std::env::var("GLINT_BLUR_START_SECS").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(6.0).clamp(2.0, 12.0);
+    // 1080p at 144 fps, a keyframe each second, three AAC tracks: like a buffer clip, short.
+    let src = dir.join("src.mp4");
+    let t0 = Instant::now();
+    let p = |p: &Path| p.to_string_lossy().into_owned();
+    let made = ff(
+        &ffmpeg,
+        &[
+            "-f", "lavfi", "-i", &format!("testsrc2=s=1920x1080:r=144:d={secs}"), "-f", "lavfi", "-i", &format!("sine=f=1000:d={secs}:sample_rate=48000"),
+            "-map", "0:v", "-map", "1:a", "-map", "1:a", "-map", "1:a", "-metadata:s:a:0", "title=Mix", "-metadata:s:a:1", "title=Desktop", "-metadata:s:a:2", "title=Microphone",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-bf", "0", "-g", "144", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ac", "2", &p(&src),
+        ],
+    );
+    if let Err(e) = made {
+        return r.check("test clip made", false, &e);
+    }
+    r.line(&format!("INFO test clip: 1920x1080 144 fps, {secs:.1} s, made in {:.1} s", t0.elapsed().as_secs_f64()));
+    let meta = library::register(&ffmpeg, &src, "start test", "Desktop", "clip");
+    let trimmed = match crate::clip::trim(&s, &meta, 1.4, secs - 0.4, true) {
+        Ok(m) => PathBuf::from(m.path),
+        Err(e) => return r.check("lossless trim", false, &e),
+    };
+
+    // The timing probe, on a clip that needs nothing and on a trim that needs re-timing.
+    for (name, file) in [("buffer clip", &src), ("lossless trim", &trimmed)] {
+        let t0 = Instant::now();
+        let issue = sync_issue(&ffprobe, file);
+        r.line(&format!("TIME probe ({name}): {:.0} ms -> {issue:?}", t0.elapsed().as_secs_f64() * 1000.0));
+    }
+    // The re-timed copy.
+    let staged = dir.join("staged.mp4");
+    let t0 = Instant::now();
+    let res = stage_retimed(&ffmpeg, &s.encoder, &trimmed, &staged, &AtomicBool::new(false));
+    let stage_secs = t0.elapsed().as_secs_f64();
+    r.check("re-timed copy written", res.is_ok(), &format!("{res:?}"));
+    r.line(&format!("TIME re-timed copy of a {:.1} s trim: {stage_secs:.2} s (encoder setting {:?})", secs - 1.8, s.encoder));
+    r.check("re-timed copy needs no further fixing", res.is_ok() && sync_issue(&ffprobe, &staged).is_none(), "");
+    if std::env::var_os("GLINT_BLUR_START_VARIANTS").is_some() {
+        stage_variants(r, &ffmpeg, &ffprobe, &trimmed, dir);
+        return; // measuring the staging only: no blur-cli run
+    }
+
+    let Some(cli) = find(&s) else {
+        r.line("SKIP blur-cli.exe not found: Blur's own start was not measured");
+        return;
+    };
+    match time_index(&cli, &staged, dir) {
+        Ok(t) => r.line(&format!("TIME Blur's reading-in of the clip (vspipe, BestSource index): {t:.2} s")),
+        Err(e) => r.line(&format!("INFO vspipe index not timed: {e}")),
+    }
+    let hw = crate::win::hardware();
+    let present: Vec<&str> = hw.gpus.iter().map(|g| g.vendor.as_str()).collect();
+    // The way Glint runs it (a console without a window), and with GLINT_BLUR_START_PIPE also the 0.1.23 way (a pipe).
+    let mut runs = vec!["console"];
+    if std::env::var_os("GLINT_BLUR_START_PIPE").is_some() {
+        runs.insert(0, "pipe");
+    }
+    r.check("console: blur-cli can be given a console (Glint has none of its own)", console::usable(), "");
+    for name in runs {
+        let job = dir.join(format!("job-{name}"));
+        let _ = fs::create_dir_all(&job);
+        let link = job.join("in.mp4");
+        let _ = fs::hard_link(&staged, &link).or_else(|_| fs::copy(&staged, &link).map(|_| ()));
+        let _ = fs::write(job.join(".blur-config.cfg"), config_text(&for_this_pc(&BlurSettings::default(), &present)));
+        let out = job.join("out.mp4");
+        let (lines, first, total, ok) = if name == "pipe" {
+            timed_blur(&cli, &link, &out)
+        } else {
+            let t0 = Instant::now();
+            let lines = std::cell::RefCell::new(Vec::<(f64, String)>::new());
+            let mut first = None;
+            let mut pcts = Vec::new();
+            let res = run_blur_seen(&cli, &link, &out, &AtomicBool::new(false), &mut |p| {
+                first.get_or_insert(t0.elapsed().as_secs_f64());
+                pcts.push(p);
+            }, &mut |row| lines.borrow_mut().push((t0.elapsed().as_secs_f64(), row.to_string())));
+            let rising = pcts.windows(2).all(|w| w[1] >= w[0]);
+            r.check("console: the percent only goes up", rising && !pcts.is_empty(), &format!("{} values", pcts.len()));
+            (lines.into_inner(), first, t0.elapsed().as_secs_f64(), res.is_ok() && out.is_file())
+        };
+        r.check(&format!("blur-cli ({name}) renders"), ok, "");
+        for (at, l) in lines.iter().filter(|l| !l.1.contains("% complete")).take(40) {
+            r.line(&format!("  {at:7.2} s  {l}"));
+        }
+        let pcts: Vec<&(f64, String)> = lines.iter().filter(|l| l.1.contains("% complete")).collect();
+        for (at, l) in pcts.iter().take(3).chain(pcts.last()) {
+            r.line(&format!("  {at:7.2} s  {l}"));
+        }
+        // When the percent lines arrive: in bursts (a full pipe buffer at a time) or one by one.
+        let mut bursts: Vec<(f64, usize)> = Vec::new();
+        for (at, _) in &pcts {
+            match bursts.last_mut() {
+                Some(b) if at - b.0 < 0.05 => b.1 += 1,
+                _ => bursts.push((*at, 1)),
+            }
+        }
+        r.line(&format!("INFO {} percent lines arrived in {} bursts: {}", pcts.len(), bursts.len(), bursts.iter().take(12).map(|b| format!("{:.2}s x{}", b.0, b.1)).collect::<Vec<_>>().join(", ")));
+        r.line(&format!("TIME blur-cli ({name}): first percent at {}, done at {total:.2} s", first.map(|f| format!("{f:.2} s")).unwrap_or("never".into())));
     }
 }

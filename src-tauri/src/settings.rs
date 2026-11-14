@@ -258,13 +258,16 @@ pub struct Settings {
     /// above always hold what the active preset has (empty for a built-in theme), so
     /// the overlay and the icon read only those; ui/themes.js keeps them in step.
     pub theme_presets: Vec<ThemePreset>,
+    /// The order of the theme tiles under Settings → Appearance, when the user dragged them: built-in theme
+    /// ids and "p:<preset id>". Tiles not listed follow in their usual order (colorpick.js prTileOrder).
+    pub theme_order: Vec<String>,
     pub theme_preset: String,
     /// Library folder colours: folder name -> "#rrggbb" (right-click a folder → Colour).
     /// Renaming a folder carries its colour along, deleting it drops it (`carry_folder_color`).
     pub folder_colors: std::collections::BTreeMap<String, String>,
-    /// Discord Rich Presence, and the Application ID it identifies as.
-    pub discord_rpc: bool,
-    pub discord_app_id: String,
+    /// Which kind tags clip cards show ("import", "trim", "edit", "blur", "discord", ...). Empty = none
+    /// (0.1.21 removed the tags; 0.1.24 brought them back as a choice).
+    pub card_tags: Vec<String>,
     /// Ask GitHub once a day whether a newer Glint has been released.
     pub update_check: bool,
     /// Install a waiting update without being asked, while no game is running, Glint's
@@ -293,6 +296,14 @@ pub struct Settings {
     pub compress_mb: u32,
     /// The Compress page's settings (sizes in the menu, preset, audio, caps, where the result goes).
     pub compress: crate::compress::CompressSettings,
+    /// The last choices of the "Export as GIF" dialog (gif.rs).
+    pub gif: crate::gif::GifOpts,
+    /// The last choices of the "Upscale" dialog (upscale.rs).
+    pub upscale: crate::upscale::UpscaleOpts,
+    /// The user's render rules (rules.rs): named chains of steps run on a clip with one click.
+    pub rules: Vec<crate::rules::Rule>,
+    /// The rule the editor's Export box runs on the exported clip ("Then run"); "" = none.
+    pub rules_after_export: String,
     /// Soft sounds for clicks, switches and results in Glint's window.
     pub ui_sounds: bool,
     /// Also a very quiet tick when the pointer moves onto a button (needs `ui_sounds`).
@@ -351,10 +362,10 @@ impl Default for Settings {
             icon_accent_2: String::new(),
             theme_colors: Default::default(),
             theme_presets: Vec::new(),
+            theme_order: Vec::new(),
             theme_preset: String::new(),
             folder_colors: Default::default(),
-            discord_rpc: false,
-            discord_app_id: String::new(),
+            card_tags: Vec::new(),
             update_check: true,
             update_auto: true,
             language: "en".into(),
@@ -366,6 +377,10 @@ impl Default for Settings {
             editor_keys: Default::default(),
             compress_mb: 10,
             compress: Default::default(),
+            gif: Default::default(),
+            upscale: Default::default(),
+            rules: Vec::new(),
+            rules_after_export: String::new(),
             ui_sounds: false,
             ui_sounds_hover: false,
             ui_sounds_volume: 50,

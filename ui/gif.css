@@ -1,0 +1,12 @@
+/* Export as GIF (gif.js): the dialog and the message when a GIF is done. */
+.confirm-box.gif-dlg { width: min(440px, 92vw); display: flex; flex-direction: column; gap: 12px; }
+.gif-dlg h3 { margin: 0; font-size: 15px; }
+.gif-clip { margin-top: -6px; color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gif-grid { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px 14px; font-size: 13px; }
+.gif-grid .field { height: 32px; width: 100%; color: var(--text); }
+.gif-copy { font-size: 13px; }
+.gif-dlg p.gif-note, .gif-dlg p.gif-hint { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.gif-dlg p.gif-note.warn { color: var(--warn, var(--text)); }
+.gif-dlg .confirm-row { margin-top: 2px; }
+.flash.gif-done { display: flex; align-items: center; gap: 10px; max-width: min(640px, 92vw); }
+.flash.gif-done span { min-width: 0; overflow-wrap: anywhere; }

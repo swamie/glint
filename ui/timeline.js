@@ -8,6 +8,7 @@
 //   .tl-bar     toolbar
 //   .tl-body    grid: .tl-heads (fixed header column) | .tl-lanes (ruler + one canvas per row + overlays)
 //   .tl-sbar    the horizontal scrollbar, under the lanes
+//   .tl-grip    drag it to make the rows taller or shorter (st.rowK, see "track height")
 // The canvases are only as wide as the visible lane: everything is drawn for the
 // current scroll position, so a 10 minute clip at 400 px/s costs the same as a short one.
 // Times are source seconds. Lane x of a time: tlPad + view(sec) * pps - scrollX, where
@@ -300,6 +301,25 @@ function tlEllipsize(ctx, text, max) {
   return lo ? text.slice(0, lo) + "…" : "";
 }
 
+/* ---------- track height (the grip under the tracks) ---------- */
+// The video and audio rows are tlVideoH / tlAudioH times a factor the user sets by dragging the grip under the
+// tracks (remembered in localStorage["glint.tl.rowK"]; a double-click puts it back to 1). 1 is the smallest:
+// an audio row's header (name, mute, volume) needs its 50 px.
+const tlRowKMin = 1;
+const tlRowKMax = 3;
+const tlRowKKey = "glint.tl.rowK";
+/** The factor after dragging the grip `dy` px down (negative: up) from factor `k0`, for rows `base` px tall at factor 1:
+ *  the rows grow by what the pointer moved, so the grip stays under it. */
+function tlRowScale(k0, dy, base) {
+  const k = (Number.isFinite(k0) ? k0 : 1) + (base > 0 && Number.isFinite(dy) ? dy / base : 0);
+  return Math.round(Math.min(tlRowKMax, Math.max(tlRowKMin, k)) * 1000) / 1000;
+}
+/** A remembered factor (localStorage text, or null): a number in range, else 1. */
+function tlRowKParse(s) {
+  const k = parseFloat(s);
+  return Number.isFinite(k) ? Math.min(tlRowKMax, Math.max(tlRowKMin, k)) : 1;
+}
+
 /* ---------- the timeline ---------- */
 
 function mountTimeline(host, opts) {
@@ -330,8 +350,13 @@ function mountTimeline(host, opts) {
     bar: {},               // last toolbar state, to touch the DOM only on change
     hatch: null, hatchKey: "",
     raf: 0, dead: false, swallowTimer: 0,
+    rowK: 1,               // row height factor (the grip under the tracks)
+    rdrag: null,           // the grip drag in progress { y, k0, base, moved }
   };
   try { st.hideCuts = localStorage.getItem("glint.tl.hideCuts") === "1"; } catch {}
+  try { st.rowK = tlRowKParse(localStorage.getItem(tlRowKKey)); } catch {}
+  const vidH = () => Math.round(tlVideoH * st.rowK);
+  const audH = () => Math.round(tlAudioH * st.rowK);
 
   /* ----- DOM ----- */
   host.classList.add("tl");
@@ -363,10 +388,11 @@ function mountTimeline(host, opts) {
         <div class="tl-tip" hidden></div>
       </div>
     </div>
-    <div class="tl-sbar"><div></div><div class="tl-scroll"><div class="tl-spacer"></div></div></div>`;
+    <div class="tl-sbar"><div></div><div class="tl-scroll"><div class="tl-spacer"></div></div></div>
+    <div class="tl-grip" role="separator" aria-orientation="horizontal" aria-label="${esc(t("Track height"))}" title="${esc(t("Drag to make the tracks taller or shorter. Double-click to reset."))}"><span></span></div>`;
   const q = (sel) => host.querySelector(sel);
   const el = {
-    bar: q(".tl-bar"), hrows: q(".tl-hrows"), lanes: q(".tl-lanes"), rows: q(".tl-rows"),
+    bar: q(".tl-bar"), body: q(".tl-body"), sbar: q(".tl-sbar"), grip: q(".tl-grip"), hrows: q(".tl-hrows"), lanes: q(".tl-lanes"), rows: q(".tl-rows"),
     ruler: q(".tl-ruler canvas"), phK: q(".tl-ph-k"), ph: q(".tl-ph"), cuts: q(".tl-cuts"), joints: q(".tl-joints"), tip: q(".tl-tip"), band: q(".tl-band"),
     bHide: q('[data-tl-act="hide-cuts"]'), bFit: q('[data-tl-act="fit"]'),
     bmFlags: q(".tl-bmks"), bmLines: q(".tl-bmls"),
@@ -496,7 +522,7 @@ function mountTimeline(host, opts) {
   const rowSig = () => m.audio.map((r) => `${r.id}/${r.kind}`).join("|");
   function headHtml(r) {
     const file = r.kind === "file";
-    return `<div class="tl-head${r.muted ? " off" : ""}" data-tl-row="${esc(r.id)}" style="height:${tlAudioH}px">
+    return `<div class="tl-head${r.muted ? " off" : ""}" data-tl-row="${esc(r.id)}" style="height:${audH()}px">
       <div class="tl-hline">
         <button type="button" class="tl-btn tl-hmute" data-tl-act="row-mute" data-tl-row="${esc(r.id)}"></button>
         <span class="tl-hname"></span>
@@ -509,8 +535,8 @@ function mountTimeline(host, opts) {
     st.rowsSig = rowSig();
     const partsTip = esc(t("Drag a clip to change the order. Right-click for more."));
     el.hrows.innerHTML = (hasParts() ? `<div class="tl-head tl-head-parts" style="height:${tlPartsH}px" title="${partsTip}">${esc(t("Clips"))}</div>` : "") +
-      `<div class="tl-head tl-head-video" style="height:${tlVideoH}px" title="${esc(opts.title || t("Video"))}" aria-label="${esc(t("Video"))}">${tlSvg(tlPaths.film)}</div>` + m.audio.map(headHtml).join("");
-    const list = [...(hasParts() ? [{ id: "parts", kind: "parts", h: tlPartsH }] : []), { id: "video", kind: "video", h: tlVideoH }, ...m.audio.map((r) => ({ id: r.id, kind: r.kind, h: tlAudioH }))];
+      `<div class="tl-head tl-head-video" style="height:${vidH()}px" title="${esc(opts.title || t("Video"))}" aria-label="${esc(t("Video"))}">${tlSvg(tlPaths.film)}</div>` + m.audio.map(headHtml).join("");
+    const list = [...(hasParts() ? [{ id: "parts", kind: "parts", h: tlPartsH }] : []), { id: "video", kind: "video", h: vidH() }, ...m.audio.map((r) => ({ id: r.id, kind: r.kind, h: audH() }))];
     el.rows.innerHTML = list.map((L) => `<div class="tl-lane" data-tl-lane="${esc(L.id)}" data-tl-kind="${L.kind}" style="height:${L.h}px"${L.kind === "parts" ? ` title="${partsTip}"` : ""}><canvas></canvas></div>`).join("");
     if (hasParts()) el.trimS.style.top = el.trimE.style.top = `${rowsTop()}px`;
     const els = el.rows.querySelectorAll(".tl-lane");
@@ -520,6 +546,76 @@ function mountTimeline(host, opts) {
     });
     st.needSize = true;
     markAll();
+    growHost();
+  }
+  /** The rows at the current height factor, without rebuilding them (the grip drag). */
+  function applyRowK() {
+    for (const L of st.lanes) {
+      if (L.kind === "parts") continue;
+      L.h = L.kind === "video" ? vidH() : audH();
+      L.el.style.height = `${L.h}px`;
+    }
+    for (const h of el.hrows.querySelectorAll(".tl-head")) {
+      if (h.classList.contains("tl-head-parts")) continue;
+      h.style.height = `${h.classList.contains("tl-head-video") ? vidH() : audH()}px`;
+    }
+    st.needSize = true;
+    markAll();
+    growHost();
+  }
+  /** Rows made taller than the default may make the whole area taller, taking the room from the video above:
+   *  --tl-want is the height that shows every row; the editor's CSS keeps the area between its usual height
+   *  and what leaves the video a usable size. At factor 1 the area is the usual height. */
+  function growHost() {
+    const want = st.rowK > tlRowKMin
+      ? `${Math.ceil(el.bar.offsetHeight + el.body.scrollHeight + el.sbar.offsetHeight + el.grip.offsetHeight + (host.offsetHeight - host.clientHeight))}px`
+      : "";
+    if (host.style.getPropertyValue("--tl-want") === want) return;
+    if (want) host.style.setProperty("--tl-want", want); else host.style.removeProperty("--tl-want");
+  }
+  /** Rows of `base` px at factor 1 that the grip scales: the video row and the audio rows. */
+  const rowsBase = () => tlVideoH + m.audio.length * tlAudioH;
+  function saveRowK() {
+    try { if (st.rowK > tlRowKMin) localStorage.setItem(tlRowKKey, String(st.rowK)); else localStorage.removeItem(tlRowKKey); } catch {}
+  }
+  function onGripDown(e) {
+    if (e.button !== 0 || st.drag) return;
+    e.preventDefault();
+    st.rdrag = { y: e.clientY, k0: st.rowK, base: rowsBase(), moved: false };
+    host.classList.add("tl-dragging");
+    host.dataset.tlDrag = "rows";
+    window.addEventListener("mousemove", onGripMove);
+    window.addEventListener("mouseup", onGripUp);
+  }
+  function onGripMove(e) {
+    const d = st.rdrag;
+    if (!d) return;
+    if (!d.moved && Math.abs(e.clientY - d.y) < tlDragPx) return;
+    d.moved = true;
+    const k = tlRowScale(d.k0, e.clientY - d.y, d.base);
+    if (k !== st.rowK) { st.rowK = k; applyRowK(); }
+  }
+  function endGrip() {
+    window.removeEventListener("mousemove", onGripMove);
+    window.removeEventListener("mouseup", onGripUp);
+    if (!st.rdrag) return;
+    st.rdrag = null;
+    host.classList.remove("tl-dragging");
+    delete host.dataset.tlDrag;
+  }
+  function onGripUp(e) {
+    const moved = !!st.rdrag?.moved;
+    endGrip();
+    saveRowK();
+    // A drag that ends outside the timeline must not count as a click on the viewer's backdrop.
+    if (moved || !host.contains(e.target)) swallowClick();
+  }
+  function onGripDbl(e) {
+    e.preventDefault();
+    if (st.rowK === 1) return;
+    st.rowK = 1;
+    applyRowK();
+    saveRowK();
   }
   function updateHeads() {
     for (const r of m.audio) {
@@ -2080,6 +2176,7 @@ function mountTimeline(host, opts) {
 
   /* ----- observers ----- */
   const ro = new ResizeObserver(() => {
+    growHost(); // the toolbar may wrap onto another line, or rows came or went
     const w = el.lanes.clientWidth, sb = el.scroll.clientWidth;
     if (w === st.laneW && sb === st.sbW) return;
     st.laneW = w;
@@ -2107,6 +2204,8 @@ function mountTimeline(host, opts) {
   el.lanes.addEventListener("dblclick", onDbl);
   el.lanes.addEventListener("contextmenu", onCtx);
   el.scroll.addEventListener("scroll", onScroll);
+  el.grip.addEventListener("mousedown", onGripDown);
+  el.grip.addEventListener("dblclick", onGripDbl);
   host.addEventListener("click", onClick);
   host.addEventListener("input", onInput);
   host.addEventListener("change", onChangeEv);
@@ -2192,6 +2291,7 @@ function mountTimeline(host, opts) {
       cancelAnimationFrame(st.raf);
       closeMenu();
       endDrag();
+      endGrip();
       unswallow();
       ro.disconnect();
       mo.disconnect();
@@ -2201,6 +2301,8 @@ function mountTimeline(host, opts) {
       el.lanes.removeEventListener("dblclick", onDbl);
       el.lanes.removeEventListener("contextmenu", onCtx);
       el.scroll.removeEventListener("scroll", onScroll);
+      el.grip.removeEventListener("mousedown", onGripDown);
+      el.grip.removeEventListener("dblclick", onGripDbl);
       host.removeEventListener("click", onClick);
       host.removeEventListener("input", onInput);
       host.removeEventListener("change", onChangeEv);
@@ -2209,11 +2311,12 @@ function mountTimeline(host, opts) {
       st.waves.clear();
       host.innerHTML = "";
       host.classList.remove("tl", "tl-dragging");
+      host.style.removeProperty("--tl-want");
     },
   };
 }
 
 // Lets the pure helpers be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { tlPickStep, tlFmtTick, tlFmtPrecise, tlSnap, tlSnapV, tlFileHit, tlSpanHit, tlTrimLeft, tlPeakMax, tlHue, tlViewMap, tlSrcToView, tlViewToSrc, tlJoints, tlSelKey, tlSelHas, tlSelMerge, tlSelToggle, tlSelRect, tlBandHits, tlSelShift, tlFmtLen, tlPartSlot };
+  module.exports = { tlRowScale, tlRowKParse, tlPickStep, tlFmtTick, tlFmtPrecise, tlSnap, tlSnapV, tlFileHit, tlSpanHit, tlTrimLeft, tlPeakMax, tlHue, tlViewMap, tlSrcToView, tlViewToSrc, tlJoints, tlSelKey, tlSelHas, tlSelMerge, tlSelToggle, tlSelRect, tlBandHits, tlSelShift, tlFmtLen, tlPartSlot };
 }

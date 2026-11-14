@@ -516,12 +516,7 @@ pub fn diag(report_path: &str, icon_exe: Option<&str>, discord_id: Option<&str>)
         check("an exe's icon is saved as a PNG", std::fs::metadata(&icon).map(|m| m.len() > 200).unwrap_or(false));
         lines.borrow_mut().push(format!("INFO icon file: {icon}"));
     }
-    if let Some(id) = discord_id {
-        match crate::discord::Client::connect(id) {
-            Ok(_) => lines.borrow_mut().push("INFO discord: connected".into()),
-            Err(e) => lines.borrow_mut().push(format!("INFO discord: {e}")),
-        }
-    }
+    let _ = discord_id; // Discord Rich Presence was removed in 0.1.24; the argument is still accepted
     let _ = std::fs::write(report_path, lines.borrow().join("\n") + "\n");
 }
 

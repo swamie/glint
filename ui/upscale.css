@@ -1,0 +1,18 @@
+/* Upscale for YouTube (upscale.js): the dialog. Theme variables only. */
+.confirm-box.up-box { width: min(480px, 92vw); }
+.up-box .up-title { margin: 0 0 8px; font-size: 15px; font-weight: 700; }
+.up-why { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; line-height: 1.45; }
+.up-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.up-row.up-top { align-items: flex-start; }
+.up-label { flex: 0 0 72px; font-size: 13px; color: var(--muted); }
+.up-row.up-top .up-label { padding-top: 8px; }
+.up-seg button { width: auto; min-width: 64px; padding: 0 12px; font-size: 12px; }
+.up-seg button:disabled { opacity: .4; cursor: default; }
+.up-choices { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+.up-choice { display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px; border: 1px solid var(--line-2); border-radius: var(--radius); cursor: pointer; }
+.up-choice.on { border-color: var(--accent); }
+.up-choice input { margin: 3px 0 0; accent-color: var(--accent); }
+.up-choice > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.up-choice b { font-size: 13px; }
+.up-q { flex: 1; min-width: 0; }
+.up-left { margin: -4px 0 12px; }

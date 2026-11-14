@@ -25,8 +25,16 @@
 .viewer.editing .player { flex: 1 1 0; min-height: 120px; }
 .viewer.editing .player video { position: absolute; inset: 0; width: 100%; height: 100%; max-height: none; object-fit: contain; }
 .viewer.editing .player:fullscreen video { height: 100%; }
-.e-tl { display: none; position: relative; flex: none; height: clamp(180px, 30vh, 260px); min-height: 0; overflow: auto; background: var(--panel); border-top: 1px solid var(--line); color: var(--text); }
-.viewer.editing .e-tl { display: block; }
+/* The timeline area: its usual height (--e-tl-min), taller only when the grip under the tracks asks for more
+   (--tl-want, set by timeline.js), never so tall that the video gets too small (--e-tl-cap: the editor is
+   100vh - 80px tall, the video keeps 140px). A flex column, so the toolbar and the scrollbar stay put and only
+   the tracks scroll. (It was display: block with a fixed height, so the .tl layout did not apply: with few
+   tracks the empty rest of the area sat under them, with many the toolbar scrolled away.) */
+.e-tl { --e-tl-min: clamp(180px, 30vh, 260px); --e-tl-cap: calc(100vh - 220px);
+  display: none; position: relative; flex: none; height: auto; min-height: var(--e-tl-min);
+  max-height: max(var(--e-tl-min), min(var(--e-tl-cap), var(--tl-want, 0px))); overflow: hidden;
+  background: var(--panel); border-top: 1px solid var(--line); color: var(--text); }
+.viewer.editing .e-tl { display: flex; flex-direction: column; }
 .e-tl-fail { padding: 14px; color: var(--muted); font-size: 12.5px; }
 
 /* ---------- player: theme-safe tints and hidden helpers ---------- */
@@ -46,7 +54,7 @@
 .viewer:fullscreen .v-side { max-height: 100vh; }
 .viewer.editing:fullscreen { height: 100vh; }
 /* The video takes the extra height; the timeline grows a little, so more rows fit. */
-.viewer.editing:fullscreen .e-tl { height: clamp(200px, 30vh, 380px); }
+.viewer.editing:fullscreen .e-tl { --e-tl-min: clamp(200px, 30vh, 380px); --e-tl-cap: calc(100vh - 140px); }
 
 /* ---------- dropping audio files on the viewer ---------- */
 .e-drop { position: absolute; inset: 0; z-index: 25; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, var(--bg) 72%, transparent); border: 2px dashed var(--accent); border-radius: 12px; pointer-events: none; }

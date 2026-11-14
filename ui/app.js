@@ -43,6 +43,7 @@ const ICON = {
   image: '<svg viewBox="0 0 24 24"><rect x="3.500" y="4.500" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.600"/><path d="m5 18 5-5 3 3 2.500-2.500L20 18"/></svg>',
   game: '<svg viewBox="0 0 24 24"><rect x="2.500" y="7" width="19" height="10" rx="5"/><path d="M7 10.500v3M5.500 12h3M15.500 11h.01M18 13h.01"/></svg>',
   compress: '<svg viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l6.500-6.500M3.500 20.500 10 14"/></svg>',
+  rules: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="7" height="6" rx="1.500"/><rect x="14" y="14" width="7" height="6" rx="1.500"/><path d="M10 7h4a3 3 0 0 1 3 3v4"/></svg>',
   warn: '<svg viewBox="0 0 24 24"><path d="M12 3.500 2.500 20h19z"/><path d="M12 9.500v5M12 17.500h.01"/></svg>',
 };
 const COMPRESS_MB = [10, 20, 50, 500]; // "Compress for Discord" sizes; Discord's upload limits are 10 MB free, 50 MB Nitro Basic, 500 MB Nitro
@@ -63,7 +64,7 @@ const fmtClock = (s) => { s = Math.max(0, Math.floor(s)); return `${Math.floor(s
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmtDur = (s) => { s = Math.max(0, Math.round(s)); const m = Math.floor(s / 60); return `${m}:${String(s % 60).padStart(2, "0")}`; };
 const fmtDurMs = (s) => { const m = Math.floor(s / 60); return `${m}:${(s % 60).toFixed(1).padStart(4, "0")}`; };
-const fmtLen = (s) => (s >= 60 ? t("{n} min", { n: Math.round(s / 60 * 10) / 10 }) : t("{n}s", { n: s }));
+const fmtLen = (s) => (s >= 60 ? (s % 60 ? t("{m} min {s}s", { m: Math.floor(s / 60), s: Math.round(s % 60) }) : t("{n} min", { n: s / 60 })) : t("{n}s", { n: s })); // a custom length reads exactly: "1 min 15s"
 const fmtSize = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(b >= 1e8 ? 0 : 1)} MB` : `${Math.max(1, Math.round(b / 1e3))} KB`);
 function timeAgo(ms) {
   const s = (Date.now() - ms) / 1000;
@@ -139,6 +140,60 @@ function askText(message, value = "", okLabel) {
     // "pass" lets the key through to the text box.
     askKey = (e) => { if (e.code === "Enter" || e.code === "NumpadEnter") done(true); else if (e.code === "Escape") done(false); else return "pass"; };
     el.onclick = (e) => { const b = e.target.closest("[data-c]"); if (b) done(b.dataset.c === "yes"); else if (e.target === el) done(false); };
+  });
+}
+
+/** A clip length typed as minutes and seconds (Keybinds → "Custom…"). Resolves to the seconds
+ *  (5 seconds to 60 minutes, what core.rs accepts), or null if cancelled. */
+function askDuration(secs) {
+  return new Promise((resolve) => {
+    const el = $("#confirm");
+    secs = clamp(Math.round(+secs || 30), 5, 3600);
+    el.innerHTML = `<div class="confirm-box"><p>${esc(t("How far back should this key clip?"))}</p>
+      <div class="dur-row"><label><input class="field" type="number" min="0" max="60" step="1" data-dur="m" value="${Math.floor(secs / 60)}"><span>${esc(t("minutes"))}</span></label>
+        <label><input class="field" type="number" min="0" max="59" step="1" data-dur="s" value="${secs % 60}"><span>${esc(t("seconds"))}</span></label></div>
+      <div class="small dur-note">${esc(t("From 5 seconds to 60 minutes. A longer clip needs a longer buffer, which uses more memory or disk."))}</div>
+      <div class="confirm-row"><button class="btn" data-c="no">${t("Cancel")}</button><button class="btn primary" data-c="yes">${esc(t("Set length"))}</button></div></div>`;
+    el.hidden = false;
+    const num = (k) => Math.max(0, Math.floor(+$(`[data-dur="${k}"]`, el).value || 0));
+    const total = () => num("m") * 60 + num("s");
+    const ok = () => total() >= 5 && total() <= 3600;
+    const paint = () => { $(".dur-note", el).classList.toggle("bad", !ok()); $('[data-c="yes"]', el).disabled = !ok(); };
+    const done = (yes) => { const v = total(); if (yes && !ok()) return; el.hidden = true; el.innerHTML = ""; el.onclick = null; el.oninput = null; askKey = null; resolve(yes ? v : null); };
+    askKey = (e) => { if (e.code === "Enter" || e.code === "NumpadEnter") done(true); else if (e.code === "Escape") done(false); else return "pass"; };
+    el.oninput = paint;
+    el.onclick = (e) => { const b = e.target.closest("[data-c]"); if (b) done(b.dataset.c === "yes"); else if (e.target === el) done(false); };
+    const first = $('[data-dur="m"]', el);
+    first.focus();
+    first.select();
+    paint();
+  });
+}
+
+/** The "new folder" prompt: its name and, if wanted, a colour (0.1.24). Resolves to { name, color }
+ *  ("" = no colour) or null if cancelled or left empty. */
+function askFolder() {
+  return new Promise((resolve) => {
+    const el = $("#confirm");
+    let color = "";
+    const swatches = () => `<button type="button" class="fc-sw fc-none${color ? "" : " on"}" data-nf="" title="${esc(t("No colour"))}" aria-label="${esc(t("No colour"))}"></button>`
+      + FOLDER_COLORS.map(([hex, label]) => `<button type="button" class="fc-sw${color === hex ? " on" : ""}" data-nf="${hex}" style="background:${hex}" title="${esc(t(label))}" aria-label="${esc(t(label))}"></button>`).join("");
+    el.innerHTML = `<div class="confirm-box"><p>${esc(t("Name the new folder"))}</p>
+      <input class="field ask-input" type="text" maxlength="60" spellcheck="false" value="">
+      <div class="small nf-label">${esc(t("Colour (if you want one)"))}</div>
+      <div class="nf-colors">${swatches()}</div>
+      <div class="confirm-row"><button class="btn" data-c="no">${t("Cancel")}</button><button class="btn primary" data-c="yes">${esc(t("Create folder"))}</button></div></div>`;
+    el.hidden = false;
+    const input = $(".ask-input", el);
+    input.focus();
+    const done = (yes) => { const v = input.value.trim(); el.hidden = true; el.innerHTML = ""; el.onclick = null; askKey = null; resolve(yes && v ? { name: v, color } : null); };
+    askKey = (e) => { if (e.code === "Enter" || e.code === "NumpadEnter") done(true); else if (e.code === "Escape") done(false); else return "pass"; };
+    el.onclick = (e) => {
+      const sw = e.target.closest("[data-nf]");
+      if (sw) { color = sw.dataset.nf; $(".nf-colors", el).innerHTML = swatches(); return input.focus(); }
+      const b = e.target.closest("[data-c]");
+      if (b) done(b.dataset.c === "yes"); else if (e.target === el) done(false);
+    };
   });
 }
 
@@ -263,6 +318,7 @@ function renderChrome() {
     // Editor (projects.js) and Compress (compresspage.js) are pages of their own; S.projects is the project list.
     navItem("editor", t("Editor"), "edit", Array.isArray(S.projects) ? S.projects.length : 0) +
     navItem("compress", t("Compress"), "compress") +
+    navItem("rules", t("Render rules"), "rules", Array.isArray(S.settings.rules) ? S.settings.rules.length : 0) + // rules.js
     navItem("keybinds", t("Keybinds"), "keys", S.settings.keybinds.length) +
     navItem("recording", t("Capture"), "rec") +
     navItem("blur", t("Blur"), "blur") +
@@ -331,19 +387,25 @@ const titleHtml = (c) => `<span class="ctitle" title="${esc(c.title + "\n" + t("
 const jobWaits = (job) => !!job && job.state === "running" && (+job.pct || 0) < 1;
 /** What a Blur render does before its first percent (jobs.rs `stage`), as a line of text. */
 const blurWaitText = (stage) => (stage === "prepare" ? t("Getting the clip ready for Blur…") : t("Starting Blur…"));
+/** The kind tags a clip card can carry, and their words. Which ones show is the user's choice
+ *  (Settings → Appearance → Tags on clips, `card_tags`); none by default, as since 0.1.21. */
+const CARD_TAGS = ["import", "trim", "edit", "blur", "discord", "upscale", "rule"];
+const cardTagLabel = (kind) => ({ import: t("import"), trim: t("trim"), edit: t("edit"), blur: t("blur"), discord: "Discord", upscale: t("upscaled"), rule: t("rule") }[kind] || kind);
 function cardHtml(c) {
   const job = S.jobs[c.id];
   const bg = c.thumb
     ? ""
     : `style="background:linear-gradient(135deg,hsl(${hue(c.game)} 45% 22%),hsl(${(hue(c.game) + 50) % 360} 50% 12%))"`;
-  // No tag for what made the clip (import, trim, edit, Discord copy, joined): the owner had them
-  // removed in 0.1.21. The clip's name still carries "(trim)", "(edit)" and so on.
+  // A tag for what made the clip (import, trim, edit, Blur, Discord copy, ...) only for the kinds the
+  // user ticked (0.1.24; 0.1.21 had removed them all). The clip's name carries "(trim)", "(edit)" too.
+  const tag = (S.settings.card_tags || []).includes(c.kind) ? `<span class="tag tag-${esc(c.kind)}">${esc(cardTagLabel(c.kind))}</span>` : "";
   // The picture is an <img> fitted by inline styles: a custom theme's `.thumb { background: … }`
   // once reset a background-image's size, so cards showed only the frame's top-left corner.
   return `<article class="card${S.sel.has(c.id) ? " sel" : ""}" data-clip="${c.id}" data-hover>
     <div class="thumb" ${bg}>
       ${c.thumb ? `<img class="thumb-img" src="${esc(fileSrc(c.thumb))}" alt="" draggable="false" decoding="async" onerror="this.remove()" style="${THUMB_IMG_STYLE}">` : `<div class="ph">${esc(c.game.slice(0, 1).toUpperCase())}</div>`}
       <span class="check" title="${esc(t("Select"))}">${ICON.check}</span>
+      ${tag}
       ${c.favorite ? `<span class="star">${ICON.star}</span>` : ""}
       <span class="dur">${fmtDur(c.duration)}</span>
       ${job && job.state === "running" ? `<div class="job${jobWaits(job) ? " wait" : ""}"><i style="width:${job.pct}%"></i></div>` : ""}
@@ -604,12 +666,16 @@ function openClipMenu(id, x, y) {
     + mItem("fav", allFav ? t("Remove favorite") : t("Favorite"), ICON.star, "", "", "none")
     + (many ? (typeof nmBulkOpen === "function" ? mItem("rename-many", t("Rename {n} clips…", { n: menuIds.length }), ICON.edit) : "") : mItem("rename", t("Rename…"), ICON.edit))
     + "<hr>" + mSub(t("Game"), ICON.game, gameItems) + mSub(t("Folder"), ICON.folder, folderItems(menuIds)) + "<hr>"
-    + (many ? (typeof joinMenuItem === "function" ? joinMenuItem(clips) : "") + mSub(t("Compress for Discord"), ICON.compress, compressItems) + "<hr>"
-      : mItem("edit", t("Open in editor"), ICON.cut) + (S.blur ? mItem("blur", t("Render with Blur"), ICON.blur, "", "", "launch") : "") + mSub(t("Compress for Discord"), ICON.compress, compressItems) + mItem("reveal", t("Open file location"), ICON.folder) + "<hr>")
+    + (many ? (typeof joinMenuItem === "function" ? joinMenuItem(clips) : "") + mSub(t("Compress for Discord"), ICON.compress, compressItems) + clipMenuExtras(clips) + "<hr>"
+      : mItem("edit", t("Open in editor"), ICON.cut) + (S.blur ? mItem("blur", t("Render with Blur"), ICON.blur, "", "", "launch") : "") + mSub(t("Compress for Discord"), ICON.compress, compressItems) + clipMenuExtras(clips) + mItem("reveal", t("Open file location"), ICON.folder) + "<hr>")
     + (many ? mItem("deselect", t("Clear selection"), ICON.x) : mItem("select", S.sel.has(id) ? t("Deselect") : t("Select"), ICON.check))
     + mItem("delete", t("Delete"), ICON.trash, "", "danger");
   placeMenu(x, y);
 }
+/** Menu entries other files add to a clip's right-click menu (0.1.24): "Export as GIF…" (gif.js),
+ *  "Upscale…" (upscale.js) and "Render rule" (rules.js). Each is a function `xMenuItem(clips)` that
+ *  returns menu HTML ("" for none) and handles its own clicks, as joinMenuItem does. */
+const clipMenuExtras = (clips) => ["gifMenuItem", "upscaleMenuItem", "rulesMenuItem"].map((fn) => (typeof window[fn] === "function" ? window[fn](clips) || "" : "")).join("");
 /** Right-click on a game chip. */
 function openGameMenu(name, x, y) {
   menuIds = [];
@@ -840,11 +906,12 @@ document.addEventListener("contextmenu", (e) => {
 });
 /** Ask for a name and create the folder. Returns the name as created, or null. */
 async function newFolder() {
-  const name = await askText(t("Name the new folder"), "", t("Create folder"));
-  if (!name) return null;
-  const made = await invoke("create_folder", { name });
+  const want = await askFolder();
+  if (!want) return null;
+  const made = await invoke("create_folder", { name: want.name });
   S.folders = (await invoke("list_folders")) || [];
-  return made || name;
+  if (want.color) setFolderColor(made || want.name, want.color); // saved with the settings, as from the folder's menu
+  return made || want.name;
 }
 async function bulkDelete() {
   const ids = [...S.sel];
@@ -1116,7 +1183,7 @@ function renderKeybinds() {
       <select class="field kb-act" data-kb="${i}" data-kbf="action">
         ${[["clip", t("Save a clip")], ["toggle", t("Pause / resume clipping")], ["show", t("Open Glint")], ...(multi || swap ? [["monitor", t("Switch the capture monitor")]] : [])].map(([v, l]) => `<option value="${v}"${k.action === v ? " selected" : ""}>${l}</option>`).join("")}
       </select>
-      ${clip ? `<select class="field kb-len" data-kb="${i}" data-kbf="seconds">${durs.map((d) => `<option value="${d}"${k.seconds === d ? " selected" : ""}>${t("Last {length}", { length: fmtLen(d) })}</option>`).join("")}</select>` : ""}
+      ${clip ? `<select class="field kb-len" data-kb="${i}" data-kbf="seconds">${durs.map((d) => `<option value="${d}"${k.seconds === d ? " selected" : ""}>${t("Last {length}", { length: fmtLen(d) })}</option>`).join("")}<option value="custom">${t("Custom…")}</option></select>` : ""}
       ${(clip || swap) && multi ? monSel : ""}
       <button class="icon-btn kb-del" data-kb="${i}" data-act="kb-del" aria-label="${esc(t("Remove keybind"))}">${ICON.trash}</button>
       ${dup ? `<div class="kb-warn">${t("{combo} is already used above. Only the first binding will fire.", { combo: esc(combo) })}</div>` : ""}
@@ -1211,11 +1278,6 @@ function renderRecording() {
 function renderSettings() {
   const s = S.settings;
   const slider = (path, min, max, step, unit) => `<input class="range" type="range" min="${min}" max="${max}" step="${step}" data-set="${path}" data-num value="${getPath(s, path)}"><span class="range-val">${getPath(s, path)}${unit}</span>`;
-  const dc = S.status.discord || "off";
-  const discordHint = !s.discord_rpc
-    ? t("Shows “Clipping Overwatch” on your Discord profile while the buffer is on")
-    : dc === "connected" ? `<span style="color:var(--ok)">${t("Connected.")}</span> ${t("Your profile shows what you are clipping")}`
-    : `<span style="color:var(--warn)">${esc(dc === "off" ? t("Connecting…") : dc)}</span>`;
   const searchBox = `<label class="search set-search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.500-3.500"/></svg><input id="set-q" type="text" value="${esc(S.setQ || "")}" placeholder="${esc(t("Search settings"))}" aria-label="${esc(t("Search settings"))}" spellcheck="false" autocomplete="off"></label>`;
   const langSelect = `<select class="field" data-lang aria-label="${esc(t("Language"))}">${Object.entries(window.GLINT_LANGS).map(([code, lang]) => `<option value="${code}"${(s.language || "en") === code ? " selected" : ""}>${esc(lang.name)}</option>`).join("")}</select>`;
   $("#view").innerHTML = pageHead(t("Settings"), t("Look, storage, startup and notifications")).replace(/<\/div>$/, () => `<div class="head-actions">${searchBox}</div></div>`) + `
@@ -1224,6 +1286,7 @@ function renderSettings() {
       ${presetTilesHtml() /* colorpick.js: built-in tiles, the user's presets, "+ New preset" */}
       ${colorRowsHtml() /* colorpick.js: the "Customise colours" box (colours and custom CSS) */}
       ${row(t("Match the taskbar icon to the theme"), t("Colours Glint's icon in the taskbar and the tray with the theme's accent, including a custom theme's and your own accent colour"), (typeof iconReloadButton === "function" ? iconReloadButton() : "") + toggle("icon_theme"))}
+      ${row(t("Tags on clips"), t("A small label on a clip's picture that says what made it. Pick the kinds that get one"), `<div class="tag-kinds">${CARD_TAGS.map((k) => `<button type="button" class="chip${(s.card_tags || []).includes(k) ? " active" : ""}" data-act="tag-kind" data-kind="${k}" aria-pressed="${(s.card_tags || []).includes(k)}">${esc(cardTagLabel(k))}</button>`).join("")}</div>`)}
       ${row(t("Renders button"), t("The button in the top bar that lists Blur renders and their progress"), select("renders_button", [["auto", t("While rendering")], ["always", t("Always")], ["never", t("Never")]]))}
       ${row(t("Interface size"), t("Makes everything in the window bigger or smaller, so more or less fits on screen"), select("ui_zoom", [70, 80, 90, 100, 110, 125, 150].map((z) => [z, `${z}%`]), true))}
     </div>
@@ -1266,10 +1329,6 @@ function renderSettings() {
       ${row(t("Show clip length"), t("“Captured last 30s”"), toggle("toast_length"))}
       ${row(t("Show game"), t("“Captured last 30s of Overwatch”"), toggle("toast_game"))}
       ${row(t("Show microphone icon"), t("Appears while your microphone is being recorded"), toggle("toast_mic"))}
-    </div>
-    <div class="section"><h2>Discord</h2>
-      ${row(t("Rich Presence"), discordHint, toggle("discord_rpc"))}
-      ${row(t("Application ID"), t("Discord only shows a presence from an app registered with it. Create one named Glint at discord.com/developers/applications (free, about a minute) and paste its Application ID here"), `<input class="field" type="text" inputmode="numeric" data-set="discord_app_id" value="${esc(s.discord_app_id || "")}" placeholder="${esc(t("18 or 19 digits"))}" spellcheck="false" style="width:210px">`)}
     </div>
     <div class="section"><h2>${t("Updates")}</h2>
       ${row(t("Version"), "", `<span class="path">Glint ${esc(S.version || "")}</span><button class="btn sm" data-act="whats-new" data-sfx="open">${t("What's new")}</button>`)}
@@ -1342,7 +1401,7 @@ function render() {
   // "editor" is drawn by projects.js (renderEditorPage) and "compress" by compresspage.js (renderCompressPage).
   const later = (fn, title) => () => (typeof window[fn] === "function" ? window[fn]() : ($("#view").innerHTML = pageHead(title, "")));
   ({ library: renderLibrary, favorites: renderLibrary, rendered: renderLibrary, keybinds: renderKeybinds, recording: renderRecording, blur: renderBlur, settings: renderSettings,
-    editor: later("renderEditorPage", t("Editor")), compress: later("renderCompressPage", t("Compress")) })[S.page]();
+    editor: later("renderEditorPage", t("Editor")), compress: later("renderCompressPage", t("Compress")), rules: later("renderRulesPage", t("Render rules")) })[S.page]();
   $("#view").scrollTop = keep;
   renderSelBar();
 }
@@ -1453,6 +1512,12 @@ document.addEventListener("click", async (e) => {
       }
       case "import": return typeof openImport === "function" ? openImport() : flash(t("Import is not available"), true);
       case "sound-play": return await invoke("preview_sound");
+    case "tag-kind": { // Settings → Appearance → Tags on clips: one kind on or off
+      const have = new Set(S.settings.card_tags || []);
+      if (have.has(d.kind)) have.delete(d.kind); else have.add(d.kind);
+      S.settings.card_tags = CARD_TAGS.filter((k) => have.has(k));
+      return saveSettings(true);
+    }
       case "sound-pick": { const file = await invoke("pick_sound_file"); if (file) { S.settings.sound_file = file; saveSettings(true); setTimeout(() => invoke("preview_sound"), 350); } return; }
       case "toast-show": return await invoke("preview_toast");
       case "sfx-try": return typeof sfxPlay === "function" && sfxPlay(d.name, true); // heard even while sounds are off
@@ -1515,6 +1580,10 @@ document.addEventListener("change", (e) => {
   if ("lang" in el.dataset) { S.settings.language = glintSetLanguage(el.value); return saveSettings(true); }
   if (el.dataset.kbf) {
     const k = S.settings.keybinds[+el.dataset.kb];
+    if (el.dataset.kbf === "seconds" && el.value === "custom") {
+      // "Custom…": ask for minutes and seconds; a cancel puts the list back on the length it had.
+      return void askDuration(k.seconds).then((secs) => { if (secs) { k.seconds = secs; saveSettings(true); } else render(); });
+    }
     k[el.dataset.kbf] = el.dataset.kbf === "seconds" || el.dataset.kbf === "monitor" ? +el.value : el.value; // monitor: -1 or an S.monitors index
     return saveSettings(true);
   }
@@ -1626,7 +1695,7 @@ async function pollStatus() {
   if (document.hidden || !S.settings) return;
   try {
     // What the settings pages show from the status: re-render them when it changes, unless the user is in a field.
-    const key = () => `${S.status.error}|${S.status.max_mbps}|${S.status.recording}|${S.status.discord}|${S.status.width}x${S.status.height}|${S.status.border}|${S.status.method}|${S.status.encoder}`;
+    const key = () => `${S.status.error}|${S.status.max_mbps}|${S.status.recording}|${S.status.width}x${S.status.height}|${S.status.border}|${S.status.method}|${S.status.encoder}`;
     const before = key();
     S.status = await invoke("get_status");
     renderChrome();

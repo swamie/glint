@@ -2,7 +2,7 @@
 use crate::library::{self, ClipMeta, Library};
 use crate::recorder::{CaptureCfg, Recorder};
 use crate::settings::{Keybind, Settings};
-use crate::{clip, discord, games, hotkeys, util, win};
+use crate::{clip, games, hotkeys, util, win};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,8 +36,6 @@ pub struct Status {
     pub error: String,
     /// Game detected as running ("" = none).
     pub game: String,
-    /// Discord Rich Presence state: "off", "connected", or the reason it is not.
-    pub discord: String,
     /// The separate game audio track: "off", "waiting" (no game), "capturing",
     /// "failed" (this game could not be captured), "unavailable" (Windows too old).
     pub game_audio: String,
@@ -71,8 +69,6 @@ pub struct CaptureStatus {
 struct Playing {
     name: String,
     pid: u32,
-    /// Unix seconds when it was first seen.
-    since: u64,
 }
 
 struct Sample {
@@ -94,7 +90,6 @@ pub struct Core {
     pub games: Mutex<games::Games>,
     playing: Mutex<Option<Playing>>,
     pub jobs: crate::jobs::Jobs,
-    discord: Mutex<String>,
 }
 
 /// Width / height the clip should have.
@@ -247,7 +242,6 @@ impl Core {
             games: Mutex::new(games),
             playing: Mutex::new(None),
             jobs: crate::jobs::Jobs::new(),
-            discord: Mutex::new("off".into()),
         })
     }
 
@@ -274,7 +268,7 @@ impl Core {
                 {
                     let mut cur = self.playing.lock().unwrap();
                     if !cur.as_ref().is_some_and(|p| p.name == name && p.pid == pid) {
-                        *cur = Some(Playing { name: name.clone(), pid, since: util::unix_ms() / 1000 });
+                        *cur = Some(Playing { name: name.clone(), pid });
                     }
                 }
                 if self.games.lock().unwrap().note(&name, &exe) {
@@ -324,16 +318,13 @@ impl Core {
     }
 
     /// Background upkeep, every two seconds: game detection, display-mode
-    /// changes (a game switching resolution), and Discord Rich Presence.
+    /// changes (a game switching resolution). (Discord Rich Presence lived here until 0.1.24; the owner had it removed.)
     pub fn watch(self: &Arc<Self>) {
         let core = self.clone();
         thread::spawn(move || {
             let modes = || win::monitors().iter().map(|m| (m.width, m.height, m.hz)).collect::<Vec<_>>();
             let mut seen = modes();
             let mut pending_mode: Option<Vec<(u32, u32, u32)>> = None;
-            let mut rpc: Option<(String, discord::Client)> = None;
-            let mut shown: Option<discord::Activity> = None;
-            let mut retry_at = std::time::Instant::now();
             loop {
                 thread::sleep(std::time::Duration::from_secs(2));
                 core.track_game();
@@ -359,63 +350,6 @@ impl Core {
                             core.emit("status-changed", ());
                         }
                     }
-                }
-
-                let s = core.settings();
-                let state = if !s.discord_rpc {
-                    if let Some((_, mut c)) = rpc.take() {
-                        let _ = c.set(None);
-                    }
-                    shown = None;
-                    "off".to_string()
-                } else {
-                    if rpc.as_ref().is_some_and(|(id, _)| *id != s.discord_app_id.trim()) {
-                        rpc = None;
-                        shown = None;
-                        retry_at = std::time::Instant::now();
-                    }
-                    let mut state = core.discord.lock().unwrap().clone();
-                    if rpc.is_none() && std::time::Instant::now() >= retry_at {
-                        match discord::Client::connect(&s.discord_app_id) {
-                            Ok(c) => {
-                                rpc = Some((s.discord_app_id.trim().to_string(), c));
-                                state = "connected".into();
-                            }
-                            Err(e) => {
-                                state = e;
-                                retry_at = std::time::Instant::now() + std::time::Duration::from_secs(15);
-                            }
-                        }
-                    }
-                    let want = core.rec.is_running().then(|| {
-                        let playing = core.playing.lock().unwrap().clone();
-                        discord::Activity {
-                            details: playing.as_ref().map(|p| format!("Clipping {}", p.name)).unwrap_or_else(|| "Clipping the desktop".into()),
-                            state: format!("Last {} ready to save", fmt_secs(s.max_clip_secs() as f64)),
-                            since: playing.map(|p| p.since),
-                        }
-                    });
-                    if let Some((_, c)) = rpc.as_mut() {
-                        if want != shown {
-                            match c.set(want.as_ref()) {
-                                Ok(()) => shown = want,
-                                Err(e) => {
-                                    state = e;
-                                    rpc = None;
-                                    shown = None;
-                                    retry_at = std::time::Instant::now() + std::time::Duration::from_secs(15);
-                                }
-                            }
-                        }
-                    }
-                    state
-                };
-                let mut cur = core.discord.lock().unwrap();
-                if *cur != state {
-                    if state != "off" && state != "connected" {
-                        util::log(&format!("discord: {state}"));
-                    }
-                    *cur = state;
                 }
             }
         });
@@ -509,7 +443,6 @@ impl Core {
             max_mbps: st.status.maxrate as f64 / 1e6,
             error: st.status.error,
             game: self.playing.lock().unwrap().as_ref().map(|p| p.name.clone()).unwrap_or_default(),
-            discord: self.discord.lock().unwrap().clone(),
             game_audio: game_audio.status(),
             border: if st.running { st.status.border.clone() } else { String::new() },
             captures,

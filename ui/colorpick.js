@@ -33,16 +33,78 @@ const prActive = () => (S.settings ? glintPresetActive(S.settings) : null);
 const prAutoName = () => t("My theme");
 let prBySearch = false; // the box was opened by the settings search, not by the user
 
-/** The tile grid: the built-in themes, the user's presets, then "+ New preset". */
+/**
+ * The tiles in the order they are shown (0.1.24: the user can drag them). A tile's key is a
+ * built-in theme's id, or "p:<id>" for one of the user's presets. `saved` (settings.theme_order)
+ * comes first, as far as its keys still exist; every other tile follows in its usual place
+ * (built-in themes, then the user's presets), so a new preset lands at the end.
+ */
+function prTileOrder(saved, builtinIds, presetIds) {
+  const all = [...builtinIds, ...presetIds.map((id) => "p:" + id)];
+  const first = (Array.isArray(saved) ? saved : []).filter((k, i, a) => all.includes(k) && a.indexOf(k) === i);
+  return [...first, ...all.filter((k) => !first.includes(k))];
+}
+
+/** The tile grid: the built-in themes and the user's presets (in the user's order), then "+ New preset". */
 function presetTilesHtml() {
   const s = S.settings;
   const act = prActive();
-  const builtin = window.GLINT_THEMES.map((th) => `<button class="theme${!act && (s.theme || "glint") === th.id ? " active" : ""}" data-theme="${th.id}" style="background:${th.vars.panel || "#0a0e16"};color:${th.vars.text || "#e8edf6"}"><i style="background:${th.vars.accent || "#62b6f7"}"></i>${esc(th.name)}</button>`).join("");
-  const mine = (s.theme_presets || []).map((p) => {
+  const tiles = {};
+  for (const th of window.GLINT_THEMES) tiles[th.id] = `<button class="theme${!act && (s.theme || "glint") === th.id ? " active" : ""}" data-tile="${th.id}" data-theme="${th.id}" style="background:${th.vars.panel || "#0a0e16"};color:${th.vars.text || "#e8edf6"}" title="${esc(t("Drag to reorder"))}"><i style="background:${th.vars.accent || "#62b6f7"}"></i>${esc(th.name)}</button>`;
+  for (const p of s.theme_presets || []) {
     const c = (v) => glintEffectiveColor(p.base, p.colors, v);
-    return `<button class="theme tp-tile${act && act.id === p.id ? " active" : ""}" data-tp="${esc(p.id)}" style="background:${c("panel")};color:${c("text")}" title="${esc(t("Your preset. Right-click to rename, duplicate or delete it"))}"><i style="background:${c("accent")}"></i><span class="tp-name">${esc(p.name)}</span></button>`;
-  }).join("");
-  return `<div class="themes">${builtin}${mine}<button class="theme tp-new" data-tp-new title="${esc(t("Make a new preset from the look you have now"))}"><b>+</b>${t("New preset")}</button></div>`;
+    tiles["p:" + p.id] = `<button class="theme tp-tile${act && act.id === p.id ? " active" : ""}" data-tile="p:${esc(p.id)}" data-tp="${esc(p.id)}" style="background:${c("panel")};color:${c("text")}" title="${esc(t("Your preset. Right-click to rename, duplicate or delete it. Drag to reorder"))}"><i style="background:${c("accent")}"></i><span class="tp-name">${esc(p.name)}</span></button>`;
+  }
+  const order = prTileOrder(s.theme_order, window.GLINT_THEMES.map((th) => th.id), (s.theme_presets || []).map((p) => p.id));
+  return `<div class="themes">${order.map((k) => tiles[k] || "").join("")}<button class="theme tp-new" data-tp-new title="${esc(t("Make a new preset from the look you have now"))}"><b>+</b>${t("New preset")}</button></div>`;
+}
+
+/* Dragging a tile to another place in the grid. The tiles move as the pointer passes them; the
+   order is saved on release (settings.theme_order). A press that does not move stays a click. */
+let prDrag = null;      // { el, x, y, moved }
+let prDragAt = -1e9;    // when a drag was last let go: the click that follows it is not a pick
+function prDragEnd(keep) {
+  const d = prDrag;
+  prDrag = null;
+  if (!d || !d.moved) return;
+  d.el.classList.remove("tp-dragging");
+  document.body.classList.remove("tp-reordering");
+  prDragAt = performance.now();
+  const grid = d.el.parentNode;
+  if (keep && grid) {
+    S.settings.theme_order = [...grid.querySelectorAll("[data-tile]")].map((el) => el.dataset.tile);
+    saveSettings();
+  } else if (typeof render === "function") render(); // dropped without effect: back to the saved order
+}
+if (typeof document !== "undefined" && typeof window !== "undefined") {
+  document.addEventListener("pointerdown", (e) => {
+    prDragEnd(false);
+    const tile = e.button === 0 ? e.target.closest?.(".themes .theme[data-tile]") : null;
+    if (tile) prDrag = { el: tile, x: e.clientX, y: e.clientY, moved: false };
+  });
+  window.addEventListener("pointermove", (e) => {
+    const d = prDrag;
+    if (!d) return;
+    if (e.buttons === 0 || !d.el.isConnected) return prDragEnd(false);
+    if (!d.moved) {
+      if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) return;
+      d.moved = true;
+      d.el.classList.add("tp-dragging");
+      document.body.classList.add("tp-reordering");
+    }
+    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest?.(".themes .theme[data-tile]");
+    if (!over || over === d.el || over.parentNode !== d.el.parentNode) return;
+    // Past the middle of the tile under the pointer: after it; otherwise before it.
+    const r = over.getBoundingClientRect();
+    over.parentNode.insertBefore(d.el, e.clientX > r.left + r.width / 2 ? over.nextSibling : over);
+  });
+  window.addEventListener("pointerup", () => prDragEnd(true));
+  window.addEventListener("pointercancel", () => prDragEnd(false));
+  window.addEventListener("blur", () => prDragEnd(false));
+  // The release of a drag is also a click on the tile: it must not pick that theme.
+  window.addEventListener("click", (e) => {
+    if (performance.now() - prDragAt < 350 && e.target.closest?.(".themes")) { e.stopPropagation(); e.preventDefault(); }
+  }, true);
 }
 
 /** The summary's hint: what an edit changes. */

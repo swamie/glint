@@ -1,0 +1,51 @@
+/* Glint's own dropdowns (dropdown.js). The select stays in the page, out of sight but focusable;
+   the button after it carries the select's own classes (.field, .kb-len, .pj-game…), so it takes
+   the select's place and size. */
+select.dd-src {
+  position: absolute !important; width: 1px !important; min-width: 0 !important; height: 1px !important;
+  margin: 0 !important; padding: 0 !important; border: 0 !important; opacity: 0 !important;
+  pointer-events: none !important; clip-path: inset(50%) !important; overflow: hidden !important;
+}
+
+.dd-btn { display: inline-flex; align-items: center; position: relative; padding-right: 28px; color: inherit; font: inherit; text-align: left; cursor: pointer; white-space: nowrap; }
+.dd-btn.field { padding-right: 28px; }
+.dd-btn:not(.field) { height: 30px; padding-left: 9px; background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--radius); }
+.dd-btn[hidden] { display: none; }
+/* The chevron, drawn in the theme's muted colour (the native select's arrow, 9 px wide, 10 px in). */
+.dd-btn::after {
+  content: ""; position: absolute; right: 10px; top: 50%; width: 9px; height: 6px; margin-top: -3px; background: var(--muted);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%23000' stroke-width='1.6'/%3E%3C/svg%3E") center / 9px 6px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%23000' stroke-width='1.6'/%3E%3C/svg%3E") center / 9px 6px no-repeat;
+  transition: transform .12s;
+}
+.dd-btn.dd-open::after { transform: rotate(180deg); }
+.dd-btn:hover:not(:disabled) { border-color: color-mix(in srgb, var(--muted) 45%, var(--line-2)); }
+select.dd-src:focus + .dd-btn, .dd-btn.dd-open { border-color: var(--accent); }
+.dd-btn:disabled { opacity: .5; cursor: default; }
+/* Every option's label in one grid cell: the widest sets the width, only the chosen one shows. */
+.dd-val { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; flex: 1 1 auto; overflow: hidden; }
+.dd-val > span { grid-area: 1 / 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; visibility: hidden; }
+.dd-val > span.on { visibility: visible; }
+
+/* The list: the right-click menu's panel (style.css .menu), on <body> above every dialog. */
+.dd-list {
+  position: fixed; z-index: 1000; display: flex; flex-direction: column; box-sizing: border-box; overflow-y: auto; overscroll-behavior: contain;
+  padding: 5px; background: var(--raised); border: 1px solid var(--line-2); border-radius: 9px; box-shadow: 0 14px 40px rgba(0, 0, 0, .6);
+  color: var(--text); font-size: 13px; outline: 0; user-select: none;
+  animation: dd-in .09s ease-out;
+}
+.dd-list.up { animation-name: dd-in-up; }
+@keyframes dd-in { from { opacity: 0; transform: translateY(-3px); } }
+@keyframes dd-in-up { from { opacity: 0; transform: translateY(3px); } }
+.dd-opt { display: flex; align-items: center; gap: 9px; flex: none; height: 30px; padding: 0 9px; border-radius: 6px; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.dd-opt > span { overflow: hidden; text-overflow: ellipsis; }
+.dd-opt.act { background: var(--raised-2); }
+.dd-opt.on { color: var(--accent); }
+.dd-opt.on::after { content: "✓"; margin-left: auto; padding-left: 12px; }
+.dd-opt[aria-disabled="true"] { opacity: .45; cursor: default; }
+.dd-opt[aria-disabled="true"].act { background: none; }
+.dd-opt.in-group { padding-left: 17px; }
+/* An <optgroup> label: drawn like the menu's header (.menu-head). */
+.dd-group { flex: none; height: 26px; margin: 2px 4px 3px; padding: 0 5px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 26px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dd-group:first-child { margin-top: 0; }
+@media (prefers-reduced-motion: reduce) { .dd-list { animation: none; } .dd-btn::after { transition: none; } }

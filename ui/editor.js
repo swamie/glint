@@ -634,6 +634,7 @@ function openClip(id) {
           <div class="v-sep"></div>
           <button class="btn wide" data-v="edit">${ICON.cut}<span>${L("Edit")}</span></button>
           <div id="v-blur">${blurPanel(c)}</div>
+        ${typeof rulesViewerHtml === "function" ? rulesViewerHtml(c) : "" /* rules.js: run a render rule on this clip */}
           <div class="v-sep"></div>
           <button class="btn wide" data-v="fav">${ICON.star}<span>${L(c.favorite ? "Remove favorite" : "Add to favorites")}</span></button>
           <button class="btn wide" data-v="reveal">${ICON.folder}<span>${L("Show in folder")}</span></button>
@@ -1690,6 +1691,7 @@ function mountEditor(root, c, P) {
       ${job ? `<div class="e-prog"><div class="small e-prog-txt">${esc(t("Exporting… {pct}%", { pct: job.pct.toFixed(0) }))}</div><div class="progress"><i style="width:${job.pct}%"></i></div></div>` : ""}
       <button class="btn primary wide" data-v="export" ${job || !changed ? "disabled" : ""}><span>${esc(rep && !c.draft ? t("Export and replace") : t("Export"))}</span></button>
       <button class="btn wide" data-v="export-blur" ${job || !S.blur || !m ? "disabled" : ""}>${ICON.blur}<span>${esc(changed ? t("Export and render with Blur") : t("Render with Blur"))}</span></button>
+      ${typeof rulesExportHtml === "function" ? rulesExportHtml(c, !!job) : "" /* rules.js: "then run a render rule" */}
       ${S.blur ? "" : `<div class="small">${esc(t("blur-cli.exe not found. Set its path under Blur."))}</div>`}`;
     if (html === lastExport) return;
     lastExport = html;
@@ -1929,6 +1931,8 @@ async function edExport(withBlur) {
   else if (gone.length && fromProject) flash(t("Exported as a new clip. {clips} moved to the Recycle Bin.", { clips: plural(gone.length) }));
   else if (gone.length) flash(withBlur ? t("Exported and replaced. Rendering with Blur…") : t("Exported. The original is in the Recycle Bin."));
   else flash(withBlur ? t("Exported. Rendering with Blur…") : stillOpen && fromProject ? t("Exported as a new clip. It is in your library.") : stillOpen ? t("Exported as a new clip") : t("Export finished: {title}", { title: meta.title }));
+  // rules.js: the render rule picked in the Export box (if any) now runs on the exported clip.
+  if (!kept.length && typeof rulesAfterExport === "function") { try { rulesAfterExport(meta, withBlur); } catch (e) { console.error("Glint: rulesAfterExport failed", e); } }
   if (!withBlur) return;
   const show = () => { if (S.open === meta.id) $("#v-blur").innerHTML = blurPanel(meta); else render(); };
   S.jobs[meta.id] = { pct: 0, state: "running", message: "" };

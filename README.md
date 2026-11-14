@@ -126,9 +126,13 @@ Each game seen is remembered in `%APPDATA%\Glint\games.json` with its icon, take
 
 A stretched resolution (4:3, 5:4, 3:2 or 16:10 shown full-screen on a wider display) reaches any screen capture as a narrow picture, although the player sees it filling the screen; left alone, the clip plays back narrow with black bars. With Capture → Aspect ratio on Auto, Glint compares the current display mode with the display's own shape (its largest mode) and, when the mode is clearly narrower, widens the clip to the display's shape on the GPU: 2160×1440 on a 16:9 display is saved as 2560×1440. Modes as wide as the display, or wider, are left alone, so ultrawide and 16:10 screens are not touched. A fixed ratio or "As captured" can be chosen instead. Glint also notices when a game changes the display mode and restarts the capture at the new size.
 
-## Discord Rich Presence
+## Render rules, GIF and upscaling
 
-Settings → Discord. While the buffer is on, your Discord profile shows "Clipping Overwatch" (or "Clipping the desktop") and the buffer length. It talks to the Discord client on this PC through Discord's local pipe; nothing is sent anywhere by Glint. Discord only accepts a presence from a registered application, so you paste in the Application ID of one you created at discord.com/developers/applications (New Application, name it Glint, copy "Application ID"). The name and icon of that application are what Discord shows.
+**Render rules.** Tools → Render rules. A rule is a name and a row of blocks, built like the clip-name builder: Colour (one of the editor's looks or your own), Blur (with your Blur settings), Upscale, Compress (to a size in MB, with the Compress page's settings), GIF and Copy (to the clipboard). Drag the blocks to order them, drag one out to remove it, click one for its options. Orders that cannot work are prevented: after GIF only Copy can follow, and Copy is last. Run a rule on one clip or several from the right-click menu (Render rule), from the viewer's side panel, or from the editor's Export box ("Then run": the rule runs on the clip you just exported, so trim → rule is one click). The steps run in order as one job in the Renders list, which shows the step and its percent; only the final result is kept, as "<clip> (<rule name>)" beside the clip (a GIF beside it, outside the library). A step with nothing to do (the clip is already small enough or already that tall) is skipped.
+
+**Export as GIF.** Right-click a clip → Export as GIF…. Pick the width (the clip's own, 720, 480 or 320 px), the frames a second (10 to 50) and, if wanted, a size limit (10, 25 or 50 MB): a GIF over its limit is made again smaller. The whole clip becomes the GIF, so trim first; a GIF has no sound. It is saved beside the clip as "<title>.gif" and is not added to the library; when it is done a message offers Show in folder and Copy.
+
+**Upscale for YouTube.** Right-click a clip → Upscale for YouTube…. YouTube gives larger uploads more bitrate, so a 1440p or 4K upload looks clearer there; upscaling adds no detail and the file gets much bigger, so do it last, right before uploading. Pick 1080p, 1440p or 4K, Sharp (every pixel becomes a block of pixels, the usual choice for games) or Smooth (Lanczos), and the quality. It uses the hardware encoder when there is one (NVENC, AMF, Quick Sync), else libx264; sound and track names are kept, frame rate and timing are unchanged. A picture wider than 4096 px comes out as HEVC. The result is a new clip, "<title> (4K)".
 
 ## Themes
 
@@ -136,7 +140,7 @@ Settings → Appearance has twelve colour themes. Custom CSS, applied after the 
 
 **Custom colours.** Settings → Appearance → Custom colours changes single colours on top of the picked theme: accent, background, panels, buttons and cards, lines, text, secondary text. Each has a round swatch that opens Glint's colour picker: drag in the square and on the hue strip, or type a hex or R G B value. The whole window shows the colour while you pick; Enter or a click outside keeps it, Esc cancels. Colours you did not set follow the ones you did (a readable text colour on the accent, panels and lines from the background). Custom CSS still wins over them.
 
-**Presets.** The theme tiles under Settings → Appearance are the built-in themes followed by your own presets and "+ New preset", which saves the look on screen under a name. A preset is a built-in theme plus your colours and your custom CSS. The built-in themes never change: the first colour you change while one of them is picked makes a preset called "My theme" and goes on there. Right-click a preset to rename, duplicate or delete it; right-click a built-in theme to duplicate it. The colours and the custom CSS sit in one box, "Customise colours", under the tiles.
+**Presets.** The theme tiles under Settings → Appearance are the built-in themes followed by your own presets and "+ New preset", which saves the look on screen under a name. Drag a tile to another place to reorder them; the order is kept. A preset is a built-in theme plus your colours and your custom CSS. The built-in themes never change: the first colour you change while one of them is picked makes a preset called "My theme" and goes on there. Right-click a preset to rename, duplicate or delete it; right-click a built-in theme to duplicate it. The colours and the custom CSS sit in one box, "Customise colours", under the tiles.
 
 **Closing the window.** Settings → Startup → "When I close the window (X)": "Keep Glint running in the tray" (the buffer keeps running and the clip keys still work; quit from the tray icon) or "Quit Glint" (everything stops; Glint asks first if a render, compression or export is still running).
 
@@ -288,7 +292,9 @@ src-tauri/src/
   sound.rs      synthesised clip sounds
   denoise.rs    microphone noise suppression (RNNoise)
   games.rs      game detection, game list, icons
-  discord.rs    Discord Rich Presence over the local pipe
+  gif.rs        export a clip as a GIF (palette filters, size limit)
+  upscale.rs    upscale a clip for YouTube (nearest neighbour or Lanczos, hardware encoders)
+  rules.rs      render rules: a chain of steps (colour, Blur, upscale, compress, GIF, copy) as one job
   editor.rs     per-track audio, waveforms and film strip for the editor; export
   jobs.rs       background render queue
   import.rs     import from other clipping software

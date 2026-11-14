@@ -1,5 +1,5 @@
 /* The editor's timeline. Loaded after style.css. */
-/* Row heights live in timeline.js (tlRulerH 26, tlVideoH 56, tlAudioH 50) and are set inline. */
+/* Row heights live in timeline.js (tlRulerH 26, tlVideoH 56, tlAudioH 50, the last two times the grip's factor) and are set inline. */
 
 .tl { --tl-head: 184px; display: flex; flex-direction: column; min-width: 0; background: var(--panel); border-top: 1px solid var(--line); color: var(--text); font-size: 12.5px; }
 
@@ -27,7 +27,9 @@
 .tl-pct { flex: none; min-width: 4.6ch; text-align: right; white-space: nowrap; font: 600 11.5px var(--mono); color: var(--text); }
 
 /* ---------- tracks ---------- */
-.tl-body { display: grid; grid-template-columns: var(--tl-head) minmax(0, 1fr); max-height: 42vh; overflow-x: hidden; overflow-y: auto; }
+/* Only the tracks scroll: as tall as they are, shrinking (and scrolling) when the area (the host, see .e-tl in editor.css) is shorter. */
+.tl-bar, .tl-sbar, .tl-grip { flex: none; }
+.tl-body { flex: 0 1 auto; min-height: 0; display: grid; grid-template-columns: var(--tl-head) minmax(0, 1fr); overflow-x: hidden; overflow-y: auto; }
 .tl-heads { min-width: 0; border-right: 1px solid var(--line); background: var(--panel); }
 .tl-corner { position: sticky; top: 0; z-index: 3; height: 26px; background: var(--panel); box-shadow: inset 0 -1px 0 var(--line); }
 .tl-head { display: flex; flex-direction: column; justify-content: center; gap: 3px; min-width: 0; padding: 0 8px 0 4px; box-shadow: inset 0 -1px 0 var(--line); }
@@ -131,3 +133,9 @@
 .tl-scroll { height: 12px; overflow-x: auto; overflow-y: hidden; }
 .tl-scroll::-webkit-scrollbar { height: 10px; }
 .tl-spacer { height: 1px; }
+
+/* ---------- the grip under the tracks: drag down for taller rows, up for shorter, double-click for the usual ---------- */
+.tl-grip { position: relative; display: grid; place-items: center; height: 10px; cursor: ns-resize; touch-action: none; }
+.tl-grip span { width: 38px; height: 4px; border-radius: 2px; background: var(--line-2); transition: background .12s, width .12s; }
+.tl-grip:hover span, .tl.tl-dragging[data-tl-drag="rows"] .tl-grip span { width: 54px; background: var(--accent); }
+.tl.tl-dragging[data-tl-drag="rows"], .tl.tl-dragging[data-tl-drag="rows"] * { cursor: ns-resize !important; }

@@ -11,9 +11,9 @@ mod compress;
 mod core;
 mod denoise;
 mod deps;
-mod discord;
 mod editor;
 mod games;
+mod gif;
 mod hotkeys;
 mod icons;
 mod import;
@@ -27,10 +27,12 @@ mod polish;
 mod procaudio;
 mod projects;
 mod recorder;
+mod rules;
 mod settings;
 mod sound;
 mod spill;
 mod update;
+mod upscale;
 mod util;
 mod win;
 
@@ -57,6 +59,11 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--blur-sync-test") {
         // glint.exe --blur-sync-test <report.txt>: what Blur is handed keeps audio and video in step (renders through Blur when it is installed).
         blur::sync_self_test(args.get(i + 1).map(String::as_str).unwrap_or("blur-sync.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--blur-start-test") {
+        // glint.exe --blur-start-test <report.txt>: where the wait before Blur's first percent goes (a short synthetic clip).
+        blur::start_self_test(args.get(i + 1).map(String::as_str).unwrap_or("blur-start.txt"));
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--blur-test") {
@@ -147,6 +154,21 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--compress-test") {
         // glint.exe --compress-test <report.txt>: Compress for Discord on made-up clips (never the clipboard).
         compress::self_test(args.get(i + 1).map(String::as_str).unwrap_or("compress.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--gif-test") {
+        // glint.exe --gif-test <report.txt>: Export as GIF on made-up clips (never the clipboard).
+        gif::self_test(args.get(i + 1).map(String::as_str).unwrap_or("gif.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--upscale-test") {
+        // glint.exe --upscale-test <report.txt>: Upscale for YouTube on made-up clips.
+        upscale::self_test(args.get(i + 1).map(String::as_str).unwrap_or("upscale.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--rules-test") {
+        // glint.exe --rules-test <report.txt>: render rules on made-up clips (Blur is a stand-in, never the clipboard).
+        rules::self_test(args.get(i + 1).map(String::as_str).unwrap_or("rules.txt"));
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--polish-test") {

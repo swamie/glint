@@ -374,6 +374,15 @@ fn color_filter(c: &Color, matrix: &str, range: &str) -> Option<String> {
     Some(steps.join(","))
 }
 
+/// The picture filter `export` applies when colour `c` covers the whole of `file`
+/// (one look after the join, then yuv420p), for a render rule's colour step
+/// (rules.rs), so a rule's look matches the editor's export of it exactly.
+/// None when `c` changes nothing.
+pub(crate) fn look_filter(ffmpeg: &Path, file: &Path, c: &Color) -> Option<String> {
+    let (matrix, range) = video_colorspace(ffmpeg, file);
+    color_filter(c, matrix, range).map(|f| format!("{f},format=yuv420p"))
+}
+
 /// `atempo` stages for `speed`, each within 0.5..=2.0 (the range where it
 /// keeps quality best). "anull" when the speed is unchanged.
 fn atempo_chain(speed: f64) -> String {
