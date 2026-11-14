@@ -332,7 +332,8 @@ function cardHtml(c) {
   const bg = c.thumb
     ? ""
     : `style="background:linear-gradient(135deg,hsl(${hue(c.game)} 45% 22%),hsl(${(hue(c.game) + 50) % 360} 50% 12%))"`;
-  // The tag names what made the clip; a Discord copy's is the brand name, so it is not translated.
+  // No tag for what made the clip (import, trim, edit, Discord copy, joined): the owner had them
+  // removed in 0.1.21. The clip's name still carries "(trim)", "(edit)" and so on.
   // The picture is an <img> fitted by inline styles: a custom theme's `.thumb { background: … }`
   // once reset a background-image's size, so cards showed only the frame's top-left corner.
   return `<article class="card${S.sel.has(c.id) ? " sel" : ""}" data-clip="${c.id}" data-hover>
@@ -340,7 +341,6 @@ function cardHtml(c) {
       ${c.thumb ? `<img class="thumb-img" src="${esc(fileSrc(c.thumb))}" alt="" draggable="false" decoding="async" onerror="this.remove()" style="${THUMB_IMG_STYLE}">` : `<div class="ph">${esc(c.game.slice(0, 1).toUpperCase())}</div>`}
       <span class="check" title="${esc(t("Select"))}">${ICON.check}</span>
       ${c.favorite ? `<span class="star">${ICON.star}</span>` : ""}
-      ${c.kind !== "clip" ? `<span class="tag tag-${esc(c.kind)}">${esc({ trim: t("trim"), edit: t("edit"), import: t("import"), discord: "Discord", joined: t("joined") }[c.kind] || c.kind)}</span>` : ""}
       <span class="dur">${fmtDur(c.duration)}</span>
       ${job && job.state === "running" ? `<div class="job"><i style="width:${job.pct}%"></i></div>` : ""}
     </div>

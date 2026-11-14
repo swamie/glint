@@ -68,4 +68,6 @@ glintAddLanguage("ko", "한국어", {
   "What's new: the section titles are a little bigger and sit closer to their lists.": "새 소식: 구역 제목이 조금 커지고 목록에 더 가까워졌어요.",
   "Blur encodes on the graphics card by default on a new install, and uses the card this PC really has.": "새로 설치하면 Blur가 기본으로 그래픽 카드에서 인코딩하고, 이 PC에 실제로 있는 카드를 써요.",
   "Clicks that made their sound but did nothing: a button could be redrawn between the press and the release. Buttons now keep their click, and the sidebar's pages open the moment you press.": "소리는 나는데 아무 일도 일어나지 않던 클릭을 고쳤어요. 누르고 떼는 사이에 버튼이 다시 그려질 수 있었어요. 이제 버튼이 클릭을 놓치지 않고, 사이드바 페이지는 누르는 순간 열려요.",
+  "The title of a selection's right-click menu (“10 selected”) is set closer together.": "여러 클립을 고르고 우클릭했을 때 나오는 메뉴 제목의 글자 간격을 좁혔어요.",
+  "Clip cards no longer carry a tag such as IMPORT, TRIM or DISCORD.": "클립 카드에 IMPORT, TRIM, DISCORD 같은 태그가 더 이상 붙지 않아요.",
 });

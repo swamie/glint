@@ -68,4 +68,6 @@ glintAddLanguage("el", "Ελληνικά", {
   "What's new: the section titles are a little bigger and sit closer to their lists.": "Τι νέο υπάρχει: οι τίτλοι των ενοτήτων είναι λίγο μεγαλύτεροι και πιο κοντά στις λίστες τους.",
   "Blur encodes on the graphics card by default on a new install, and uses the card this PC really has.": "Σε νέα εγκατάσταση το Blur κωδικοποιεί στην κάρτα γραφικών από προεπιλογή, και χρησιμοποιεί την κάρτα που έχει πραγματικά αυτός ο υπολογιστής.",
   "Clicks that made their sound but did nothing: a button could be redrawn between the press and the release. Buttons now keep their click, and the sidebar's pages open the moment you press.": "Κλικ που έκαναν τον ήχο τους αλλά τίποτα άλλο: ένα κουμπί μπορούσε να ξανασχεδιαστεί ανάμεσα στο πάτημα και την απελευθέρωση. Τα κουμπιά δεν χάνουν πια το κλικ τους, και οι σελίδες της πλαϊνής μπάρας ανοίγουν τη στιγμή που πατάτε.",
+  "The title of a selection's right-click menu (“10 selected”) is set closer together.": "Ο τίτλος του μενού δεξιού κλικ μιας επιλογής είναι πιο πυκνός.",
+  "Clip cards no longer carry a tag such as IMPORT, TRIM or DISCORD.": "Οι κάρτες κλιπ δεν έχουν πια ετικέτα όπως IMPORT, TRIM ή DISCORD.",
 });

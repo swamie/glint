@@ -14,6 +14,15 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.21", date: "2026-11-14",
+    new: [],
+    improved: [
+      t("The title of a selection's right-click menu (“10 selected”) is set closer together."),
+      t("Clip cards no longer carry a tag such as IMPORT, TRIM or DISCORD."),
+    ],
+    fixed: [],
+  },
+  {
     version: "0.1.20", date: "2026-11-14",
     new: [
       t("Theme presets: “+ New preset” saves the look you have as your own preset. Right-click a preset to rename, duplicate or delete it. Changing a colour never alters the built-in themes: it makes a preset of yours instead."),

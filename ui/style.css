@@ -407,7 +407,7 @@ body.has-sel #view { padding-bottom: 92px; }
 /* A menu's header ("5 selected", a part's name): one item's height (30 px, its text centred, so the
    space above and below is even) with the separator under it, drawn like .menu hr (4 px in from each
    side, 5 px to the next item). 4 + 5 px puts the text on the items' left edge, where their icons start. */
-.menu-head { display: block; flex: none; height: 31px; margin: 0 4px 5px; padding: 0 5px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 30px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }.menu button.on { color: var(--accent); }
+.menu-head { display: block; flex: none; height: 31px; margin: 0 4px 5px; padding: 0 5px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 30px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }.menu button.on { color: var(--accent); }
 .menu button.on::after { content: "✓"; margin-left: auto; padding-left: 12px; }
 .menu button.danger, .menu button.danger svg { color: var(--danger); }
 .menu button.danger:hover { background: #3a1519; }
