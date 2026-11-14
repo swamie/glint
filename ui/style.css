@@ -201,7 +201,7 @@ select.field option { background: var(--raised); }
 .thumb .tag { position: absolute; left: 8px; bottom: 8px; padding: 1px 6px; border-radius: 5px; background: var(--accent); color: var(--accent-ink); font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercase; }
 .thumb .star { position: absolute; right: 8px; top: 8px; width: 26px; height: 26px; border-radius: 6px; background: rgba(4, 7, 12, .82); display: grid; place-items: center; color: var(--warn); }
 .thumb .star svg { width: 14px; height: 14px; fill: currentColor; stroke: none; }
-.thumb .job { position: absolute; inset: auto 0 0 0; height: 4px; background: rgba(255, 255, 255, .12); }
+.thumb .job { position: absolute; inset: auto 0 0 0; height: 4px; background: rgba(255, 255, 255, .12); overflow: hidden; }
 .thumb .job i { display: block; height: 100%; background: var(--accent); }
 /* The picture: inline styles in cardHtml fit the whole frame; this only keeps it out of the way of clicks and drags. */
 .thumb .thumb-img { pointer-events: none; user-select: none; }
@@ -305,6 +305,10 @@ select.field option { background: var(--raised); }
 .v-sep { height: 1px; background: var(--line); margin: 5px 0; }
 .progress { height: 6px; border-radius: 3px; background: var(--raised-2); overflow: hidden; }
 .progress i { display: block; height: 100%; background: var(--accent); transition: width .2s; }
+/* A job that works but has reported no percent yet (Blur reading the clip in): a short bar that
+   keeps moving, so "0 %" does not look stuck. */
+.progress.wait i, .thumb .job.wait i { width: 30% !important; transition: none; animation: bar-wait 1.1s ease-in-out infinite alternate; }
+@keyframes bar-wait { from { transform: translateX(0); } to { transform: translateX(233.4%); } }
 .small { color: var(--muted); font-size: 12px; }
 
 /* player */

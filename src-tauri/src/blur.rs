@@ -243,23 +243,37 @@ pub const CANCELLED: &str = "Cancelled";
 /// `render`, stoppable: once `cancel` is set, blur-cli and everything it
 /// started are killed within about a quarter of a second, the partial
 /// `output` is removed, and the result is `Err(CANCELLED)`.
-pub fn render_cancellable(blur_cli: &Path, input: &Path, output: &Path, cfg: &BlurSettings, cancel: &AtomicBool, mut progress: impl FnMut(f32)) -> Result<(), String> {
+pub fn render_cancellable(blur_cli: &Path, input: &Path, output: &Path, cfg: &BlurSettings, cancel: &AtomicBool, progress: impl FnMut(f32)) -> Result<(), String> {
+    render_staged(blur_cli, input, output, cfg, cancel, &mut |_| {}, progress)
+}
+
+/// `render_cancellable` that also says what happens before Blur's first
+/// percent, which can be a long time: `stage` gets "prepare" while the clip is
+/// re-timed for Blur (only when it needs that), then "start" once blur-cli
+/// runs. Blur reports nothing while it reads the clip in and renders its first
+/// frames, so without this a render looked stuck at 0 %.
+pub fn render_staged(blur_cli: &Path, input: &Path, output: &Path, cfg: &BlurSettings, cancel: &AtomicBool, stage: &mut dyn FnMut(&str), mut progress: impl FnMut(f32)) -> Result<(), String> {
     if cancel.load(Ordering::SeqCst) {
         return Err(CANCELLED.into());
     }
     let job = util::tmp_dir().join(format!("blur-{}", util::new_id()));
     fs::create_dir_all(&job).map_err(|e| format!("Cannot create blur job folder: {e}"))?;
-    let result = render_in(blur_cli, input, output, cfg, &job, cancel, &mut progress);
+    let result = render_in(blur_cli, input, output, cfg, &job, cancel, stage, &mut progress);
     let _ = fs::remove_dir_all(&job);
     result
 }
 
-fn render_in(blur_cli: &Path, input: &Path, output: &Path, cfg: &BlurSettings, job: &Path, cancel: &AtomicBool, progress: &mut impl FnMut(f32)) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+fn render_in(blur_cli: &Path, input: &Path, output: &Path, cfg: &BlurSettings, job: &Path, cancel: &AtomicBool, stage: &mut dyn FnMut(&str), progress: &mut impl FnMut(f32)) -> Result<(), String> {
     let ext = input.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "mp4".into());
     let s = Settings::load();
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg");
     let issue = ffmpeg.as_deref().and_then(library::ffprobe_for).and_then(|p| sync_issue(&p, input));
+    if issue.is_some() && ffmpeg.is_some() {
+        stage("prepare");
+    }
     let link = stage_input(ffmpeg.as_deref(), &s.encoder, issue, input, &ext, job, cancel)?;
+    stage("start");
     // The GPU type and GPU encoding as this PC's cards allow (the "nvidia" default on an AMD or Intel PC).
     let hw = crate::win::hardware();
     let present: Vec<&str> = hw.gpus.iter().map(|g| g.vendor.as_str()).collect();

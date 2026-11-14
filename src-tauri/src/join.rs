@@ -32,6 +32,12 @@
 //!      rate, H.264 with the editor's encoder choice (hardware, libx264 when it
 //!      fails, at a higher quality than an export since the editor usually
 //!      encodes the draft once more), a keyframe at every join.
+//!    Since 0.1.22 "encode" is the last resort: when the pictures differ, the
+//!    clips that differ are first re-encoded one by one to the picture of the
+//!    others (see "Matching" below; a project's draft is never the one that is
+//!    re-encoded), and then one of the copy ways joins them. Everything is
+//!    encoded only when that cannot be done: a codec other than H.264, or a
+//!    clip larger than the picture the others would be matched to.
 //!    Audio: the tracks are matched by TITLE (`Tracks::of`), so Desktop,
 //!    Microphone and Game stay apart even when the clips have different track
 //!    sets; a clip without a track gives silence there. The last two ways lay
@@ -399,8 +405,13 @@ pub struct Plan {
     pub total: f64,
 }
 
+/// True when the pictures of `a` and `b` can be copied into one stream. The
+/// level is not compared (since 0.1.22): every clip brings its own parameter
+/// sets along (the concat demuxer puts them in front of its keyframes), and a
+/// 60 fps and a 120 fps capture of the same size differ in nothing else.
 fn same_video(a: &VInfo, b: &VInfo) -> bool {
-    a.codec == b.codec && a.profile == b.profile && a.level == b.level && a.width == b.width && a.height == b.height && a.pix_fmt == b.pix_fmt && a.sar == b.sar && a.has_b == b.has_b && a.field_order == b.field_order && a.time_base == b.time_base
+    let scan = |f: &str| if matches!(f, "" | "unknown" | "progressive") { "progressive".to_string() } else { f.to_string() };
+    a.codec == b.codec && a.profile == b.profile && a.width == b.width && a.height == b.height && a.pix_fmt == b.pix_fmt && a.sar == b.sar && a.has_b == b.has_b && scan(&a.field_order) == scan(&b.field_order) && a.time_base == b.time_base
 }
 
 fn sar_value(sar: &str) -> f64 {
@@ -696,6 +707,184 @@ fn encode_args(srcs: &[Src], plan: &Plan, enc: &str, title: &str, out: &Path) ->
 }
 
 // ---------------------------------------------------------------------------
+// Matching: re-encode only the clips whose picture differs (since 0.1.22)
+//
+// "encode" re-encodes every clip, and the whole draft again each time clips
+// are added to a project: two minutes for two minutes of 1440p. Most of the
+// time only a few clips differ (an export, a Blur render or a compressed clip
+// among captures), so those alone are re-encoded to the picture of the rest
+// (`match_args`), each at its own frame rate, with its sound copied as it is.
+// After that every picture is the same and one of the copy ways joins them.
+
+/// Share of the job's progress the matching takes (1..60 %); the join takes the rest.
+const MATCH_SHARE: f32 = 59.0;
+
+/// `-video_track_timescale` for time base `tb` ("1/90000").
+fn timescale(tb: &str) -> Option<u32> {
+    let (n, d) = tb.split_once('/')?;
+    if n.trim() != "1" {
+        return None;
+    }
+    d.trim().parse::<u32>().ok().filter(|&d| d > 0 && d <= 100_000_000)
+}
+
+/// `-profile:v` for the profile name ffprobe gives.
+fn profile_arg(profile: &str) -> Option<&'static str> {
+    match profile {
+        "High" => Some("high"),
+        "Main" => Some("main"),
+        "Constrained Baseline" | "Baseline" => Some("baseline"),
+        _ => None,
+    }
+}
+
+/// The picture as it is shown: width with the sample aspect ratio applied, and height, both even.
+fn shown_size(v: &VInfo) -> (u32, u32) {
+    let even = |x: f64| (((x / 2.0).round() as u32) * 2).max(2);
+    (even(v.width as f64 * sar_value(&v.sar)), even(v.height as f64))
+}
+
+/// True when another clip can be re-encoded to picture `t` so that both are copied.
+fn can_match(t: &VInfo) -> bool {
+    t.codec == "h264"
+        && t.pix_fmt == "yuv420p"
+        && sar_value(&t.sar) == 1.0
+        && matches!(t.field_order.as_str(), "" | "unknown" | "progressive")
+        && (0..=2).contains(&t.has_b)
+        && timescale(&t.time_base).is_some()
+        && profile_arg(&t.profile).is_some()
+        && t.width >= 16
+        && t.height >= 16
+        && t.width % 2 == 0
+        && t.height % 2 == 0
+}
+
+/// The clip whose picture the others are matched to, or None when everything
+/// has to be encoded. No clip is ever made smaller: the target has the largest
+/// picture. `keep_first`: the first clip is a project's draft and stays as it
+/// is. Otherwise the picture that the most seconds already have (the least to
+/// re-encode), the earliest of those.
+fn match_target(srcs: &[Src], keep_first: bool) -> Option<usize> {
+    let area = |s: &Src| {
+        let (w, h) = shown_size(s.video());
+        w as u64 * h as u64
+    };
+    let largest = srcs.iter().map(area).max()?;
+    let fits = |i: usize| can_match(srcs[i].video()) && area(&srcs[i]) == largest;
+    if keep_first {
+        return fits(0).then_some(0);
+    }
+    let mut best: Option<(usize, f64)> = None;
+    for i in 0..srcs.len() {
+        if !fits(i) {
+            continue;
+        }
+        let secs: f64 = srcs.iter().filter(|s| same_video(s.video(), srcs[i].video())).map(Src::vspan).sum();
+        if best.is_none_or(|(_, b)| secs > b + 1e-6) {
+            best = Some((i, secs));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// The encoder that gives picture `t`'s frame order, and its arguments for that.
+/// Without B-frames any encoder does; with them only libx264 is predictable
+/// (its SPS says how far frames are reordered, which is what ffprobe reads).
+fn match_encoder(t: &VInfo, wanted: &str) -> (String, Vec<String>) {
+    match t.has_b {
+        0 => (wanted.to_string(), sv(&["-bf", "0"])),
+        1 => ("x264".into(), sv(&["-bf", "2", "-b-pyramid", "none"])),
+        _ => ("x264".into(), sv(&["-bf", "3", "-b-pyramid", "normal"])),
+    }
+}
+
+/// Arguments that re-encode `src` to picture `t` at `fps` frames a second: scaled
+/// to fit and letterboxed like "encode", its own timing kept (no `setpts`, so
+/// the sound, copied as it is, stays where it was against the picture).
+fn match_args(src: &Src, t: &VInfo, fps: u32, enc: &str, order: &[String], out: &Path) -> Vec<String> {
+    let mut a = head();
+    a.push("-i".into());
+    a.push(src.path.to_string_lossy().into_owned());
+    let (w, h) = (t.width, t.height);
+    let sar = if sar_value(&src.video().sar) != 1.0 { "scale=w='trunc(iw*sar/2)*2':h=ih,setsar=1," } else { "" };
+    a.extend(sv(&["-map", "0:v:0", "-map", "0:a?", "-vf"]));
+    a.push(format!("{sar}scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bicubic,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={fps},format=yuv420p"));
+    a.extend(draft_quality(crate::editor::video_codec_args(enc)));
+    a.extend(sv(&["-profile:v", profile_arg(&t.profile).unwrap_or("high")]));
+    a.extend(order.iter().cloned());
+    a.extend(sv(&["-pix_fmt", "yuv420p", "-g"]));
+    a.push((fps * 2).to_string());
+    a.push("-video_track_timescale".into());
+    a.push(timescale(&t.time_base).unwrap_or(90000).to_string());
+    a.extend(sv(&["-c:a", "copy"]));
+    // A track's title is read back as "name" by newer ffmpeg builds and then not written again: say it.
+    for (k, au) in src.a.iter().enumerate() {
+        if !au.title.trim().is_empty() {
+            a.push(format!("-metadata:s:a:{k}"));
+            a.push(format!("title={}", au.title));
+        }
+    }
+    a.extend(sv(&["-sn", "-dn", "-map_chapters", "-1", "-f", "mp4"]));
+    a.push(out.to_string_lossy().into_owned());
+    a
+}
+
+/// One clip matched to `t`, at `file`: its probe, or why the copy cannot be used.
+#[allow(clippy::too_many_arguments)]
+fn match_one(ffmpeg: &Path, ffprobe: &Path, src: &Src, t: &VInfo, fps: u32, enc: &str, order: &[String], file: &Path, cancel: &AtomicBool, on_frac: &mut dyn FnMut(f64)) -> Result<Src, String> {
+    let _ = fs::remove_file(file);
+    run_ffmpeg(ffmpeg, &match_args(src, t, fps, enc, order, file), src.vspan(), cancel, on_frac)?;
+    let p = probe(ffprobe, file, &src.title)?;
+    match &p.v {
+        Some(v) if same_video(v, t) => Ok(p),
+        v => Err(format!("the matched copy came out different: {v:?}")),
+    }
+}
+
+/// Re-encode the clips whose picture differs from the target's. Returns every
+/// clip, those replaced by their matched copies (temporary files, removed when
+/// `keep` is dropped); None when there is no target or a copy could not be made
+/// (the caller then encodes everything, as before). `Err` only for a cancel.
+#[allow(clippy::too_many_arguments)]
+fn match_clips(ffmpeg: &Path, ffprobe: &Path, srcs: &[Src], fps_hint: &[u32], keep_first: bool, encoder: &str, cancel: &AtomicBool, report: &mut dyn FnMut(f32), keep: &mut Vec<Partial>) -> Result<Option<Vec<Src>>, String> {
+    let Some(ti) = match_target(srcs, keep_first) else { return Ok(None) };
+    let t = srcs[ti].video().clone();
+    let odd: Vec<usize> = (0..srcs.len()).filter(|&i| !same_video(srcs[i].video(), &t)).collect();
+    if odd.is_empty() {
+        return Ok(None);
+    }
+    let total: f64 = odd.iter().map(|&i| srcs[i].vspan()).sum::<f64>().max(0.001);
+    let (enc, order) = match_encoder(&t, &crate::editor::pick_encoder(ffmpeg, encoder));
+    util::log(&format!("join: matching {} of {} clips ({total:.1} s) to clip {} ({}x{} {} b{} {}), encoder {enc}", odd.len(), srcs.len(), ti + 1, t.width, t.height, t.profile, t.has_b, t.time_base));
+    let mut out = srcs.to_vec();
+    let mut done = 0.0f64;
+    for &i in &odd {
+        let s = &srcs[i];
+        let file = util::tmp_dir().join(format!("match-{}.mp4", util::new_id()));
+        keep.push(Partial(Some(file.clone())));
+        let hint = fps_hint.get(i).copied().unwrap_or(0);
+        let fps = (if hint > 0 { hint } else { s.video().fps.round() as u32 }).clamp(1, 240);
+        let span = s.vspan();
+        let mut frac = |f: f64| report(1.0 + MATCH_SHARE * ((done + span * f) / total) as f32);
+        let mut got = match_one(ffmpeg, ffprobe, s, &t, fps, &enc, &order, &file, cancel, &mut frac);
+        if got.as_ref().is_err_and(|e| e != CANCELLED) && enc != "x264" {
+            util::log(&format!("join: matching \"{}\" with {enc} failed ({}), retrying with libx264", s.title, got.as_ref().err().map(String::as_str).unwrap_or("")));
+            got = match_one(ffmpeg, ffprobe, s, &t, fps, "x264", &order, &file, cancel, &mut frac);
+        }
+        match got {
+            Ok(p) => out[i] = p,
+            Err(e) if e == CANCELLED => return Err(e),
+            Err(e) => {
+                util::log(&format!("join: \"{}\" could not be matched ({e}); encoding every clip instead", s.title));
+                return Ok(None);
+            }
+        }
+        done += span;
+    }
+    Ok(Some(out))
+}
+
+// ---------------------------------------------------------------------------
 // Running
 
 /// Run ffmpeg (`-progress pipe:1`), reporting 0..1 of `expected` seconds done.
@@ -782,22 +971,32 @@ impl Drop for Partial {
 /// `within` seconds), or the planned time when none is found. Relative to the file's start.
 pub fn measure_starts(ffprobe: &Path, file: &Path, planned: &[f64], within: f64) -> Vec<f64> {
     let start = ffprobe_out(ffprobe, &["-v", "error", "-show_entries", "format=start_time", "-of", "default=nw=1:nk=1"], file).and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(0.0);
-    planned
-        .iter()
-        .map(|&t| {
-            let iv = format!("{}%{}", f6(t - 2.0), f6(t + 2.0));
-            let keys: Vec<f64> = ffprobe_out(ffprobe, &["-v", "error", "-select_streams", "v:0", "-read_intervals", &iv, "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0"], file)
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|l| {
-                    let (p, f) = l.split_once(',')?;
-                    f.contains('K').then(|| p.trim().parse::<f64>().ok()).flatten()
-                })
-                .collect();
-            let best = keys.into_iter().min_by(|a, b| (a - t).abs().total_cmp(&(b - t).abs())).filter(|k| (k - t).abs() <= within);
-            best.unwrap_or(t) - start
-        })
-        .collect()
+    let one = |t: f64| {
+        let iv = format!("{}%{}", f6(t - 2.0), f6(t + 2.0));
+        let keys: Vec<f64> = ffprobe_out(ffprobe, &["-v", "error", "-select_streams", "v:0", "-read_intervals", &iv, "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0"], file)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| {
+                let (p, f) = l.split_once(',')?;
+                f.contains('K').then(|| p.trim().parse::<f64>().ok()).flatten()
+            })
+            .collect();
+        let best = keys.into_iter().min_by(|a, b| (a - t).abs().total_cmp(&(b - t).abs())).filter(|k| (k - t).abs() <= within);
+        best.unwrap_or(t) - start
+    };
+    // One ffprobe per join, all at once: twenty in a row took over a second.
+    thread::scope(|sc| {
+        let hs: Vec<_> = planned.iter().map(|&t| (t, sc.spawn(move || one(t)))).collect();
+        hs.into_iter().map(|(t, h)| h.join().unwrap_or(t - start)).collect()
+    })
+}
+
+/// `probe` for several files at once (two ffprobe runs each), in their order.
+pub fn probe_all(ffprobe: &Path, files: &[(&Path, &str)]) -> Vec<Result<Src, String>> {
+    thread::scope(|sc| {
+        let hs: Vec<_> = files.iter().map(|&(file, title)| (title, sc.spawn(move || probe(ffprobe, file, title)))).collect();
+        hs.into_iter().map(|(title, h)| h.join().unwrap_or_else(|_| Err(format!("Could not read \"{title}\"")))).collect()
+    })
 }
 
 /// A finished join, at its final path.
@@ -814,15 +1013,18 @@ pub struct Done {
 /// Join `srcs` (in order) into `out` (which must not exist yet; written as
 /// `.<name>.joining` first). `encoder` as in the settings ("auto", "nvenc", ...).
 /// `progress` gets 0..100, never backwards. Nothing is left behind on error or cancel.
-pub fn join(ffmpeg: &Path, srcs: &[Src], fps_hint: &[u32], out: &Path, title: &str, encoder: &str, cancel: &AtomicBool, progress: &mut dyn FnMut(f32)) -> Result<Done, String> {
+/// `keep_first`: the first clip is a project's draft; it is never re-encoded
+/// to match the clips added to it (they are matched to it).
+#[allow(clippy::too_many_arguments)]
+pub fn join(ffmpeg: &Path, srcs: &[Src], fps_hint: &[u32], keep_first: bool, out: &Path, title: &str, encoder: &str, cancel: &AtomicBool, progress: &mut dyn FnMut(f32)) -> Result<Done, String> {
+    join_as(ffmpeg, srcs, fps_hint, keep_first, true, out, title, encoder, cancel, progress)
+}
+
+/// `join`; `matching` false encodes every clip when the pictures differ (the way before 0.1.22, kept as the fallback).
+#[allow(clippy::too_many_arguments)]
+fn join_as(ffmpeg: &Path, srcs: &[Src], fps_hint: &[u32], keep_first: bool, matching: bool, out: &Path, title: &str, encoder: &str, cancel: &AtomicBool, progress: &mut dyn FnMut(f32)) -> Result<Done, String> {
     let ffprobe = library::ffprobe_for(ffmpeg).ok_or("Could not read the clip (ffprobe.exe was not found)")?;
     let mut plan = plan(srcs, fps_hint)?;
-    let dir = out.parent().map(Path::to_path_buf).unwrap_or_default();
-    let name = out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "joined.mp4".into());
-    let part = dir.join(format!(".{name}.joining"));
-    let mut guard = Partial(Some(part.clone()));
-    let list = util::tmp_dir().join(format!("join-{}.txt", util::new_id()));
-    let _list_guard = Partial(Some(list.clone()));
     let mut top = 0f32;
     let mut report = |p: f32| {
         if p > top {
@@ -830,6 +1032,28 @@ pub fn join(ffmpeg: &Path, srcs: &[Src], fps_hint: &[u32], out: &Path, title: &s
             progress(p);
         }
     };
+    // Pictures differ: re-encode only the clips that differ, then copy (see "Matching").
+    let mut matched_files: Vec<Partial> = Vec::new();
+    let mut matched: Option<Vec<Src>> = None;
+    if plan.mode == Mode::Encode && matching {
+        if let Some(v) = match_clips(ffmpeg, &ffprobe, srcs, fps_hint, keep_first, encoder, cancel, &mut report, &mut matched_files)? {
+            match self::plan(&v, fps_hint) {
+                Ok(p) if p.mode != Mode::Encode => {
+                    plan = p;
+                    matched = Some(v);
+                }
+                other => util::log(&format!("join: the matched clips still cannot be copied ({:?}); encoding every clip instead", other.map(|p| p.mode))),
+            }
+        }
+    }
+    let lo: f32 = if matched.is_some() { 1.0 + MATCH_SHARE } else { 1.0 };
+    let srcs: &[Src] = matched.as_deref().unwrap_or(srcs);
+    let dir = out.parent().map(Path::to_path_buf).unwrap_or_default();
+    let name = out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "joined.mp4".into());
+    let part = dir.join(format!(".{name}.joining"));
+    let mut guard = Partial(Some(part.clone()));
+    let list = util::tmp_dir().join(format!("join-{}.txt", util::new_id()));
+    let _list_guard = Partial(Some(list.clone()));
     util::log(&format!(
         "join: {} clips -> {}: mode {}, drift {:.1} ms, {:.1} s, tracks {:?}",
         srcs.len(), out.display(), plan.mode.name(), plan.drift * 1000.0, plan.total, plan.tracks
@@ -839,16 +1063,16 @@ pub fn join(ffmpeg: &Path, srcs: &[Src], fps_hint: &[u32], out: &Path, title: &s
         match plan.mode {
             Mode::Copy | Mode::CopyVideo => {
                 fs::write(&list, concat_list(srcs, &plan.durs)).map_err(|e| format!("Could not write the join list: {e}"))?;
-                run_ffmpeg(ffmpeg, &copy_args(srcs, plan, &list, title, &part), plan.total, cancel, &mut |f| report(1.0 + 95.0 * f as f32))
+                run_ffmpeg(ffmpeg, &copy_args(srcs, plan, &list, title, &part), plan.total, cancel, &mut |f| report(lo + (96.0 - lo) * f as f32))
             }
             Mode::Encode => {
                 let enc = crate::editor::pick_encoder(ffmpeg, encoder);
-                let r = run_ffmpeg(ffmpeg, &encode_args(srcs, plan, &enc, title, &part), plan.total, cancel, &mut |f| report(1.0 + 95.0 * f as f32));
+                let r = run_ffmpeg(ffmpeg, &encode_args(srcs, plan, &enc, title, &part), plan.total, cancel, &mut |f| report(lo + (96.0 - lo) * f as f32));
                 match r {
                     Err(e) if e != CANCELLED && enc != "x264" => {
                         util::log(&format!("join: {enc} failed ({e}), retrying with libx264"));
                         let _ = fs::remove_file(&part);
-                        run_ffmpeg(ffmpeg, &encode_args(srcs, plan, "x264", title, &part), plan.total, cancel, &mut |f| report(1.0 + 95.0 * f as f32))
+                        run_ffmpeg(ffmpeg, &encode_args(srcs, plan, "x264", title, &part), plan.total, cancel, &mut |f| report(lo + (96.0 - lo) * f as f32))
                     }
                     r => r,
                 }
@@ -1246,7 +1470,16 @@ struct Case<'a> {
     mode: Mode,
     tracks: usize,
     titles: Vec<&'a str>,
+    /// Width, height and frame rate of the result (rate 0 = not checked).
     size: Option<(u32, u32, u32)>,
+    /// The first clip is a project's draft (`join`'s `keep_first`).
+    keep_first: bool,
+    /// Encode every clip when the pictures differ (the way before 0.1.22).
+    encode_all: bool,
+    /// Clips (by position) re-encoded like an export after they are made: High profile, B-frames, a 1/15360 time base.
+    redo: Vec<usize>,
+    /// Either copy way is right (which one depends on a few milliseconds of sound).
+    loose: bool,
     /// `feeds[i][k]`: the track of clip i expected on result track k (None = silence).
     feeds: Vec<Vec<Option<usize>>>,
 }
@@ -1271,7 +1504,31 @@ fn run_self_test(r: &mut Report) {
     let p = plan(&[mk("1/90000", 180, 1280), mk("1/90000", 180, 1280), mk("1/90000", 180, 1280)], &[]);
     r.check("plan: sound 160 ms shorter than the picture drifts, so only the picture is copied", p.as_ref().is_ok_and(|p| p.mode == Mode::CopyVideo && p.drift < -MAX_DRIFT), &format!("{:?}", p.as_ref().map(|p| (p.mode, p.drift))));
     let p = plan(&[mk("1/90000", 189, 1280), mk("1/15360", 189, 1280)], &[60, 60]);
-    r.check("plan: a different picture time base is re-encoded (the concat demuxer would scramble it)", p.as_ref().is_ok_and(|p| p.mode == Mode::Encode), &format!("{:?}", p.as_ref().map(|p| p.mode)));
+    r.check("plan: a different picture time base is not copied as it is (the concat demuxer would scramble it)", p.as_ref().is_ok_and(|p| p.mode == Mode::Encode), &format!("{:?}", p.as_ref().map(|p| p.mode)));
+    let mut lvl = mk("1/90000", 189, 1280);
+    lvl.v.as_mut().unwrap().level = 61;
+    let p = plan(&[mk("1/90000", 189, 1280), lvl], &[]);
+    r.check("plan: a 60 fps and a 120 fps capture (only the level differs) are copied", p.as_ref().is_ok_and(|p| p.mode == Mode::Copy), &format!("{:?}", p.as_ref().map(|p| p.mode)));
+    // Matching: which clip the others are re-encoded to.
+    let pic = |w: u32, h: u32, profile: &str, has_b: i64, tb: &str, secs: f64| Src {
+        duration: secs,
+        v: Some(VInfo { codec: "h264".into(), profile: profile.into(), width: w, height: h, pix_fmt: "yuv420p".into(), sar: "1:1".into(), has_b, time_base: tb.into(), fps: 60.0, first: 0.0, end: secs, ..Default::default() }),
+        ..Default::default()
+    };
+    let (cap, exp) = (pic(2560, 1440, "High", 0, "1/90000", 30.0), pic(2560, 1440, "High", 2, "1/15360", 14.0));
+    r.check("match: the picture most seconds have is kept (two captures, one export)", match_target(&[exp.clone(), cap.clone(), cap.clone()], false) == Some(1), "");
+    r.check("match: a project's draft is kept, whatever is added", match_target(&[exp.clone(), cap.clone(), cap.clone()], true) == Some(0), "");
+    r.check("match: no clip is made smaller (a 1080p draft, a 1440p clip added)", match_target(&[pic(1920, 1080, "High", 0, "1/90000", 60.0), cap.clone()], true).is_none() && match_target(&[pic(1920, 1080, "High", 0, "1/90000", 60.0), cap.clone()], false) == Some(1), "");
+    let mut hevc = cap.clone();
+    hevc.v.as_mut().unwrap().codec = "hevc".into();
+    r.check("match: only H.264 4:2:0 with square pixels is matched to", match_target(&[hevc.clone(), hevc], false).is_none() && !can_match(pic(1280, 720, "High 10", 0, "1/90000", 1.0).video()) && can_match(cap.video()), "");
+    let ma = match_args(&exp, cap.video(), 60, "x264", &match_encoder(cap.video(), "x264").1, Path::new("o.mp4")).join(" ");
+    r.check("match: arguments keep the clip's timing and sound, and give the target's time base, profile and frame order", ma.contains("-video_track_timescale 90000") && ma.contains("-profile:v high") && ma.contains("-bf 0") && ma.contains("-c:a copy") && ma.contains("fps=60") && !ma.contains("setpts") && ma.contains("scale=2560:1440"), &ma);
+    let mut named_src = exp.clone();
+    named_src.a = vec![AInfo { title: "Mix".into(), ..Default::default() }, AInfo::default(), AInfo { title: "Game".into(), ..Default::default() }];
+    let ma = match_args(&named_src, cap.video(), 60, "x264", &[], Path::new("o.mp4")).join(" ");
+    r.check("match: the copy keeps each track's title", ma.contains("-metadata:s:a:0 title=Mix") && ma.contains("-metadata:s:a:2 title=Game") && !ma.contains("-metadata:s:a:1"), &ma);
+    r.check("match: B-frames are matched with libx264 only", match_encoder(exp.video(), "nvenc").0 == "x264" && match_encoder(cap.video(), "nvenc").0 == "nvenc", "");
     let p = plan(&[mk("1/90000", 189, 1280), mk("1/90000", 189, 1920)], &[60, 120]);
     r.check("plan: different sizes: encode at the largest size and highest rate", p.as_ref().is_ok_and(|p| p.mode == Mode::Encode && (p.width, p.height, p.fps) == (1920, 720, 120)), &format!("{:?}", p.as_ref().map(|p| (p.mode, p.width, p.height, p.fps))));
     let mut silent = mk("1/90000", 189, 1280);
@@ -1350,6 +1607,10 @@ fn run_self_test(r: &mut Report) {
             tracks: 3,
             titles: vec!["Mix", "Desktop", "Microphone"],
             size: None,
+            keep_first: false,
+            encode_all: false,
+            redo: vec![],
+            loose: false,
             feeds: vec![vec![n0, n1, n2], vec![n0, n1, n2]],
         },
         Case {
@@ -1359,6 +1620,10 @@ fn run_self_test(r: &mut Report) {
             tracks: 1,
             titles: vec!["Mix"],
             size: None,
+            keep_first: false,
+            encode_all: false,
+            redo: vec![],
+            loose: false,
             feeds: vec![vec![n0], vec![n0], vec![n0]],
         },
         Case {
@@ -1368,6 +1633,10 @@ fn run_self_test(r: &mut Report) {
             tracks: 2,
             titles: vec!["Mix", "Desktop"],
             size: None,
+            keep_first: false,
+            encode_all: false,
+            redo: vec![],
+            loose: false,
             feeds: vec![vec![None, None], vec![n0, n1]],
         },
         Case {
@@ -1381,6 +1650,10 @@ fn run_self_test(r: &mut Report) {
             tracks: 4,
             titles: vec!["Mix", "Desktop", "Microphone", "Game"],
             size: None,
+            keep_first: false,
+            encode_all: false,
+            redo: vec![],
+            loose: false,
             feeds: vec![vec![n0, n1, n2, n3], vec![n0, n1, n2, None], vec![n0, n0, None, None]],
         },
         Case {
@@ -1390,11 +1663,71 @@ fn run_self_test(r: &mut Report) {
                 ("e2", sp(240, 240, 30, 3.0, 0.0, 1, false, "4/3", 1.5)),
                 ("e3", sp(160, 200, 30, 2.5, 0.0, 2, true, "1", 0.8)),
             ],
+            mode: Mode::CopyVideo,
+            tracks: 3,
+            titles: vec!["Mix", "Desktop", "Microphone"],
+            size: Some((320, 240, 0)),
+            keep_first: false,
+            encode_all: false,
+            redo: vec![],
+            loose: false,
+            feeds: vec![vec![n0, n1, n2], vec![n0, n0, None], vec![n0, n1, None]],
+        },
+        Case {
+            name: "different sizes, every clip encoded (the fallback)",
+            files: vec![
+                ("e1", sp(320, 240, 60, 3.0, 0.0, 3, false, "1", 1.0)),
+                ("e2", sp(240, 240, 30, 3.0, 0.0, 1, false, "4/3", 1.5)),
+                ("e3", sp(160, 200, 30, 2.5, 0.0, 2, true, "1", 0.8)),
+            ],
             mode: Mode::Encode,
             tracks: 3,
             titles: vec!["Mix", "Desktop", "Microphone"],
             size: Some((320, 240, 60)),
+            keep_first: false,
+            encode_all: true,
+            redo: vec![],
+            loose: false,
             feeds: vec![vec![n0, n1, n2], vec![n0, n0, None], vec![n0, n1, None]],
+        },
+        Case {
+            name: "an export among captures (only the export is re-encoded)",
+            files: vec![("m1", sp(320, 240, 60, 3.0, 0.0, 3, false, "1", 1.0)), ("m2", sp(320, 240, 60, 3.0, 0.0, 3, false, "1", 1.4)), ("m3", sp(320, 240, 60, 2.5, 0.0, 3, true, "1", 0.8))],
+            mode: Mode::CopyVideo,
+            tracks: 3,
+            titles: vec!["Mix", "Desktop", "Microphone"],
+            size: Some((320, 240, 0)),
+            keep_first: false,
+            encode_all: false,
+            redo: vec![1],
+            loose: true,
+            feeds: vec![vec![n0, n1, n2], vec![n0, n1, n2], vec![n0, n1, n2]],
+        },
+        Case {
+            name: "a draft with B-frames stays as it is; the capture added to it is matched",
+            files: vec![("k1", sp(320, 240, 60, 3.0, 0.0, 3, false, "1", 1.0)), ("k2", sp(320, 240, 60, 3.0, 0.0, 3, false, "1", 1.4))],
+            mode: Mode::CopyVideo,
+            tracks: 3,
+            titles: vec!["Mix", "Desktop", "Microphone"],
+            size: Some((320, 240, 0)),
+            keep_first: true,
+            encode_all: false,
+            redo: vec![0],
+            loose: true,
+            feeds: vec![vec![n0, n1, n2], vec![n0, n1, n2]],
+        },
+        Case {
+            name: "a larger clip added to a draft: nothing is made smaller, every clip is encoded",
+            files: vec![("g1", sp(240, 240, 60, 3.0, 0.0, 3, false, "1", 1.0)), ("g2", sp(320, 240, 60, 3.0, 0.0, 3, false, "1", 1.4))],
+            mode: Mode::Encode,
+            tracks: 3,
+            titles: vec!["Mix", "Desktop", "Microphone"],
+            size: Some((320, 240, 60)),
+            keep_first: true,
+            encode_all: false,
+            redo: vec![],
+            loose: false,
+            feeds: vec![vec![n0, n1, n2], vec![n0, n1, n2]],
         },
     ];
 
@@ -1409,6 +1742,18 @@ fn run_self_test(r: &mut Report) {
                 built = false;
             }
             paths.push(p);
+        }
+        for &i in &case.redo {
+            // Like an export of the editor: High profile, B-frames, another time base; the sound as it is.
+            let tmp = paths[i].with_extension("redo.mp4");
+            let mut a = sv(&["-hide_banner", "-loglevel", "error", "-y", "-i"]);
+            a.push(paths[i].to_string_lossy().into_owned());
+            a.extend(sv(&["-map", "0", "-c:v", "libx264", "-preset", "veryfast", "-bf", "3", "-pix_fmt", "yuv420p", "-video_track_timescale", "15360", "-c:a", "copy"]));
+            a.push(tmp.to_string_lossy().into_owned());
+            if let Err(e) = build(&ffmpeg, &a).and_then(|_| fs::rename(&tmp, &paths[i]).map_err(|e| e.to_string())) {
+                r.check(&format!("{}: re-encode clip {} like an export", case.name, i + 1), false, &e);
+                built = false;
+            }
         }
         if !built {
             continue;
@@ -1429,7 +1774,7 @@ fn run_self_test(r: &mut Report) {
         let out = dir.join(format!("{} joined.mp4", case.files[0].0));
         let t0 = Instant::now();
         let mut pcts = Vec::new();
-        let res = join(&ffmpeg, &srcs, &[], &out, "test join", "x264", &AtomicBool::new(false), &mut |p| pcts.push(p));
+        let res = join_as(&ffmpeg, &srcs, &[], case.keep_first, !case.encode_all, &out, "test join", "x264", &AtomicBool::new(false), &mut |p| pcts.push(p));
         let took = t0.elapsed().as_secs_f64();
         let Ok(done) = res else {
             r.check(&format!("{}: join succeeds", case.name), false, res.err().as_deref().unwrap_or(""));
@@ -1437,17 +1782,27 @@ fn run_self_test(r: &mut Report) {
         };
         r.check(&format!("{}: join succeeds", case.name), true, "");
         r.line(&format!("INFO {}: mode {}, planned drift of a copy {:.1} ms, {took:.2} s, starts {:?} (planned {:?})", case.name, done.mode.name(), done.plan.drift * 1000.0, done.starts, done.plan.starts));
-        r.check(&format!("{}: way taken is {}", case.name, case.mode.name()), done.mode == case.mode, done.mode.name());
+        r.check(&format!("{}: way taken is {}{}", case.name, case.mode.name(), if case.loose { " or copy" } else { "" }), done.mode == case.mode || (case.loose && done.mode == Mode::Copy), done.mode.name());
+        if !case.redo.is_empty() {
+            let v: Vec<String> = srcs.iter().map(|s| format!("{} b{} {}", s.video().profile, s.video().has_b, s.video().time_base)).collect();
+            r.check(&format!("{}: the re-encoded clip really differs from the others", case.name), srcs.iter().any(|s| !same_video(s.video(), srcs[0].video())), &format!("{v:?}"));
+            if case.keep_first {
+                let kept = probe(&ffprobe, &out, "out").ok().and_then(|p| p.v).is_some_and(|v| same_video(&v, srcs[0].video()));
+                r.check(&format!("{}: the result has the first clip's picture format", case.name), kept, "");
+            }
+        }
         let sum: f64 = srcs.iter().map(|s| s.duration).sum();
         let p = library::probe(&ffmpeg, &out, false).unwrap_or_default();
-        r.check(&format!("{}: length = sum of the clips within 50 ms", case.name), (p.duration - sum).abs() <= 0.05, &format!("{:.3} vs {:.3}", p.duration, sum));
+        // A straight copy plays each clip's sound to its last AAC frame before the next clip starts: up to 35 ms a clip.
+        let slack = if done.mode == Mode::Copy { 0.035 * srcs.len() as f64 } else { 0.05 };
+        r.check(&format!("{}: length = sum of the clips within {:.0} ms", case.name, slack * 1000.0), (p.duration - sum).abs() <= slack, &format!("{:.3} vs {:.3}", p.duration, sum));
         r.check(&format!("{}: one video and {} audio streams", case.name, case.tracks), p.video_streams == 1 && p.audio_streams as usize == case.tracks, &format!("{} video, {} audio", p.video_streams, p.audio_streams));
         let titles = stream_titles(&ffprobe, &out);
         r.check(&format!("{}: track titles {:?}", case.name, case.titles), titles == case.titles, &format!("{titles:?}"));
         let errs = decode_errors(&ffmpeg, &out);
         r.check(&format!("{}: result decodes without errors", case.name), errs.is_empty(), &errs);
         if let Some((w, h, fps)) = case.size {
-            r.check(&format!("{}: picture {w}x{h} at {fps} fps", case.name), p.width == w && p.height == h && p.fps == fps, &format!("{}x{}@{}", p.width, p.height, p.fps));
+            r.check(&format!("{}: picture {w}x{h}{}", case.name, if fps > 0 { format!(" at {fps} fps") } else { String::new() }), p.width == w && p.height == h && (fps == 0 || p.fps == fps), &format!("{}x{}@{}", p.width, p.height, p.fps));
         }
         // Join points: each clip's flash lands at its start + its own flash time.
         let fl = flashes(&ffmpeg, &out);
@@ -1502,6 +1857,8 @@ fn run_self_test(r: &mut Report) {
         r.check(&format!("{}: progress reached 100 and never went back", case.name), pcts.last() == Some(&100.0) && pcts.windows(2).all(|w| w[1] >= w[0]), &format!("{} updates", pcts.len()));
         let left: Vec<_> = fs::read_dir(&dir).map(|rd| rd.filter_map(Result::ok).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".joining")).collect()).unwrap_or_default();
         r.check(&format!("{}: no partial file left", case.name), left.is_empty(), &format!("{left:?}"));
+        let left: Vec<_> = fs::read_dir(util::tmp_dir()).map(|rd| rd.filter_map(Result::ok).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("match-")).collect()).unwrap_or_default();
+        r.check(&format!("{}: no matched copy left in the temp folder", case.name), left.is_empty(), &format!("{left:?}"));
         let _ = fs::remove_file(&out);
         if case.mode == Mode::Encode {
             encode_srcs = srcs;
@@ -1515,7 +1872,7 @@ fn run_self_test(r: &mut Report) {
         let out = dir.join("cancelled.mp4");
         let t0 = Instant::now();
         let mut set_at: Option<Instant> = None;
-        let res = join(&ffmpeg, &encode_srcs, &[], &out, "cancel", "x264", &cancel, &mut |p| {
+        let res = join(&ffmpeg, &encode_srcs, &[], false, &out, "cancel", "x264", &cancel, &mut |p| {
             if p > 20.0 && !c.swap(true, Ordering::SeqCst) {
                 set_at = Some(Instant::now());
             }
@@ -1688,12 +2045,16 @@ fn run_self_test(r: &mut Report) {
         let srcs: Vec<Src> = paths.iter().filter_map(|p| probe(&ffprobe, p, &p.to_string_lossy()).ok()).collect();
         let out = dir.join("real join.mp4");
         let t0 = Instant::now();
-        match join(&ffmpeg, &srcs, &[], &out, "real join", "auto", &AtomicBool::new(false), &mut |_| {}) {
+        match join(&ffmpeg, &srcs, &[], false, &out, "real join", "auto", &AtomicBool::new(false), &mut |_| {}) {
             Ok(d) => {
                 let sum: f64 = srcs.iter().map(|s| s.duration).sum();
                 r.line(&format!("INFO real clips: {} files, mode {}, drift of a copy {:.1} ms, {:.1} s, length {:.3} vs sum {sum:.3}, starts {:?} (planned {:?})", srcs.len(), d.mode.name(), d.plan.drift * 1000.0, t0.elapsed().as_secs_f64(), d.duration, d.starts, d.plan.starts));
                 r.check("real clips: the result decodes without errors", decode_errors(&ffmpeg, &out).is_empty(), &decode_errors(&ffmpeg, &out));
                 r.check("real clips: length = sum within 50 ms (+ AAC priming per join)", (d.duration - sum).abs() <= 0.05 + 0.045 * (srcs.len() - 1) as f64, &format!("{:.3} vs {sum:.3}", d.duration));
+                // GLINT_JOIN_KEEP="<file>": keep a copy of the result there, to look at it in a player.
+                if let Some(keep) = std::env::var_os("GLINT_JOIN_KEEP") {
+                    let _ = fs::copy(&out, PathBuf::from(keep));
+                }
                 let _ = fs::remove_file(&out);
             }
             Err(e) => r.check("real clips: join", false, &e),

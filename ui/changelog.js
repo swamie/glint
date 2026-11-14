@@ -14,6 +14,18 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.22", date: "2026-11-15",
+    new: [
+      t("Editor page: pick several projects with Ctrl or Shift and a click, the tick on a card, or a box drawn over the cards. Rename or delete them together from the bar at the bottom, the right-click menu, F2 or Delete."),
+    ],
+    improved: [
+      t("Adding clips to a project is much faster when the clips are not all alike (a capture next to an export or a Blur render). Only the clips that differ are converted; before, every clip was, and the whole project again with each add."),
+      t("A 60 fps and a 120 fps capture of the same size now go into a project without any conversion."),
+      t("A Blur render no longer looks stuck at 0 %: until Blur reports its first percent, Glint says “Starting Blur…” and the bar keeps moving."),
+    ],
+    fixed: [],
+  },
+  {
     version: "0.1.21", date: "2026-11-14",
     new: [],
     improved: [

@@ -28,6 +28,10 @@ let projSaveTimer = 0;
 // The clip list beside the editor. q / game stay while the app runs; sel is the selection, in the order picked.
 const projLib = { id: null, q: "", game: "all", sel: [], anchor: null };
 let projDrag = null;                // a press in the clip list: { x, y, item, ctrl, shift, mode, ... }
+// The Editor page's selection: projects picked with Ctrl / Shift, their tick or a box, in the order picked.
+const projSel = { ids: [], anchor: null };
+let projPageDrag = null;            // a press on the Editor page: { x, y, cx, cy, card, add, mode, ... }
+let projBoxAt = -1e9;               // when a selection box was last let go (that release is not a click on a card)
 
 /* ---------- pure helpers (tested under node) ---------- */
 
@@ -90,6 +94,17 @@ function projBoxHits(base, rects, box) {
   return out;
 }
 
+/** The names a bulk rename gives `n` projects: the name alone for one, "<name> 1" ... "<name> n" for more. */
+function projBulkNames(base, n) {
+  base = String(base || "").trim();
+  return n === 1 ? [base] : Array.from({ length: n }, (_, i) => `${base} ${i + 1}`);
+}
+/** A name without the number at its end ("Montage 3" gives "Montage"): what a bulk rename offers. */
+function projBaseName(name) {
+  name = String(name || "").trim();
+  return name.replace(/\s+\d+$/, "").trim() || name;
+}
+
 /* ---------- the project list ---------- */
 
 /** Put project `p` (as the backend returned it) into S.projects, newest change first. */
@@ -140,8 +155,9 @@ function projCardHtml(p) {
   const { n, secs } = projSummary(p), busy = projBusyInfo(p), c = p.clip;
   const bg = c && c.thumb ? "" : `style="background:linear-gradient(135deg,hsl(${hue(p.name)} 40% 22%),hsl(${(hue(p.name) + 50) % 360} 45% 12%))"`;
   const meta = [n === 1 ? t("1 clip") : t("{n} clips", { n }), ...(secs > 0 ? [fmtDur(secs)] : [])].join(" · ");
-  return `<article class="card pj-card" data-pj="${esc(p.id)}" tabindex="0" data-hover title="${esc(p.name)}">
+  return `<article class="card pj-card${projSel.ids.includes(p.id) ? " sel" : ""}" data-pj="${esc(p.id)}" tabindex="0" data-hover title="${esc(p.name)}">
     <div class="thumb" ${bg}>
+      <span class="check" data-pjp="pick" title="${esc(t("Select"))}">${ICON.check}</span>
       ${c && c.thumb ? `<img class="thumb-img" src="${esc(fileSrc(c.thumb))}" alt="" draggable="false" decoding="async" onerror="this.remove()" style="${typeof THUMB_IMG_STYLE === "string" ? THUMB_IMG_STYLE : ""}">` : `<div class="ph">${n ? JOIN_ICON : ICON.plus}</div>`}
       ${p.exported ? `<span class="tag pj-tag-exp">${esc(t("Exported"))}</span>` : !n ? `<span class="tag pj-tag-empty">${esc(t("Empty"))}</span>` : ""}
       ${secs > 0 ? `<span class="dur">${fmtDur(secs)}</span>` : ""}
@@ -155,6 +171,7 @@ function projCardHtml(p) {
 /** The Editor page (app.js render() calls it for S.page "editor"). */
 function renderEditorPage() {
   const list = projList();
+  projSel.ids = projSel.ids.filter((id) => list.some((p) => p.id === id));
   const empty = `<div class="empty pj-empty-page"><h2>${esc(t("No projects yet"))}</h2>
     <p>${esc(t("A project is an editing session that is kept: the clips you put in it, your cuts, their order and levels. Close it at any time and go on later, right where you left off."))}</p>
     <p>${esc(t("Start one with New project, or select clips in the library and pick Edit together. Export saves the result as a new clip; the clips themselves stay as they are."))}</p>
@@ -201,11 +218,151 @@ async function projDelete(id) {
   } catch (e) { fail(e); }
   projRefreshUI();
 }
+/** Rename projects `ids` at once: one name, numbered in the order the page shows them. */
+async function projRenameMany(ids) {
+  const list = projList().filter((p) => ids.includes(p.id));
+  if (!list.length) return;
+  if (list.length === 1) return projRename(list[0].id);
+  const base = await askText(t("Rename {n} projects. Each gets this name and a number, in the order shown.", { n: list.length }), projBaseName(list[0].name), t("Rename"));
+  if (!base) return;
+  const names = projBulkNames(base, list.length);
+  let done = 0;
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].name === names[i]) { done++; continue; }
+    try { projUpsert(await invoke("rename_project", { id: list[i].id, name: names[i] })); done++; }
+    catch (e) { console.warn("Glint: rename_project failed", e); }
+  }
+  flash(done === list.length ? t("{n} projects renamed", { n: done }) : t("{done} of {n} projects renamed", { done, n: list.length }), done !== list.length);
+  projRefreshUI();
+}
+/** Delete projects `ids` at once, after one question. One that clips are still being added to stays. */
+async function projDeleteMany(ids) {
+  const list = projList().filter((p) => ids.includes(p.id));
+  if (!list.length) return;
+  if (list.length === 1) return projDelete(list[0].id);
+  const n = list.length;
+  if (!(await ask(t("Delete {n} projects? Your edits in them are lost. The clips themselves stay in your library, and so do the clips you exported from them.", { n }), t("Delete {n} projects", { n })))) return;
+  const gone = new Set();
+  for (const p of list) {
+    try {
+      if (await invoke("delete_project", { id: p.id })) { gone.add(p.id); projCache.delete(p.id); projSavedText.delete(p.id); }
+    } catch (e) { console.warn("Glint: delete_project failed", e); }
+  }
+  S.projects = projList().filter((x) => !gone.has(x.id));
+  projSel.ids = projSel.ids.filter((id) => !gone.has(id));
+  projSel.anchor = null;
+  if (gone.size) sfx("close");
+  flash(gone.size === n ? t("{n} projects deleted", { n }) : t("{done} of {n} projects deleted. Clips are still being added to the others.", { done: gone.size, n }), gone.size !== n);
+  projRefreshUI();
+}
 function projOpenMenu(id, x, y) {
   const p = projById(id);
   if (!p) return closeMenu();
-  $("#menu").innerHTML = projMItem("open", t("Open"), PICON.play, id) + projMItem("rename", t("Rename…"), ICON.edit, id) + "<hr>" + projMItem("delete", t("Delete"), ICON.trash, id, "danger");
+  const n = projSel.ids.length;
+  // A right-click on one of several picked projects is about all of them, as in the library.
+  $("#menu").innerHTML = projSel.ids.includes(id) && n > 1
+    ? `<div class="menu-head">${esc(t("{n} selected", { n }))}</div>` + projMItem("rename-sel", t("Rename…"), ICON.edit) + projMItem("clear-sel", t("Clear selection"), ICON.x) + "<hr>" + projMItem("delete-sel", t("Delete"), ICON.trash, "", "danger")
+    : projMItem("open", t("Open"), PICON.play, id) + projMItem("rename", t("Rename…"), ICON.edit, id) + projMItem("pick", projSel.ids.includes(id) ? t("Deselect") : t("Select"), ICON.check, id)
+      + "<hr>" + projMItem("delete", t("Delete"), ICON.trash, id, "danger");
   placeMenu(x, y);
+}
+
+/* ---------- the Editor page: picking several projects ---------- */
+
+/** Bring the cards and the selection bar in line with projSel without rebuilding the grid. */
+function projSyncSel() {
+  for (const el of document.querySelectorAll("#view .pj-card")) el.classList.toggle("sel", projSel.ids.includes(el.dataset.pj));
+  if (typeof renderSelBar === "function") renderSelBar();
+}
+/** Drop the Editor page's selection (app.js goPage calls it too). */
+function projSelClear() {
+  if (!projSel.ids.length) return;
+  projSel.ids = [];
+  projSel.anchor = null;
+  projSyncSel();
+}
+/** app.js renderSelBar: draw the bar for the Editor page's selection into `el`. True when it is shown. */
+function projSelBar(el) {
+  if (typeof S === "undefined" || S.page !== "editor" || S.open) return false;
+  const picked = projList().filter((p) => projSel.ids.includes(p.id));
+  if (!picked.length) return false;
+  const secs = picked.reduce((s, p) => s + projSummary(p).secs, 0);
+  document.body.classList.add("has-sel");
+  el.hidden = false;
+  el.innerHTML = `<b>${esc(t("{n} selected", { n: picked.length }))}</b><span class="muted">${secs > 0 ? fmtDur(secs) : ""}</span>
+    <button class="btn sm" data-pjp="sel-rename">${ICON.edit}${esc(t("Rename"))}</button>
+    <button class="btn sm danger" data-pjp="sel-del">${ICON.trash}${esc(t("Delete"))}</button>
+    <button class="icon-btn" data-pjp="sel-clear" aria-label="${esc(t("Clear selection"))}" title="${esc(t("Clear selection (Esc)"))}">${ICON.x}</button>`;
+  return true;
+}
+/** A click that picks: Shift takes the range from the last one picked, otherwise the project is added or taken out. */
+function projPageClick(id, e) {
+  const r = projSelClick(projSel.ids, projSel.anchor, projList().map((p) => p.id), id, { ctrl: true, shift: !!e.shiftKey && projSel.anchor != null });
+  projSel.ids = r.sel;
+  projSel.anchor = r.anchor ?? id;
+  projSyncSel();
+}
+function projPageDown(e) {
+  projPageDragEnd(false);
+  if (e.button !== 0 || typeof S === "undefined" || S.page !== "editor" || S.open) return;
+  const view = e.target.closest?.("#view");
+  if (!view || !view.querySelector(".pj-grid") || e.target.closest("button, select, input, a, .check")) return;
+  if (e.clientX - view.getBoundingClientRect().left >= view.clientWidth) return; // the scroll bar
+  projPageDrag = { x: e.clientX, y: e.clientY, cx: e.clientX, cy: e.clientY, view, card: e.target.closest(".pj-card")?.dataset.pj || null, add: e.ctrlKey || e.shiftKey, mode: null };
+}
+function projPageMove(e) {
+  const d = projPageDrag;
+  if (!d) return;
+  if (e.buttons === 0) return projPageDragEnd(false); // the button was let go where Glint could not see it
+  d.cx = e.clientX;
+  d.cy = e.clientY;
+  if (!d.mode) {
+    if (Math.hypot(d.cx - d.x, d.cy - d.y) < 6) return;
+    // Card positions are taken once, in the scrolling page's own coordinates.
+    const vr = d.view.getBoundingClientRect(), top = d.view.scrollTop - vr.top;
+    d.mode = "box";
+    d.base = d.add ? projSel.ids.slice() : [];
+    d.ox = d.x - vr.left;
+    d.oy = d.y + top;
+    d.rects = [...d.view.querySelectorAll(".pj-card")].map((el) => { const b = el.getBoundingClientRect(); return { id: el.dataset.pj, l: b.left - vr.left, r: b.right - vr.left, t: b.top + top, b: b.bottom + top }; });
+    d.box = document.createElement("div");
+    d.box.className = "marquee";
+    d.view.append(d.box);
+    document.body.classList.add("selecting");
+    d.timer = setInterval(() => {
+      const b = d.view.getBoundingClientRect();
+      const dy = d.cy < b.top + 48 ? -Math.ceil((b.top + 48 - d.cy) / 3) : d.cy > b.bottom - 48 ? Math.ceil((d.cy - b.bottom + 48) / 3) : 0;
+      if (dy) { d.view.scrollTop += Math.max(-40, Math.min(40, dy)); projPageBox(d); }
+    }, 16);
+  }
+  projPageBox(d);
+}
+function projPageBox(d) {
+  const vr = d.view.getBoundingClientRect();
+  const x = Math.max(0, Math.min(d.view.clientWidth, d.cx - vr.left));
+  const y = Math.max(0, Math.min(d.view.scrollHeight, d.cy - vr.top + d.view.scrollTop));
+  const box = { l: Math.min(x, d.ox), r: Math.max(x, d.ox), t: Math.min(y, d.oy), b: Math.max(y, d.oy) };
+  if (!d.box.isConnected) d.view.append(d.box); // the page was redrawn under the drag
+  Object.assign(d.box.style, { left: `${box.l}px`, top: `${box.t}px`, width: `${box.r - box.l}px`, height: `${box.b - box.t}px` });
+  projSel.ids = projBoxHits(d.base, d.rects, box);
+  projSel.anchor = null;
+  projSyncSel();
+}
+/** End the press on the Editor page. `drop`: a real release; otherwise it is dropped without effect. */
+function projPageDragEnd(drop) {
+  const d = projPageDrag;
+  if (!d) return;
+  projPageDrag = null;
+  clearInterval(d.timer);
+  document.body.classList.remove("selecting");
+  if (d.box) {
+    const box = d.box;
+    box.classList.add("out");
+    setTimeout(() => box.remove(), 170);
+    projBoxAt = performance.now();
+  }
+  // A plain click beside the cards drops the selection.
+  if (drop && !d.mode && !d.card && !d.add) projSelClear();
 }
 /** A menu item of this file: data-pjm instead of app.js's data-m, so menuAction never sees it. */
 const projMItem = (act, label, icon, arg = "", cls = "", disabled = false) =>
@@ -664,19 +821,32 @@ if (typeof document !== "undefined" && typeof window !== "undefined" && window._
     const d = b.dataset;
     try {
       if (d.pjp === "new") return void projNew();
+      if (d.pjp === "pick") { const card = b.closest(".pj-card"); if (card && !S.open) projPageClick(card.dataset.pj, e); return; }
+      if (d.pjp === "sel-rename") return void projRenameMany(projSel.ids.slice());
+      if (d.pjp === "sel-del") return void projDeleteMany(projSel.ids.slice());
+      if (d.pjp === "sel-clear") return projSelClear();
       if (d.pja === "add") return projAddSel();
       if (d.pjm) {
         closeMenu();
         if (d.pjm === "open") return projOpen(d.arg);
         if (d.pjm === "rename") return void projRename(d.arg);
         if (d.pjm === "delete") return void projDelete(d.arg);
+        if (d.pjm === "pick") return projPageClick(d.arg, e);
+        if (d.pjm === "rename-sel") return void projRenameMany(projSel.ids.slice());
+        if (d.pjm === "delete-sel") return void projDeleteMany(projSel.ids.slice());
+        if (d.pjm === "clear-sel") return projSelClear();
         if (d.pjm === "add") return projAddSel();
         if (d.pjm === "all") { const ids = projShown().map((c) => c.id); projLib.sel = [...projLib.sel, ...ids.filter((x) => !projLib.sel.includes(x))]; return projPaintSel(); }
         if (d.pjm === "none") { projLib.sel = []; projLib.anchor = null; return projPaintSel(); }
         if (d.pjm === "show") return projShowInLibrary(projLib.sel.slice());
         return;
       }
-      if (d.pj && S.page === "editor" && !S.open) return projOpen(d.pj);
+      if (d.pj && S.page === "editor" && !S.open) {
+        if (performance.now() - projBoxAt < 350) return; // the release of a selection box
+        // With projects picked, or Ctrl / Shift held, a click picks; otherwise it opens the project.
+        if (projSel.ids.length || e.ctrlKey || e.shiftKey) return projPageClick(d.pj, e);
+        return projOpen(d.pj);
+      }
     } catch (err) { fail(err); }
   });
   // Registered before app.js's handler on the same node: stopImmediatePropagation keeps it from closing this menu.
@@ -692,11 +862,15 @@ if (typeof document !== "undefined" && typeof window !== "undefined" && window._
     if (typeof askKey !== "undefined" && askKey) return; // a prompt is up: its keys
     let used = false;
     if (S.open) used = projKey(e);
-    else if (S.page === "editor" && e.target.closest?.(".pj-card") && !e.repeat) {
-      const id = e.target.closest(".pj-card").dataset.pj;
-      if (e.code === "Enter" || e.code === "NumpadEnter") { projOpen(id); used = true; }
-      else if (e.code === "Delete") { projDelete(id); used = true; }
-      else if (e.code === "F2") { projRename(id); used = true; }
+    else if (S.page === "editor" && !e.repeat && !e.target.closest?.("input, textarea, select, [contenteditable]")) {
+      // The picked projects, else the card that has the focus.
+      const id = e.target.closest?.(".pj-card")?.dataset.pj || null;
+      const ids = projSel.ids.length ? projSel.ids.slice() : id ? [id] : [];
+      if ((e.code === "Enter" || e.code === "NumpadEnter") && id) { projOpen(id); used = true; }
+      else if (e.code === "Delete" && ids.length) { projDeleteMany(ids); used = true; }
+      else if (e.code === "F2" && ids.length) { projRenameMany(ids); used = true; }
+      else if (e.ctrlKey && e.code === "KeyA" && projList().length) { projSel.ids = [...projSel.ids, ...projList().map((p) => p.id).filter((x) => !projSel.ids.includes(x))]; projSyncSel(); used = true; }
+      else if (e.code === "Escape" && projSel.ids.length && document.getElementById("menu")?.hidden !== false) { projSelClear(); used = true; }
     }
     if (used) { e.preventDefault(); e.stopImmediatePropagation(); }
   }, true);
@@ -704,6 +878,13 @@ if (typeof document !== "undefined" && typeof window !== "undefined" && window._
   window.addEventListener("mouseup", () => projDragEnd(true));
   window.addEventListener("blur", () => projDragEnd(false));
   document.addEventListener("visibilitychange", () => { if (document.hidden) projDragEnd(false); });
+  // The Editor page: a box drawn over the cards picks them.
+  document.addEventListener("mousedown", projPageDown);
+  window.addEventListener("mousemove", projPageMove);
+  window.addEventListener("mouseup", () => projPageDragEnd(true));
+  window.addEventListener("blur", () => projPageDragEnd(false));
+  window.addEventListener("pointercancel", () => projPageDragEnd(false));
+  document.addEventListener("visibilitychange", () => { if (document.hidden) projPageDragEnd(false); });
   // The window going away some other way (Alt+F4): best effort; the debounced save has usually run.
   window.addEventListener("pagehide", () => { try { if (S.player) projFlush(S.player); } catch {} });
 

@@ -57,6 +57,10 @@ pub struct Job {
     pub result_id: String,
     /// Unix milliseconds when it was queued.
     pub queued: u64,
+    /// What a running job does before its first percent, so that "0 %" does not
+    /// look stuck: "prepare" (the clip is being made ready, e.g. re-timed for
+    /// Blur), "start" (the renderer runs but has reported nothing yet), or "".
+    pub stage: String,
 }
 
 impl Job {
@@ -166,6 +170,22 @@ impl Jobs {
     /// Every job, oldest first.
     pub fn list(&self) -> Vec<Job> {
         self.inner.state.lock().unwrap().list.clone()
+    }
+
+    /// Set the `stage` of the running job of `kind` on clip `clip_id` and tell the UI.
+    /// Nothing happens when there is no such job or the stage is the same.
+    pub fn stage(&self, clip_id: &str, kind: &str, stage: &str) {
+        let job = {
+            let mut st = self.inner.state.lock().unwrap();
+            let Some(j) = st.list.iter_mut().find(|j| j.clip_id == clip_id && j.kind == kind && j.state == "running") else { return };
+            if j.stage == stage {
+                return;
+            }
+            j.stage = stage.to_string();
+            j.clone()
+        };
+        self.inner.blur_progress(&job);
+        self.inner.publish();
     }
 
     /// True while a queued or running job works on clip `id` (see `Job::uses`):
@@ -329,7 +349,7 @@ impl Inner {
         }
         let message = if j.state == "done" { &j.result_id } else { &j.message };
         let _order = self.emit_lock.lock().unwrap();
-        self.emit("blur-progress", json!({ "id": j.clip_id, "pct": j.pct, "state": j.state, "message": message }));
+        self.emit("blur-progress", json!({ "id": j.clip_id, "pct": j.pct, "state": j.state, "message": message, "stage": j.stage }));
     }
 
     /// Start queued jobs, oldest first, while their lane has room.
@@ -507,7 +527,7 @@ pub fn enqueue_blur(core: &Arc<Core>, clip_id: String) -> Result<Job, String> {
         let dir = src.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(&s.clips_dir));
         let title = format!("{} (blur)", m.title);
         let out = reserve_output(&dir, &util::sanitize_filename(&title), &blur::container(&s.blur));
-        let result = blur::render_cancellable(&blur_cli, &src, &out, &s.blur, cancel, |pct| progress(pct));
+        let result = blur::render_staged(&blur_cli, &src, &out, &s.blur, cancel, &mut |stage| core.jobs.stage(&m.id, "blur", stage), |pct| progress(pct));
         reserved().lock().unwrap().remove(&out);
         result?;
         // Blur keeps every audio track but drops their titles; a clip with a Game track needs them in the editor.
@@ -676,6 +696,19 @@ fn run_self_test(r: &mut Report) {
         r.check("all six done with their result id", list.iter().all(|j| j.state == "done" && j.result_id == format!("res-{}", j.clip_id)), "");
         let queued_seen = progress_events(&g.events, "c5").iter().any(|p| p["state"] == "queued");
         r.check("blur-progress says \"queued\" for a waiting job", queued_seen, "");
+    }
+
+    // 1b. What a running job does before its first percent.
+    {
+        let g = rig(1);
+        let _ = g.jobs.enqueue("s", "s", "blur", fake(&g.track, "s", 30, 20, None, None));
+        wait_until(2.0, || state_of(&g.jobs, "s") == "running");
+        g.jobs.stage("s", "blur", "prepare");
+        g.jobs.stage("zz", "blur", "prepare");
+        r.check("stage: a running job carries its stage in the list and in blur-progress", g.jobs.list().iter().any(|j| j.clip_id == "s" && j.stage == "prepare") && progress_events(&g.events, "s").iter().any(|p| p["stage"] == "prepare"), "");
+        g.jobs.stage("s", "compress", "start");
+        r.check("stage: a job of another kind on the same clip is not touched", g.jobs.list().iter().all(|j| j.stage != "start"), "");
+        wait_until(5.0, || all_ended(&g.jobs));
     }
 
     // 2. Raising and lowering the limit.

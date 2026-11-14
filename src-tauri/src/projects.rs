@@ -571,15 +571,11 @@ fn build(core: &Arc<Core>, pid: &str, clips: &[ClipMeta], ffmpeg: &Path, s: &cra
     }
     let old = draft_of(core, pid);
     let ffprobe = library::ffprobe_for(ffmpeg).ok_or("Could not read the clip (ffprobe.exe was not found)")?;
-    let mut srcs = Vec::with_capacity(clips.len() + 1);
-    if let Some(d) = &old {
-        srcs.push(join::probe(&ffprobe, Path::new(&d.path), &d.title)?);
-    }
-    for c in clips {
-        if cancel.load(Ordering::SeqCst) {
-            return Err(join::CANCELLED.into());
-        }
-        srcs.push(join::probe(&ffprobe, Path::new(&c.path), &c.title)?);
+    // Every file is read at once (two ffprobe runs each): one after the other took seconds for twenty clips.
+    let files: Vec<(&Path, &str)> = old.iter().chain(clips.iter()).map(|c| (Path::new(&c.path), c.title.as_str())).collect();
+    let srcs = join::probe_all(&ffprobe, &files).into_iter().collect::<Result<Vec<_>, _>>()?;
+    if cancel.load(Ordering::SeqCst) {
+        return Err(join::CANCELLED.into());
     }
     progress(1.0);
     // The new draft goes beside the old one, else into `<clips_dir>\.drafts` (beside the first clip without a clips folder).
@@ -601,7 +597,8 @@ fn build(core: &Arc<Core>, pid: &str, clips: &[ClipMeta], ffmpeg: &Path, s: &cra
         progress(90.0);
         (Mode::Copy, vec![0.0], clips[0].duration)
     } else {
-        let done = join::join(ffmpeg, &srcs, &fps, &out, &proj.name, &s.encoder, cancel, progress)?;
+        // The draft (when there is one) is never re-encoded to match what is added: the clips are matched to it.
+        let done = join::join(ffmpeg, &srcs, &fps, old.is_some(), &out, &proj.name, &s.encoder, cancel, progress)?;
         (done.mode, done.starts, done.duration)
     };
     if cancel.load(Ordering::SeqCst) {

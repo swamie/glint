@@ -327,6 +327,10 @@ function visibleClips() {
 
 /** A card's name: its own hit area (see editTitle). The tooltip shows the full name, which the card may cut short. */
 const titleHtml = (c) => `<span class="ctitle" title="${esc(c.title + "\n" + t("Double-click to rename"))}">${esc(c.title)}</span>`;
+/** A running job that has reported no percent yet: its bar keeps moving instead of sitting empty (style.css `.wait`). */
+const jobWaits = (job) => !!job && job.state === "running" && (+job.pct || 0) < 1;
+/** What a Blur render does before its first percent (jobs.rs `stage`), as a line of text. */
+const blurWaitText = (stage) => (stage === "prepare" ? t("Getting the clip ready for Blur…") : t("Starting Blur…"));
 function cardHtml(c) {
   const job = S.jobs[c.id];
   const bg = c.thumb
@@ -342,7 +346,7 @@ function cardHtml(c) {
       <span class="check" title="${esc(t("Select"))}">${ICON.check}</span>
       ${c.favorite ? `<span class="star">${ICON.star}</span>` : ""}
       <span class="dur">${fmtDur(c.duration)}</span>
-      ${job && job.state === "running" ? `<div class="job"><i style="width:${job.pct}%"></i></div>` : ""}
+      ${job && job.state === "running" ? `<div class="job${jobWaits(job) ? " wait" : ""}"><i style="width:${job.pct}%"></i></div>` : ""}
     </div>
     <h3>${titleHtml(c)}</h3>
     <p><span>${esc(c.game)}</span>${S.folder === null && folderDiffers(c) ? `<span>${esc(c.folder)}</span>` : ""}<span>${timeAgo(c.created)}</span><span>${fmtSize(c.size)}</span></p>
@@ -449,6 +453,8 @@ const plural = (n) => (n === 1 ? t("1 clip") : t("{n} clips", { n }));
 
 function renderSelBar() {
   const el = $("#selbar");
+  // The Editor page has a selection of its own (projects.js): its bar goes in the same place.
+  if (typeof projSelBar === "function" && projSelBar(el)) return;
   const sel = S.clips.filter((c) => S.sel.has(c.id));
   const on = isLib() && sel.length > 0 && !S.open;
   document.body.classList.toggle("has-sel", on);
@@ -1348,6 +1354,7 @@ function goPage(page) {
   S.tab = "all";
   S.folder = null;
   S.sel.clear();
+  if (typeof projSelClear === "function") projSelClear();
   $("#view").scrollTop = 0;
   render();
 }
@@ -1657,7 +1664,7 @@ async function pollStatus() {
   // A game was seen for the first time, or its icon was just taken from its exe.
   T.event.listen("games-changed", async () => { S.games = (await invoke("list_games")) || []; if (isLib() && !S.open && !S.sel.size) render(); });
   T.event.listen("blur-progress", ({ payload: p }) => {
-    S.jobs[p.id] = { pct: p.pct, state: p.state, message: p.message };
+    S.jobs[p.id] = { pct: p.pct, state: p.state, message: p.message, stage: p.stage || "" };
     if (p.state === "done") { delete S.jobs[p.id]; sfx("success"); flash(t("Blur render finished")); }
     if (p.state === "cancelled") delete S.jobs[p.id];
     if (p.state === "error") flash(p.message, true);

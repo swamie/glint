@@ -191,8 +191,12 @@ if (!window.__TAURI__) {
       const squeeze = j.kind === "compress";
       if (jobs.filter((x) => x.state === "running" && (x.kind === "compress") === squeeze).length >= (squeeze ? 1 : limit)) continue;
       j.state = "running";
+      // A Blur render says what it does before its first percent (jobs.rs `stage`): two seconds of "start" here.
+      let waitTicks = squeeze ? 0 : (window.__mockBlurWait ?? 10);
+      if (waitTicks) { j.stage = "start"; window.__mockEmit("blur-progress", { id: j.clip_id, pct: 0, state: "running", message: "", stage: "start" }); }
       const tick = setInterval(() => {
         if (j.state !== "running") { clearInterval(tick); return; }
+        if (waitTicks > 0) { waitTicks--; return; }
         j.pct = Math.min(100, j.pct + 5);
         if (j.pct >= 100) {
           clearInterval(tick);

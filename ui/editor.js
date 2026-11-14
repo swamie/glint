@@ -534,8 +534,11 @@ function blurPanel(c) {
   const st = job?.state;
   if (st === "running" || st === "queued") {
     const pct = clamp(+job.pct || 0, 0, 100);
-    return `<div class="small">${esc(st === "queued" ? t("Waiting to render") : t("Rendering with Blur… {pct}%", { pct: pct.toFixed(0) }))}</div>
-      ${st === "running" ? `<div class="progress"><i style="width:${pct}%"></i></div>` : ""}
+    // Before Blur's first percent the bar keeps moving and the line says what happens: "0%" looked stuck.
+    const wait = jobWaits(job);
+    return `<div class="small">${esc(st === "queued" ? t("Waiting to render") : wait ? blurWaitText(job.stage) : t("Rendering with Blur… {pct}%", { pct: pct.toFixed(0) }))}</div>
+      ${st === "running" ? `<div class="progress${wait ? " wait" : ""}"><i style="width:${pct}%"></i></div>` : ""}
+      ${wait ? `<div class="small">${esc(t("The first percent can take a while: Blur reads the clip in first."))}</div>` : ""}
       <div class="small">${esc(t("It keeps rendering in the background. You can follow it under the Renders button at the top of the window."))}</div>
       <button class="btn wide" data-v="blur-done">${esc(t("Done"))}</button>`;
   }

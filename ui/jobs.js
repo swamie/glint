@@ -181,7 +181,8 @@ function jobsStateLine(r) {
   }
   switch (r.state) {
     case "queued": return squeeze ? t("Waiting to compress for Discord") : t("Waiting");
-    case "running": return squeeze ? t("Compressing for Discord {pct} %", { pct }) : t("Rendering {pct} %", { pct });
+    // A Blur render before its first percent: what it does, not "0 %" (app.js blurWaitText).
+    case "running": return squeeze ? t("Compressing for Discord {pct} %", { pct }) : jobsWaits(r) && typeof blurWaitText === "function" ? blurWaitText(r.job && r.job.stage) : t("Rendering {pct} %", { pct });
     case "done": return squeeze ? t("Compressed for Discord") : t("Finished");
     case "error": return r.message ? t("Failed: {message}", { message: r.message }) : t("Failed");
     case "cancelled": return t("Cancelled");
@@ -192,13 +193,15 @@ function jobsStateLine(r) {
 }
 
 const jobsHasBar = (r) => r.state === "running" || r.state === "exporting";
+/** A row that works but has no percent yet: its bar keeps moving (style.css `.wait`). */
+const jobsWaits = (r) => jobsHasBar(r) && r.pct < 1;
 
 /** What makes a row need rebuilding; a progress change alone is updated in place. */
 const jobsRowSig = (r) => [r.state, r.title, r.message, r.job ? r.job.result_id : ""].join("\u0001");
 
 function jobsRowEl(r) {
   const line = jobsStateLine(r);
-  const bar = jobsHasBar(r) ? `<div class="progress jobs-bar"><i style="width:${r.pct.toFixed(1)}%"></i></div>` : "";
+  const bar = jobsHasBar(r) ? `<div class="progress jobs-bar${jobsWaits(r) ? " wait" : ""}"><i style="width:${r.pct.toFixed(1)}%"></i></div>` : "";
   let act = "";
   // Backend jobs (Blur and compress) can be cancelled and their result opened; export rows only follow along.
   if (r.job && (r.state === "queued" || r.state === "running")) act = `<button type="button" class="btn sm jobs-act" data-j-cancel="${esc(r.job.id)}">${esc(t("Cancel"))}</button>`;
@@ -228,6 +231,7 @@ function jobsRenderPop(rows) {
         const line = jobsStateLine(r), st = el.querySelector(".jobs-state");
         if (st.textContent !== line) { st.textContent = line; st.title = line; }
         el.querySelector(".jobs-bar i").style.width = `${r.pct.toFixed(1)}%`;
+        el.querySelector(".jobs-bar").classList.toggle("wait", jobsWaits(r));
       }
     } else {
       const fresh = jobsRowEl(r);
