@@ -398,8 +398,90 @@ fn device_name(d: &Option<cpal::Device>) -> String {
     d.as_ref().and_then(|d| d.name().ok()).unwrap_or_default()
 }
 
+/// The devices chosen in Settings → Audio, by name ("" = the Windows default),
+/// and a counter that moves on every change so a running capture switches.
+static CHOICE: Mutex<(String, String, u64)> = Mutex::new((String::new(), String::new(), 0));
+
+/// Set the output device whose sound is recorded and the microphone. A running
+/// capture rebuilds its streams within a quarter of a second; nothing else restarts.
+pub fn set_devices(desk: &str, mic: &str) {
+    let mut c = CHOICE.lock().unwrap();
+    if c.0 != desk || c.1 != mic {
+        c.0 = desk.to_string();
+        c.1 = mic.to_string();
+        c.2 += 1;
+    }
+}
+
+fn choice() -> (String, String, u64) {
+    CHOICE.lock().unwrap().clone()
+}
+
+/// Which of `names` the user's choice `want` is: the exact name first, then the
+/// same name in other case or with spaces around it. None = use the default
+/// ("" chosen, or the device is not there: unplugged).
+pub fn pick(names: &[String], want: &str) -> Option<usize> {
+    let w = want.trim();
+    if w.is_empty() {
+        return None;
+    }
+    names.iter().position(|n| n == want).or_else(|| names.iter().position(|n| n.trim().eq_ignore_ascii_case(w)))
+}
+
+/// The device to capture: the chosen one when it is there, else the Windows default.
+fn open_device(host: &cpal::Host, output: bool, want: &str) -> Option<cpal::Device> {
+    if !want.trim().is_empty() {
+        let devs: Vec<cpal::Device> = match if output { host.output_devices() } else { host.input_devices() } {
+            Ok(d) => d.collect(),
+            Err(_) => Vec::new(),
+        };
+        let names: Vec<String> = devs.iter().map(|d| d.name().unwrap_or_default()).collect();
+        if let Some(i) = pick(&names, want) {
+            return devs.into_iter().nth(i);
+        }
+    }
+    if output { host.default_output_device() } else { host.default_input_device() }
+}
+
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct DeviceInfo {
+    pub name: String,
+    pub default: bool,
+}
+
+#[derive(serde::Serialize, Clone, Debug, Default)]
+pub struct DeviceList {
+    pub outputs: Vec<DeviceInfo>,
+    pub inputs: Vec<DeviceInfo>,
+}
+
+/// The output and input devices Windows has now, the default ones marked. Opens no stream.
+pub fn list_devices() -> DeviceList {
+    // A thread of its own: cpal sets COM up per thread, away from the caller's apartment.
+    thread::spawn(|| {
+        let host = cpal::default_host();
+        let one = |devs: Option<Vec<cpal::Device>>, def: String| -> Vec<DeviceInfo> {
+            let mut out: Vec<DeviceInfo> = Vec::new();
+            for d in devs.unwrap_or_default() {
+                let Ok(name) = d.name() else { continue };
+                if name.is_empty() || out.iter().any(|o| o.name == name) {
+                    continue;
+                }
+                out.push(DeviceInfo { default: name == def, name });
+            }
+            out
+        };
+        let outputs = one(host.output_devices().ok().map(|d| d.collect()), device_name(&host.default_output_device()));
+        let inputs = one(host.input_devices().ok().map(|d| d.collect()), device_name(&host.default_input_device()));
+        DeviceList { outputs, inputs }
+    })
+    .join()
+    .unwrap_or_default()
+}
+
 /// Run capture until `stop` is set. Streams are rebuilt when a device errors
-/// out or the Windows default device changes.
+/// out, the device in use changes (the Windows default, the choice in
+/// Settings → Audio, or a chosen device that was missing comes back).
 pub fn spawn(desk: Arc<Mutex<AudioRing>>, mic: Arc<Mutex<AudioRing>>, want_desk: bool, want_mic: bool, max_secs: f64, stop: Arc<AtomicBool>) {
     if !want_desk {
         desk.lock().unwrap().clear();
@@ -413,12 +495,18 @@ pub fn spawn(desk: Arc<Mutex<AudioRing>>, mic: Arc<Mutex<AudioRing>>, want_desk:
     thread::Builder::new()
         .name("audio".into())
         .spawn(move || {
+            let mut logged = (String::new(), String::new());
             while !stop.load(Ordering::Relaxed) {
                 let host = cpal::default_host();
                 let failed = Arc::new(AtomicBool::new(false));
-                let out_dev = if want_desk { host.default_output_device() } else { None };
-                let in_dev = if want_mic { host.default_input_device() } else { None };
+                let (want_out, want_in, gen) = choice();
+                let out_dev = if want_desk { open_device(&host, true, &want_out) } else { None };
+                let in_dev = if want_mic { open_device(&host, false, &want_in) } else { None };
                 let names = (device_name(&out_dev), device_name(&in_dev));
+                if names != logged {
+                    crate::util::log(&format!("audio: desktop \"{}\", microphone \"{}\"", names.0, names.1));
+                    logged = names.clone();
+                }
                 let _s1 = out_dev.as_ref().and_then(|d| build_stream(d, true, desk.clone(), max_secs, failed.clone()));
                 let _s2 = in_dev.as_ref().and_then(|d| build_stream(d, false, mic.clone(), max_secs, failed.clone()));
                 let mut ticks = 0u32;
@@ -427,15 +515,15 @@ pub fn spawn(desk: Arc<Mutex<AudioRing>>, mic: Arc<Mutex<AudioRing>>, want_desk:
                     if stop.load(Ordering::Relaxed) {
                         return;
                     }
-                    if failed.load(Ordering::Relaxed) {
+                    if failed.load(Ordering::Relaxed) || CHOICE.lock().unwrap().2 != gen {
                         break;
                     }
                     ticks += 1;
                     if ticks % 16 == 0 {
                         let host = cpal::default_host();
                         let cur = (
-                            device_name(&if want_desk { host.default_output_device() } else { None }),
-                            device_name(&if want_mic { host.default_input_device() } else { None }),
+                            device_name(&if want_desk { open_device(&host, true, &want_out) } else { None }),
+                            device_name(&if want_mic { open_device(&host, false, &want_in) } else { None }),
                         );
                         if cur != names {
                             break;
@@ -446,4 +534,76 @@ pub fn spawn(desk: Arc<Mutex<AudioRing>>, mic: Arc<Mutex<AudioRing>>, want_desk:
             }
         })
         .ok();
+}
+
+/// `glint.exe --audio-test <report.txt>`: choosing a device by name with the
+/// fallback, the settings keys, old settings files. It lists the devices
+/// Windows has but opens no stream: nothing is recorded or played.
+pub fn self_test(report_path: &str) {
+    use std::io::Write;
+    let path = PathBuf::from(report_path);
+    let _ = std::fs::remove_file(&path);
+    let (mut passed, mut failed) = (0u32, 0u32);
+    let mut check = |name: &str, ok: bool, detail: String| {
+        if ok { passed += 1 } else { failed += 1 }
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f, "{} {name}{}", if ok { "PASS" } else { "FAIL" }, if detail.is_empty() { String::new() } else { format!("  [{detail}]") });
+        }
+    };
+    if std::env::var_os("GLINT_DATA_DIR").is_none() {
+        check("refused", false, "set GLINT_DATA_DIR so the real settings are never touched".into());
+        return;
+    }
+
+    // Choosing a device by name.
+    let names: Vec<String> = ["Speakers (Realtek(R) Audio)", "Headphones (USB Audio)", "Microphone (USB Audio)", "Headphones (USB Audio)"].iter().map(|s| s.to_string()).collect();
+    check("pick: \"\" is the Windows default", pick(&names, "").is_none() && pick(&names, "   ").is_none(), String::new());
+    check("pick: the exact name", pick(&names, "Headphones (USB Audio)") == Some(1), format!("{:?}", pick(&names, "Headphones (USB Audio)")));
+    check("pick: other case and spaces around it still match", pick(&names, "  speakers (realtek(r) audio) ") == Some(0), format!("{:?}", pick(&names, "  speakers (realtek(r) audio) ")));
+    check("pick: an exact match wins over a case match", pick(&["mic".to_string(), "Mic".to_string()], "Mic") == Some(1), String::new());
+    check("pick: an unplugged device falls back to the default", pick(&names, "Arctis 7 Game").is_none(), String::new());
+    check("pick: no device at all falls back to the default", pick(&[], "Headphones (USB Audio)").is_none(), String::new());
+    check("pick: a part of a name is not a match", pick(&names, "Headphones").is_none(), String::new());
+
+    // The choice reaches a running capture through a counter that moves only on a change.
+    let g0 = choice().2;
+    set_devices("A", "B");
+    let g1 = choice().2;
+    set_devices("A", "B");
+    let g2 = choice().2;
+    set_devices("A", "");
+    let c = choice();
+    check("set_devices: a change moves the counter, the same choice does not", g1 == g0 + 1 && g2 == g1 && c.2 == g1 + 1 && c.0 == "A" && c.1.is_empty(), format!("{g0} {g1} {g2} {}", c.2));
+    set_devices("", "");
+
+    // The settings keys.
+    let d = crate::settings::Settings::default();
+    check("settings: both devices default to \"\" (the Windows default)", d.desktop_device.is_empty() && d.mic_device.is_empty(), String::new());
+    let old: Result<crate::settings::Settings, _> = serde_json::from_str(r#"{"desktop_audio":true,"mic":false,"mic_denoise":true,"game_audio":true}"#);
+    check("settings: a file from before 0.1.27 loads, devices \"\"", old.as_ref().is_ok_and(|s| s.desktop_device.is_empty() && s.mic_device.is_empty() && !s.mic && s.mic_denoise && s.game_audio), format!("{:?}", old.as_ref().err()));
+    let mut s = crate::settings::Settings::default();
+    s.desktop_device = "Headphones (USB Audio)".into();
+    s.mic_device = "Microphone (Яндекс 🎤)".into();
+    let json = serde_json::to_value(&s).unwrap_or_default();
+    check("settings: saved under the keys desktop_device and mic_device", json["desktop_device"] == "Headphones (USB Audio)" && json["mic_device"] == "Microphone (Яндекс 🎤)", String::new());
+    let back: Option<crate::settings::Settings> = serde_json::from_value(json).ok();
+    check("settings: the names come back unchanged", back.is_some_and(|b| b.desktop_device == s.desktop_device && b.mic_device == s.mic_device), String::new());
+
+    // The device list (no stream is opened).
+    let t0 = std::time::Instant::now();
+    let list = list_devices();
+    let ms = t0.elapsed().as_millis();
+    let detail = format!("{} outputs, {} inputs, {ms} ms", list.outputs.len(), list.inputs.len());
+    let ok = |v: &[DeviceInfo]| v.iter().filter(|d| d.default).count() <= 1 && v.iter().all(|d| !d.name.is_empty()) && v.iter().enumerate().all(|(i, d)| v.iter().position(|e| e.name == d.name) == Some(i));
+    check("list: names are set, unique, at most one default per list", ok(&list.outputs) && ok(&list.inputs), detail.clone());
+    check("list: an output is marked default when there are outputs", list.outputs.is_empty() || list.outputs.iter().any(|d| d.default), detail.clone());
+    check("list: quick enough for the Refresh button", ms < 3000, detail.clone());
+    let json = serde_json::to_value(&list).unwrap_or_default();
+    check("list: JSON shape { outputs: [{ name, default }], inputs }", json["outputs"].is_array() && json["inputs"].is_array() && list.outputs.first().map_or(true, |_|json["outputs"][0]["name"].is_string() && json["outputs"][0]["default"].is_boolean()), String::new());
+    let names: Vec<String> = list.outputs.iter().map(|d| d.name.clone()).collect();
+    check("list: every listed output is found again by its name", names.iter().enumerate().all(|(i, n)| pick(&names, n) == Some(i)), detail);
+
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "DONE passed={passed} failed={failed}");
+    }
 }

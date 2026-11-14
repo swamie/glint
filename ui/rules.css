@@ -24,6 +24,9 @@
 .rl-block.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .rl-step-no { display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 999px; background: var(--line-2); color: var(--muted); font-size: 11px; font-weight: 700; }
 .rl-block.k-color .rl-step-no, .rl-add.k-color b { color: var(--accent); }
+/* 0.1.27: a Canvas block whose saved layout is gone (or not picked yet). */
+.rl-block.bad { border-color: var(--danger); }
+.rl-block.bad .nm-lbl, .rl-block.bad .rl-step-no { color: var(--danger); }
 .rl-arrow { color: var(--dim); font-size: 12px; }
 .rl-why { color: var(--warn); }
 .rl-why[hidden] { display: none; }

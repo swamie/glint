@@ -1,0 +1,4 @@
+/* Settings → Audio (audiodev.js). Device names can be long: the dropdown stops at a width and cuts the name. */
+select.aud-dev, .dd-btn.aud-dev { width: 300px; max-width: 42vw; }
+.aud-section .row .ctl { min-width: 0; }
+.aud-warn { color: var(--warn); }

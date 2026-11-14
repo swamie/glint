@@ -22,6 +22,9 @@ const KO: &[(&str, &str)] = &[
     ("Captured last {len}", "최근 {len}"),
     ("Captured {game}", "{game}"),
     ("the desktop", "데스크톱"),
+    // Game mode (0.1.27)
+    ("No game is running", "실행 중인 게임이 없어요"),
+    ("Glint records the game as soon as one starts", "게임을 시작하면 Glint가 바로 녹화해요"),
     // Tray menu
     ("Capture monitor", "캡처 모니터"),
     ("Open Glint", "Glint 열기"),
@@ -48,6 +51,9 @@ const EL: &[(&str, &str)] = &[
     ("Captured last {len}", "Τελευταία {len}"),
     ("Captured {game}", "{game}"),
     ("the desktop", "Επιφάνεια εργασίας"),
+    // Game mode (0.1.27)
+    ("No game is running", "Δεν τρέχει κανένα παιχνίδι"),
+    ("Glint records the game as soon as one starts", "Το Glint καταγράφει το παιχνίδι μόλις ξεκινήσει"),
     // Tray menu
     ("Capture monitor", "Οθόνη καταγραφής"),
     ("Open Glint", "Άνοιγμα Glint"),

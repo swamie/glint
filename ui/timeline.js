@@ -322,8 +322,18 @@ function tlRowKParse(s) {
 
 /* ---------- the timeline ---------- */
 
-function mountTimeline(host, opts) {
-  const m = opts.model;
+/** What an audio row is called on the timeline. The clip's own tracks say what they hold ("Mic audio",
+ *  "Overwatch audio", "Desktop audio"); an added file keeps its name. `game` is the clip's game ("" or "Desktop" = none). */
+function tlRowName(r, game) {
+  if (!r || r.kind !== "track") return r ? t(r.title) : "";
+  if (r.title === "Microphone") return t("Mic audio");
+  if (r.title === "Desktop") return t("Desktop audio");
+  if (r.title === "Game") return game && game !== "Desktop" ? t("{game} audio", { game }) : t("Game audio");
+  if (r.title === "Mix") return t("All audio");
+  return t(r.title);
+}
+
+function mountTimeline(host, opts) {  const m = opts.model;
   const dur = () => Math.max(0, +m.duration || 0);
   const st = {
     pps: 100, scrollX: 0, laneW: 0, sbW: 0, dpr: window.devicePixelRatio || 1,
@@ -623,9 +633,10 @@ function mountTimeline(host, opts) {
       if (!h) continue;
       h.classList.toggle("off", !!r.muted);
       const name = h.querySelector(".tl-hname");
-      if (name.textContent !== t(r.title)) name.textContent = t(r.title);
+      const shown = tlRowName(r, opts.game);
+      if (name.textContent !== shown) name.textContent = shown;
       const hint = typeof emRowHint === "function" ? emRowHint(m, r) : "";
-      const tip = hint ? `${t(r.title)}\n${t(hint)}` : t(r.title);
+      const tip = hint ? `${shown}\n${t(hint)}` : shown;
       if (name.title !== tip) name.title = tip;
       const mb = h.querySelector(".tl-hmute");
       const key = r.muted ? "m" : "v";
@@ -1443,7 +1454,7 @@ function mountTimeline(host, opts) {
       ctx.fillStyle = g > 1 ? C.warn : C.text;
       ctx.fillText(txt, right - w + 5, y + 11.5);
     }
-    label(ctx, C, "note", t(row.title), bx0, bx1, y + bh - 24);
+    label(ctx, C, "note", tlRowName(row, opts.game), bx0, bx1, y + bh - 24);
   }
 
   /** The clip blocks ("Edit together"): one per part in display order with its title and length. A clip cut out

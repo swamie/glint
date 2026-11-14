@@ -1,5 +1,5 @@
-//! Render rules (0.1.24): a named chain of steps (color look, Blur, upscale,
-//! compress, GIF, copy) run on a clip with one click.
+//! Render rules (0.1.24): a named chain of steps (color look, canvas layout
+//! (0.1.27), Blur, upscale, compress, GIF, copy) run on a clip with one click.
 //!
 //! A rule lives in `Settings::rules` (the UI edits it, ui/rules.js). Running it
 //! queues one job of kind "rule" per clip (the compress lane of jobs.rs). The
@@ -10,7 +10,8 @@
 //! failing step fails the job with the step's name and the reason. When a job
 //! ends well, "rule-done" is sent (see `finish`).
 use crate::core::Core;
-use crate::editor::Color;
+use crate::editor::{Canvas, CanvasPiece, Color};
+use crate::settings::CanvasPreset;
 use crate::gif::GifOpts;
 use crate::jobs::{Job, Runner};
 use crate::library::{self, ClipMeta};
@@ -30,7 +31,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 /// The step kinds, in the order the page offers them.
-pub const KINDS: [&str; 6] = ["color", "blur", "upscale", "compress", "gif", "copy"];
+pub const KINDS: [&str; 7] = ["color", "canvas", "blur", "upscale", "compress", "gif", "copy"];
 
 /// The error a step returns when the cancel flag stopped it.
 pub const CANCELLED: &str = "Cancelled";
@@ -41,6 +42,10 @@ pub const WHY_ONCE: &str = "Each kind of block can be used once.";
 pub const WHY_GIF: &str = "A GIF is not a video, so only Copy can come after it.";
 pub const WHY_COPY: &str = "Copy is always the last block.";
 pub const WHY_UNKNOWN: &str = "An unknown block was left out.";
+/// 0.1.27: the Canvas block (with Color, which the same export does) runs before every other step.
+pub const WHY_CANVAS: &str = "Canvas goes first, with Color next to it (one export does both).";
+/// A Canvas block whose layout was never picked.
+pub const NO_LAYOUT: &str = "Pick a layout for the Canvas block.";
 pub const NO_STEPS: &str = "This rule has no blocks yet. Add one first.";
 
 /// One step of a rule. Only the fields of its kind are used; the others keep their defaults.
@@ -57,11 +62,15 @@ pub struct Step {
     pub upscale: UpscaleOpts,
     /// "gif": what gif.rs is asked for.
     pub gif: GifOpts,
+    /// "canvas": the saved layout (`Settings::canvas_presets`), by id; found by `layout_name`
+    /// when that id is gone (saving a layout again under the same name gives it a new id).
+    pub layout: String,
+    pub layout_name: String,
 }
 
 impl Default for Step {
     fn default() -> Self {
-        Step { kind: String::new(), look: "Vivid".into(), mb: 50, upscale: UpscaleOpts::default(), gif: GifOpts::default() }
+        Step { kind: String::new(), look: "Vivid".into(), mb: 50, upscale: UpscaleOpts::default(), gif: GifOpts::default(), layout: String::new(), layout_name: String::new() }
     }
 }
 
@@ -98,6 +107,88 @@ pub fn look_color(s: &Settings, name: &str) -> Option<Color> {
         return Some(mk(*v));
     }
     s.color_presets.iter().find(|p| p.name == name).map(|p| mk([p.brightness, p.contrast, p.saturation, p.gamma]))
+}
+
+/// The saved layout a Canvas block names: by id, else by name (see `Step::layout`).
+pub fn find_layout<'a>(s: &'a Settings, st: &Step) -> Option<&'a CanvasPreset> {
+    s.canvas_presets
+        .iter()
+        .find(|p| !st.layout.is_empty() && p.id == st.layout)
+        .or_else(|| s.canvas_presets.iter().find(|p| !st.layout_name.is_empty() && p.name == st.layout_name))
+}
+
+// ---------------------------------------------------------------------------
+// A saved layout on another clip (ports of ui/canvas.js; the self-test compares numbers)
+
+/// Smallest source box side, fraction of the clip's picture (canvas.js `CV_SRC_MIN`).
+const CV_SRC_MIN: f64 = 0.02;
+
+/// canvas.js `cvEven`: even, 16..=4096.
+fn cv_even(x: f64) -> f64 {
+    let x = if x.is_finite() { x } else { 0.0 };
+    ((x / 2.0).round() * 2.0).clamp(16.0, 4096.0)
+}
+
+/// canvas.js `cvNorm`: a saved canvas made safe to use (sizes, boxes and background kept in range).
+pub fn canvas_norm(c: &Canvas) -> Canvas {
+    let n = |x: f64, d: f64| if x.is_finite() { x } else { d };
+    let pieces = c
+        .pieces
+        .iter()
+        .map(|p| {
+            let sw = n(p.sw, 1.0).clamp(CV_SRC_MIN, 1.0);
+            let sh = n(p.sh, 1.0).clamp(CV_SRC_MIN, 1.0);
+            let mut q = p.clone(); // a clone, so fields other agents add to a piece are kept
+            q.sx = n(p.sx, 0.0).clamp(0.0, 1.0 - sw);
+            q.sy = n(p.sy, 0.0).clamp(0.0, 1.0 - sh);
+            q.sw = sw;
+            q.sh = sh;
+            q.x = n(p.x, 0.0).clamp(-4.0, 4.0);
+            q.y = n(p.y, 0.0).clamp(-4.0, 4.0);
+            q.w = n(p.w, 1.0).clamp(0.005, 8.0);
+            q.h = n(p.h, 1.0).clamp(0.005, 8.0);
+            q
+        })
+        .collect();
+    let b = c.background.as_str();
+    let hex = b.len() == 7 && b.starts_with('#') && b[1..].chars().all(|ch| ch.is_ascii_hexdigit());
+    let background = if b == "blur" || b == "black" || hex { b.to_string() } else { "black".to_string() };
+    let mut out = c.clone();
+    out.width = cv_even(c.width);
+    out.height = cv_even(c.height);
+    out.background = background;
+    out.pieces = pieces;
+    out
+}
+
+/// canvas.js `cvRefit`: piece `p` of canvas `c` with its source box given the pixel shape of its
+/// place again, for a clip picture of `src_w` x `src_h`: about as much of the picture, at the same
+/// side of it, inside it.
+pub fn canvas_refit(p: &CanvasPiece, c: &Canvas, src_w: f64, src_h: f64) -> CanvasPiece {
+    let a = (p.w * c.width) / (p.h * c.height);
+    let ax = if p.sw < 0.999 { (p.sx / (1.0 - p.sw)).clamp(0.0, 1.0) } else { 0.5 };
+    let ay = if p.sh < 0.999 { (p.sy / (1.0 - p.sh)).clamp(0.0, 1.0) } else { 0.5 };
+    let area = (p.sw * src_w * p.sh * src_h).max(1.0);
+    let mut wpx = (area * a).sqrt();
+    let mut hpx = wpx / a;
+    let k = 1f64.min(src_w / wpx).min(src_h / hpx);
+    wpx *= k;
+    hpx *= k;
+    let (sw, sh) = (wpx / src_w, hpx / src_h);
+    let mut q = p.clone();
+    q.sw = sw;
+    q.sh = sh;
+    q.sx = (1.0 - sw) * ax;
+    q.sy = (1.0 - sh) * ay;
+    q
+}
+
+/// Saved canvas `c` for a clip picture of `w` x `h` (what the editor's "My layouts" does: canvas.js `applyPreset`).
+pub fn canvas_for_clip(c: &Canvas, w: u32, h: u32) -> Canvas {
+    let mut n = canvas_norm(c);
+    let pieces = n.pieces.iter().map(|p| canvas_refit(p, &n, w as f64, h as f64)).collect();
+    n.pieces = pieces;
+    n
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +234,18 @@ pub fn fix_order(steps: &[Step]) -> (Vec<Step>, Option<&'static str>) {
             out.push(st);
         }
     }
+    // Canvas (and Color, which goes into the same export) first: the canvas is made from the clip itself.
+    if out.iter().any(|s| s.kind == "canvas") {
+        let front = |s: &Step| s.kind == "canvas" || s.kind == "color";
+        let group: Vec<Step> = out.iter().filter(|s| front(s)).cloned().collect();
+        if !out.iter().take(group.len()).all(front) {
+            note(WHY_CANVAS);
+            out.retain(|s| !front(s));
+            for (k, st) in group.into_iter().enumerate() {
+                out.insert(k, st);
+            }
+        }
+    }
     (out, why)
 }
 
@@ -150,6 +253,7 @@ pub fn fix_order(steps: &[Step]) -> (Vec<Step>, Option<&'static str>) {
 pub fn kind_label(kind: &str) -> &'static str {
     match kind {
         "color" => "Color",
+        "canvas" => "Canvas",
         "blur" => "Blur",
         "upscale" => "Upscale",
         "compress" => "Compress",
@@ -168,6 +272,7 @@ fn height_words(h: u32) -> String {
 pub fn step_words(st: &Step) -> String {
     match st.kind.as_str() {
         "color" => format!("Color: {}", st.look),
+        "canvas" if !st.layout_name.is_empty() => format!("Canvas: {}", st.layout_name),
         "upscale" => format!("Upscale to {}", height_words(st.upscale.height)),
         "compress" => format!("Compress to {} MB", st.mb),
         "gif" => {
@@ -200,6 +305,10 @@ pub fn check(s: &Settings, rule: &Rule) -> Result<(), String> {
         match st.kind.as_str() {
             "color" if look_color(s, &st.look).is_none() => return Err(format!("The color look \"{}\" no longer exists. Pick another one in the rule.", st.look)),
             "compress" if !(compress::MIN_MB..=compress::MAX_MB).contains(&st.mb) => return Err(format!("Pick a size from {} to {} MB", compress::MIN_MB, compress::MAX_MB)),
+            "canvas" if st.layout.is_empty() && st.layout_name.is_empty() => return Err(NO_LAYOUT.into()),
+            "canvas" if find_layout(s, st).is_none() => {
+                return Err(format!("The canvas layout \"{}\" no longer exists. Pick another one in the rule.", if st.layout_name.is_empty() { &st.layout } else { &st.layout_name }))
+            }
             _ => {}
         }
     }
@@ -212,7 +321,7 @@ pub fn check(s: &Settings, rule: &Rule) -> Result<(), String> {
 /// How long a step takes compared with the others, for one progress bar over all of them.
 fn weight(kind: &str) -> f32 {
     match kind {
-        "color" => 1.0,
+        "color" | "canvas" => 1.0,
         "blur" => 3.0,
         "upscale" => 2.0,
         "compress" => 1.5,
@@ -331,6 +440,7 @@ fn sv(a: &[&str]) -> Vec<String> {
 fn color_step(tools: &Tools, cur: &Path, out: &Path, look: &str, cancel: &AtomicBool, report: &mut dyn FnMut(f32)) -> Result<Option<PathBuf>, String> {
     let c = look_color(&tools.settings, look).ok_or_else(|| format!("the color look \"{look}\" no longer exists"))?;
     let Some(vf) = editor::look_filter(&tools.ffmpeg, cur, &c) else { return Ok(None) };
+    ENCODES.fetch_add(1, Ordering::SeqCst);
     let duration = library::probe(&tools.ffmpeg, cur, false).map(|p| p.duration).unwrap_or(0.0);
     let titles = track_titles(&tools.ffmpeg, cur);
     let build = |enc: &str| -> Vec<String> {
@@ -368,13 +478,108 @@ fn color_step(tools: &Tools, cur: &Path, out: &Path, look: &str, cancel: &Atomic
     Ok(Some(out.to_path_buf()))
 }
 
+/// Video encodes started by the color and canvas steps (the self-test counts them: Color with Canvas is one).
+static ENCODES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The canvas step: the editor's export (`editor::export` with `ExportOpts::canvas`) of the whole
+/// clip onto saved layout `step`, its pieces fitted to this clip's picture; with `look` (a Color
+/// block in the same rule) the same export also applies that look. The file is written into the
+/// temporary folder as `<stem> (edit).mp4` (a stand-in clip that is a "draft" whose clips folder
+/// is the temporary folder: `clip::output_dir`). The export cannot be stopped part-way: on cancel
+/// this returns at once and the export's thread removes its file when ffmpeg is done.
+fn canvas_step(tools: &Tools, cur: &Path, stem: &str, step: &Step, look: Option<&str>, cancel: &AtomicBool, report: &mut dyn FnMut(f32)) -> Result<Option<PathBuf>, String> {
+    let preset = find_layout(&tools.settings, step).ok_or_else(|| format!("the canvas layout \"{}\" no longer exists", step.layout_name))?;
+    let color = match look {
+        Some(l) => look_color(&tools.settings, l).ok_or_else(|| format!("the color look \"{l}\" no longer exists"))?,
+        None => Color::default(),
+    };
+    let p = library::probe(&tools.ffmpeg, cur, false).filter(|p| p.width > 0 && p.height > 0 && p.duration > 0.0).ok_or("Could not read the clip's picture size")?;
+    let canvas = canvas_for_clip(&preset.canvas, p.width, p.height);
+    let tmp = util::tmp_dir();
+    let meta = ClipMeta { path: cur.to_string_lossy().into_owned(), title: stem.to_string(), duration: p.duration, width: p.width, height: p.height, fps: p.fps, draft: true, ..Default::default() };
+    let mut settings = tools.settings.clone();
+    settings.clips_dir = tmp.to_string_lossy().into_owned();
+    settings.ffmpeg_path = tools.ffmpeg.to_string_lossy().into_owned();
+    let opts = editor::ExportOpts { color, canvas: Some(canvas), ..Default::default() };
+    ENCODES.fetch_add(1, Ordering::SeqCst);
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let gone = abandoned.clone();
+    let (tx, rx) = mpsc::channel::<Result<f32, Result<ClipMeta, String>>>();
+    thread::spawn(move || {
+        let ptx = tx.clone();
+        let res = editor::export(&settings, &meta, &opts, &mut |v| {
+            let _ = ptx.send(Ok(v));
+        });
+        if gone.load(Ordering::SeqCst) {
+            // Cancelled meanwhile: nobody takes the result.
+            if let Ok(m) = &res {
+                let _ = fs::remove_file(&m.path);
+                let _ = fs::remove_file(&m.thumb);
+            }
+        }
+        let _ = tx.send(Err(res));
+    });
+    let res = loop {
+        if cancel.load(Ordering::SeqCst) {
+            abandoned.store(true, Ordering::SeqCst);
+            return Err(CANCELLED.into());
+        }
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Ok(v)) => report(v),
+            Ok(Err(res)) => break res,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break Err("the export stopped".into()),
+        }
+    };
+    let m = res?;
+    let _ = fs::remove_file(&m.thumb); // the stand-in clip's thumbnail: it never goes into the library
+    let file = PathBuf::from(&m.path);
+    if !fs::metadata(&file).is_ok_and(|x| x.len() > 0) {
+        let _ = fs::remove_file(&file);
+        return Err("ffmpeg wrote no file".into());
+    }
+    if file.parent() != Some(tmp.as_path()) {
+        let _ = fs::remove_file(&file);
+        return Err("the export went to the wrong folder".into());
+    }
+    // The export copies the sound, and a stream copy into MP4 drops the track names: write them again (as the color step does).
+    keep_titles(&tools.ffmpeg, cur, &file);
+    Ok(Some(file))
+}
+
+/// Give `out` the audio track titles of `src` again (a stream copy); left as it is when nothing is to be done or anything fails.
+fn keep_titles(ffmpeg: &Path, src: &Path, out: &Path) {
+    let want = track_titles(ffmpeg, src);
+    let have = track_titles(ffmpeg, out);
+    if want.iter().all(String::is_empty) || have == want || have.len() != want.len() {
+        return;
+    }
+    let tmp = out.with_extension("titles.mp4");
+    let mut a = sv(&["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i"]);
+    a.push(out.to_string_lossy().into_owned());
+    a.extend(sv(&["-map", "0", "-c", "copy"]));
+    for (i, title) in want.iter().enumerate().filter(|(_, x)| !x.is_empty()) {
+        a.push(format!("-metadata:s:a:{i}"));
+        a.push(format!("title={title}"));
+    }
+    a.extend(sv(&["-movflags", "+faststart"]));
+    a.push(tmp.to_string_lossy().into_owned());
+    let ok = util::hidden_cmd(ffmpeg).args(&a).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    if !(ok && track_titles(ffmpeg, &tmp) == want && fs::rename(&tmp, out).is_ok()) {
+        let _ = fs::remove_file(&tmp);
+    }
+}
+
 /// Run `steps` on `src` in order. Every file made is `<tmp>\<tag>-…`; the caller
 /// removes them all afterwards (`TmpGuard`) once it has taken the result.
 /// `progress` gets 0..100 over all steps (never backwards), `stage` the kind of
 /// each step as it starts.
 pub(crate) fn run_steps(tools: &Tools, steps: &[Step], src: &Path, tag: &str, cancel: &AtomicBool, progress: &mut dyn FnMut(f32), stage: &mut dyn FnMut(&str)) -> Result<Outcome, String> {
     let tmp = util::tmp_dir();
-    let total: f32 = steps.iter().map(|s| weight(&s.kind)).sum::<f32>().max(0.001);
+    // With a Canvas block the Color block's look goes into the canvas export (one encode, not two).
+    let merged_look: Option<String> = steps.iter().any(|s| s.kind == "canvas").then(|| steps.iter().find(|s| s.kind == "color").map(|s| s.look.clone())).flatten();
+    let merged = |st: &Step| st.kind == "color" && merged_look.is_some();
+    let total: f32 = steps.iter().filter(|s| !merged(s)).map(|s| weight(&s.kind)).sum::<f32>().max(0.001);
     let mut base = 0f32;
     let mut top = 0f32;
     let mut cur = src.to_path_buf();
@@ -382,6 +587,9 @@ pub(crate) fn run_steps(tools: &Tools, steps: &[Step], src: &Path, tag: &str, ca
     for (i, st) in steps.iter().enumerate() {
         if cancel.load(Ordering::SeqCst) {
             return Err(CANCELLED.into());
+        }
+        if merged(st) {
+            continue; // done by the canvas step
         }
         stage(&st.kind);
         let w = weight(&st.kind);
@@ -396,6 +604,7 @@ pub(crate) fn run_steps(tools: &Tools, steps: &[Step], src: &Path, tag: &str, ca
             };
             match st.kind.as_str() {
                 "color" => color_step(tools, &cur, &file("mp4"), &st.look, cancel, &mut report),
+                "canvas" => canvas_step(tools, &cur, &format!("{tag}-{i}-canvas"), st, merged_look.as_deref(), cancel, &mut report),
                 "blur" => match &tools.blur {
                     None => Err(BLUR_MISSING.into()),
                     Some(run) => {
@@ -708,14 +917,32 @@ fn pure_checks(r: &mut Report) {
     r.check("order: a kind twice and an unknown kind are left out", kinds(&f) == ["blur", "color"] && why == Some(WHY_ONCE), &format!("{:?} {why:?}", kinds(&f)));
     let (f, _) = fix_order(&steps_of(&["copy", "gif", "upscale", "compress"]));
     r.check("order: copy, gif, upscale, compress -> upscale, compress, gif, copy", kinds(&f) == ["upscale", "compress", "gif", "copy"], &format!("{:?}", kinds(&f)));
-    let s = Settings::default();
-    let all_fixed = ["color", "blur", "upscale", "compress", "gif", "copy"];
+    let (f, why) = fix_order(&steps_of(&["blur", "canvas"]));
+    r.check("order: Canvas moves before Blur", kinds(&f) == ["canvas", "blur"] && why == Some(WHY_CANVAS), &format!("{:?} {why:?}", kinds(&f)));
+    let (f, why) = fix_order(&steps_of(&["blur", "color", "compress", "canvas", "copy"]));
+    r.check("order: Canvas and Color go first together, Copy stays last", kinds(&f) == ["color", "canvas", "blur", "compress", "copy"] && why == Some(WHY_CANVAS), &format!("{:?} {why:?}", kinds(&f)));
+    let (f, why) = fix_order(&steps_of(&["canvas", "color", "upscale", "gif"]));
+    r.check("order: Canvas then Color is kept as it is", kinds(&f) == ["canvas", "color", "upscale", "gif"] && why.is_none(), &format!("{:?} {why:?}", kinds(&f)));
+    let (f, _) = fix_order(&steps_of(&["gif", "canvas", "copy"]));
+    r.check("order: Canvas after a GIF moves before it", kinds(&f) == ["canvas", "gif", "copy"], &format!("{:?}", kinds(&f)));
+    let (f, why) = fix_order(&steps_of(&["blur", "color"]));
+    r.check("order: without Canvas, Color may still come after Blur", kinds(&f) == ["blur", "color"] && why.is_none(), &format!("{:?}", kinds(&f)));
+    let mut s = Settings::default();
+    s.canvas_presets.push(CanvasPreset { id: "L1".into(), name: "Vertical".into(), canvas: Canvas::default() });
+    let with_layout = |mut v: Vec<Step>| -> Vec<Step> {
+        for st in v.iter_mut().filter(|x| x.kind == "canvas") {
+            st.layout = "L1".into();
+            st.layout_name = "Vertical".into();
+        }
+        v
+    };
+    let all_fixed = KINDS;
     let mut perm_ok = true;
     // Every order of every pair and triple ends in a form `check` accepts.
     for a in all_fixed {
         for b in all_fixed {
             for c in all_fixed {
-                let (f, _) = fix_order(&steps_of(&[a, b, c]));
+                let (f, _) = fix_order(&with_layout(steps_of(&[a, b, c])));
                 let rule = Rule { id: "x".into(), name: "x".into(), steps: f.clone() };
                 let gif_ok = f.iter().position(|s| s.kind == "gif").map_or(true, |g| f[g + 1..].iter().all(|s| s.kind == "copy"));
                 let copy_ok = f.iter().position(|s| s.kind == "copy").map_or(true, |i| i + 1 == f.len());
@@ -752,6 +979,8 @@ fn pure_checks(r: &mut Report) {
     r.check("looks: the user's own preset is found by name", mine.as_ref().is_some_and(|c| (c.brightness - 1.2).abs() < 1e-6), "");
     r.check("looks: a built-in look is found by name", look_color(&s, "Black and white").is_some_and(|c| c.saturation == 0.0 && (c.contrast - 1.12).abs() < 1e-6), "");
 
+    canvas_pure_checks(r, &s);
+
     // The built-in looks are the editor's (ui/editor.js ED_PRESETS), read from the source tree when it is there.
     let js = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/editor.js")).unwrap_or_default();
     if js.is_empty() {
@@ -786,6 +1015,73 @@ fn pure_checks(r: &mut Report) {
     let old: Result<Settings, _> = serde_json::from_str(r#"{"rules":[{"id":"a","name":"Old"},{"id":"b","name":"N","steps":[{"kind":"compress","mb":25}]}]}"#);
     let ok = old.as_ref().is_ok_and(|o| o.rules.len() == 2 && o.rules[0].steps.is_empty() && o.rules[1].steps[0].mb == 25 && o.rules[1].steps[0].look == "Vivid" && o.rules_after_export.is_empty());
     r.check("settings: rules with missing fields load with defaults", ok, &format!("{:?}", old.err()));
+}
+
+fn piece(v: [f64; 8]) -> CanvasPiece {
+    CanvasPiece { sx: v[0], sy: v[1], sw: v[2], sh: v[3], x: v[4], y: v[5], w: v[6], h: v[7], ..Default::default() }
+}
+
+fn canvas_of(w: f64, h: f64, bg: &str, pieces: &[[f64; 8]]) -> Canvas {
+    Canvas { width: w, height: h, background: bg.into(), pieces: pieces.iter().map(|p| piece(*p)).collect(), ..Default::default() }
+}
+
+/// A Canvas block that names layout `id` / `name`.
+fn canvas_step_of(id: &str, name: &str) -> Step {
+    Step { kind: "canvas".into(), layout: id.into(), layout_name: name.into(), ..Default::default() }
+}
+
+/// The Canvas block's words, checks and the layout maths (cvNorm + cvRefit of ui/canvas.js).
+fn canvas_pure_checks(r: &mut Report, s: &Settings) {
+    let rule = Rule { steps: vec![canvas_step_of("L1", "Vertical"), Step::of("copy")], ..Default::default() };
+    r.check("words: Canvas: Vertical → Copy", describe(&rule) == "Canvas: Vertical → Copy", &describe(&rule));
+    r.check("check: a rule with a Canvas block whose layout exists runs", check(s, &rule).is_ok(), &format!("{:?}", check(s, &rule)));
+    let renamed = Rule { steps: vec![canvas_step_of("old-id", "Vertical")], ..Default::default() };
+    r.check("check: a layout saved again under its name (new id) is still found", check(s, &renamed).is_ok() && find_layout(s, &renamed.steps[0]).is_some_and(|p| p.id == "L1"), "");
+    let gone = Rule { steps: vec![canvas_step_of("L9", "Deleted one")], ..Default::default() };
+    let e = check(s, &gone);
+    r.check("check: a deleted layout is refused in plain words", e.as_ref().is_err_and(|e| e.contains("\"Deleted one\" no longer exists")), &format!("{e:?}"));
+    let none = Rule { steps: vec![Step::of("canvas")], ..Default::default() };
+    r.check("check: a Canvas block with no layout picked is refused", check(s, &none).err().as_deref() == Some(NO_LAYOUT), "");
+
+    // cvNorm + cvRefit (canvas.js `applyPreset`), expected numbers from node running ui/canvas.js.
+    #[allow(clippy::type_complexity)]
+    let cases: [(Canvas, (u32, u32), (f64, f64, &str), Vec<[f64; 8]>); 4] = [
+        (canvas_of(1080.0, 1920.0, "blur", &[[0.341796875, 0.0, 0.31640625, 1.0, 0.0, 0.0, 1.0, 1.0]]), (1280, 1024), (1080.0, 1920.0, "blur"), vec![[0.3113317643984552, 0.08073725421878941, 0.3773364712030895, 0.8385254915624212, 0.0, 0.0, 1.0, 1.0]]),
+        (
+            canvas_of(1080.0, 1920.0, "#112233", &[[0.64, 0.0, 0.36, 0.2667, 0.0, 0.0, 1.0, 0.24], [0.0, 0.7, 0.3, 0.3, 0.0, 0.74, 1.0, 0.26]]),
+            (2560, 1080),
+            (1080.0, 1920.0, "#112233"),
+            vec![[0.6918868061338901, 0.0, 0.3081131938661099, 0.3116127511297743, 0.0, 0.0, 1.0, 0.24], [0.0, 0.6859818358638987, 0.28660762426785075, 0.31401816413610123, 0.0, 0.74, 1.0, 0.26]],
+        ),
+        (canvas_of(1081.0, 1079.0, "nope", &[[0.1, 0.2, 0.5, 0.4, -0.1, 0.25, 1.2, 0.5]]), (1280, 720), (1082.0, 1080.0, "black"), vec![[0.09598077100843327, 0.20515190512437867, 0.5200961449578336, 0.3845442846268641, -0.1, 0.25, 1.2, 0.5]]),
+        (canvas_of(1080.0, 1920.0, "black", &[[0.0, 0.0, 1.0, 1.0, 0.0, 0.25, 1.0, 0.5]]), (1440, 1080), (1080.0, 1920.0, "black"), vec![[0.07812500000000006, 0.0, 0.8437499999999999, 1.0, 0.0, 0.25, 1.0, 0.5]]),
+    ];
+    for (k, (c, (w, h), (cw, ch, bg), want)) in cases.iter().enumerate() {
+        let got = canvas_for_clip(c, *w, *h);
+        let mut worst = 0f64;
+        for (p, e) in got.pieces.iter().zip(want) {
+            for (a, b) in [p.sx, p.sy, p.sw, p.sh, p.x, p.y, p.w, p.h].iter().zip(e) {
+                worst = worst.max((a - b).abs());
+            }
+        }
+        let ok = got.width == *cw && got.height == *ch && got.background == *bg && got.pieces.len() == want.len() && worst < 1e-12;
+        r.check(&format!("layout maths: case {} gives canvas.js's numbers ({w}x{h} clip)", k + 1), ok, &format!("{}x{} {} worst {worst:e}", got.width, got.height, got.background));
+    }
+    // On a clip of another shape every piece shows a box of its place's pixel shape (never stretched).
+    let three = canvas_of(1080.0, 1920.0, "blur", &[[0.64, 0.0, 0.36, 0.2, 0.0, 0.0, 1.0, 0.24], [0.2, 0.0, 0.6, 1.0, 0.0, 0.24, 1.0, 0.5], [0.0, 0.8, 0.3, 0.2, 0.0, 0.74, 1.0, 0.26]]);
+    let mut stretch = 0f64;
+    for (w, h) in [(1920u32, 1080u32), (1440, 1080), (2560, 1080), (1080, 1920)] {
+        let got = canvas_for_clip(&three, w, h);
+        for p in &got.pieces {
+            let place = (p.w * got.width) / (p.h * got.height);
+            let source = (p.sw * w as f64) / (p.sh * h as f64);
+            let inside = p.sx >= -1e-9 && p.sy >= -1e-9 && p.sx + p.sw <= 1.0 + 1e-9 && p.sy + p.sh <= 1.0 + 1e-9;
+            stretch = stretch.max(if inside { (place / source - 1.0).abs() } else { 1.0 });
+        }
+    }
+    r.check("layout maths: on 16:9, 4:3, 21:9 and 9:16 clips no piece is stretched and every box is inside the picture", stretch < 1e-9, &format!("{stretch:e}"));
+    let old: Result<Rule, _> = serde_json::from_str(r#"{"id":"a","name":"Old","steps":[{"kind":"color","look":"Soft"},{"kind":"compress","mb":25}]}"#);
+    r.check("settings: a rule saved before the Canvas block loads (no layout fields)", old.as_ref().is_ok_and(|o| o.steps.len() == 2 && o.steps.iter().all(|st| st.layout.is_empty() && st.layout_name.is_empty()) && fix_order(&o.steps).1.is_none()), &format!("{:?}", old.err()));
 }
 
 /// A test picture (`noise` makes it big, as a real clip is) with one tone per title, the tracks titled.
@@ -961,6 +1257,8 @@ fn media_checks(r: &mut Report) {
     }
     r.check("color: no temporary files left", tmp_files("rule-test-color").is_empty(), "");
 
+    canvas_media_checks(r, &ffmpeg, &s, &dir, &small, &big, &titles);
+
     // 2. Color → Blur (stand-in) → Compress → Copy on the big clip: progress, stages, size.
     if big_size > compress::limit_bytes(5) {
         let tag = "rule-test-chain";
@@ -1064,6 +1362,84 @@ fn media_checks(r: &mut Report) {
     queue_checks(r, &ffmpeg, &root, &dir, &small, &big);
 }
 
+/// The Canvas block on real (synthetic) clips: the result has the canvas's size, with Color it is
+/// still one export, a deleted layout is refused, nothing is left behind.
+fn canvas_media_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path, small: &Path, big: &Path, titles: &[&str]) {
+    let mut s = s.clone();
+    // Made on a 16:9 clip: the gameplay in the middle, a strip of the top right corner above it.
+    let layout = canvas_of(360.0, 640.0, "blur", &[[0.64, 0.0, 0.36, 0.1215, 0.0, 0.0, 1.0, 0.24], [0.2, 0.0, 0.6, 1.0, 0.0, 0.24, 1.0, 0.5]]);
+    s.canvas_presets.push(CanvasPreset { id: "LV".into(), name: "Test vertical".into(), canvas: layout });
+    let tools = Tools { ffmpeg: ffmpeg.to_path_buf(), settings: s.clone(), blur: None };
+    let no_cancel = AtomicBool::new(false);
+    let square = dir.join("square.mp4");
+    let built = make_clip(ffmpeg, &square, 480, 360, 30, 3, titles, false);
+    r.check("canvas: build a 4:3 test clip", built.is_ok(), built.as_ref().err().map(String::as_str).unwrap_or(""));
+    let cv = canvas_step_of("LV", "Test vertical");
+    let vivid = Step { kind: "color".into(), look: "Vivid".into(), ..Default::default() };
+    let tag = "rule-test-canvas";
+    let _g = TmpGuard(tag.into());
+    let mut alone: Option<PathBuf> = None;
+    for (what, clip) in [("16:9", small), ("4:3", square.as_path())] {
+        if !clip.is_file() {
+            continue;
+        }
+        let before = ENCODES.load(Ordering::SeqCst);
+        let mut stages: Vec<String> = Vec::new();
+        let res = run_steps(&tools, &[cv.clone()], clip, &format!("{tag}-{}", what.replace(':', "x")), &no_cancel, &mut |_| {}, &mut |k| stages.push(k.into()));
+        match &res {
+            Ok(o) => {
+                let p = library::probe(ffmpeg, &o.file, false).unwrap_or_default();
+                let sp = library::probe(ffmpeg, clip, false).unwrap_or_default();
+                r.check(&format!("canvas on a {what} clip: the result is 360 x 640, one export"), o.made && p.width == 360 && p.height == 640 && ENCODES.load(Ordering::SeqCst) - before == 1 && stages == ["canvas"], &format!("{}x{} encodes {} stages {stages:?}", p.width, p.height, ENCODES.load(Ordering::SeqCst) - before));
+                r.check(&format!("canvas on a {what} clip: length, both tracks and their titles kept"), (p.duration - sp.duration).abs() < 0.2 && p.audio_streams == 2 && track_titles(ffmpeg, &o.file) == titles, &format!("{:.2} vs {:.2}, {} tracks {:?}", p.duration, sp.duration, p.audio_streams, track_titles(ffmpeg, &o.file)));
+                r.check(&format!("canvas on a {what} clip: written in the temporary folder, nothing beside the clip"), o.file.parent() == Some(util::tmp_dir().as_path()) && !fs::read_dir(dir).map(|d| d.filter_map(Result::ok).any(|e| e.file_name().to_string_lossy().contains("(edit)"))).unwrap_or(true), &o.file.to_string_lossy());
+                if what == "16:9" {
+                    alone = Some(o.file.clone());
+                }
+            }
+            Err(e) => r.check(&format!("canvas on a {what} clip runs"), false, e),
+        }
+    }
+    // Color and Canvas: one export, the look is in it.
+    let before = ENCODES.load(Ordering::SeqCst);
+    let mut stages: Vec<String> = Vec::new();
+    let mut pcts: Vec<f32> = Vec::new();
+    let res = run_steps(&tools, &[vivid.clone(), cv.clone()], small, &format!("{tag}-color"), &no_cancel, &mut |p| pcts.push(p), &mut |k| stages.push(k.into()));
+    match &res {
+        Ok(o) => {
+            let p = library::probe(ffmpeg, &o.file, false).unwrap_or_default();
+            let n = ENCODES.load(Ordering::SeqCst) - before;
+            r.check("color + canvas: one export, 360 x 640, the stage is canvas", n == 1 && p.width == 360 && p.height == 640 && stages == ["canvas"] && o.skipped.is_empty(), &format!("encodes {n} {}x{} stages {stages:?} skipped {:?}", p.width, p.height, o.skipped));
+            let d = alone.as_ref().map(|a| mean_diff(&frame_rgb(ffmpeg, a, 1.5), &frame_rgb(ffmpeg, &o.file, 1.5))).unwrap_or(0.0);
+            r.line(&format!("INFO color + canvas vs canvas alone: mean difference {d:.2} (0..255)"));
+            r.check("color + canvas: the look is applied (differs from the canvas alone)", d > 1.0, &format!("{d:.2}"));
+            r.check("color + canvas: progress never goes back and ends at 100", pcts.windows(2).all(|w| w[1] >= w[0]) && pcts.last() == Some(&100.0), "");
+        }
+        Err(e) => r.check("color + canvas runs", false, e),
+    }
+    // A deleted layout: the step fails with the block's name (check() refuses it before; this is the run).
+    let gone = canvas_step_of("nope", "Deleted");
+    let res = run_steps(&tools, &[gone], small, &format!("{tag}-gone"), &no_cancel, &mut |_| {}, &mut |_| {});
+    r.check("canvas: a deleted layout fails the step and makes nothing", res.as_ref().is_err_and(|e| e.starts_with("Canvas:") && e.contains("Deleted")), &format!("{:?}", res.as_ref().map(|o| o.file.clone())));
+    // Cancel during the export: returns at once, the export's file goes when ffmpeg is done.
+    let cancel = AtomicBool::new(false);
+    let t0 = Instant::now();
+    let mut set_at: Option<Instant> = None;
+    let res = run_steps(&tools, &[cv.clone()], big, &format!("{tag}-cancel"), &cancel, &mut |p| {
+        if p > 1.0 && set_at.is_none() {
+            cancel.store(true, Ordering::SeqCst);
+            set_at = Some(Instant::now());
+        }
+    }, &mut |_| {});
+    let took = set_at.map(|x| x.elapsed());
+    r.check("canvas: cancel returns Cancelled within a second", res.as_ref().err().map(String::as_str) == Some(CANCELLED) && took.is_some_and(|d| d < Duration::from_millis(1000)), &format!("{took:?} after {:.1} s", t0.elapsed().as_secs_f64()));
+    let cleaned = wait_until(30.0, || tmp_files(&format!("{tag}-cancel")).is_empty());
+    r.check("canvas: after a cancel the export's file is removed once it ends", cleaned, &format!("{:?}", tmp_files(&format!("{tag}-cancel"))));
+    drop(_g);
+    r.check("canvas: no temporary files left", tmp_files(tag).is_empty(), &format!("{:?}", tmp_files(tag)));
+    let _ = fs::remove_file(&square);
+}
+
 /// Through the queue and the library, the way the app runs a rule.
 fn queue_checks(r: &mut Report, ffmpeg: &Path, root: &Path, dir: &Path, small: &Path, big: &Path) {
     let core = Core::new();
@@ -1073,7 +1449,7 @@ fn queue_checks(r: &mut Report, ffmpeg: &Path, root: &Path, dir: &Path, small: &
     {
         let mut s = core.settings.lock().unwrap();
         s.clips_dir = root.to_string_lossy().into_owned();
-        s.rules = vec![rule.clone(), skip_rule.clone(), blur_rule.clone()];
+        s.rules = vec![rule.clone(), skip_rule.clone(), blur_rule.clone(), Rule { id: "r-gone".into(), name: "Vertical".into(), steps: vec![canvas_step_of("deleted", "Old layout")] }];
         s.blur_path = util::data_dir().join("no blur here").join("blur-cli.exe").to_string_lossy().into_owned();
     }
     core.jobs.connect(&core);
@@ -1089,6 +1465,8 @@ fn queue_checks(r: &mut Report, ffmpeg: &Path, root: &Path, dir: &Path, small: &
     let state = |jid: &str| core.jobs.list().into_iter().find(|j| j.id == jid).unwrap_or_default();
 
     r.check("rules_run: an unknown rule is refused", run_ids(&core, "nope", &[big_id.clone()]).is_err_and(|e| e == "That render rule no longer exists"), "");
+    let res = run_ids(&core, "r-gone", &[small_id.clone()]);
+    r.check("rules_run: a rule whose canvas layout was deleted is refused, nothing queued", res.as_ref().is_err_and(|e| e.contains("\"Old layout\" no longer exists")) && core.jobs.list().is_empty(), &format!("{res:?}"));
     if blur::find(&core.settings()).is_none() {
         let res = run_ids(&core, "r-blur", &[small_id.clone()]);
         r.check("rules_run: a rule with Blur is refused before queueing when Blur is missing", res.as_ref().err().map(String::as_str) == Some(BLUR_MISSING) && core.jobs.list().is_empty(), &format!("{res:?}"));

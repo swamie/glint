@@ -313,6 +313,162 @@ pub fn detect() -> Option<(String, u32, String)> {
     identify(&fg).map(|name| (name, fg.pid, fg.exe))
 }
 
+// ---------------------------------------------------------------------------
+// Game mode (0.1.27): all visible windows are scored, not only the foreground one.
+
+/// An executable's file name in lower case, the key the user's marks are kept by: "cs2.exe".
+pub fn exe_key(path: &str) -> String {
+    Path::new(path).file_name().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default()
+}
+
+/// What the user told Glint from the GAME / DESKTOP switch's menu, plus what it saw before.
+pub struct Marks<'a> {
+    /// "Detect the game automatically". Off: only the program picked by hand counts.
+    pub auto: bool,
+    /// The program picked by hand (`exe_key`), "" = none.
+    pub pick: &'a str,
+    /// Programs the user called a game / not a game (`exe_key`).
+    pub games: &'a [String],
+    pub not_games: &'a [String],
+    /// Games seen before (`games.json`): their program counts as a game again.
+    pub seen: &'a [Game],
+    /// The process of the game being recorded now, if any.
+    pub current: Option<u32>,
+}
+
+impl Marks<'_> {
+    /// Nothing marked: game detection as before 0.1.27.
+    pub fn none() -> Marks<'static> {
+        Marks { auto: true, pick: "", games: &[], not_games: &[], seen: &[], current: None }
+    }
+}
+
+/// Points a window gets for being a game (None = it is not one), before the bonuses of `choose`.
+pub const SCORE_PICK: i64 = 1000;
+pub const SCORE_MARKED: i64 = 500;
+pub const SCORE_KNOWN: i64 = 300;
+pub const SCORE_SEEN: i64 = 200;
+pub const SCORE_STORE: i64 = 150;
+pub const SCORE_FULLSCREEN: i64 = 80;
+
+/// Windows smaller than this are splash screens, pop-ups and tray helpers, not a game to record
+/// (a hand-picked program is taken whatever its size).
+const MIN_W: u32 = 320;
+const MIN_H: u32 = 200;
+
+fn stem_of(lower_path: &str) -> String {
+    Path::new(lower_path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+fn is_minecraft(w: &win::WinInfo) -> bool {
+    let lower = w.exe.to_lowercase();
+    let title = w.title.to_lowercase();
+    let class = w.class.to_lowercase();
+    MC_TITLES.iter().any(|k| title.contains(k)) || class == "glfw30" || class == "lwjgl" || MC_PATHS.iter().any(|p| lower.contains(p)) || w.fullscreen
+}
+
+/// How much `w` looks like a game. The order: the user's own marks, then the table of known
+/// games, games seen before, a game store's folder, and last a window that fills its monitor.
+/// Browsers, launchers, players and tools (NOT_GAMES) are never games unless the user says so.
+pub fn rate(w: &win::WinInfo, m: &Marks) -> Option<i64> {
+    let key = exe_key(&w.exe);
+    let lower = w.exe.to_lowercase();
+    let stem = stem_of(&lower);
+    if key.is_empty() || m.not_games.iter().any(|n| *n == key) {
+        return None;
+    }
+    if !m.pick.is_empty() && m.pick == key {
+        return Some(SCORE_PICK);
+    }
+    if !m.auto {
+        return None;
+    }
+    if !w.minimized && (w.width < MIN_W || w.height < MIN_H) {
+        return None;
+    }
+    if m.games.iter().any(|g| *g == key) {
+        return Some(SCORE_MARKED);
+    }
+    if NOT_GAMES.contains(&stem.as_str()) || NOT_GAMES_MORE.contains(&stem.as_str()) {
+        return None;
+    }
+    if stem == "javaw" || stem == "java" {
+        return is_minecraft(w).then_some(SCORE_KNOWN);
+    }
+    if KNOWN.iter().any(|(exe, _)| *exe == stem) {
+        return Some(SCORE_KNOWN);
+    }
+    if m.seen.iter().any(|g| !g.exe.is_empty() && g.name != DESKTOP && g.exe.to_lowercase() == lower) {
+        return Some(SCORE_SEEN);
+    }
+    // Store folders and fullscreen windows hold helpers too: a crash reporter, an anti-cheat, a launcher.
+    if lower.contains("\\launcher\\") || HELPER_WORDS.iter().any(|h| stem.contains(h)) {
+        return None;
+    }
+    if GAME_DIRS.iter().any(|d| lower.contains(d)) {
+        return Some(SCORE_STORE);
+    }
+    w.fullscreen.then_some(SCORE_FULLSCREEN)
+}
+
+/// The window to record among `wins`: the best `rate`, plus 200 for the foreground window, 100 for
+/// the game being recorded now (it is kept while it lives, unless another game is played in front
+/// of it), 100 less when minimized, and the larger window of one program before its smaller ones.
+pub fn choose(wins: &[win::WinInfo], m: &Marks) -> Option<usize> {
+    let mut best: Option<(usize, i64, u64)> = None;
+    for (i, w) in wins.iter().enumerate() {
+        let Some(base) = rate(w, m) else { continue };
+        let score = base + if w.foreground { 200 } else { 0 } + if m.current == Some(w.pid) { 100 } else { 0 } - if w.minimized { 100 } else { 0 };
+        let area = w.width as u64 * w.height as u64;
+        if best.map_or(true, |(_, s, a)| score > s || (score == s && area > a)) {
+            best = Some((i, score, area));
+        }
+    }
+    best.map(|(i, _, _)| i)
+}
+
+/// The name a window's game is filed under: the table, Minecraft's Java, a game seen before
+/// from this program, else its Steam folder or version info; never "Desktop" (a program the
+/// user picked whose name means "not a game" keeps its file name).
+pub fn name_for(w: &win::WinInfo, seen: &[Game]) -> String {
+    let lower = w.exe.to_lowercase();
+    let stem = stem_of(&lower);
+    if let Some((_, name)) = KNOWN.iter().find(|(exe, _)| *exe == stem) {
+        return name.to_string();
+    }
+    if (stem == "javaw" || stem == "java") && is_minecraft(w) {
+        return "Minecraft".into();
+    }
+    if let Some(g) = seen.iter().find(|g| !g.exe.is_empty() && g.name != DESKTOP && g.exe.to_lowercase() == lower) {
+        return g.name.clone();
+    }
+    let name = canonical(&display_name(&w.exe));
+    if name == DESKTOP {
+        Path::new(&w.exe).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Game".into())
+    } else {
+        name
+    }
+}
+
+/// `detect` with the user's marks (desktop mode): a program marked "not a game" is none, one
+/// picked or marked as a game is one. With nothing marked it is exactly `detect`.
+pub fn detect_marked(m: &Marks) -> Option<(String, u32, String)> {
+    let fg = win::foreground()?;
+    let key = exe_key(&fg.exe);
+    if m.not_games.iter().any(|n| *n == key) {
+        return None;
+    }
+    let picked = !m.pick.is_empty() && m.pick == key;
+    if picked || (m.auto && m.games.iter().any(|g| *g == key)) {
+        let w = win::WinInfo { exe: fg.exe.clone(), title: fg.title.clone(), class: fg.class.clone(), fullscreen: fg.fullscreen, ..Default::default() };
+        return Some((name_for(&w, m.seen), fg.pid, fg.exe));
+    }
+    if !m.auto {
+        return None; // detection off: the hand pick only
+    }
+    identify(&fg).map(|name| (name, fg.pid, fg.exe))
+}
+
 pub fn icons_dir() -> PathBuf {
     let d = util::data_dir().join("icons");
     let _ = fs::create_dir_all(&d);

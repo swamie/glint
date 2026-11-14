@@ -323,6 +323,129 @@ pub fn foreground() -> Option<Foreground> {
     }
 }
 
+/// A visible top-level window of another program: what game detection (game mode, 0.1.27) looks at.
+/// Only facts about the window and the path of its program; no process is opened beyond
+/// `PROCESS_QUERY_LIMITED_INFORMATION` to read that path.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WinInfo {
+    /// The window handle, as gfxcapture's `hwnd` option takes it.
+    pub hwnd: u64,
+    pub pid: u32,
+    /// Full path of its executable.
+    pub exe: String,
+    pub title: String,
+    pub class: String,
+    /// It covers its whole monitor (fullscreen or borderless).
+    pub fullscreen: bool,
+    pub minimized: bool,
+    /// It is the window the user is working in.
+    pub foreground: bool,
+    /// Its client area (the picture without the frame), in pixels; 0 while minimized.
+    pub width: u32,
+    pub height: u32,
+    /// Index into `monitors()` of the monitor it is (mostly) on.
+    pub monitor: u32,
+}
+
+#[link(name = "dwmapi")]
+extern "system" {
+    fn DwmGetWindowAttribute(hwnd: isize, attr: u32, value: *mut c_void, size: u32) -> i32;
+}
+
+/// Every visible, uncloaked top-level window with no owner and no tool-window style, of every
+/// program but Glint itself: a few milliseconds.
+pub fn windows() -> Vec<WinInfo> {
+    use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetClientRect, GetWindow, GetWindowRect, GetWindowTextW, IsIconic, IsWindowVisible, GW_OWNER};
+    unsafe extern "system" fn collect(hwnd: HWND, lp: LPARAM) -> BOOL {
+        let list = &mut *(lp.0 as *mut Vec<HWND>);
+        list.push(hwnd);
+        BOOL(1)
+    }
+    let mut all: Vec<HWND> = Vec::new();
+    let mons = monitors();
+    let own = std::process::id();
+    let mut exes: Vec<(u32, Option<String>)> = Vec::new();
+    let mut out = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(collect), LPARAM(&mut all as *mut Vec<HWND> as isize));
+        let fg = GetForegroundWindow();
+        for hwnd in all {
+            if !IsWindowVisible(hwnd).as_bool() || GetWindow(hwnd, GW_OWNER).is_ok_and(|o| !o.0.is_null()) {
+                continue;
+            }
+            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            if ex & WS_EX_TOOLWINDOW.0 as isize != 0 {
+                continue;
+            }
+            // Cloaked: a window of a suspended store app or on another virtual desktop (DWMWA_CLOAKED = 14).
+            let mut cloaked = 0u32;
+            if DwmGetWindowAttribute(hwnd.0 as isize, 14, &mut cloaked as *mut u32 as *mut c_void, 4) == 0 && cloaked != 0 {
+                continue;
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid == 0 || pid == own {
+                continue;
+            }
+            let exe = match exes.iter().find(|(p, _)| *p == pid) {
+                Some((_, e)) => e.clone(),
+                None => {
+                    let e = exe_of(pid);
+                    exes.push((pid, e.clone()));
+                    e
+                }
+            };
+            let Some(exe) = exe else { continue };
+            let mut tbuf = [0u16; 256];
+            let tlen = GetWindowTextW(hwnd, &mut tbuf).max(0) as usize;
+            let mut cbuf = [0u16; 128];
+            let clen = GetClassNameW(hwnd, &mut cbuf).max(0) as usize;
+            let minimized = IsIconic(hwnd).as_bool();
+            let mut cr = RECT::default();
+            let (width, height) = if !minimized && GetClientRect(hwnd, &mut cr).is_ok() { ((cr.right - cr.left).max(0) as u32, (cr.bottom - cr.top).max(0) as u32) } else { (0, 0) };
+            let mut wr = RECT::default();
+            let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+            let have_mon = GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool();
+            let fullscreen = !minimized
+                && have_mon
+                && GetWindowRect(hwnd, &mut wr).is_ok()
+                && wr.left <= mi.rcMonitor.left
+                && wr.top <= mi.rcMonitor.top
+                && wr.right >= mi.rcMonitor.right
+                && wr.bottom >= mi.rcMonitor.bottom;
+            let monitor = if have_mon { mons.iter().find(|m| m.x == mi.rcMonitor.left && m.y == mi.rcMonitor.top).map_or(0, |m| m.index) } else { 0 };
+            out.push(WinInfo {
+                hwnd: hwnd.0 as usize as u64,
+                pid,
+                exe,
+                title: String::from_utf16_lossy(&tbuf[..tlen]),
+                class: String::from_utf16_lossy(&cbuf[..clen]),
+                fullscreen,
+                minimized,
+                foreground: hwnd == fg,
+                width,
+                height,
+                monitor,
+            });
+        }
+    }
+    out
+}
+
+/// The full path of process `pid`'s executable (PROCESS_QUERY_LIMITED_INFORMATION only).
+pub fn exe_of(pid: u32) -> Option<String> {
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
+        let _ = CloseHandle(h);
+        ok.then(|| String::from_utf16_lossy(&buf[..len as usize]))
+    }
+}
+
 /// ProductName, else FileDescription, from an executable's version resource.
 pub fn exe_product(path: &str) -> Option<String> {
     unsafe { version_string(path, "ProductName").or_else(|| version_string(path, "FileDescription")) }.map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s.len() < 60)

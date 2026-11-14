@@ -293,6 +293,7 @@ function renderChrome() {
   for (const el of $$("[data-i18n-ph]")) el.placeholder = t(el.dataset.i18nPh);
   if (typeof updRender === "function") updRender(); // its tooltip is text too
   if (typeof jobsRender === "function") jobsRender(); // shown or hidden by a setting
+  if (typeof capRender === "function") capRender(); // the GAME / DESKTOP switch (capmode.js)
   if (typeof sfxFromSettings === "function") sfxFromSettings(S.settings); // a sound setting applies at once
   // The sidebar can be folded to a strip of icons, so every item carries its name as a tooltip.
   document.documentElement.style.setProperty("--nav-op", String(clamp(+S.settings.nav_opacity || 60, 20, 100) / 100)); // the clip arrows in fullscreen (editor.css)
@@ -350,6 +351,9 @@ function renderChrome() {
         const info = `${st.width}×${st.height} @ ${st.fps} fps${enc ? " · " + enc : ""}`;
         return st.game ? t("<b>Clipping</b> {game} · {info}", { game: esc(st.game), info }) : t("<b>Clipping</b> {info}", { info });
       })();
+  // Game mode (capmode.js): "Waiting for a game", or the whole screen as a fallback. "" leaves the text above.
+  const capText = typeof capStatusText === "function" ? capStatusText(st) : "";
+  if (capText) $("#sb-state").innerHTML = capText;
   // More than one monitor buffered (clip keybinds that name another monitor): the text above stays
   // the capture monitor's; a short "+1 monitor" lists them all in its tooltip, and turns yellow
   // with a warning mark when one of the others fails while the capture monitor is fine.
@@ -1346,12 +1350,6 @@ function renderRecording() {
       ${plan.mode === "mixed" ? row(t("Kept in RAM"), t("Clips up to this length are saved straight from RAM"), select("buffer_ram_secs", [...new Set([15, 30, 60, 120, plan.window])].sort((a, b) => a - b).map((n) => [n, t("Last {length}", { length: fmtLen(n) })]), true)) : ""}
       ${plan.mode === "ram" ? "" : row(t("Buffer folder"), `<span class="path" title="${esc(bufferDir)}">${esc(bufferDir)}</span><br>${t("Temporary files, deleted as the buffer moves on. An SSD is best")}`, `<button class="btn sm" data-act="pick-buffer-dir">${t("Change")}</button>${s.buffer_dir ? `<button class="btn sm" data-act="reset-buffer-dir">${t("Default")}</button>` : ""}`)}
     </div>
-    <div class="section"><h2>${t("Audio")}</h2>
-      ${row(t("Desktop audio"), t("Everything you hear, from the default output device"), toggle("desktop_audio"))}
-      ${row(t("Microphone"), t("Default input device, saved as its own track"), toggle("mic"))}
-      ${row(t("Microphone noise suppression"), t("Cuts background noise such as fans and hum from your voice (RNNoise). Applied when a clip is saved, so it costs nothing while clipping"), toggle("mic_denoise"))}
-      ${row(t("Separate game audio track"), t("Adds a track with only the game's sound, so you can keep the game and drop everything else (voice chat, music) when editing. Needs Windows 10 version 2004 or newer.") + (s.game_audio && st.game_audio === "unavailable" ? `<br><b>${t("Not available on this version of Windows.")}</b>` : s.game_audio && st.game_audio === "failed" ? `<br><b>${t("The current game's sound could not be captured.")}</b>` : ""), toggle("game_audio"))}
-    </div>
     <div class="section"><h2>${t("Behaviour")}</h2>
       ${row(t("Start clipping when Glint starts"), t("Otherwise the buffer stays off until you resume"), toggle("record_on_start"))}
     </div>`;
@@ -1392,6 +1390,7 @@ function renderSettings() {
         : t("Glint quits: the buffer stops and clip keys do nothing until you open Glint again"),
         select("close_to_tray", [["true", t("Keep Glint running in the tray")], ["false", t("Quit Glint")]]))}
     </div>
+    ${typeof audSectionHtml === "function" ? audSectionHtml() /* audiodev.js: desktop audio, microphone and their devices (moved from Capture in 0.1.27) */ : ""}
     <div class="section"><h2>${t("Clip sound")}</h2>
       ${row(t("Clip sound"), t("Plays the moment a clip key is pressed"), toggle("sound"))}
       ${row(t("Sound"), t("Picking one plays it"), `${select("sound_name", [...S.sounds.map((x) => [x.id, x.name]), ["custom", t("Custom file…")]])}<button class="btn sm" data-act="sound-play">${t("Play")}</button>`)}

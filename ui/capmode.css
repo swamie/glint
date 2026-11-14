@@ -1,0 +1,44 @@
+/* The GAME / DESKTOP switch in the top bar (ui/capmode.js, 0.1.27).
+   A pill of two halves of equal width; the chosen half sits on a thumb in the accent color that
+   slides to the other half (a transform only: nothing around it moves). 30 px high like the top
+   bar's buttons. In narrow windows the words give way to two icons, as the clip button's keycaps do. */
+#capmode-slot { display: flex; align-items: center; height: 100%; flex: none; }
+.cm-pill { position: relative; display: grid; grid-template-columns: 1fr 1fr; height: 30px; padding: 2px; box-sizing: border-box;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 999px; isolation: isolate; }
+.cm-pill:hover { border-color: color-mix(in srgb, var(--line-2) 72%, var(--text)); }
+/* Half of the padding box less the padding: exactly one half, so translateX(100%) lands on the other. */
+.cm-thumb { position: absolute; z-index: 0; top: 2px; bottom: 2px; left: 2px; width: calc(50% - 2px); border-radius: 999px;
+  background: var(--accent); box-shadow: 0 1px 8px color-mix(in srgb, var(--accent) 30%, transparent);
+  transform: translateX(100%); transition: transform .2s cubic-bezier(.3, .7, .2, 1); pointer-events: none; }
+.cm-pill.is-game .cm-thumb { transform: translateX(0); }
+.cm-half { position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; height: 100%;
+  padding: 0 12px; border: 0; border-radius: 999px; background: none; color: var(--muted); cursor: pointer; white-space: nowrap;
+  font: 700 11px/1 var(--sans); letter-spacing: .07em; transition: color .2s; }
+.cm-half[aria-checked="true"] { color: var(--accent-ink); cursor: default; }
+.cm-half:not([aria-checked="true"]):hover { color: var(--text); }
+.cm-half:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cm-half svg { display: none; width: 15px; height: 15px; }
+/* Waiting for a game: the thumb breathes. */
+.cm-pill.waiting .cm-thumb { animation: cm-breathe 1.8s ease-in-out infinite; }
+@keyframes cm-breathe { 50% { opacity: .55; } }
+@media (max-width: 920px) {
+  .cm-half { padding: 0 9px; }
+  .cm-half svg { display: block; }
+  .cm-half .cm-label { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-thumb, .cm-half { transition: none; }
+  .cm-pill.waiting .cm-thumb { animation: none; }
+}
+
+/* The status bar while waiting for a game (redrawn every second, so it does not animate). */
+.cm-wait-dot { display: inline-block; width: 7px; height: 7px; margin: 0 7px 1px 0; border-radius: 50%; background: var(--warn); vertical-align: middle; }
+
+/* The switch's right-click menu (the app's own #menu). */
+.menu.cm-menu { max-width: 380px; }
+.cm-menu .cm-sub { flex: none; padding: 2px 9px 4px; color: var(--muted); font-size: 11.5px; font-weight: 600; }
+.cm-menu .cm-list { display: flex; flex-direction: column; max-height: 290px; overflow-y: auto; }
+.cm-menu .cm-prog span { min-width: 0; }
+.cm-menu .cm-prog.cm-not span { opacity: .55; }
+.cm-menu .cm-tag { flex: none; margin-left: auto; padding: 2px 7px; border-radius: 999px; font: 700 10px/1.2 var(--sans); font-style: normal; letter-spacing: .03em;
+  color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }

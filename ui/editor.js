@@ -1172,6 +1172,7 @@ function mountPlayer(root, c) {
       P.tl = mountTimeline(host, {
         model: P.model,
         title: c.title,
+        game: c.game, // names the Game row ("Overwatch audio")
         getTime: () => tlNow(),
         onSeek: (sec, exact) => P.seek(sec, false, !!exact), // exact: onto a bookmark, even inside a cut-out part
         onChange: (what) => P.edSync(what),

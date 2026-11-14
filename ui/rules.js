@@ -1,6 +1,6 @@
 "use strict";
 // 0.1.24: Render rules. A rule is a name and a row of blocks (steps) run in order on a clip with one
-// click: Color (a look), Blur, Upscale, Compress (to N MB), GIF, Copy. Saved in S.settings.rules;
+// click: Color (a look), Canvas (a saved canvas layout, 0.1.27), Blur, Upscale, Compress (to N MB), GIF, Copy. Saved in S.settings.rules;
 // the backend (src-tauri/src/rules.rs) runs them as jobs of kind "rule" (command rules_run).
 //
 // The builder looks and drags like the clip-name builder (naming.js / naming.css: its classes are reused,
@@ -12,12 +12,13 @@
 // touched inside functions. The pure model at the top runs in Node (tests). No local is called `t`.
 
 /* ---------- model (pure) ---------- */
-const RL_KINDS = ["color", "blur", "upscale", "compress", "gif", "copy"];
+const RL_KINDS = ["color", "canvas", "blur", "upscale", "compress", "gif", "copy"];
 // Why an order was changed: the same sentences as rules.rs (WHY_*).
 const RL_WHY_ONCE = "Each kind of block can be used once.";
 const RL_WHY_GIF = "A GIF is not a video, so only Copy can come after it.";
 const RL_WHY_COPY = "Copy is always the last block.";
 const RL_WHY_UNKNOWN = "An unknown block was left out.";
+const RL_WHY_CANVAS = "Canvas goes first, with Color next to it (one export does both).";
 const RL_MIN_MB = 5, RL_MAX_MB = 1000;
 const RL_GIF_WIDTHS = [0, 720, 480, 320];
 const RL_GIF_FPS = [10, 15, 20, 30, 50];
@@ -49,14 +50,34 @@ function rlFixOrder(steps) {
   }
   const c = out.findIndex((s) => s.kind === "copy");
   if (c >= 0 && c !== out.length - 1) { note(RL_WHY_COPY); out.push(...out.splice(c, 1)); }
+  // 0.1.27: Canvas (and Color, made in the same export) first, in the order they had.
+  if (out.some((s) => s.kind === "canvas")) {
+    const front = (s) => s.kind === "canvas" || s.kind === "color";
+    const group = out.filter(front);
+    if (!out.slice(0, group.length).every(front)) {
+      note(RL_WHY_CANVAS);
+      const rest = out.filter((s) => !front(s));
+      out.length = 0;
+      out.push(...group, ...rest);
+    }
+  }
   return { steps: out, why };
 }
 /** The kinds that can still be added (each kind once). */
 const rlFree = (steps) => RL_KINDS.filter((k) => !steps.some((s) => s.kind === k));
-/** A new block of `kind`. `last` = the dialogs' last choices ({ gif, upscale } from the settings). */
+/** A new block of `kind`. `last` = the dialogs' last choices ({ gif, upscale } from the settings;
+ *  `layout`: the saved canvas layout a new Canvas block starts with, or none). */
 function rlNewStep(kind, last = {}) {
-  return { kind, look: "Vivid", mb: 50, upscale: { height: 2160, ...(last.upscale || {}) }, gif: { width: 480, fps: 20, max_mb: 0, ...(last.gif || {}) } };
+  const lay = kind === "canvas" && last.layout ? last.layout : null;
+  return { kind, look: "Vivid", mb: 50, upscale: { height: 2160, ...(last.upscale || {}) }, gif: { width: 480, fps: 20, max_mb: 0, ...(last.gif || {}) }, layout: lay ? String(lay.id || "") : "", layout_name: lay ? String(lay.name || "") : "" };
 }
+/** The saved layout a Canvas block names, out of `list` (S.settings.canvas_presets): by id, else by name (rules.rs `find_layout`). */
+function rlLayoutOf(st, list) {
+  const all = Array.isArray(list) ? list : [];
+  return (st?.layout && all.find((p) => p && p.id === st.layout)) || (st?.layout_name && all.find((p) => p && p.name === st.layout_name)) || null;
+}
+/** A saved layout with its size: "Overwatch vertical · 1080 × 1920". */
+const rlLayoutLabel = (p) => `${p.name} · ${Math.round(+p.canvas?.width || 0)} × ${Math.round(+p.canvas?.height || 0)}`;
 /** `steps` with block `from` moved to index `to`. */
 function rlMove(steps, from, to) {
   const out = steps.slice();
@@ -81,13 +102,17 @@ function rlFreeName(names, base = "Render rule {n}", tr = (s, p) => s.replace("{
 
 /* ---------- words (translated) ---------- */
 const rlTr = (s, p) => (typeof t === "function" ? t(s, p) : String(s).replace(/\{(\w+)\}/g, (_, k) => (p && k in p ? p[k] : `{${k}}`)));
-const rlKindLabel = (k) => ({ color: t("Color"), blur: t("Blur"), upscale: t("Upscale"), compress: t("Compress"), gif: t("GIF"), copy: t("Copy") }[k] || k);
+const rlKindLabel = (k) => ({ color: t("Color"), canvas: t("Canvas"), blur: t("Blur"), upscale: t("Upscale"), compress: t("Compress"), gif: t("GIF"), copy: t("Copy") }[k] || k);
 /** A look's name to show: the built-in looks are translated, the user's own are not. */
 const rlLookName = (name) => (typeof ED_PRESETS !== "undefined" && ED_PRESETS.some((p) => p.name === name) ? rlTr(name) : name);
 /** One block in words: "Color: Vivid", "Blur", "Upscale to 4K", "Compress to 50 MB", "GIF 480 px, 20 fps", "Copy". */
 function rlWords(st) {
   switch (st.kind) {
     case "color": return t("Color: {look}", { look: rlLookName(st.look) });
+    case "canvas": {
+      const name = rlLayoutOf(st, rlLayouts())?.name || st.layout_name;
+      return name ? t("Canvas: {name}", { name }) : t("Canvas");
+    }
     case "upscale": return t("Upscale to {target}", { target: rlHeight(+st.upscale?.height || 2160) });
     case "compress": return t("Compress to {n} MB", { n: st.mb });
     case "gif": {
@@ -117,7 +142,18 @@ const RL = {
 
 const rlList = () => { if (!Array.isArray(S.settings.rules)) S.settings.rules = []; return S.settings.rules; };
 const rlById = (id) => rlList().find((r) => r.id === id) || null;
-const rlLast = () => ({ gif: S.settings.gif, upscale: S.settings.upscale });
+/** The canvas layouts saved in the editor (canvas.js "Save this layout…"). */
+const rlLayouts = () => (typeof S !== "undefined" && Array.isArray(S.settings?.canvas_presets) ? S.settings.canvas_presets : []);
+const rlLast = () => ({ gif: S.settings.gif, upscale: S.settings.upscale, layout: rlLayouts()[0] || null });
+/** Why rule `rule` cannot run because of its Canvas block (the same words as rules.rs `check`), or "". */
+function rlCanvasProblem(rule) {
+  const st = rule?.steps?.find((s) => s.kind === "canvas");
+  if (!st) return "";
+  if (!st.layout && !st.layout_name) return t("Pick a layout for the Canvas block.");
+  return rlLayoutOf(st, rlLayouts()) ? "" : t('The canvas layout "{name}" no longer exists. Pick another one in the rule.', { name: st.layout_name || st.layout });
+}
+/** Why rule `rule` cannot run right now (Blur missing, its canvas layout gone), or "". */
+const rlCannotWhy = (rule) => (rlHasBlur(rule) && !S.blur ? t("blur-cli.exe was not found.") : rlCanvasProblem(rule));
 const rlNewId = () => "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const rlHasBlur = (rule) => !!rule?.steps?.some((s) => s.kind === "blur");
 /** The looks a Color block can use: the editor's built-in ones (not "None") and the user's own. */
@@ -170,7 +206,9 @@ function renderRulesPage() {
 function rlCardHtml(rule, i) {
   const open = rule.id === RL.open;
   const n = rule.steps?.length || 0;
-  const blurWarn = rlHasBlur(rule) && !S.blur ? `<div class="small rl-bad">${esc(t("blur-cli.exe was not found."))} ${esc(t("This rule cannot run until Blur is installed."))}</div>` : "";
+  const canvasBad = rlCanvasProblem(rule);
+  const blurWarn = (rlHasBlur(rule) && !S.blur ? `<div class="small rl-bad">${esc(t("blur-cli.exe was not found."))} ${esc(t("This rule cannot run until Blur is installed."))}</div>` : "")
+    + (canvasBad ? `<div class="small rl-bad">${esc(canvasBad)}</div>` : "");
   return `<div class="rl-card${open ? " open" : ""}" data-rl-card="${esc(rule.id)}">
       <button type="button" class="rl-head" data-rlp="pick" data-arg="${esc(rule.id)}" aria-expanded="${open}" title="${esc(t("Right-click for rename, duplicate, delete and order"))}">
         <span class="rl-icon">${ICON.rules}</span>
@@ -193,7 +231,9 @@ function rlBuilderHtml(rule) {
   const chips = steps.map((st, i) => {
     const label = rlWords(st);
     const aria = t("{block}, block {i} of {n}. Alt+Left or Alt+Right moves it, Delete removes it, Enter shows its options", { block: label, i: i + 1, n });
-    return `<span class="nm-block rl-block k-${st.kind}${RL.sel === i ? " on" : ""}" role="listitem" tabindex="0" data-rl-i="${i}" aria-label="${esc(aria)}">`
+    // A Canvas block whose layout is gone (or never picked) is shown broken.
+    const bad = st.kind === "canvas" && !rlLayoutOf(st, rlLayouts()) ? (st.layout || st.layout_name ? t("This layout no longer exists") : t("Pick a layout")) : "";
+    return `<span class="nm-block rl-block k-${st.kind}${RL.sel === i ? " on" : ""}${bad ? " bad" : ""}" role="listitem" tabindex="0" data-rl-i="${i}" aria-label="${esc(bad ? `${aria}. ${bad}` : aria)}"${bad ? ` title="${esc(bad)}"` : ""}>`
       + `<span class="nm-grip" aria-hidden="true"></span><span class="rl-step-no">${i + 1}</span><span class="nm-lbl">${esc(label)}</span>`
       + `<button type="button" class="nm-x" tabindex="-1" data-rl-x="${i}" aria-label="${esc(t("Remove {block}", { block: label }))}" title="${esc(t("Remove {block}", { block: label }))}">${ICON.x}</button></span>`
       + (i < n - 1 ? `<span class="rl-arrow" aria-hidden="true">→</span>` : "");
@@ -220,6 +260,16 @@ function rlOptsHtml(rule, i) {
       + builtin.map((n) => opt(n, rlTr(n), st.look)).join("")
       + (mine.length ? `<optgroup label="${esc(t("Your presets"))}">${mine.map((n) => opt(n, n, st.look)).join("")}</optgroup>` : ""), t("Look"))
       + `<span class="small">${esc(t("The editor's color looks. Make your own in the editor's {link}.")).replace("{link}", () => `<a href="#" class="rl-link" data-rl-colorpanel>${esc(t("color panel"))}</a>`)}</span>`;
+  } else if (st.kind === "canvas") {
+    const list = rlLayouts(), cur = rlLayoutOf(st, list);
+    const gone = !cur && (st.layout || st.layout_name);
+    if (list.length || gone) {
+      body = sel("layout", (cur ? "" : opt("", gone ? t("{name} (no longer exists)", { name: st.layout_name || st.layout }) : t("Pick a layout"), ""))
+        + list.map((p) => opt(p.id, rlLayoutLabel(p), cur ? cur.id : "")).join(""), t("Layout"));
+    }
+    body += `<span class="small">${esc(list.length
+      ? t("A layout saved in the editor. Its pieces are fitted to each clip's picture, so it works on clips of any size.")
+      : t("No saved layouts yet. Make one in the editor's Canvas panel, then click “Save this layout…”."))}</span>`;
   } else if (st.kind === "compress") {
     body = `<label class="rl-opt"><span>${esc(t("Size"))}</span><input class="field rl-mb" type="number" min="${RL_MIN_MB}" max="${RL_MAX_MB}" step="1" data-rl-opt="mb" value="${+st.mb || 50}" aria-label="${esc(t("Size in MB"))}"><span>MB</span></label>`
       + `<span class="rl-quick">${RL_MB_QUICK.map((n) => `<button type="button" class="btn sm${+st.mb === n ? " on" : ""}" data-rl-mb="${n}">${n}</button>`).join("")}</span>`
@@ -319,7 +369,7 @@ function rulesMenuItem(clips) {
   if (!RL.menuClips.length || (clips || []).some((c) => c.draft)) return "";
   const list = rlList();
   const inner = list.length
-    ? list.map((r) => rlMItem("run", r.name, rlHasBlur(r) && !S.blur ? ICON.warn : "", r.id, "", rlHasBlur(r) && !S.blur)).join("") + "<hr>" + rlMItem("page", t("Edit rules…"), ICON.gear)
+    ? list.map((r) => rlMItem("run", r.name, rlCannotWhy(r) ? ICON.warn : "", r.id, "", !!rlCannotWhy(r))).join("") + "<hr>" + rlMItem("page", t("Edit rules…"), ICON.gear)
     : `<div class="menu-hint">${esc(t("No render rules yet"))}</div>` + rlMItem("page-new", t("Make a render rule…"), ICON.plus);
   return mSub(t("Render rule"), ICON.rules, inner);
 }
@@ -330,11 +380,11 @@ function rulesViewerHtml(c) {
   const list = rlList();
   if (!list.length) return `<div class="rl-v small"><button type="button" class="text-link" data-rlv="new">${esc(t("Make a render rule"))}</button></div>`;
   const pick = rlById(rlViewerPick()) || list[0];
-  const cannot = rlHasBlur(pick) && !S.blur;
+  const cannot = rlCannotWhy(pick);
   return `<div class="rl-v">
       <div class="rl-v-row"><select class="field" data-rlv-pick aria-label="${esc(t("Render rule"))}">${list.map((r) => `<option value="${esc(r.id)}"${r.id === pick.id ? " selected" : ""}>${esc(r.name)}</option>`).join("")}</select>
       <button type="button" class="btn" data-rlv="run" data-arg="${esc(c.id)}" ${cannot ? "disabled" : ""}>${ICON.rules}<span>${esc(t("Run"))}</span></button></div>
-      <div class="small rl-v-words">${esc(cannot ? t("blur-cli.exe was not found.") : rlDescribe(pick))}</div>
+      <div class="small rl-v-words">${esc(cannot || rlDescribe(pick))}</div>
     </div>`;
 }
 const RL_PICK_KEY = "glint.rulesPick";
@@ -391,6 +441,7 @@ function rulesJobLine(r) {
   if (r.state !== "running") return "";
   switch (r.job?.stage) {
     case "color": return t("Color {pct} %", { pct });
+    case "canvas": return t("Canvas {pct} %", { pct });
     case "blur": return pct < 1 ? t("Blur…") : t("Blur {pct} %", { pct });
     case "upscale": return t("Upscaling {pct} %", { pct });
     case "compress": return t("Compressing {pct} %", { pct });
@@ -471,9 +522,9 @@ if (typeof document !== "undefined" && typeof window !== "undefined" && window._
     if (el.matches?.("[data-rlv-pick]")) {
       rlSetViewerPick(el.value);
       const rule = rlById(el.value), words = el.closest(".rl-v")?.querySelector(".rl-v-words"), run = el.closest(".rl-v")?.querySelector('[data-rlv="run"]');
-      const cannot = rlHasBlur(rule) && !S.blur;
-      if (words) words.textContent = cannot ? t("blur-cli.exe was not found.") : rlDescribe(rule);
-      if (run) run.disabled = cannot;
+      const cannot = rlCannotWhy(rule);
+      if (words) words.textContent = cannot || rlDescribe(rule);
+      if (run) run.disabled = !!cannot;
       return;
     }
     const opt = el.dataset?.rlOpt;
@@ -483,6 +534,7 @@ if (typeof document !== "undefined" && typeof window !== "undefined" && window._
     if (!st) return;
     const v = el.value;
     if (opt === "look") st.look = v;
+    else if (opt === "layout") { const p = rlLayouts().find((x) => x.id === v); if (!p) return; st.layout = p.id; st.layout_name = p.name; }
     else if (opt === "mb") st.mb = Math.round(clamp(+v || 50, RL_MIN_MB, RL_MAX_MB));
     else if (opt === "height") st.upscale = { ...(st.upscale || {}), height: +v };
     else if (opt === "gif-width") st.gif = { ...(st.gif || {}), width: +v };
@@ -627,7 +679,7 @@ function rlDragEnd(drop) {
   if (at >= 0) rlFocus({ i: at }); else rlFocus({ add: kind });
 }
 
-if (typeof module !== "undefined") module.exports = { rlFixOrder, rlFree, rlNewStep, rlMove, rlInsert, rlWords, rlDescribe, rlFreeName, rlDropResult, rlHeight, RL_WHY_GIF, RL_WHY_COPY, RL_WHY_ONCE, RL_WHY_UNKNOWN };
+if (typeof module !== "undefined") module.exports = { rlFixOrder, rlFree, rlNewStep, rlMove, rlInsert, rlWords, rlDescribe, rlFreeName, rlDropResult, rlHeight, rlLayoutOf, rlLayoutLabel, RL_WHY_GIF, RL_WHY_COPY, RL_WHY_ONCE, RL_WHY_UNKNOWN, RL_WHY_CANVAS };
 
 /* "…the editor's color panel" in a Color block's options: opens the newest clip in the editor at its Color section (0.1.25). */
 function rlOpenColorPanel() {

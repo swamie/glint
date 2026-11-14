@@ -355,6 +355,12 @@ fn list_sounds() -> Vec<SoundInfo> {
     crate::sound::SOUNDS.iter().map(|(id, name)| SoundInfo { id, name }).collect()
 }
 
+/// Settings → Audio: the sound devices Windows has now (it records nothing).
+#[tauri::command(async)]
+fn audio_devices() -> crate::audio::DeviceList {
+    crate::audio::list_devices()
+}
+
 /// Play the clip sound as currently set, so the user can hear a choice.
 #[tauri::command(async)]
 fn preview_sound(core: St) {
@@ -880,6 +886,7 @@ pub fn run(minimized: bool) {
             set_game,
             sort_by_game,
             list_sounds,
+            audio_devices,
             preview_sound,
             pick_sound_file,
             preview_toast,
@@ -946,7 +953,9 @@ pub fn run(minimized: bool) {
             crate::polish::set_app_icon,
             crate::polish::reload_app_icon,
             crate::capture2::auto_info,
-            crate::capture2::recommended_settings
+            crate::capture2::recommended_settings,
+            crate::capmode::game_menu,
+            crate::capmode::game_mark
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

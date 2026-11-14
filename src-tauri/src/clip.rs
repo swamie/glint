@@ -49,7 +49,18 @@ pub(crate) fn reserve_path(dir: &Path, base: &str, ext: &str) -> PathBuf {
 /// stays desktop + mic: the game is already part of the desktop sound.
 /// Without desktop sound the mix is mic + game (Mix, Microphone, Game), so
 /// track 1 still holds everything that was heard.
-pub fn write(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, String> {
+pub fn write(s: &Settings, cap: Capture, game: &str) -> Result<ClipMeta, String> {
+    write_as(s, cap, game, false)
+}
+
+/// `write` for a clip of game mode (capmode.rs, 0.1.27): no desktop sound, and the tracks are
+/// Mix (game + microphone), Game, Microphone (`audio_layout_game`).
+pub fn write_game(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, String> {
+    cap.desk = None;
+    write_as(s, cap, game, true)
+}
+
+fn write_as(s: &Settings, mut cap: Capture, game: &str, game_mode: bool) -> Result<ClipMeta, String> {
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg").ok_or("ffmpeg.exe was not found")?;
     if s.mic_denoise {
         if let Some(mic) = cap.mic.as_mut().filter(|m| !m.data.is_empty()) {
@@ -91,7 +102,8 @@ pub fn write(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, Str
     for (f, rate, _) in &inputs {
         cmd.args(["-f", "s16le", "-ar", &rate.to_string(), "-ac", "2", "-i"]).arg(f);
     }
-    let titles = audio_layout(&mut cmd, &inputs.iter().map(|(_, _, name)| *name).collect::<Vec<_>>());
+    let names: Vec<&str> = inputs.iter().map(|(_, _, name)| *name).collect();
+    let titles = if game_mode { audio_layout_game(&mut cmd, &names) } else { audio_layout(&mut cmd, &names) };
     // The "fast" AAC coder halves audio encode time on long clips (measured 11.8 s -> 5.5 s for 10 min x 3 tracks).
     cmd.args(["-c:v", "copy", "-c:a", "aac", "-aac_coder", "fast", "-b:a", "160k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart"]);
     cmd.arg("-metadata").arg(format!("title={title}"));
@@ -185,6 +197,38 @@ pub fn audio_layout(cmd: &mut std::process::Command, names: &[&str]) -> Vec<&'st
     if let Some(g) = game {
         maps.push(format!("{}:a", g + 1));
         titles.push("Game");
+    }
+    cmd.args(["-map", "0:v:0"]);
+    for m in &maps {
+        cmd.arg("-map").arg(m);
+    }
+    for (i, t) in titles.iter().enumerate() {
+        cmd.arg(format!("-metadata:s:a:{i}")).arg(format!("title={t}"));
+        if titles.len() > 1 {
+            cmd.arg(format!("-disposition:a:{i}")).arg(if i == 0 { "default" } else { "0" });
+        }
+    }
+    titles
+}
+
+/// The track layout of a game-mode clip (0.1.27): with the game's sound and the microphone,
+/// track 1 is their mix (what players, Discord and joins take), then the game alone, then the
+/// microphone alone; one source alone is the only track. Same titles as `audio_layout`.
+pub fn audio_layout_game(cmd: &mut std::process::Command, names: &[&str]) -> Vec<&'static str> {
+    let game = names.iter().position(|n| *n == "Game");
+    let mic = names.iter().position(|n| *n == "Microphone");
+    let mut maps: Vec<String> = Vec::new();
+    let mut titles: Vec<&'static str> = Vec::new();
+    if let (Some(g), Some(m)) = (game, mic) {
+        cmd.arg("-filter_complex").arg(format!("[{}:a][{}:a]amix=inputs=2:duration=longest:normalize=0[mix]", g + 1, m + 1));
+        maps.push("[mix]".into());
+        titles.push("Mix");
+    }
+    for (at, title) in [(game, "Game"), (mic, "Microphone")] {
+        if let Some(i) = at {
+            maps.push(format!("{}:a", i + 1));
+            titles.push(title);
+        }
     }
     cmd.args(["-map", "0:v:0"]);
     for m in &maps {

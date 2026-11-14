@@ -228,6 +228,20 @@ pub struct Settings {
     pub mic_denoise: bool,
     /// Also record the current game's own sound (its process tree) as an extra "Game" track.
     pub game_audio: bool,
+    /// Settings → Audio: the output device whose sound is recorded and the microphone,
+    /// by name. "" = the Windows default; a device that is not there falls back to it.
+    pub desktop_device: String,
+    pub mic_device: String,
+    /// The top bar's GAME / DESKTOP switch (0.1.27, capmode.rs): "desktop" records the whole
+    /// monitor and all desktop sound (as always), "game" only the game's window and its own sound.
+    pub capture_mode: String,
+    /// Look for the game by itself; off = only the program picked by hand (`game_pick`).
+    pub game_auto: bool,
+    /// Marks from the switch's right-click menu, by executable name in lower case ("cs2.exe"):
+    /// the program picked by hand ("" = none), programs that are games, programs that are not.
+    pub game_pick: String,
+    pub game_exes: Vec<String>,
+    pub not_game_exes: Vec<String>,
     pub record_on_start: bool,
     pub sound: bool,
     /// One of `sound::SOUNDS`, or "custom" to play `sound_file`.
@@ -355,6 +369,13 @@ impl Default for Settings {
             mic: true,
             mic_denoise: false,
             game_audio: false,
+            desktop_device: String::new(),
+            mic_device: String::new(),
+            capture_mode: "desktop".into(),
+            game_auto: true,
+            game_pick: String::new(),
+            game_exes: Vec::new(),
+            not_game_exes: Vec::new(),
             record_on_start: true,
             sound: true,
             sound_name: "chirp".into(),

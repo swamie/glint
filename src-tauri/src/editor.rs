@@ -162,11 +162,62 @@ pub struct ExportOpts {
     /// An output picture of its own size with pieces of the clip placed on
     /// it (vertical videos). None = the clip's own picture, as before.
     pub canvas: Option<Canvas>,
+    /// Keyframes (0.1.27): one track per piece of `canvas`, in the same
+    /// order. An empty track (or none at all) = the piece stands still, as
+    /// before; otherwise the track replaces the piece's own two boxes.
+    pub canvas_tracks: Vec<Vec<PiecePoint>>,
 }
 
 impl Default for ExportOpts {
     fn default() -> Self {
-        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new(), ordered: false, overlays: Vec::new(), blurs: Vec::new(), fade_in: 0.0, fade_out: 0.0, canvas: None }
+        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new(), ordered: false, overlays: Vec::new(), blurs: Vec::new(), fade_in: 0.0, fade_out: 0.0, canvas: None, canvas_tracks: Vec::new() }
+    }
+}
+
+/// A point of a moving overlay's or blur box's track (keyframes, 0.1.27): at
+/// `t` seconds of the RESULT the thing is moved by `dx`, `dy` (fractions of
+/// the picture) and scaled by `sx`, `sy` about its own middle. Between two
+/// points it moves evenly, or eases in and out when `e` is set on the first
+/// one. Two points at the same time make a jump (a cut between keyframes).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct MovePoint {
+    pub t: f64,
+    pub dx: f64,
+    pub dy: f64,
+    pub sx: f64,
+    pub sy: f64,
+    pub e: bool,
+}
+
+impl Default for MovePoint {
+    fn default() -> Self {
+        MovePoint { t: 0.0, dx: 0.0, dy: 0.0, sx: 1.0, sy: 1.0, e: false }
+    }
+}
+
+/// A point of a moving canvas piece's track: at `t` seconds of the RESULT
+/// its place is `x`, `y`, `w`, `h` (fractions of the canvas), the middle of
+/// what it shows is `cx`, `cy` (fractions of the source) and `z` canvas
+/// pixels show one source pixel. The source box follows from those at every
+/// instant, so the piece is never stretched. `e` as in `MovePoint`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct PiecePoint {
+    pub t: f64,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub cx: f64,
+    pub cy: f64,
+    pub z: f64,
+    pub e: bool,
+}
+
+impl Default for PiecePoint {
+    fn default() -> Self {
+        PiecePoint { t: 0.0, x: 0.0, y: 0.0, w: 1.0, h: 1.0, cx: 0.5, cy: 0.5, z: 1.0, e: false }
     }
 }
 
@@ -213,6 +264,15 @@ pub struct Overlay {
     pub png: String,
     pub from: f64,
     pub to: f64,
+    /// A moving overlay (keyframes, 0.1.27): the PNG is only the item's box,
+    /// which lies at `x`, `y`, `w`, `h` (fractions of the picture) before
+    /// `track` moves and scales it. An empty track = the PNG is the whole
+    /// picture, laid at 0:0 as before.
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub track: Vec<MovePoint>,
 }
 
 /// A box of the picture that is blurred from `from` to `to` seconds of the
@@ -229,6 +289,9 @@ pub struct BlurBox {
     pub from: f64,
     pub to: f64,
     pub strength: f64,
+    /// Keyframes (0.1.27): the box moves and scales about its middle along
+    /// this track. Empty = it stands still.
+    pub track: Vec<MovePoint>,
 }
 
 /// Where overlay PNGs are written; an export removes the ones it used from here.
@@ -1007,12 +1070,103 @@ pub(crate) fn frames_on_screen(ffmpeg: &Path, file: &Path, times: &[f64]) -> Vec
 
 /// The picture layers of an export, checked and clamped to the result's length.
 struct Layers {
-    /// (png path, from, to) in output seconds.
-    overlays: Vec<(String, f64, f64)>,
-    /// (x, y, w, h fractions, from, to, strength).
-    blurs: Vec<(f64, f64, f64, f64, f64, f64, f64)>,
+    /// (png path, from, to) in output seconds, and how it moves (keyframes).
+    overlays: Vec<(String, f64, f64, Option<Moving>)>,
+    /// (x, y, w, h fractions, from, to, strength), and how it moves.
+    blurs: Vec<(f64, f64, f64, f64, f64, f64, f64, Option<Moving>)>,
     fade_in: f64,
     fade_out: f64,
+}
+
+/// A moving overlay or blur box (keyframes): its box before it moves (x, y,
+/// w, h: fractions of the picture) and its track, checked: (t, dx, dy, sx,
+/// sy, ease) sorted by time.
+#[derive(Debug, Clone, PartialEq)]
+struct Moving {
+    bx: (f64, f64, f64, f64),
+    pts: Vec<(f64, [f64; 4], bool)>,
+}
+
+/// The most points a track keeps (the UI sends a few per keyframe).
+const MAX_TRACK: usize = 2000;
+
+/// `pts` checked for a result `total` seconds long: times inside it and in
+/// order, moves within 4 pictures, scales 0.01..=50. None when empty.
+fn clean_moves(pts: &[MovePoint], total: f64) -> Option<Vec<(f64, [f64; 4], bool)>> {
+    let f = |v: f64, d: f64, lo: f64, hi: f64| if v.is_finite() { v.clamp(lo, hi) } else { d };
+    let mut out: Vec<(f64, [f64; 4], bool)> = pts
+        .iter()
+        .take(MAX_TRACK)
+        .filter(|p| p.t.is_finite())
+        .map(|p| (p.t.clamp(0.0, total.max(0.0)), [f(p.dx, 0.0, -4.0, 4.0), f(p.dy, 0.0, -4.0, 4.0), f(p.sx, 1.0, 0.01, 50.0), f(p.sy, 1.0, 0.01, 50.0)], p.e))
+        .collect();
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    (!out.is_empty()).then_some(out)
+}
+
+/// A number for an ffmpeg expression: at most 6 decimals, no trailing zeros.
+fn ex_num(v: f64) -> String {
+    let s = format!("{:.6}", if v.is_finite() { v } else { 0.0 });
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s.is_empty() || s == "-0" { "0".into() } else { s.into() }
+}
+
+/// One value of a track as an ffmpeg expression on the result's time `t`:
+/// the first value, plus for each step between two points the change times
+/// how far `t` has got through it (0..1, eased with smoothstep when the first
+/// point says so), so the value is held before the first point and after the
+/// last. Two points at one time jump at that time. A sum, not nested `if`s,
+/// and grouped in parentheses eight at a time: ffmpeg refuses an expression
+/// tree about a hundred deep (a plain chain of 100 `+` is one), so the
+/// grouping keeps it a few levels deep for any number of points.
+fn track_expr(pts: &[(f64, f64, bool)]) -> String {
+    let Some(first) = pts.first() else { return "0".into() };
+    fn grouped(terms: &[String]) -> String {
+        if terms.len() <= 8 {
+            return terms.concat();
+        }
+        let k = terms.len().div_ceil(8);
+        terms.chunks(k).map(|c| format!("+({})", grouped(c))).collect()
+    }
+    let mut terms: Vec<String> = Vec::new();
+    for w in pts.windows(2) {
+        let ((ta, va, ease), (tb, vb, _)) = (w[0], w[1]);
+        let d = vb - va;
+        if d.abs() < 1e-7 {
+            continue;
+        }
+        let (sign, mag) = (if d < 0.0 { '-' } else { '+' }, ex_num(d.abs()));
+        terms.push(if tb - ta < 1e-6 {
+            format!("{sign}{mag}*gte(t,{})", ex_num(ta))
+        } else {
+            let u = format!("clip((t-{})/{},0,1)", ex_num(ta), ex_num(tb - ta));
+            if ease { format!("{sign}{mag}*{u}*{u}*(3-2*{u})") } else { format!("{sign}{mag}*{u}") }
+        });
+    }
+    ex_num(first.1) + &grouped(&terms)
+}
+
+/// Field `k` of a checked move track as an expression (`track_expr`).
+fn move_expr(pts: &[(f64, [f64; 4], bool)], k: usize) -> String {
+    track_expr(&pts.iter().map(|(t, v, e)| (*t, v[k], *e)).collect::<Vec<_>>())
+}
+
+/// The value of a track at time `t`, as `track_expr`'s expression gives it (for the self-test).
+fn track_value(pts: &[(f64, f64, bool)], t: f64) -> f64 {
+    let Some(first) = pts.first() else { return 0.0 };
+    let mut v = first.1;
+    for w in pts.windows(2) {
+        let ((ta, va, ease), (tb, vb, _)) = (w[0], w[1]);
+        if tb - ta < 1e-6 {
+            if t >= ta {
+                v += vb - va;
+            }
+        } else {
+            let u = ((t - ta) / (tb - ta)).clamp(0.0, 1.0);
+            v += (vb - va) * if ease { u * u * (3.0 - 2.0 * u) } else { u };
+        }
+    }
+    v
 }
 
 /// `opts`' overlays, blur boxes and fades on a result `total` seconds long;
@@ -1030,18 +1184,32 @@ fn layer_plan(opts: &ExportOpts, total: f64) -> Result<Option<Layers>, String> {
         if !Path::new(&o.png).is_file() {
             return Err("An overlay picture of the edit is missing. Try the export again.".into());
         }
-        overlays.push((o.png.clone(), a, b));
+        // A moving one: the PNG is the item's box (it may hang over the picture's edges).
+        let moving = clean_moves(&o.track, total).and_then(|pts| {
+            let (w, h) = (fin(o.w).min(4.0), fin(o.h).min(4.0));
+            (w > 0.0005 && h > 0.0005).then(|| Moving { bx: (fin(o.x).clamp(-4.0, 4.0), fin(o.y).clamp(-4.0, 4.0), w, h), pts })
+        });
+        overlays.push((o.png.clone(), a, b, moving));
     }
     let mut blurs = Vec::new();
     for g in &opts.blurs {
         let Some((a, b)) = span(g.from, g.to) else { continue };
+        let st = fin(g.strength).clamp(0.0, 0.2);
+        if let Some(pts) = clean_moves(&g.track, total) {
+            // A moving box: kept whole (its track may take it partly off the picture).
+            let (x, y) = (fin(g.x).clamp(-1.0, 2.0), fin(g.y).clamp(-1.0, 2.0));
+            let (w, h) = (fin(g.w).min(1.0), fin(g.h).min(1.0));
+            if w > 0.002 && h > 0.002 && st > 0.0 {
+                blurs.push((x, y, w, h, a, b, st, Some(Moving { bx: (x, y, w, h), pts })));
+            }
+            continue;
+        }
         let x = fin(g.x).clamp(0.0, 1.0);
         let y = fin(g.y).clamp(0.0, 1.0);
         let w = fin(g.w).min(1.0 - x);
         let h = fin(g.h).min(1.0 - y);
-        let st = fin(g.strength).clamp(0.0, 0.2);
         if w > 0.002 && h > 0.002 && st > 0.0 {
-            blurs.push((x, y, w, h, a, b, st));
+            blurs.push((x, y, w, h, a, b, st, None));
         }
     }
     // Fades longer than half the result would overlap: each is kept to half.
@@ -1064,7 +1232,12 @@ fn layer_chain(l: &Layers, first_png: usize, (pw, ph): (u32, u32), total: f64) -
     let mut g = Vec::new();
     let mut cur = "vb".to_string();
     let even = |v: f64| ((v / 2.0).round() as i64 * 2).max(0) as u32;
-    for (i, &(x, y, w, h, a, b, st)) in l.blurs.iter().enumerate() {
+    for (i, &(x, y, w, h, a, b, st, ref moving)) in l.blurs.iter().enumerate() {
+        if let Some(mv) = moving {
+            g.extend(moving_blur_chain(mv, &cur, i, (pw, ph), (a, b, st)));
+            cur = format!("vl{i}");
+            continue;
+        }
         let bx = even(x * pw as f64).min(pw.saturating_sub(2));
         let by = even(y * ph as f64).min(ph.saturating_sub(2));
         let bw = even(w * pw as f64).clamp(2, pw - bx);
@@ -1076,9 +1249,20 @@ fn layer_chain(l: &Layers, first_png: usize, (pw, ph): (u32, u32), total: f64) -
         ));
         cur = format!("vl{i}");
     }
-    for (j, (_, a, b)) in l.overlays.iter().enumerate() {
+    for (j, (_, a, b, moving)) in l.overlays.iter().enumerate() {
         let input = first_png + j;
-        g.push(format!("[{input}:v]scale={pw}:{ph},format=rgba[op{j}];[{cur}][op{j}]overlay=0:0:enable='between(t,{a:.4},{b:.4})'[vo{j}]"));
+        if let Some(mv) = moving {
+            // The item's box, scaled about its middle and moved per frame (its input is the PNG looped, so a frame comes for every size).
+            let (bx, by, bw, bh) = mv.bx;
+            let (sx, sy, dx, dy) = (move_expr(&mv.pts, 2), move_expr(&mv.pts, 3), move_expr(&mv.pts, 0), move_expr(&mv.pts, 1));
+            let (w0, h0) = (ex_num(pw as f64 * bw), ex_num(ph as f64 * bh));
+            let (mx, my) = (ex_num(bx + bw / 2.0), ex_num(by + bh / 2.0));
+            g.push(format!(
+                "[{input}:v]format=rgba,scale=w='max(2,{w0}*({sx}))':h='max(2,{h0}*({sy}))':eval=frame[op{j}];[{cur}][op{j}]overlay=x='{pw}*({mx}+({dx}))-overlay_w/2':y='{ph}*({my}+({dy}))-overlay_h/2':shortest=1:enable='between(t,{a:.4},{b:.4})'[vo{j}]"
+            ));
+        } else {
+            g.push(format!("[{input}:v]scale={pw}:{ph},format=rgba[op{j}];[{cur}][op{j}]overlay=0:0:enable='between(t,{a:.4},{b:.4})'[vo{j}]"));
+        }
         cur = format!("vo{j}");
     }
     let mut tail = vec![];
@@ -1093,6 +1277,36 @@ fn layer_chain(l: &Layers, first_png: usize, (pw, ph): (u32, u32), total: f64) -
     g
 }
 
+/// A moving blur box `i` from `[cur]` to `[vl{i}]` on a `pw` x `ph` picture,
+/// shown from `a` to `b` seconds with blur `st` (fraction of the height).
+/// `crop` takes a new position every frame but its size only once, so the
+/// blurred copy is scaled every frame to make the box a FIXED size (the
+/// smallest it gets), the box is cut out of that by laying the copy on a
+/// frame of that size at minus the box's position (`overlay` follows each
+/// frame's size, `crop` would not), scaled to the box's size of the moment
+/// and laid at its place.
+fn moving_blur_chain(mv: &Moving, cur: &str, i: usize, (pw, ph): (u32, u32), (a, b, st): (f64, f64, f64)) -> Vec<String> {
+    let (bx, by, bw, bh) = mv.bx;
+    let even = |v: f64| (((v / 2.0).round() as i64) * 2).max(2) as u32;
+    let min_of = |k: usize| mv.pts.iter().map(|p| p.1[k]).fold(f64::INFINITY, f64::min);
+    let fw = even(bw * min_of(2) * pw as f64).min(pw & !1);
+    let fh = even(bh * min_of(3) * ph as f64).min(ph & !1);
+    let (sx, sy, dx, dy) = (move_expr(&mv.pts, 2), move_expr(&mv.pts, 3), move_expr(&mv.pts, 0), move_expr(&mv.pts, 1));
+    // The box's size (fractions of the picture) and its left / top edge at time t.
+    let (wf, hf) = (format!("{}*({sx})", ex_num(bw)), format!("{}*({sy})", ex_num(bh)));
+    let lx = format!("{}+({dx})-{wf}/2", ex_num(bx + bw / 2.0));
+    let ty = format!("{}+({dy})-{hf}/2", ex_num(by + bh / 2.0));
+    let sigma = (st * ph as f64).clamp(0.5, 500.0);
+    let on = format!("enable='between(t,{a:.4},{b:.4})'");
+    vec![format!(
+        "[{cur}]split=2[{cur}m][{cur}s];[{cur}s]gblur=sigma={sigma:.3}:steps=2:{on},split=2[kb{i}a][kb{i}b];[kb{i}a]crop={fw}:{fh}:0:0[kb{i}c];\
+         [kb{i}b]scale=w='max({fw},{fw}/({wf}))':h='max({fh},{fh}/({hf}))':eval=frame[kb{i}d];\
+         [kb{i}c][kb{i}d]overlay=x='-clip(({lx})*overlay_w,0,overlay_w-{fw})':y='-clip(({ty})*overlay_h,0,overlay_h-{fh})'[kb{i}e];\
+         [kb{i}e]scale=w='max(2,{pw}*{wf})':h='max(2,{ph}*{hf})':eval=frame[bb{i}];\
+         [{cur}m][bb{i}]overlay=x='{pw}*({lx})':y='{ph}*({ty})':{on}[vl{i}]"
+    )]
+}
+
 /// A `Canvas` checked and turned into whole pixels.
 #[derive(Debug, Clone, PartialEq)]
 struct CanvasPlan {
@@ -1104,6 +1318,53 @@ struct CanvasPlan {
     /// part of the canvas it covers (x, y, w, h), already clipped to the
     /// canvas. All even, as 4:2:0 needs.
     pieces: Vec<([u32; 4], [u32; 4])>,
+    /// Moving pieces (keyframes): each drawn just before `pieces[k]` (after
+    /// the last one when k == pieces.len()), so the order is the canvas's.
+    moving: Vec<(usize, MovingPiece)>,
+}
+
+/// A moving canvas piece, checked: (t, [x, y, w, h, cx, cy, z], ease) sorted
+/// by time, and the fixed size (`fw` x `fh` pixels) its source box is
+/// scaled to on the way (see `moving_piece_chain`).
+#[derive(Debug, Clone, PartialEq)]
+struct MovingPiece {
+    pts: Vec<(f64, [f64; 7], bool)>,
+    fw: u32,
+    fh: u32,
+}
+
+/// Largest picture a moving piece's source is scaled to on the way, per side.
+const MOVING_MAX_SIDE: f64 = 8192.0;
+
+/// A piece's track checked for a `cw` x `ch` canvas on a `sw` x `sh` source:
+/// places within 4 canvases, sides 0.005..=8, middles inside the source,
+/// zoom 0.01..=100; times in order. None when empty.
+fn moving_piece(pts: &[PiecePoint], (cw, ch): (u32, u32), (sw, sh): (u32, u32)) -> Option<MovingPiece> {
+    let f = |v: f64, d: f64, lo: f64, hi: f64| if v.is_finite() { v.clamp(lo, hi) } else { d };
+    let mut list: Vec<(f64, [f64; 7], bool)> = pts
+        .iter()
+        .take(MAX_TRACK)
+        .filter(|p| p.t.is_finite())
+        .map(|p| (p.t.max(0.0), [f(p.x, 0.0, -4.0, 4.0), f(p.y, 0.0, -4.0, 4.0), f(p.w, 1.0, 0.005, 8.0), f(p.h, 1.0, 0.005, 8.0), f(p.cx, 0.5, 0.0, 1.0), f(p.cy, 0.5, 0.0, 1.0), f(p.z, 1.0, 0.01, 100.0)], p.e))
+        .collect();
+    if list.is_empty() {
+        return None;
+    }
+    list.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (cwf, chf, swf, shf) = (cw as f64, ch as f64, sw.max(2) as f64, sh.max(2) as f64);
+    // The source box in source pixels at each point (never wider or taller than the source).
+    let boxes: Vec<(f64, f64, f64, f64)> = list.iter().map(|(_, v, _)| (v[2] * cwf, v[3] * chf, (v[2] * cwf / v[6]).min(swf), (v[3] * chf / v[6]).min(shf))).collect();
+    // The fixed size: as large as the source box is shown at most (more would not be seen), so no
+    // detail is lost on the way, but the scaled source never larger than MOVING_MAX_SIDE.
+    let side = |shown: &dyn Fn(&(f64, f64, f64, f64)) -> f64, src_box: &dyn Fn(&(f64, f64, f64, f64)) -> f64, full: f64| {
+        let want = boxes.iter().map(shown).fold(2.0, f64::max).min(full);
+        let smallest = boxes.iter().map(src_box).fold(f64::INFINITY, f64::min).max(1.0);
+        let cap = MOVING_MAX_SIDE * smallest / full;
+        ((want.min(cap) / 2.0).floor() as u32 * 2).max(2)
+    };
+    let fw = side(&|b| b.0.min(b.2), &|b| b.2, swf);
+    let fh = side(&|b| b.1.min(b.3), &|b| b.3, shf);
+    Some(MovingPiece { pts: list, fw, fh })
 }
 
 /// A canvas side: made even and kept to 16..=4096 (`fallback` when not a number).
@@ -1129,8 +1390,9 @@ fn hex_color(s: &str) -> Option<(u8, u8, u8)> {
 /// `c` on a source picture `sw` x `sh` pixels: sizes clamped, numbers that
 /// are not numbers dropped, each piece clipped to the canvas (the source
 /// part under the visible part is cropped, so nothing is ever scaled to more
-/// than the canvas's size), pieces that do not show left out.
-fn canvas_plan(c: &Canvas, (sw, sh): (u32, u32)) -> CanvasPlan {
+/// than the canvas's size), pieces that do not show left out. A piece with a
+/// track in `tracks` (same index) moves instead (keyframes).
+fn canvas_plan(c: &Canvas, tracks: &[Vec<PiecePoint>], (sw, sh): (u32, u32)) -> CanvasPlan {
     let (cw, ch) = (canvas_side(c.width, 1080), canvas_side(c.height, 1920));
     let color = match c.background.trim() {
         "blur" => None,
@@ -1140,7 +1402,12 @@ fn canvas_plan(c: &Canvas, (sw, sh): (u32, u32)) -> CanvasPlan {
     let even = |v: f64| ((v / 2.0).round().max(0.0) as u32) * 2;
     let (sw_f, sh_f, cw_f, ch_f) = (sw as f64, sh as f64, cw as f64, ch as f64);
     let mut pieces = Vec::new();
-    for p in &c.pieces {
+    let mut moving = Vec::new();
+    for (i, p) in c.pieces.iter().enumerate() {
+        if let Some(mp) = tracks.get(i).and_then(|t| moving_piece(t, (cw, ch), (sw, sh))) {
+            moving.push((pieces.len(), mp));
+            continue;
+        }
         let sx = fin(p.sx).clamp(0.0, 1.0);
         let sy = fin(p.sy).clamp(0.0, 1.0);
         let pw = fin(p.sw).min(1.0 - sx);
@@ -1171,7 +1438,32 @@ fn canvas_plan(c: &Canvas, (sw, sh): (u32, u32)) -> CanvasPlan {
         let crop_h = even(uy1 - uy0).clamp(2, (sh - cy).max(2));
         pieces.push(([cx, cy, crop_w, crop_h], [vx0, vy0, vx1 - vx0, vy1 - vy0]));
     }
-    CanvasPlan { width: cw, height: ch, color, pieces }
+    CanvasPlan { width: cw, height: ch, color, pieces, moving }
+}
+
+/// A moving piece from `[{input}]` (the source, `sw` x `sh`) laid on
+/// `[{cur}]` (the canvas, `cw` x `ch`) as `[{out}]`. `crop` takes a new
+/// position every frame but its size only once, and keeps the size of the
+/// first frame it saw, so: the source is scaled every frame (`eval=frame`)
+/// to make its source box the FIXED size `fw` x `fh`; the box is cut out by
+/// laying that on a frame of the fixed size at minus the box's position
+/// (`overlay` follows every frame's size); the cut is scaled every frame to
+/// the place's size and laid at the place. Width and height are scaled by
+/// the same zoom at every instant, so the piece is never stretched.
+fn moving_piece_chain(mp: &MovingPiece, input: &str, cur: &str, out: &str, i: usize, (cw, ch): (u32, u32), (sw, sh): (u32, u32)) -> String {
+    let e = |k: usize| track_expr(&mp.pts.iter().map(|(t, v, ea)| (*t, v[k], *ea)).collect::<Vec<_>>());
+    let (x, y, w, h, cx, cy, z) = (e(0), e(1), e(2), e(3), e(4), e(5), e(6));
+    let (fw, fh) = (mp.fw, mp.fh);
+    // Place size in canvas pixels, source box size in source pixels (never more than the source).
+    let (pw, ph) = (format!("{cw}*({w})"), format!("{ch}*({h})"));
+    let (bw, bh) = (format!("min({pw}/({z}),{sw})"), format!("min({ph}/({z}),{sh})"));
+    format!(
+        "[{input}]split=2[km{i}a][km{i}b];[km{i}a]crop={fw}:{fh}:0:0,setsar=1[km{i}c];\
+         [km{i}b]scale=w='max({fw},{sw}*{fw}/{bw})':h='max({fh},{sh}*{fh}/{bh})':eval=frame,setsar=1[km{i}d];\
+         [km{i}c][km{i}d]overlay=x='-clip(({cx})*overlay_w-{fw}/2,0,overlay_w-{fw})':y='-clip(({cy})*overlay_h-{fh}/2,0,overlay_h-{fh})'[km{i}e];\
+         [km{i}e]scale=w='max(2,{pw})':h='max(2,{ph})':eval=frame,setsar=1[kq{i}];\
+         [{cur}][kq{i}]overlay=x='{cw}*({x})':y='{ch}*({y})'[{out}]"
+    )
 }
 
 /// Filter chains from `[{input}]` (the joined result, yuv420p, source size)
@@ -1183,12 +1475,13 @@ fn canvas_plan(c: &Canvas, (sw, sh): (u32, u32)) -> CanvasPlan {
 /// laid on in order. `matrix` / `range` are the source's (for the color).
 fn canvas_chain(p: &CanvasPlan, input: &str, out: &str, (sw, sh): (u32, u32), matrix: &str, range: &str) -> Vec<String> {
     let (cw, ch) = (p.width, p.height);
-    let n = p.pieces.len();
+    let n = p.pieces.len() + p.moving.len();
     let mut g = Vec::new();
     let bg_in = if n == 0 {
         input.to_string()
     } else {
-        let outs: String = std::iter::once("[cb]".to_string()).chain((0..n).map(|i| format!("[cp{i}]"))).collect();
+        // Still pieces take cp0.., moving ones cpm0.. (so a canvas without moving pieces is built as before).
+        let outs: String = std::iter::once("[cb]".to_string()).chain((0..p.pieces.len()).map(|i| format!("[cp{i}]"))).chain((0..p.moving.len()).map(|i| format!("[cpm{i}]"))).collect();
         g.push(format!("[{input}]split={}{outs}", n + 1));
         "cb".to_string()
     };
@@ -1222,7 +1515,17 @@ fn canvas_chain(p: &CanvasPlan, input: &str, out: &str, (sw, sh): (u32, u32), ma
     };
     let mut cur = "cbg".to_string();
     g.push(format!("[{bg_in}]{bg}[{cur}]"));
-    for (i, ([cx, cy, crw, crh], [vx, vy, vw, vh])) in p.pieces.iter().enumerate() {
+    let mut moved = 0;
+    for slot in 0..=p.pieces.len() {
+        // Moving pieces that come before this still one in the canvas's order.
+        while let Some((_, mp)) = p.moving.get(moved).filter(|(at, _)| *at == slot) {
+            let next = format!("cvm{moved}");
+            g.push(moving_piece_chain(mp, &format!("cpm{moved}"), &cur, &next, moved, (cw, ch), (sw, sh)));
+            cur = next;
+            moved += 1;
+        }
+        let Some(([cx, cy, crw, crh], [vx, vy, vw, vh])) = p.pieces.get(slot) else { break };
+        let i = slot;
         g.push(format!("[cp{i}]crop={crw}:{crh}:{cx}:{cy},scale={vw}:{vh},setsar=1[cq{i}];[{cur}][cq{i}]overlay={vx}:{vy}[cv{i}]"));
         cur = format!("cv{i}");
     }
@@ -1383,7 +1686,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         None
     };
     let canvas = match (&opts.canvas, src_size) {
-        (Some(c), Some(size)) => Some(canvas_plan(c, size)),
+        (Some(c), Some(size)) => Some(canvas_plan(c, &opts.canvas_tracks, size)),
         _ => None,
     };
     // With overlays, blur boxes or fades the picture goes on through `layer_chain` (below) to [v].
@@ -1481,7 +1784,23 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         let size = canvas.as_ref().map(|c| (c.width, c.height)).or(src_size).ok_or("Could not read the clip's picture size")?;
         graph.extend(layer_chain(l, first_png, size, out_total));
     }
-    let png_inputs: Vec<String> = layers.as_ref().map(|l| l.overlays.iter().map(|o| o.0.clone()).collect()).unwrap_or_default();
+    // (path, moves): a moving overlay's picture is looped, so its per-frame scale gets a frame for every size.
+    let png_inputs: Vec<(String, bool)> = layers.as_ref().map(|l| l.overlays.iter().map(|o| (o.0.clone(), o.3.is_some())).collect()).unwrap_or_default();
+    let loop_rate = cap.min(60);
+    // Keyframe tracks can make the graph long; Windows cuts a command line at 32767 characters, so a
+    // long graph goes to a file (`-/filter_complex`, ffmpeg 7+). Short ones stay on the line as before.
+    let graph_text = graph.join(";");
+    let mut _graph_file = OverlayFiles(Vec::new());
+    let graph_arg: [String; 2] = if graph_text.len() > 24_000 {
+        let dir = overlay_dir();
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join(format!("{}.txt", util::new_id()));
+        fs::write(&path, &graph_text).map_err(|e| e.to_string())?;
+        _graph_file.0.push(path.clone());
+        ["-/filter_complex".into(), path.to_string_lossy().into_owned()]
+    } else {
+        ["-filter_complex".into(), graph_text]
+    };
 
     let title = format!("{} (edit)", src.title);
     // Beside the source; from a draft, into its folder in the clips folder.
@@ -1513,12 +1832,16 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         for (path, seek, len) in &file_inputs {
             a.extend(["-ss".to_string(), format!("{seek:.6}"), "-t".into(), format!("{len:.6}"), "-i".into(), path.clone()]);
         }
-        for png in &png_inputs {
+        for (png, moves) in &png_inputs {
+            if *moves {
+                // A frame `loop_rate` times a second for the whole result (the overlay ends with the picture: `shortest`).
+                a.extend(["-loop".to_string(), "1".into(), "-framerate".into(), loop_rate.to_string(), "-t".into(), format!("{:.3}", out_total + 1.0)]);
+            }
             // One still picture each; `pattern_type none` so no character of the path is read as a frame number pattern.
             a.extend(["-f", "image2", "-pattern_type", "none", "-i"].map(String::from));
             a.push(png.clone());
         }
-        a.extend(["-filter_complex".into(), graph.join(";")]);
+        a.extend(graph_arg.iter().cloned());
         a.extend(maps.iter().cloned());
         a.extend(video_codec_args(enc));
         // Frames keep their own timestamps (no CFR duplication); vfr only drops exact repeats.
@@ -1875,6 +2198,7 @@ fn run_self_test(r: &mut Report) {
     ordered_checks(r, &ffmpeg, &s, &dir);
     layer_checks(r, &ffmpeg, &s, &src, &src_file, (f_desk, 1));
     canvas_checks(r, &ffmpeg, &s, &src, &src_file, (f_desk, 1));
+    keyframe_checks(r, &ffmpeg, &s, &src, &src_file);
     if let Some(clip) = std::env::var_os("GLINT_EDITOR_BENCH") {
         bench(r, &ffmpeg, &s, Path::new(&clip));
     }
@@ -1992,7 +2316,7 @@ fn layer_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, src
 
     // 1. An overlay from 1 to 2.5 s: on the picture inside, the source outside; never the lossless cut.
     let png = make_png("ov1.png");
-    let opts = ExportOpts { overlays: vec![Overlay { png: png.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), from: 1.0, to: 2.5 }], ..Default::default() };
+    let opts = ExportOpts { overlays: vec![Overlay { png: png.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), from: 1.0, to: 2.5, ..Default::default() }], ..Default::default() };
     match ex(&opts) {
         Ok(m) => {
             let out = Path::new(&m.path);
@@ -2013,7 +2337,7 @@ fn layer_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, src
     let seg = |a: f64, b: f64| Range { start: a, end: b, ..Default::default() };
     let moved = ExportOpts { segments: vec![seg(5.5, 7.5), seg(0.5, 2.5)], ordered: true, speed: 2.0, ..Default::default() };
     let png2 = make_png("ov2.png");
-    let with = ExportOpts { overlays: vec![Overlay { png: png2.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), from: 1.2, to: 1.8 }], ..moved.clone() };
+    let with = ExportOpts { overlays: vec![Overlay { png: png2.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), from: 1.2, to: 1.8, ..Default::default() }], ..moved.clone() };
     match (ex(&moved), ex(&with)) {
         (Ok(a), Ok(b)) => {
             let (pa, pb) = (Path::new(&a.path), Path::new(&b.path));
@@ -2028,7 +2352,7 @@ fn layer_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, src
     }
 
     // 3. A blur box over the top-left quarter from 0 to 2.5 s: less detail inside, the rest as it was.
-    let blur = ExportOpts { blurs: vec![BlurBox { x: 0.0, y: 0.0, w: 0.5, h: 0.5, from: 0.0, to: 2.5, strength: 0.03 }], ..Default::default() };
+    let blur = ExportOpts { blurs: vec![BlurBox { x: 0.0, y: 0.0, w: 0.5, h: 0.5, from: 0.0, to: 2.5, strength: 0.03, ..Default::default() }], ..Default::default() };
     match ex(&blur) {
         Ok(m) => {
             let out = Path::new(&m.path);
@@ -2066,9 +2390,9 @@ fn layer_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, src
     // 5. A failed export still removes its PNG; a missing PNG is refused before ffmpeg runs.
     let png3 = make_png("ov3.png");
     let missing_audio = AudioEdit { source: "file".into(), path: odir.join("no-such-file.wav").to_string_lossy().into_owned(), volume: 1.0, ..Default::default() };
-    let bad = ex(&ExportOpts { overlays: vec![Overlay { png: png3.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), from: 0.0, to: 8.0 }], audio: vec![missing_audio], ..Default::default() });
+    let bad = ex(&ExportOpts { overlays: vec![Overlay { png: png3.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), from: 0.0, to: 8.0, ..Default::default() }], audio: vec![missing_audio], ..Default::default() });
     r.check("overlay PNG removed when the export fails", bad.is_err() && png3.as_ref().is_some_and(|p| !p.exists()), &format!("{:?}", bad.err()));
-    let gone = ex(&ExportOpts { overlays: vec![Overlay { png: odir.join("never-written.png").to_string_lossy().into_owned(), from: 0.0, to: 8.0 }], ..Default::default() });
+    let gone = ex(&ExportOpts { overlays: vec![Overlay { png: odir.join("never-written.png").to_string_lossy().into_owned(), from: 0.0, to: 8.0, ..Default::default() }], ..Default::default() });
     r.check("missing overlay PNG is refused cleanly", gone.as_ref().is_err_and(|e| e.contains("overlay")), &format!("{:?}", gone.err()));
 }
 
@@ -2135,7 +2459,7 @@ fn canvas_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, sr
     );
 
     // --- the plan: odd sizes made even, hostile numbers never reach ffmpeg
-    let odd = canvas_plan(&Canvas { width: 1081.0, height: 1351.0, ..Default::default() }, (640, 360));
+    let odd = canvas_plan(&Canvas { width: 1081.0, height: 1351.0, ..Default::default() }, &[], (640, 360));
     let hostile = Canvas {
         width: -5.0,
         height: 1e12,
@@ -2149,7 +2473,7 @@ fn canvas_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, sr
             piece(0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0, 1.0),
         ],
     };
-    let hp = canvas_plan(&hostile, (640, 360));
+    let hp = canvas_plan(&hostile, &[], (640, 360));
     let ok_box = |&([cx, cy, cw, ch], [vx, vy, vw, vh]): &([u32; 4], [u32; 4])| {
         [cx, cy, cw, ch, vx, vy, vw, vh].iter().all(|v| v % 2 == 0) && cw > 0 && ch > 0 && vw > 0 && vh > 0 && cx + cw <= 640 && cy + ch <= 360 && vx + vw <= hp.width && vy + vh <= hp.height
     };
@@ -2248,8 +2572,8 @@ fn canvas_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, sr
     let png = odir.join("canvas-ov.png");
     let made = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=black@0.0:s=1080x1920,format=rgba,drawbox=x=0:y=1100:w=540:h=300:color=white@1.0:t=fill:replace=1", "-frames:v", "1", &png.to_string_lossy()]);
     let layered = ExportOpts {
-        overlays: vec![Overlay { png: png.to_string_lossy().into_owned(), from: 1.0, to: 2.5 }],
-        blurs: vec![BlurBox { x: 0.6, y: 0.52, w: 0.4, h: 0.2, from: 0.0, to: 8.0, strength: 0.03 }],
+        overlays: vec![Overlay { png: png.to_string_lossy().into_owned(), from: 1.0, to: 2.5, ..Default::default() }],
+        blurs: vec![BlurBox { x: 0.6, y: 0.52, w: 0.4, h: 0.2, from: 0.0, to: 8.0, strength: 0.03, ..Default::default() }],
         ..canvas_opts.clone()
     };
     match (made, &first, ex(&layered)) {
@@ -2292,6 +2616,195 @@ fn canvas_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, sr
             r.check("canvas with hostile numbers exports a working file", (p.width, p.height) == (1080, 4096) && near(p.duration, 1.0, 0.15), &format!("{}x{} dur={:.3}", p.width, p.height, p.duration));
         }
         Err(e) => r.check("canvas with hostile numbers exports a working file", !e.starts_with("Export failed") && !e.is_empty(), &format!("clean error: {e}")),
+    }
+}
+
+/// The box (x0, y0, x1, y1, inclusive) of the bright pixels (> 200) of a
+/// `w` x `h` grey frame, or None when there are none.
+fn bright_box(f: &Option<Vec<u8>>, w: usize, h: usize) -> Option<(f64, f64, f64, f64)> {
+    let f = f.as_ref()?;
+    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+    for y in 0..h {
+        for x in 0..w {
+            if f[y * w + x] > 200 {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+            }
+        }
+    }
+    (x0 != usize::MAX).then_some((x0 as f64, y0 as f64, x1 as f64, y1 as f64))
+}
+
+/// Keyframes (0.1.27): a moving overlay at the right place and size at three
+/// times, eased ("Smooth") against even, across a cut between two keyframes
+/// and at 2x speed; a moving canvas piece showing the right part of the source
+/// at the right place, unstretched, at three times; a moving blur box; a
+/// track long enough that the graph goes through a file; the track maths.
+/// The test clip is 640x360, 8 s, still from 3 to 5 s.
+fn keyframe_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, src_file: &Path) {
+    let ex = |opts: &ExportOpts| export(s, src, opts, &mut |_| {});
+    let mv = |t: f64, dx: f64, dy: f64, sx: f64, sy: f64, e: bool| MovePoint { t, dx, dy, sx, sy, e };
+    let blank = |a: f64, b: f64| Range { start: a, end: b, blank: true, ..Default::default() };
+    const W: usize = 640;
+    const H: usize = 360;
+    let frame = |out: &Path, t: f64| grey_at(ffmpeg, out, t, W, H);
+    // Where a box whose base is `b` (fractions) is with move (dx, dy, sx, sy): (x0, y0, x1, y1) pixels.
+    let expect = |(bx, by, bw, bh): (f64, f64, f64, f64), (dx, dy, sx, sy): (f64, f64, f64, f64)| {
+        let (cx, cy, w, h) = ((bx + bw / 2.0 + dx) * W as f64, (by + bh / 2.0 + dy) * H as f64, bw * sx * W as f64, bh * sy * H as f64);
+        (cx - w / 2.0, cy - h / 2.0, cx + w / 2.0 - 1.0, cy + h / 2.0 - 1.0)
+    };
+    let off = |a: Option<(f64, f64, f64, f64)>, b: (f64, f64, f64, f64)| a.map(|a| (a.0 - b.0).abs().max((a.1 - b.1).abs()).max((a.2 - b.2).abs()).max((a.3 - b.3).abs())).unwrap_or(999.0);
+
+    // --- options and maths
+    let parsed: Result<ExportOpts, _> = serde_json::from_str(
+        r#"{"overlays":[{"png":"a.png","from":0,"to":3,"x":0.1,"y":0.2,"w":0.3,"h":0.1,"track":[{"t":0,"dx":0.1,"dy":0,"sx":1,"sy":1},{"t":2,"dx":0.2,"dy":0.1,"sx":2,"sy":2,"e":true}]}],"blurs":[{"x":0.1,"y":0.1,"w":0.2,"h":0.2,"from":0,"to":3,"strength":0.03,"track":[{"t":1,"dx":0.5}]}],"canvas":{"width":1080,"height":1920,"background":"black","pieces":[{"sx":0,"sy":0,"sw":1,"sh":1,"x":0,"y":0,"w":1,"h":0.3}]},"canvas_tracks":[[{"t":0,"x":0,"y":0,"w":1,"h":0.3,"cx":0.5,"cy":0.5,"z":0.5}]]}"#,
+    );
+    r.check(
+        "keyframe tracks parse; a missing scale is 1",
+        parsed.as_ref().is_ok_and(|o| o.overlays[0].track.len() == 2 && o.overlays[0].track[1].e && o.overlays[0].w == 0.3 && o.blurs[0].track[0].sx == 1.0 && o.blurs[0].track[0].dx == 0.5 && o.canvas_tracks[0][0].z == 0.5 && o.canvas_tracks[0][0].cx == 0.5),
+        &format!("{:?}", parsed.as_ref().err()),
+    );
+    let pts = [(0.5, 0.0, true), (2.5, 1.0, false), (2.5, 3.0, false), (4.0, 2.0, false)];
+    let expr = track_expr(&pts);
+    let vals: Vec<f64> = [0.0, 1.0, 1.5, 2.49, 2.5, 3.25, 9.0].iter().map(|t| track_value(&pts, *t)).collect();
+    let want = [0.0, 0.15625, 0.5, 0.999925, 3.0, 2.5, 2.0];
+    r.check(
+        "track maths: held before and after, eased between keyframes, a jump at a cut",
+        vals.iter().zip(want).all(|(a, b)| near(*a, b, 1e-4)) && expr.contains("gte(t,2.5)") && expr.contains("*(3-2*") && !expr.contains("if("),
+        &format!("{vals:.5?} / {expr}"),
+    );
+
+    // A white 64x36 box (0.1 x 0.1 of the picture) as the UI sends a moving item: only its box.
+    let odir = overlay_dir();
+    let _ = fs::create_dir_all(&odir);
+    let make_box = |name: &str| -> String {
+        let p = odir.join(name);
+        let _ = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=white:s=64x36,format=rgba", "-frames:v", "1", &p.to_string_lossy()]);
+        p.to_string_lossy().into_owned()
+    };
+    let base = (0.05, 0.1, 0.1, 0.1);
+    let moving = |png: String, from: f64, to: f64, track: Vec<MovePoint>| Overlay { png, from, to, x: base.0, y: base.1, w: base.2, h: base.3, track };
+
+    // --- 1. A moving overlay on a black picture: still before its first keyframe, half way at the middle, at the end after the last.
+    let lin = vec![mv(0.5, 0.0, 0.0, 1.0, 1.0, false), mv(2.5, 0.5, 0.4, 2.0, 1.5, false)];
+    let linear = ex(&ExportOpts { segments: vec![blank(0.0, 3.0)], overlays: vec![moving(make_box("kf1.png"), 0.0, 3.0, lin.clone())], ..Default::default() });
+    match &linear {
+        Ok(m) => {
+            let out = Path::new(&m.path);
+            let got: Vec<_> = [0.2, 1.5, 2.8].iter().map(|t| bright_box(&frame(out, *t), W, H)).collect();
+            let want = [expect(base, (0.0, 0.0, 1.0, 1.0)), expect(base, (0.25, 0.2, 1.5, 1.25)), expect(base, (0.5, 0.4, 2.0, 1.5))];
+            let offs: Vec<f64> = got.iter().zip(want).map(|(g, w)| off(*g, w)).collect();
+            r.check("moving overlay is at its place and size at three times", offs.iter().all(|o| *o <= 3.0), &format!("off by {offs:.1?} px: {got:.0?} for {want:.0?}"));
+        }
+        Err(e) => r.check("moving overlay is at its place and size at three times", false, e),
+    }
+
+    // --- 2. "Smooth": the same keyframes eased: the same at both keyframes, behind in the first half.
+    let eased: Vec<MovePoint> = lin.iter().map(|p| MovePoint { e: true, ..p.clone() }).collect();
+    match (&linear, ex(&ExportOpts { segments: vec![blank(0.0, 3.0)], overlays: vec![moving(make_box("kf2.png"), 0.0, 3.0, eased)], ..Default::default() })) {
+        (Ok(a), Ok(b)) => {
+            let (pa, pb) = (Path::new(&a.path), Path::new(&b.path));
+            let at = |p: &Path, t: f64| bright_box(&frame(p, t), W, H);
+            let same_keys = off(at(pb, 0.5), at(pa, 0.5).unwrap_or_default()).max(off(at(pb, 2.5), at(pa, 2.5).unwrap_or_default()));
+            // At 1.0 s a quarter of the way: even 0.25, eased 0.15625 of the move.
+            let (qa, qb) = (at(pa, 1.0), at(pb, 1.0));
+            let (wa, wb) = (expect(base, (0.125, 0.1, 1.25, 1.125)), expect(base, (0.078125, 0.0625, 1.15625, 1.078125)));
+            r.check("smooth equals even at the keyframes and differs between", same_keys <= 2.0 && off(qa, wa) <= 3.0 && off(qb, wb) <= 3.0 && off(qa, wb) > 10.0, &format!("keys off by {same_keys:.1}; at 1 s even {qa:.0?} (want {wa:.0?}), smooth {qb:.0?} (want {wb:.0?})"));
+        }
+        (a, b) => r.check("smooth equals even at the keyframes and differs between", false, &format!("{:?} / {:?}", a.as_ref().err(), b.err())),
+    }
+
+    // --- 3. A cut between two keyframes (timeline 1 s: no move, 6 s: 0.5 to the right; 1.5..5.5 cut out):
+    //        the UI sends both sides of the cut at output 1.5 s, so the box jumps there.
+    let cut = vec![mv(0.0, 0.0, 0.0, 1.0, 1.0, false), mv(1.0, 0.0, 0.0, 1.0, 1.0, false), mv(1.5, 0.05, 0.0, 1.0, 1.0, false), mv(1.5, 0.45, 0.0, 1.0, 1.0, false), mv(2.0, 0.5, 0.0, 1.0, 1.0, false), mv(4.0, 0.5, 0.0, 1.0, 1.0, false)];
+    match ex(&ExportOpts { segments: vec![blank(0.0, 1.5), blank(5.5, 8.0)], overlays: vec![moving(make_box("kf3.png"), 0.0, 4.0, cut)], ..Default::default() }) {
+        Ok(m) => {
+            let out = Path::new(&m.path);
+            let (before, after) = (bright_box(&frame(out, 1.4), W, H), bright_box(&frame(out, 1.6), W, H));
+            let (wb, wa) = (expect(base, (0.04, 0.0, 1.0, 1.0)), expect(base, (0.46, 0.0, 1.0, 1.0)));
+            r.check("moving overlay jumps at a cut between two keyframes", off(before, wb) <= 3.0 && off(after, wa) <= 3.0, &format!("at 1.4 s {before:.0?} (want {wb:.0?}), at 1.6 s {after:.0?} (want {wa:.0?})"));
+        }
+        Err(e) => r.check("moving overlay jumps at a cut between two keyframes", false, &e),
+    }
+
+    // --- 4. 2x speed: timeline keyframes at 0.5 and 2.5 s are output 0.25 and 1.25 s.
+    let fast = vec![mv(0.25, 0.0, 0.0, 1.0, 1.0, false), mv(1.25, 0.5, 0.4, 2.0, 1.5, false)];
+    match ex(&ExportOpts { segments: vec![blank(0.0, 3.0)], speed: 2.0, overlays: vec![moving(make_box("kf4.png"), 0.0, 1.5, fast)], ..Default::default() }) {
+        Ok(m) => {
+            let out = Path::new(&m.path);
+            let (mid, end) = (bright_box(&frame(out, 0.75), W, H), bright_box(&frame(out, 1.4), W, H));
+            let (wm, we) = (expect(base, (0.25, 0.2, 1.5, 1.25)), expect(base, (0.5, 0.4, 2.0, 1.5)));
+            let len = library::probe(ffmpeg, out, false).map(|p| p.duration).unwrap_or(0.0);
+            r.check("moving overlay at 2x speed follows output time", off(mid, wm) <= 8.0 && off(end, we) <= 3.0 && near(len, 1.5, 0.15), &format!("at 0.75 s {mid:.0?} (want {wm:.0?}), at 1.4 s {end:.0?} (want {we:.0?}), length {len:.2}"));
+        }
+        Err(e) => r.check("moving overlay at 2x speed follows output time", false, &e),
+    }
+
+    // --- 5. A moving canvas piece on a 360x640 canvas: from the whole picture across the top to a
+    //        zoomed top-left part lower down, over output 0..2 s.
+    let (gw, gh) = (40usize, 24usize);
+    let inset = |(x, y, w, h): (f64, f64, f64, f64)| (x + w * 0.08, y + h * 0.08, w * 0.84, h * 0.84);
+    let same_as = |out: &Path, t: f64, ob: (f64, f64, f64, f64), sb: (f64, f64, f64, f64)| {
+        box_diff(&grey_box_at(ffmpeg, out, t, "", inset(ob), gw, gh), &grey_box_at(ffmpeg, src_file, t, "", inset(sb), gw, gh), gw, (0, 0, gw, gh))
+    };
+    let pp = |t: f64, x: f64, y: f64, w: f64, h: f64, cx: f64, cy: f64, z: f64| PiecePoint { t, x, y, w, h, cx, cy, z, e: false };
+    let canvas = Canvas { width: 360.0, height: 640.0, background: "black".into(), pieces: vec![CanvasPiece { sx: 0.0, sy: 0.0, sw: 1.0, sh: 1.0, x: 0.0, y: 0.0, w: 1.0, h: 0.28125 }] };
+    let track = vec![pp(0.0, 0.0, 0.0, 1.0, 0.28125, 0.5, 0.5, 0.5625), pp(2.0, 0.1, 0.5, 0.8, 0.225, 0.25, 0.25, 0.9)];
+    match ex(&ExportOpts { segments: vec![Range { start: 0.0, end: 2.6, ..Default::default() }], canvas: Some(canvas), canvas_tracks: vec![track], ..Default::default() }) {
+        Ok(m) => {
+            let out = Path::new(&m.path);
+            // (time, place on the canvas, source box): the source box is the place's size over the zoom, around (cx, cy).
+            let cases = [
+                (0.0, (0.0, 0.0, 1.0, 0.28125), (0.0, 20.0 / 360.0, 1.0, 320.0 / 360.0)),
+                (1.0, (0.05, 0.25, 0.9, 0.253125), ((240.0 - 221.538) / 640.0, (135.0 - 110.769) / 360.0, 443.077 / 640.0, 221.538 / 360.0)),
+                (2.4, (0.1, 0.5, 0.8, 0.225), (0.0, 10.0 / 360.0, 0.5, 160.0 / 360.0)),
+            ];
+            let mut parts = Vec::new();
+            let mut ok = (m.width, m.height) == (360, 640);
+            for (t, place, sb) in cases {
+                let right = same_as(out, t, place, sb);
+                // Stretched: a box a fifth narrower in the source (the test picture has upright bars).
+                let stretched = same_as(out, t, place, (sb.0, sb.1, sb.2 * 0.8, sb.3));
+                ok &= right < 12.0 && stretched > right + 4.0;
+                parts.push(format!("{t} s: {right:.1} (stretched {stretched:.1})"));
+            }
+            let black = grey_box_at(ffmpeg, out, 1.0, "", (0.0, 0.6, 1.0, 0.35), 16, 8).map(|f| box_mean(&f, 16, (0, 0, 16, 8))).unwrap_or(-1.0);
+            ok &= (0.0..8.0).contains(&black);
+            r.check("moving canvas piece shows the right part at the right place, unstretched, at three times", ok, &format!("{} x {}; {}; black below {black:.1}", m.width, m.height, parts.join(", ")));
+        }
+        Err(e) => r.check("moving canvas piece shows the right part at the right place, unstretched, at three times", false, &e),
+    }
+
+    // --- 6. A moving blur box: blurred where it is at each time, not where it was.
+    let blur = BlurBox { x: 0.05, y: 0.05, w: 0.25, h: 0.25, from: 0.0, to: 2.8, strength: 0.03, track: vec![mv(0.0, 0.0, 0.0, 1.0, 1.0, false), mv(2.0, 0.5, 0.45, 1.2, 1.2, false)] };
+    match ex(&ExportOpts { segments: vec![Range { start: 0.0, end: 2.8, ..Default::default() }], blurs: vec![blur], ..Default::default() }) {
+        Ok(m) => {
+            let out = Path::new(&m.path);
+            const BW: usize = 320;
+            let px = |(x, y, w, h): (f64, f64, f64, f64)| ((x * 320.0) as usize + 4, (y * 180.0) as usize + 4, ((x + w) * 320.0) as usize - 4, ((y + h) * 180.0) as usize - 4);
+            let ratio = |t: f64, b: (f64, f64, f64, f64)| {
+                let (e, s0) = (grey_at(ffmpeg, out, t, BW, 180), grey_at(ffmpeg, src_file, t, BW, 180));
+                let (d, d0) = (box_detail(&e, BW, px(b)), box_detail(&s0, BW, px(b)));
+                if d0 > 0.3 { d / d0 } else { 9.0 }
+            };
+            let start = ratio(0.2, (0.06, 0.06, 0.23, 0.23));
+            let end_box = (0.525, 0.475, 0.3, 0.3);
+            let (end, left) = (ratio(2.5, end_box), ratio(2.5, (0.05, 0.05, 0.25, 0.25)));
+            r.check("moving blur box blurs where it is, not where it was", start < 0.4 && end < 0.4 && (0.75..1.33).contains(&left), &format!("detail ratio at 0.2 s {start:.2}, at 2.5 s in its new place {end:.2}, in its old place {left:.2}"));
+        }
+        Err(e) => r.check("moving blur box blurs where it is, not where it was", false, &e),
+    }
+
+    // --- 7. Many points: the graph is too long for a command line and goes through a file.
+    let many: Vec<MovePoint> = (0..600).map(|i| mv(i as f64 * 0.005, i as f64 * 0.001, 0.0, 1.0, 1.0, i % 2 == 0)).collect();
+    let before: Vec<_> = fs::read_dir(&odir).map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "txt")).collect()).unwrap_or_default();
+    match ex(&ExportOpts { segments: vec![blank(0.0, 3.0)], overlays: vec![moving(make_box("kf7.png"), 0.0, 3.0, many)], ..Default::default() }) {
+        Ok(m) => {
+            let late = bright_box(&frame(Path::new(&m.path), 2.8), W, H);
+            let left: Vec<_> = fs::read_dir(&odir).map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "txt") && !before.contains(p)).collect()).unwrap_or_default();
+            let want = expect(base, (0.56, 0.0, 1.0, 1.0));
+            r.check("a very long keyframe track exports (graph through a file, file removed)", off(late, want) <= 3.0 && left.is_empty(), &format!("{late:.0?} for {want:.0?}; files left {left:?}"));
+        }
+        Err(e) => r.check("a very long keyframe track exports (graph through a file, file removed)", false, &e),
     }
 }
 

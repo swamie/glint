@@ -12,7 +12,7 @@ if (!window.__TAURI__) {
   const state = {
     settings: {
       clips_dir: "C:\\Users\\you\\Videos\\Glint", game_folders: false, clip_name: [{ kind: "game" }, { kind: "date" }, { kind: "time" }], monitor: 0, height: 0, fps: 60, quality: "high", bitrate: 0, encoder: "auto", method: "auto", buffer: "mixed", buffer_ram_secs: 30, buffer_dir: "",
-      cursor: true, desktop_audio: true, mic: true, mic_denoise: false, game_audio: false, record_on_start: true, sound: true, sound_name: "chirp", sound_volume: 40, sound_file: "",
+      cursor: true, desktop_audio: true, mic: true, mic_denoise: false, game_audio: false, desktop_device: "", mic_device: "Microphone (Old Webcam)", capture_mode: "desktop", game_auto: true, game_pick: "", game_exes: [], not_game_exes: [], record_on_start: true, sound: true, sound_name: "chirp", sound_volume: 40, sound_file: "",
       toast: true, toast_pos: "tr", toast_opacity: 96, toast_scale: 100, toast_secs: 3.5, toast_length: true, toast_game: true, toast_mic: true,
       ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", icon_theme: false, icon_accent: "", icon_accent_2: "", card_tags: [], nav_opacity: 60, theme_order: [], gif: { width: 480, fps: 20, max_mb: 0, copy: false }, upscale: { height: 2160, filter: "sharp", quality: "high", encoder: "auto" }, rules: [], rules_after_export: "", canvas_presets: [], discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true, update_check: true, update_auto: true,
       compress_mb: 10, ui_sounds: false, ui_sounds_hover: false, ui_sounds_volume: 50,
@@ -35,7 +35,7 @@ if (!window.__TAURI__) {
       { index: 0, name: "DISPLAY1", width: 2160, height: 1440, hz: 280, primary: true, x: 0, y: 0, native_width: 2560, native_height: 1440 },
       { index: 1, name: "DISPLAY2", width: 1680, height: 1050, hz: 60, primary: false, x: 2160, y: 0, native_width: 1680, native_height: 1050 },
     ],
-    status: { recording: true, encoder: "nvenc", method: "wgc", width: 2560, height: 1440, fps: 60, fps_actual: 59.9, buffer_secs: 412, buffer_max: 600, buffer_bytes: 3.1e7, buffer_disk_bytes: 2.8e8, ram_total: 2.4e8, cpu_pct: 0.9, ram_app: 3.4e7, ram_ffmpeg: 1.4e8, max_mbps: 15, error: "", game: "Overwatch", discord: "off", border: "off" },
+    status: { recording: true, encoder: "nvenc", method: "wgc", width: 2560, height: 1440, fps: 60, fps_actual: 59.9, buffer_secs: 412, buffer_max: 600, buffer_bytes: 3.1e7, buffer_disk_bytes: 2.8e8, ram_total: 2.4e8, cpu_pct: 0.9, ram_app: 3.4e7, ram_ffmpeg: 1.4e8, max_mbps: 15, error: "", game: "Overwatch", discord: "off", border: "off", capture_mode: "desktop", capture_target: "" },
     // capture2.rs AutoInfo: what each "Auto" resolves to (get_state.auto, auto_info).
     auto: { encoder: "nvenc", method: "wgc", method_why: "", aspect_width: 2560, aspect_height: 1440, mode_width: 2160, mode_height: 1440, widened: true, auto_mbps: 17.7, native_width: 2160, native_height: 1440, ffmpeg: "C:\\tools\\ffmpeg\\bin\\ffmpeg.exe", blur: "C:\\tools\\blur\\blur-cli.exe", border: { build: 26300, configurable: true, main: "Allow", desktop_apps: "Allow", device: "Allow", can_remove: true } },
     // What's new opens by itself after an update: localStorage["glint.seenVersion"] = "0.1.7", then reload.
@@ -47,6 +47,11 @@ if (!window.__TAURI__) {
   // other monitors' captures fail with it (the status bar's warning mark).
   const syncCaptures = () => {
     const st = state.status, set = state.settings;
+    // The GAME / DESKTOP switch (capmode.js). window.__mockCapTarget = "waiting" | "screen" | "screen_failed"
+    // shows the other states of game mode ("window" when unset).
+    st.capture_mode = set.capture_mode === "game" ? "game" : "desktop";
+    st.capture_target = st.capture_mode === "game" && st.recording ? window.__mockCapTarget || "window" : "";
+    if (st.capture_target === "waiting") { st.captures = []; return st; }
     const cap = state.monitors.find((m) => m.index === set.monitor) || state.monitors[0];
     const named = set.keybinds.filter((k) => k.action === "clip" && k.monitor >= 0 && k.monitor !== cap.index).map((k) => k.monitor);
     const others = state.monitors.filter((m) => named.includes(m.index));
@@ -384,6 +389,10 @@ if (!window.__TAURI__) {
             if (!rule) throw "That render rule no longer exists";
             if (!rule.steps?.length) throw "This rule has no blocks yet. Add one first.";
             if (rule.steps.some((st) => st.kind === "blur") && !state.blur) throw "blur-cli.exe was not found. Install Blur or set its path under Blur settings.";
+            // 0.1.27 (rules.rs check): a Canvas block names a saved layout by id, else by name.
+            const cvStep = rule.steps.find((st) => st.kind === "canvas"), cvList = state.settings.canvas_presets || [];
+            if (cvStep && !cvStep.layout && !cvStep.layout_name) throw "Pick a layout for the Canvas block.";
+            if (cvStep && !cvList.some((p) => (cvStep.layout && p.id === cvStep.layout) || (cvStep.layout_name && p.name === cvStep.layout_name))) throw `The canvas layout "${cvStep.layout_name || cvStep.layout}" no longer exists. Pick another one in the rule.`;
             const out = [];
             for (const id of args.ids || []) {
               const src = clips.find((x) => x.id === id);
@@ -591,6 +600,11 @@ if (!window.__TAURI__) {
             return null;
           }
           case "list_sounds": return [{ id: "chirp", name: "Chirp" }, { id: "ding", name: "Ding" }, { id: "pop", name: "Pop" }];
+          // Settings → Audio (audiodev.js). The mock's mic_device is not in the list: it shows the "not connected" note.
+          case "audio_devices": return {
+            outputs: [{ name: "Speakers (Realtek(R) Audio)", default: true }, { name: "Headphones (Arctis 7 Game)", default: false }, { name: "LG ULTRAGEAR (NVIDIA High Definition Audio)", default: false }],
+            inputs: [{ name: "Microphone (Arctis 7 Chat)", default: true }, { name: "Microphone (Realtek(R) Audio)", default: false }],
+          };
           case "set_game": clips.forEach((c) => { if (args.ids.includes(c.id)) c.game = args.game; }); return null;
           case "sort_by_game": { let n = 0; clips.forEach((c) => { if (!c.folder) { c.folder = c.game; if (!folders.includes(c.game)) folders.push(c.game); n++; } }); return n; }
           case "list_folders": return [...folders];
@@ -631,6 +645,33 @@ if (!window.__TAURI__) {
           };
           case "get_status": case "toggle_recording": mockDeps.sync(); return syncCaptures();
           case "save_settings": state.settings = args.settings; return syncCaptures();
+          // The GAME / DESKTOP switch's right-click menu (capmode.rs game_menu / game_mark).
+          case "game_menu": {
+            const set = state.settings;
+            const rows = [
+              { exe: "overwatch.exe", name: "Overwatch", title: "Overwatch", game: true },
+              { exe: "hades.exe", name: "Hades", title: "Hades", game: true },
+              { exe: "chrome.exe", name: "chrome", title: "YouTube - Google Chrome", game: false },
+              { exe: "discord.exe", name: "Discord", title: "#general | Friends - Discord", game: false },
+              { exe: "emu.exe", name: "emu", title: "My Emulator 2.1", game: false },
+            ];
+            const auto = set.game_auto !== false;
+            const current = set.game_pick || (auto ? rows.find((r) => r.game && !(set.not_game_exes || []).includes(r.exe))?.exe || "" : "");
+            const out = rows.map((r) => ({ ...r, game: r.exe === set.game_pick || (auto && (r.game || (set.game_exes || []).includes(r.exe)) && !(set.not_game_exes || []).includes(r.exe)), current: r.exe === current, picked: r.exe === set.game_pick, not_game: (set.not_game_exes || []).includes(r.exe) }));
+            out.sort((a, b) => b.current - a.current || b.picked - a.picked || b.game - a.game || a.name.localeCompare(b.name));
+            return { mode: set.capture_mode || "desktop", auto, pick: set.game_pick || "", current: out.find((r) => r.current) || null, programs: out };
+          }
+          case "game_mark": {
+            const set = state.settings, exe = String(args.exe || "").toLowerCase();
+            const drop = (list) => (list || []).filter((e) => e !== exe);
+            if (args.action === "auto-on") set.game_auto = true;
+            else if (args.action === "auto-off") set.game_auto = false;
+            else if (args.action === "unpick") set.game_pick = "";
+            else if (args.action === "pick") { set.game_pick = exe; set.not_game_exes = drop(set.not_game_exes); set.game_exes = [...drop(set.game_exes), exe]; }
+            else if (args.action === "not-game") { set.game_exes = drop(set.game_exes); if (set.game_pick === exe) set.game_pick = ""; set.not_game_exes = [...drop(set.not_game_exes), exe]; }
+            else throw `Unknown choice "${args.action}"`;
+            return JSON.parse(JSON.stringify(set));
+          }
           case "list_clips": case "rescan_library": return clips;
           case "set_favorite": { const c = clips.find((x) => x.id === args.id); c.favorite = args.favorite; return c; }
           case "rename_clip": { const c = clips.find((x) => x.id === args.id); c.title = args.title; return c; }

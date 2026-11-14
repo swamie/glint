@@ -199,7 +199,9 @@ function cvNorm(c) {
     if (!p || typeof p !== "object") return null;
     const sw = cvClamp(n(p.sw, 1), CV_SRC_MIN, 1), sh = cvClamp(n(p.sh, 1), CV_SRC_MIN, 1);
     const w = cvClamp(n(p.w, 1), 0.005, 8), h = cvClamp(n(p.h, 1), 0.005, 8);
-    return { id: typeof p.id === "string" && p.id ? p.id : cvNewId(), sx: cvClamp(n(p.sx, 0), 0, 1 - sw), sy: cvClamp(n(p.sy, 0), 0, 1 - sh), sw, sh, x: cvClamp(n(p.x, 0), -4, 4), y: cvClamp(n(p.y, 0), -4, 4), w, h };
+    // Keyframes (keyframes.js), when it has any.
+    const keys = Array.isArray(p.keys) && typeof kfNormPiece === "function" ? kfNormPiece(p) : [];
+    return { id: typeof p.id === "string" && p.id ? p.id : cvNewId(), sx: cvClamp(n(p.sx, 0), 0, 1 - sw), sy: cvClamp(n(p.sy, 0), 0, 1 - sh), sw, sh, x: cvClamp(n(p.x, 0), -4, 4), y: cvClamp(n(p.y, 0), -4, 4), w, h, ...(keys.length ? { keys, smooth: !!p.smooth } : {}) };
   }).filter(Boolean);
   const bg = typeof c.background === "string" && (c.background === "blur" || c.background === "black" || /^#[0-9a-f]{6}$/i.test(c.background)) ? c.background : "black";
   return { width: cvEven(c.width), height: cvEven(c.height), background: bg, pieces };
@@ -241,6 +243,8 @@ function cvMount(root, c, P) {
   const cv = () => m()?.canvas || null;
   const src = () => ({ w: v.videoWidth || c.width || 1920, h: v.videoHeight || c.height || 1080 });
   const piece = (id) => cv()?.pieces.find((p) => p.id === id) || null;
+  /** A piece as it is at the playhead (keyframes.js): its own boxes when it has no keyframes. */
+  const shown = (p, tm = P.time()) => (p && kfHas(p) ? kfPieceAt(p, tm, cv(), src()) : p);
   const on = () => st.editing && !!cv();
   const srcView = () => on() && st.arrange && st.view === "source";
 
@@ -304,7 +308,11 @@ function cvMount(root, c, P) {
     }
     if (!ready) return;
     ctx.imageSmoothingQuality = "high";
-    for (const p of C.pieces) ctx.drawImage(v, p.sx * s.w, p.sy * s.h, p.sw * s.w, p.sh * s.h, p.x * W, p.y * H, p.w * W, p.h * H);
+    const tm = P.time();
+    for (const p0 of C.pieces) {
+      const p = shown(p0, tm);
+      ctx.drawImage(v, p.sx * s.w, p.sy * s.h, p.sw * s.w, p.sh * s.h, p.x * W, p.y * H, p.w * W, p.h * H);
+    }
   }
   // Every frame the video shows (also the one after a seek while paused).
   const onFrame = () => { if (st.dead) return; draw(); v.requestVideoFrameCallback(onFrame); };
@@ -324,7 +332,8 @@ function cvMount(root, c, P) {
     box.classList.toggle("cv-src", srcView());
     layer.classList.toggle("drawing", show && st.draw);
     if (!show) { st.lastLayer = ""; layer.innerHTML = ""; return; }
-    const html = cv().pieces.map((p, i) => `<div class="cv-box${p.id === st.sel ? " on" : ""}" data-cv-id="${esc(p.id)}" style="--cvc:${CV_COLORS[i % CV_COLORS.length]};${boxCss(rectOf(p))}"><b>${i + 1}</b>${p.id === st.sel ? HANDLES.map((h) => `<i class="cv-h cv-h-${h}" data-cv-h="${h}"></i>`).join("") : ""}</div>`).join("")
+    const tm = P.time();
+    const html = cv().pieces.map((p, i) => `<div class="cv-box${p.id === st.sel ? " on" : ""}${kfHas(p) ? " kf-moving" : ""}" data-cv-id="${esc(p.id)}" style="--cvc:${CV_COLORS[i % CV_COLORS.length]};${boxCss(rectOf(shown(p, tm)))}"><b>${i + 1}</b>${p.id === st.sel ? HANDLES.map((h) => `<i class="cv-h cv-h-${h}" data-cv-h="${h}"></i>`).join("") : ""}</div>`).join("")
       + (st.band ? `<div class="cv-band" style="${boxCss(st.band)}"></div>` : "");
     if (html !== st.lastLayer) { st.lastLayer = html; layer.innerHTML = html; }
   }
@@ -375,7 +384,9 @@ function cvMount(root, c, P) {
       if (!el) return select(null);
       const id = el.dataset.cvId, handle = e.target.closest?.("[data-cv-h]")?.dataset.cvH || "move";
       if (st.sel !== id) select(id);
-      st.drag = { kind: "piece", id, handle, x0: q.fx, y0: q.fy, p0: { ...piece(id) }, tx: begin() };
+      // `p0` is the piece as shown at the playhead; one with keyframes changes its keyframe there (`tm`).
+      const tm = P.time();
+      st.drag = { kind: "piece", id, handle, x0: q.fx, y0: q.fy, p0: { ...shown(piece(id), tm) }, own: { ...piece(id) }, tm, tx: begin() };
     }
     try { layer.setPointerCapture(e.pointerId); } catch { /* the drag still works while the pointer stays over the layer */ }
     renderLayer();
@@ -414,7 +425,8 @@ function cvMount(root, c, P) {
       }
       next = cvResultDrag(d.p0, d.handle, dx, dy);
     }
-    Object.assign(p, next);
+    // Auto-key: a piece with keyframes gets (or changes) the one at the playhead.
+    Object.assign(p, kfHas(d.own) ? kfPieceSet(d.own, d.tm, next, cv(), src()) : next);
     st.dirty = true;
     draw();
     renderLayer();
@@ -456,7 +468,8 @@ function cvMount(root, c, P) {
     e.preventDefault();
     if (!st.wheel) st.wheel = { tx: begin(), timer: 0 };
     clearTimeout(st.wheel.timer);
-    Object.assign(p, cvZoom(p, e.deltaY > 0 ? 1.06 : 1 / 1.06));
+    const tm = P.time(), z = cvZoom(shown(p, tm), e.deltaY > 0 ? 1.06 : 1 / 1.06);
+    Object.assign(p, kfHas(p) ? kfPieceSet(p, tm, z, cv(), src()) : z);
     st.dirty = true;
     draw();
     st.wheel.timer = setTimeout(() => { const w = st.wheel; st.wheel = null; finish(w.tx); }, 350);
@@ -496,6 +509,14 @@ function cvMount(root, c, P) {
         if (st.arrange && C.pieces.length) {
           html += `<div class="ov-list cv-list" role="list">${C.pieces.map((p, i) => `<div role="listitem" class="ov-item${p.id === st.sel ? " on" : ""}" data-cv-pick="${esc(p.id)}"><span class="cv-dot" style="background:${CV_COLORS[i % CV_COLORS.length]}"></span><span class="ov-in">${esc(t("Piece {n}", { n: i + 1 }))}</span>${i < C.pieces.length - 1 ? `<button type="button" class="cv-mini" data-cv-front="${esc(p.id)}" title="${esc(t("Bring to the front"))}" aria-label="${esc(t("Bring to the front"))}">↑</button>` : ""}<button type="button" class="cv-mini" data-cv-del="${esc(p.id)}" title="${esc(t("Remove this piece"))}" aria-label="${esc(t("Remove this piece"))}">×</button></div>`).join("")}</div>`;
         }
+        // The selected piece's keyframes (keyframes.js): a time bar with its diamonds, and the buttons.
+        const sp = st.arrange && !st.draw ? piece(st.sel) : null;
+        if (sp) {
+          const D = mm.duration || 1, tm = P.time();
+          html += `<div class="ov-when kf-piece"><div class="cv-row"><span>${esc(t("Piece {n}", { n: C.pieces.indexOf(sp) + 1 }))}</span></div>`
+            + `<div class="ov-rbar kf-bar" title="${esc(t("Click to move the playhead"))}"><div class="ov-rnow" style="left:${cvClamp((tm / D) * 100, 0, 100)}%"></div>${kfDiamonds(sp.keys, D, tm)}</div>`
+            + `${kfControls(sp.keys, tm, sp.smooth)}</div>`;
+        }
       }
       const mine = presets();
       if (mine.length || C) {
@@ -517,9 +538,11 @@ function cvMount(root, c, P) {
         C.pieces = withIds(cvLayout("fill", C, s));
         mm.canvas = C;
       } else {
+        const C0 = { width: mm.canvas.width, height: mm.canvas.height };
         mm.canvas.width = w;
         mm.canvas.height = h;
-        mm.canvas.pieces = mm.canvas.pieces.map((p) => cvRefit(p, mm.canvas, s));
+        // Keyframes are refitted the same way, each one (keyframes.js).
+        mm.canvas.pieces = mm.canvas.pieces.map((p) => kfPieceRefit(cvRefit(p, mm.canvas, s), C0, mm.canvas, s));
       }
     });
   }
@@ -538,7 +561,7 @@ function cvMount(root, c, P) {
     const name = await askText(t("Name this layout"), "", t("Save"));
     if (!name || st.dead || !cv()) return;
     const now = cv();
-    const entry = { id: cvNewId(), name, canvas: { width: now.width, height: now.height, background: now.background, pieces: now.pieces.map(({ id, ...rest }) => rest) } };
+    const entry = { id: cvNewId(), name, canvas: { width: now.width, height: now.height, background: now.background, pieces: now.pieces.map(({ id, keys, smooth, ...rest }) => rest) } }; // a layout is still: keyframes belong to this clip's times
     S.settings.canvas_presets = [...presets().filter((p) => p.name !== name), entry];
     saveSettings();
     st.lastPanel = "";
@@ -554,8 +577,47 @@ function cvMount(root, c, P) {
     renderPanel();
   }
 
+  /** The selected piece's keyframe buttons (keyframes.js): previous / next move the playhead; add, remove and Smooth are undo steps. */
+  function keyAction(act, value) {
+    const p = piece(st.sel), tm = P.time(), C = cv();
+    if (!p || !C) return;
+    if (act === "prev" || act === "next") {
+      const to = act === "prev" ? kfPrev(p.keys, tm) : kfNext(p.keys, tm);
+      if (to !== null) P.seek(to, false, true);
+      refresh();
+      return;
+    }
+    change(() => {
+      const now = shown(p, tm);
+      if (act === "add") p.keys = kfPut(p.keys, tm, kfPieceKey(now, C, src()));
+      else if (act === "smooth") p.smooth = !!value;
+      else if (act === "remove") {
+        const keys = kfDrop(p.keys || [], tm);
+        if (keys.length) p.keys = keys;
+        else {
+          // The last keyframe: the piece stays as it is now.
+          Object.assign(p, { sx: now.sx, sy: now.sy, sw: now.sw, sh: now.sh, x: now.x, y: now.y, w: now.w, h: now.h });
+          delete p.keys;
+          delete p.smooth;
+        }
+      }
+    });
+  }
+  const keySig = (tm) => { const p = st.arrange ? piece(st.sel) : null; return p ? `${kfIndexAt(p.keys, tm)}|${kfPrev(p.keys, tm)}|${kfNext(p.keys, tm)}` : ""; };
+  // The piece's time bar: a click (on a diamond: exactly there) moves the playhead.
+  panel.addEventListener("pointerdown", (e) => {
+    const bar = e.target.closest?.(".kf-bar");
+    if (!bar || e.button !== 0 || !m()) return;
+    e.preventDefault();
+    const dia = e.target.closest("[data-kf-t]"), r = bar.getBoundingClientRect();
+    P.seek(dia ? +dia.dataset.kfT : cvClamp((e.clientX - r.left) / (r.width || 1), 0, 1) * (m().duration || 0), false, !!dia);
+    refresh();
+  });
+
   panel.addEventListener("mousedown", (e) => { if (e.target.closest("button")) e.preventDefault(); });
   panel.addEventListener("click", (e) => {
+    const kb = e.target.closest("button[data-kf]");
+    if (kb) { keyAction(kb.dataset.kf); return; }
     const b = e.target.closest("button, [data-cv-pick]");
     if (!b || !m()) return;
     const d = b.dataset;
@@ -572,6 +634,7 @@ function cvMount(root, c, P) {
   });
   panel.addEventListener("change", (e) => {
     const el = e.target, k = el.dataset?.cv;
+    if (el.dataset?.kf === "smooth") { el.blur(); keyAction("smooth", el.checked); return; }
     if (!k || !m()) return;
     if (k === "shape") {
       if (el.value === "off") { st.custom = false; st.sel = null; change((mm) => { mm.canvas = null; }); setArrange(false); }
@@ -604,6 +667,12 @@ function cvMount(root, c, P) {
       // The canvas takes the clip's color preview (a CSS filter on the video).
       if (view.style.filter !== v.style.filter) view.style.filter = v.style.filter;
       if (st.dirty || v.currentTime !== st.lastT) draw();
+      // Keyframes (keyframes.js): the piece boxes follow moving pieces, the time bar and its buttons the playhead.
+      if (st.arrange && !st.drag && cv().pieces.some(kfHas)) renderLayer();
+      const tm = P.time(), nowEl = panel.querySelector(".kf-bar .ov-rnow");
+      if (nowEl) nowEl.style.left = `${cvClamp((tm / (m()?.duration || 1)) * 100, 0, 100)}%`;
+      const sig = keySig(tm);
+      if (sig !== st.keySig) { st.keySig = sig; renderPanel(); }
     },
     /** After any change of the model (P.edSync), including undo / redo and a project's load. */
     sync(what) {

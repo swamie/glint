@@ -47,6 +47,9 @@ pub struct CaptureCfg {
     pub buffer_ram_secs: f64,
     /// Folder for the buffer files.
     pub buffer_dir: PathBuf,
+    /// Game mode (capmode.rs): the game's window handle, captured instead of the monitor
+    /// (Graphics Capture only); `width` x `height` is then its client area. 0 = the monitor `monitor`.
+    pub window: u64,
 }
 
 impl CaptureCfg {
@@ -468,6 +471,9 @@ pub struct RecStatus {
     /// (asked for none, ffmpeg reported no trouble), "failed" (ffmpeg warned
     /// that Windows refused to turn it off).
     pub border: String,
+    /// Game mode: the window capture failed twice in a row without a frame (capmode.rs then
+    /// records the game's monitor instead).
+    pub window_failed: bool,
 }
 
 /// One monitor's buffer, as `stats` reports it.
@@ -476,6 +482,8 @@ pub struct CapStats {
     /// Unique per pipeline: a restarted capture gets a new one (frame counts start again).
     pub id: u64,
     pub monitor: u32,
+    /// The window it captures (game mode), 0 = the monitor.
+    pub window: u64,
     /// It is the capture monitor (`Settings::monitor`).
     pub primary: bool,
     pub status: RecStatus,
@@ -512,6 +520,12 @@ struct Pipe {
     alive: AtomicBool,
     child: Mutex<Option<Child>>,
     status: Mutex<RecStatus>,
+    /// The window it captures now (game mode; 0 = the monitor). Another game's window of the
+    /// same size is taken over by the same pipeline: its buffer stays, a new epoch begins.
+    window: AtomicU64,
+    /// Game mode, the game has exited: no ffmpeg runs, but the buffer is kept (it ages out by
+    /// its length) so a clip key still saves the end of the game. `Recorder::start` resumes it.
+    parked: AtomicBool,
 }
 
 impl Pipe {
@@ -527,12 +541,51 @@ impl Pipe {
             alive: AtomicBool::new(true),
             child: Mutex::new(None),
             status: Mutex::new(status),
+            window: AtomicU64::new(cfg.window),
+            parked: AtomicBool::new(false),
             cfg,
         })
     }
 
     fn alive(&self) -> bool {
         self.alive.load(Ordering::SeqCst)
+    }
+
+    /// Its configuration as it captures now (the window it was moved to, if any).
+    fn cfg_now(&self) -> CaptureCfg {
+        let mut c = self.cfg.clone();
+        c.window = self.window.load(Ordering::SeqCst);
+        c
+    }
+
+    /// `cfg` asks for another window with everything else the same: a window capture can move there.
+    fn can_move_to(&self, cfg: &CaptureCfg) -> bool {
+        let mut c = cfg.clone();
+        c.window = self.cfg.window;
+        self.cfg.window != 0 && cfg.window != 0 && c == self.cfg
+    }
+
+    /// Capture `window` from now on: its ffmpeg is ended, `supervise` starts the next one on the
+    /// new window at once, as a new epoch in the same buffer.
+    fn is_parked(&self) -> bool {
+        self.parked.load(Ordering::SeqCst)
+    }
+
+    /// Stop its ffmpeg and keep the buffer (see `parked`).
+    fn park(&self) {
+        self.parked.store(true, Ordering::SeqCst);
+        if let Some(c) = self.child.lock().unwrap().as_mut() {
+            let _ = c.kill();
+        }
+    }
+
+    fn move_to(&self, window: u64) {
+        self.window.store(window, Ordering::SeqCst);
+        self.parked.store(false, Ordering::SeqCst);
+        self.status.lock().unwrap().window_failed = false;
+        if let Some(c) = self.child.lock().unwrap().as_mut() {
+            let _ = c.kill();
+        }
     }
 
     fn set_error(&self, msg: &str) {
@@ -560,6 +613,7 @@ impl Pipe {
         CapStats {
             id: self.id,
             monitor: self.cfg.monitor,
+            window: self.window.load(Ordering::SeqCst),
             primary,
             status,
             frames: ring.frames,
@@ -731,11 +785,18 @@ pub fn capture_args(cfg: &CaptureCfg, enc: &str, method: &str, sw: bool, no_bord
         // limit of 280 delivered 4 % fewer frames than limits of 294 or 1000.
         let (cap_num, cap_den) = (hz as u64 * 21, k as u64 * 20);
         rate_scale = (cap_num as f64 / cap_den as f64 / cfg.fps.max(1) as f64).max(1.0);
-        let mut s = format!("gfxcapture=monitor_idx={}:max_framerate={}/{}:capture_cursor={}", cfg.monitor, cap_num, cap_den, cfg.cursor as u8);
+        // Game mode: one window (its client area, no frame) instead of the monitor. Its size is
+        // always given (a window can be an odd number of pixels wide, which encoders refuse), and
+        // the picture is fitted into it keeping its shape: a window that changes size is shown
+        // whole until the capture restarts at the new size (capmode.rs), never cut off.
+        let target = if cfg.window != 0 { format!("hwnd={}", cfg.window) } else { format!("monitor_idx={}", cfg.monitor) };
+        let mut s = format!("gfxcapture={target}:max_framerate={}/{}:capture_cursor={}", cap_num, cap_den, cfg.cursor as u8);
         if no_border {
             s += ":display_border=0";
         }
-        if cfg.scaled {
+        if cfg.window != 0 {
+            s += &format!(":width={w}:height={h}:resize_mode=scale_aspect:scale_mode=bicubic");
+        } else if cfg.scaled {
             s += &format!(":width={w}:height={h}:resize_mode=scale:scale_mode=bicubic");
         }
         if cfg.fps < hz {
@@ -839,7 +900,13 @@ impl Recorder {
 
     /// Every buffered monitor's configuration, the capture monitor's first.
     pub fn current_cfgs(&self) -> Vec<CaptureCfg> {
-        self.inner.pipes.lock().unwrap().iter().map(|p| p.cfg.clone()).collect()
+        self.inner.pipes.lock().unwrap().iter().filter(|p| !p.is_parked()).map(|p| p.cfg_now()).collect()
+    }
+
+    /// As `current_cfgs`, with the captures that are parked (game mode, the game exited) and
+    /// only keep their buffer.
+    pub fn buffered_cfgs(&self) -> Vec<CaptureCfg> {
+        self.inner.pipes.lock().unwrap().iter().map(|p| p.cfg_now()).collect()
     }
 
     /// Capture the monitors in `cfgs` (the capture monitor first; one entry per
@@ -849,12 +916,28 @@ impl Recorder {
     /// only when what it depends on changed.
     pub fn start(&self, cfgs: Vec<CaptureCfg>) {
         if cfgs.is_empty() {
-            return self.stop();
+            // Game mode with no game (capmode.rs): clipping stays on and waits. The desktop's
+            // list is never empty (a monitor is always there).
+            return self.wait();
         }
         let mut pipes = self.inner.pipes.lock().unwrap();
         self.inner.running.store(true, Ordering::SeqCst);
         let old = std::mem::take(&mut *pipes);
-        let (keep, stale): (Vec<_>, Vec<_>) = old.into_iter().partition(|p| p.alive() && cfgs.contains(&p.cfg));
+        // Game mode: another game's window of the same size is taken over by the capture of the
+        // last one, which keeps its buffer (a new epoch). Never for a monitor capture.
+        for p in &old {
+            if p.alive() && !cfgs.contains(&p.cfg_now()) {
+                if let Some(c) = cfgs.iter().find(|c| p.can_move_to(c)) {
+                    util::log(&format!("capture: moving to window {:#x}", c.window));
+                    p.move_to(c.window);
+                }
+            }
+        }
+        let (keep, stale): (Vec<_>, Vec<_>) = old.into_iter().partition(|p| p.alive() && cfgs.contains(&p.cfg_now()));
+        // A parked capture asked for again resumes on its buffer (a new epoch). Never in desktop mode.
+        for p in keep.iter().filter(|p| p.is_parked()) {
+            p.parked.store(false, Ordering::SeqCst);
+        }
         // Old captures go first, so a monitor never has two ffmpegs at once.
         for p in &stale {
             p.halt();
@@ -864,7 +947,7 @@ impl Recorder {
             spill::clean(&cfgs[0].buffer_dir);
         }
         for cfg in &cfgs {
-            match keep.iter().find(|p| p.cfg == *cfg) {
+            match keep.iter().find(|p| p.cfg_now() == *cfg) {
                 Some(p) => pipes.push(p.clone()),
                 None => {
                     let p = Pipe::new(cfg.clone());
@@ -892,6 +975,54 @@ impl Recorder {
             audio::spawn(self.inner.desk.clone(), self.inner.mic.clone(), key.desk, key.mic, max_secs + 5.0, stop.clone());
             *audio = Some((key, stop));
         }
+    }
+
+    /// Clipping is on but there is nothing to capture (game mode, no game running): every capture
+    /// and the shared audio stop and their buffers are freed; `is_running` stays true and
+    /// `current_cfgs` is empty until `start` is given something to capture.
+    ///
+    /// What the captures hold is KEPT (0.1.27, the lead's call): a game that crashes or is closed
+    /// right after a good moment is when people press the clip key. Each capture is parked (its
+    /// ffmpeg ends, its buffer ages out by its normal length), the shared audio capture stops
+    /// but its rings stay. A later `start` with the same capture resumes it as a new epoch; a
+    /// different one replaces it (and frees it). `stop` frees everything, as before.
+    pub fn wait(&self) {
+        let pipes = self.inner.pipes.lock().unwrap();
+        self.inner.running.store(true, Ordering::SeqCst);
+        if pipes.is_empty() {
+            drop(pipes);
+            return self.stop_keep_running();
+        }
+        for p in pipes.iter() {
+            p.park();
+        }
+        drop(pipes);
+        if let Some((_, stop)) = self.inner.audio.lock().unwrap().take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Test hook (`--capmode-test`): put MPEG-TS `ts` into the first capture's buffer as one run of
+    /// ffmpeg that ended at `t` on the app clock, and stereo 48 kHz `mic` into the microphone
+    /// ring, ending at `t`. Nothing is captured.
+    pub fn test_feed(&self, ts: &[u8], t: f64, mic: &[i16]) {
+        if let Some(p) = self.inner.pipes.lock().unwrap().first().cloned() {
+            let mut ring = p.ring.lock().unwrap();
+            ring.begin_epoch(t);
+            ring.feed(ts, t);
+            ring.end_epoch();
+        }
+        let mut m = self.inner.mic.lock().unwrap();
+        m.configure(48_000, 120.0);
+        let start = t - (mic.len() / 2) as f64 / 48_000.0;
+        for (k, pkt) in mic.chunks(960).enumerate() {
+            m.push(pkt, start + ((k + 1) * 480) as f64 / 48_000.0);
+        }
+    }
+
+    fn stop_keep_running(&self) {
+        self.stop();
+        self.inner.running.store(true, Ordering::SeqCst);
     }
 
     /// Stop every capture and free the buffers.
@@ -934,22 +1065,24 @@ impl Recorder {
         // back afterwards, so the capture callback is never kept waiting.
         let desk = self.inner.desk.lock().unwrap().plan(&snap.segments);
         let mic = self.inner.mic.lock().unwrap().plan(&snap.segments);
-        Ok((snap, desk.map(Plan::read), mic.map(Plan::read), pipe.cfg.clone()))
+        Ok((snap, desk.map(Plan::read), mic.map(Plan::read), pipe.cfg_now()))
     }
 
     pub fn stats(&self) -> RecStats {
         let now = now_secs();
         let pipes: Vec<Arc<Pipe>> = self.inner.pipes.lock().unwrap().clone();
-        let captures: Vec<CapStats> = pipes.iter().enumerate().map(|(i, p)| p.stats(i == 0, now)).collect();
+        let all: Vec<CapStats> = pipes.iter().enumerate().map(|(i, p)| p.stats(i == 0, now)).collect();
+        // A parked capture (game mode, the game exited) is not capturing: only its bytes count.
+        let captures: Vec<CapStats> = all.iter().zip(&pipes).filter(|(_, p)| !p.is_parked()).map(|(c, _)| c.clone()).collect();
         let (desk_ram, desk_disk) = self.inner.desk.lock().unwrap().bytes();
         let (mic_ram, mic_disk) = self.inner.mic.lock().unwrap().bytes();
         let first = captures.first();
         RecStats {
             status: first.map(|c| c.status.clone()).unwrap_or_default(),
             running: self.is_running(),
-            video_bytes: captures.iter().map(|c| c.video_bytes).sum(),
+            video_bytes: all.iter().map(|c| c.video_bytes).sum(),
             audio_bytes: (desk_ram + mic_ram) as u64,
-            video_disk_bytes: captures.iter().map(|c| c.video_disk_bytes).sum(),
+            video_disk_bytes: all.iter().map(|c| c.video_disk_bytes).sum(),
             audio_disk_bytes: (desk_disk + mic_disk) as u64,
             buffer_secs: first.map_or(0.0, |c| c.buffer_secs),
             max_secs: first.map_or(0.0, |c| c.max_secs),
@@ -984,13 +1117,23 @@ fn supervise(pipe: Arc<Pipe>) {
 
     let no_border = gfx_caps(&ffmpeg).1;
     while pipe.alive() {
+        // Parked (game mode, the game exited): no ffmpeg; the buffer only ages out by its length.
+        while pipe.is_parked() && pipe.alive() {
+            pipe.ring.lock().unwrap().evict(now_secs());
+            thread::sleep(Duration::from_millis(200));
+        }
+        if !pipe.alive() {
+            return;
+        }
         {
             let mut st = pipe.status.lock().unwrap();
             st.encoder = enc.clone();
             st.method = method.clone();
             st.border = if method == "wgc" { "off".into() } else { String::new() };
         }
-        let args = capture_args(&cfg, &enc, &method, sw, no_border);
+        // Game mode: the window it captures now (`Pipe::move_to` can change it between runs).
+        let window = pipe.window.load(Ordering::SeqCst);
+        let args = if window == cfg.window { capture_args(&cfg, &enc, &method, sw, no_border) } else { capture_args(&CaptureCfg { window, ..cfg.clone() }, &enc, &method, sw, no_border) };
         let frames_before = pipe.ring.lock().unwrap().frames;
         let spawned = util::hidden_cmd_prio(&ffmpeg).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
         let started = Instant::now();
@@ -1071,7 +1214,7 @@ fn supervise(pipe: Arc<Pipe>) {
                             }
                             // Checked under the lock: halt() clears `alive` before it empties the ring.
                             let mut ring = pipe.ring.lock().unwrap();
-                            if !pipe.alive() {
+                            if !pipe.alive() || pipe.is_parked() {
                                 break;
                             }
                             ring.feed(&buf[..n], now_secs());
@@ -1090,6 +1233,12 @@ fn supervise(pipe: Arc<Pipe>) {
             }
         }
         let no_frames = !got_data || pipe.ring.lock().unwrap().frames == frames_before;
+        // Moved to another game's window (`Pipe::move_to`): start on it at once, nothing failed.
+        if pipe.window.load(Ordering::SeqCst) != window || pipe.is_parked() {
+            backoff = 1;
+            quick_fails = 0;
+            continue;
+        }
         if started.elapsed() > Duration::from_secs(15) && !no_frames {
             backoff = 1;
             quick_fails = 0;
@@ -1110,6 +1259,13 @@ fn supervise(pipe: Arc<Pipe>) {
                     util::log(&format!("capture {mon}: the {enc} encoder delivered no frames ({err}); using x264 on the CPU instead"));
                     enc = "x264".into();
                     sw = false;
+                } else if window != 0 {
+                    // A window capture that refused twice: capmode.rs records the game's monitor
+                    // instead (Desktop Duplication cannot capture one window).
+                    if !pipe.status.lock().unwrap().window_failed {
+                        util::log(&format!("capture {mon}: window {window:#x} could not be captured ({err})"));
+                    }
+                    pipe.status.lock().unwrap().window_failed = true;
                 } else if method == "wgc" && cfg.method == "auto" {
                     // Graphics Capture refused: fall back to Desktop Duplication.
                     method = "dda".into();
@@ -1335,6 +1491,7 @@ pub fn self_test(report_path: &str) {
             buffer: "ram".into(),
             buffer_ram_secs: 30.0,
             buffer_dir: root.join("rec"),
+            window: 0,
         };
         let rec = Recorder::new();
         let ids = |rec: &Recorder| rec.stats().captures.iter().map(|c| (c.monitor, c.id, c.primary)).collect::<Vec<_>>();

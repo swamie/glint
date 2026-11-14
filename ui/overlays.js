@@ -92,6 +92,9 @@ function ovNorm(o) {
     if (o.kind === "blur") out.strength = ovClamp(ovNum(o.strength, 0.03), 0.001, 0.2);
     else Object.assign(out, { width: ovClamp(ovNum(o.width, 4 / 720), 0, 0.1), fill: ["none", "solid", "half"].includes(o.fill) ? o.fill : "none" });
   }
+  // Keyframes (keyframes.js), when it has any.
+  const keys = Array.isArray(o.keys) && typeof kfNormOv === "function" ? kfNormOv(o) : [];
+  if (keys.length) Object.assign(out, { keys, smooth: !!o.smooth });
   return out;
 }
 
@@ -196,15 +199,17 @@ function ovResized(o0, k, x, y, W, H, measure) {
   return o;
 }
 
-/** The items as the export's PNGs need them: runs of neighbours (bottom to top, blur boxes left out) that share an OUTPUT time range: [{ items, from, to }]. */
+/** The items as the export's PNGs need them: runs of neighbours (bottom to top, blur boxes left out) that share an OUTPUT time range: [{ items, from, to }].
+ *  An item with keyframes is a group of its own with `moving: true` (its own picture, moved by ffmpeg). */
 function ovGroups(m) {
   const out = [];
   for (const o of m.overlays || []) {
     if (o.kind === "blur" || (o.kind === "text" && !String(o.text || "").trim()) || (o.kind === "pen" && !o.pts.length)) continue;
     const r = emOutRange(m, o.from, o.to);
     if (!r) continue;
+    if (Array.isArray(o.keys) && o.keys.length) { out.push({ items: [o], from: r.from, to: r.to, moving: true }); continue; }
     const last = out[out.length - 1];
-    if (last && last.from === r.from && last.to === r.to) last.items.push(o);
+    if (last && !last.moving && last.from === r.from && last.to === r.to) last.items.push(o);
     else out.push({ items: [o], from: r.from, to: r.to });
   }
   return out;
@@ -429,6 +434,10 @@ function ovMount(root, c, P) {
 
   /* ----- drawing the preview ----- */
   const now = () => P.time();
+  /** An item as it is shown at `tm`: with its keyframes' move built in (keyframes.js). */
+  const atTime = (o, tm) => (o && kfHas(o) ? kfOvAt(o, tm, st.W || 1, st.H || 1, ovMeasure) : o);
+  /** The items shown at `tm`, as they are shown then (for hit tests). */
+  const shownAt = (tm) => list().map((o) => atTime(o, tm));
   function redraw() {
     if (st.dead || !st.editing) return;
     place();
@@ -436,12 +445,14 @@ function ovMount(root, c, P) {
     const shown = mm ? list().filter((o) => ovVisibleAt(o, tm)) : [];
     st.shown = shown.map((o) => o.id).join(",");
     st.dirty = false;
+    st.moving = shown.some(kfHas);
+    st.lastT = tm;
     const ctx = art.getContext("2d");
     ctx.setTransform(st.dpr, 0, 0, st.dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    ovDraw(ctx, shown, W, H, st.typing?.id);
+    kfOvDraw(ctx, shown, tm, W, H, st.typing?.id, ovMeasure);
     // Blur boxes: one div each, blurring what lies under it.
-    const blurs = shown.filter((o) => o.kind === "blur");
+    const blurs = shown.filter((o) => o.kind === "blur").map((o) => atTime(o, tm));
     while (blursEl.children.length > blurs.length) blursEl.lastChild.remove();
     while (blursEl.children.length < blurs.length) blursEl.appendChild(document.createElement("div"));
     blurs.forEach((o, i) => {
@@ -459,7 +470,7 @@ function ovMount(root, c, P) {
     ctx.setTransform(st.dpr, 0, 0, st.dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
     const draft = st.drag?.kind === "draw" ? item(st.drag.id) : null;
-    const o = item(st.sel);
+    const o = atTime(item(st.sel), now());
     if (!o && !draft) return;
     const accent = getComputedStyle(root).getPropertyValue("--accent").trim() || "#3b82f6";
     // A blur box being drawn shows its outline, since its inside only blurs.
@@ -518,12 +529,15 @@ function ovMount(root, c, P) {
     if (e.button !== 0 || !m() || st.typing) return;
     const p = at(e), pt = frac(p), mm = m(), tm = now();
     if (st.tool === "select") {
-      const o = item(st.sel);
+      const o = atTime(item(st.sel), tm);
       const h = o && ovVisibleAt(o, tm) ? ovHandles(o, st.W, st.H, ovMeasure).find((q) => Math.abs(q.x - p.px) <= 7 && Math.abs(q.y - p.py) <= 7) : null;
-      const hit = h ? o : ovHitTop(mm.overlays, tm, st.W, st.H, p.px, p.py, tol(), ovMeasure);
+      const hit = h ? o : ovHitTop(shownAt(tm), tm, st.W, st.H, p.px, p.py, tol(), ovMeasure);
       if (!hit) { select(null); st.drag = { kind: "click", x: p.px, y: p.py }; layer.setPointerCapture(e.pointerId); return; }
       select(hit.id);
-      st.drag = { kind: h ? "resize" : "move", handle: h?.k, id: hit.id, start: pt, orig: JSON.parse(JSON.stringify(hit)), tx: begin(), x: p.px, y: p.py, moved: false };
+      // `orig` is the item as shown; one with keyframes changes its keyframe at the playhead (`tm`) instead of its shape.
+      const own = item(hit.id), keyed = kfHas(own);
+      st.drag = { kind: h ? "resize" : "move", handle: h?.k, id: hit.id, start: pt, orig: JSON.parse(JSON.stringify(hit)), tx: begin(), x: p.px, y: p.py, moved: false,
+        keyed, tm, base: keyed ? JSON.parse(JSON.stringify(own)) : null, T0: keyed ? kfOvT(own, tm) : null };
     } else if (st.tool === "text") {
       startText(pt);
       e.preventDefault(); // keep the focus in the new text box
@@ -550,7 +564,13 @@ function ovMount(root, c, P) {
     if (i < 0) return;
     const cur = mm.overlays[i];
     let next = cur;
-    if (d.kind === "move") next = ovMoved(d.orig, pt[0] - d.start[0], pt[1] - d.start[1]);
+    if (d.keyed && (d.kind === "move" || d.kind === "resize")) {
+      // Auto-key: the drag sets the keyframe at the playhead (or adds one there).
+      let T = d.kind === "move" ? kfOvMoveT(d.T0, pt[0] - d.start[0], pt[1] - d.start[1])
+        : kfOvResizeT(d.base, d.T0, d.orig, ovResized(d.orig, d.handle, pt[0], pt[1], st.W, st.H, ovMeasure), d.handle, st.W, st.H, ovMeasure);
+      if (KF_UNIFORM.includes(cur.kind)) T = { ...T, sy: T.sx };
+      next = { ...cur, keys: kfPut(d.base.keys, d.tm, T) };
+    } else if (d.kind === "move") next = ovMoved(d.orig, pt[0] - d.start[0], pt[1] - d.start[1]);
     else if (d.kind === "resize") next = ovResized(d.orig, d.handle, pt[0], pt[1], st.W, st.H, ovMeasure);
     else if (cur.kind === "pen") {
       const last = cur.pts[cur.pts.length - 1];
@@ -589,16 +609,16 @@ function ovMount(root, c, P) {
   layer.addEventListener("dblclick", (e) => {
     if (!m() || st.typing) return;
     const p = at(e);
-    const hit = ovHitTop(m().overlays, now(), st.W, st.H, p.px, p.py, tol(), ovMeasure);
+    const hit = ovHitTop(shownAt(now()), now(), st.W, st.H, p.px, p.py, tol(), ovMeasure);
     if (hit?.kind === "text") { e.preventDefault(); editText(hit.id); }
     else if (!hit && st.tool === "select") P.fullscreen(); // as a double-click on the video does
   });
   function hover(e) {
     if (st.tool !== "select" || !m()) { layer.style.cursor = ""; return; }
-    const p = at(e), o = item(st.sel), tm = now();
+    const p = at(e), tm = now(), o = atTime(item(st.sel), tm);
     const h = o && ovVisibleAt(o, tm) ? ovHandles(o, st.W, st.H, ovMeasure).find((q) => Math.abs(q.x - p.px) <= 7 && Math.abs(q.y - p.py) <= 7) : null;
     const cur = h ? (h.k === "nw" || h.k === "se" ? "nwse-resize" : h.k === "ne" || h.k === "sw" ? "nesw-resize" : "crosshair")
-      : ovHitTop(m().overlays, tm, st.W, st.H, p.px, p.py, tol(), ovMeasure) ? "move" : "";
+      : ovHitTop(shownAt(tm), tm, st.W, st.H, p.px, p.py, tol(), ovMeasure) ? "move" : "";
     if (layer.style.cursor !== cur) layer.style.cursor = cur;
   }
 
@@ -629,7 +649,7 @@ function ovMount(root, c, P) {
     setTimeout(focus, 0); // and again after the click that opened it has finished
   }
   function styleEditor() {
-    const o = st.typing && item(st.typing.id);
+    const o = st.typing && atTime(item(st.typing.id), now());
     if (!o) return;
     const px = o.size * st.H;
     Object.assign(editor.style, {
@@ -740,7 +760,8 @@ function ovMount(root, c, P) {
             <input class="ov-time" data-ov-time="from" value="${esc(ovFmtTime(o.from))}" aria-label="${esc(t("Starts at"))}" title="${esc(t("Starts at"))}">
             <span class="ov-dash">–</span>
             <input class="ov-time" data-ov-time="to" value="${esc(ovFmtTime(o.to))}" aria-label="${esc(t("Ends at"))}" title="${esc(t("Ends at"))}"></div>
-          <div class="ov-rbar" aria-hidden="true"><div class="ov-rsel" style="left:${pct(o.from)};width:${pct(o.to - o.from)}"><i data-ov-end="from"></i><i data-ov-end="to"></i></div><div class="ov-rnow" style="left:${pct(now())}"></div></div>
+          <div class="ov-rbar" aria-hidden="true"><div class="ov-rsel" style="left:${pct(o.from)};width:${pct(o.to - o.from)}"><i data-ov-end="from"></i><i data-ov-end="to"></i></div><div class="ov-rnow" style="left:${pct(now())}"></div>${kfDiamonds(o.keys, D, now())}</div>
+          ${kfControls(o.keys, now(), o.smooth)}
           <div class="ov-btns">
             <button type="button" class="btn sm" data-ov-act="fromNow">${esc(t("From the playhead"))}</button>
             <button type="button" class="btn sm" data-ov-act="toNow">${esc(t("Until the playhead"))}</button>
@@ -813,8 +834,41 @@ function ovMount(root, c, P) {
     renderPanel();
   }
 
+  /** The keyframe buttons (keyframes.js): previous / next move the playhead; add, remove and Smooth are undo steps. */
+  function keyAction(act, value) {
+    const o = item(st.sel), tm = now();
+    if (!o) return;
+    if (act === "prev" || act === "next") {
+      const to = act === "prev" ? kfPrev(o.keys, tm) : kfNext(o.keys, tm);
+      if (to !== null) P.seek(to, false, true);
+      redraw();
+      renderPanel();
+      return;
+    }
+    change(() => {
+      if (act === "add") o.keys = kfPut(o.keys, tm, kfOvT(o, tm));
+      else if (act === "smooth") o.smooth = !!value;
+      else if (act === "remove") {
+        const T = kfOvT(o, tm), keys = kfDrop(o.keys || [], tm);
+        if (keys.length) o.keys = keys;
+        else {
+          // The last keyframe: the item stays where it is now.
+          const flat = kfOvBake(o, T, st.W || 1, st.H || 1, ovMeasure);
+          for (const k of Object.keys(o)) if (!(k in flat)) delete o[k];
+          Object.assign(o, flat);
+        }
+      }
+    });
+    redraw();
+    renderPanel();
+  }
+  /** What the keyframe buttons show for the selection at `tm` (the panel is redrawn when it changes). */
+  const keySig = (tm) => { const o = item(st.sel); return o ? `${kfIndexAt(o.keys, tm)}|${kfPrev(o.keys, tm)}|${kfNext(o.keys, tm)}` : ""; };
+
   panel.addEventListener("mousedown", (e) => { if (e.target.closest("button")) e.preventDefault(); });
   panel.addEventListener("click", (e) => {
+    const kb = e.target.closest("button[data-kf]");
+    if (kb) { keyAction(kb.dataset.kf); return; }
     const b = e.target.closest("[data-ov-color], [data-ov-act], [data-ov-pick]");
     if (!b) return;
     const d = b.dataset, o = item(st.sel);
@@ -843,6 +897,7 @@ function ovMount(root, c, P) {
   });
   panel.addEventListener("change", (e) => {
     const k = e.target.dataset?.ovInput, tk = e.target.dataset?.ovTime;
+    if (e.target.dataset?.kf === "smooth") { e.target.blur(); keyAction("smooth", e.target.checked); return; }
     if (k) {
       const x = e.target.type === "checkbox" ? e.target.checked : e.target.type === "range" ? +e.target.value : e.target.value;
       if (e.target.type === "range" || e.target.type === "checkbox" || e.target.type === "color") e.target.blur();
@@ -858,6 +913,9 @@ function ovMount(root, c, P) {
   panel.addEventListener("keydown", (e) => { if (e.target.dataset?.ovTime && (e.code === "Enter" || e.code === "NumpadEnter")) e.target.blur(); });
   // The range bar: drag either end, or the bar itself to move the whole range.
   panel.addEventListener("pointerdown", (e) => {
+    // A keyframe's diamond: the playhead goes there.
+    const dia = e.target.closest?.("[data-kf-t]");
+    if (dia && e.button === 0) { e.preventDefault(); P.seek(+dia.dataset.kfT, false, true); redraw(); renderPanel(); return; }
     const rb = e.target.closest(".ov-rbar"), o = item(st.sel);
     if (!rb || !o || e.button !== 0) return;
     e.preventDefault();
@@ -906,10 +964,14 @@ function ovMount(root, c, P) {
       if (!st.editing || st.dead) return;
       const mm = m();
       const shown = mm ? list().filter((o) => ovVisibleAt(o, tm)).map((o) => o.id).join(",") : "";
-      if (shown !== st.shown || st.dirty) redraw();
+      // Items with keyframes move: redrawn at every new playhead time.
+      if (shown !== st.shown || st.dirty || (st.moving && tm !== st.lastT)) redraw();
       else paintFade(tm);
       const nowEl = panel.querySelector(".ov-rnow");
       if (nowEl) nowEl.style.left = `${ovClamp((tm / dur()) * 100, 0, 100)}%`;
+      // The keyframe buttons follow the playhead (add / remove, previous / next).
+      const sig = keySig(tm);
+      if (sig !== st.keySig) { st.keySig = sig; renderPanel(); }
     },
     /** After any change of the model (P.edSync), including undo / redo. */
     sync(what) {
@@ -952,6 +1014,20 @@ function ovMount(root, c, P) {
       const W = cs ? cs.width : v.videoWidth || c.width || 1920, H = cs ? cs.height : v.videoHeight || c.height || 1080;
       const out = [];
       for (const g of ovGroups(mm)) {
+        if (g.moving) {
+          // An item with keyframes: a picture of its own box only, which ffmpeg moves and scales along its track (keyframes.js).
+          const o = g.items[0], f = kfOvFrame(o, W, H, ovMeasure);
+          const cv = document.createElement("canvas");
+          cv.width = f.w;
+          cv.height = f.h;
+          const ctx = cv.getContext("2d");
+          ctx.translate(-f.x, -f.y);
+          ovDraw(ctx, [o], W, H);
+          const png = await invoke("editor_overlay_png", { data: cv.toDataURL("image/png") });
+          const r6 = (x) => Math.round(x * 1e6) / 1e6;
+          out.push({ png, from: g.from, to: g.to, x: r6(f.x / W), y: r6(f.y / H), w: r6(f.w / W), h: r6(f.h / H), track: kfOvTrack(mm, o) });
+          continue;
+        }
         const cv = document.createElement("canvas");
         cv.width = W;
         cv.height = H;

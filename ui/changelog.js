@@ -14,6 +14,19 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.28", date: "2026-11-15",
+    new: [
+      t("A GAME / DESKTOP switch in the top bar. DESKTOP records the whole monitor and all the sound, as before. GAME records only the game: its window and its own sound, plus your microphone. Glint finds the game by itself; right-click the switch to pick it by hand or to say “This is not a game”."),
+      t("Editor keyframes: text, shapes, drawings, blur boxes and canvas pieces can move and change size over time. Add a keyframe, move the playhead, drag the item, and it travels between the two, evenly or with Smooth."),
+      t("Settings → Audio: pick which output device's sound is recorded and which microphone is used. If a chosen device is unplugged, Glint records the Windows default until it is back."),
+      t("Render rules have a Canvas block: pick a layout you saved in the editor and the rule turns any clip into that vertical video in one click."),
+    ],
+    improved: [
+      t("The editor's audio rows say what they hold: “Mic audio”, “Desktop audio” and the game's name for the game's own track."),
+      t("Number boxes (Fade in, Fade out and the others) have Glint's own look, with small arrows to step the value."),
+    ],
+  },
+  {
     version: "0.1.26", date: "2026-11-15",
     new: [
       t("Editor: a Canvas for vertical videos. Pick 9:16 (TikTok, Shorts, Reels), 1:1, 4:5 or your own size, then choose which parts of the picture show and where: the gameplay in the middle, the kill feed zoomed above, the health bar below. Behind them is the clip blurred, black or a color."),

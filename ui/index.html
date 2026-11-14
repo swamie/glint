@@ -26,6 +26,9 @@
 <link rel="stylesheet" href="dropdown.css">
 <link rel="stylesheet" href="overlays.css">
 <link rel="stylesheet" href="canvas.css">
+<link rel="stylesheet" href="keyframes.css">
+<link rel="stylesheet" href="audiodev.css">
+<link rel="stylesheet" href="capmode.css">
 <link rel="stylesheet" href="lang/ko.css">
 <link rel="stylesheet" href="lang/el.css">
 <style id="custom-css"></style>
@@ -48,6 +51,8 @@
       </label>
     </div>
     <div class="top-actions">
+      <!-- The GAME / DESKTOP switch, filled by capmode.js. -->
+      <div id="capmode-slot"></div>
       <button id="btn-toggle" class="btn" data-hover>Pause</button>
       <button id="btn-clip" class="btn" data-hover>
         <span class="clip-keys"></span>
@@ -166,6 +171,14 @@
 <script src="lang/el-ovl.js"></script>
 <script src="lang/ko-cv.js"></script>
 <script src="lang/el-cv.js"></script>
+<script src="lang/ko-rc.js"></script>
+<script src="lang/el-rc.js"></script> 
+<script src="lang/ko-kf.js"></script>
+<script src="lang/el-kf.js"></script> 
+<script src="lang/ko-aud.js"></script>
+<script src="lang/el-aud.js"></script> 
+<script src="lang/ko-cap.js"></script>
+<script src="lang/el-cap.js"></script>
 <script src="mock.js"></script>
 <script src="themes.js"></script>
 <script src="editmodel.js"></script>
@@ -187,6 +200,9 @@
 <script src="rules.js"></script>
 <script src="overlays.js"></script>
 <script src="canvas.js"></script>
+<script src="keyframes.js"></script>
+<script src="audiodev.js"></script>
+<script src="capmode.js"></script>
 <script src="app.js"></script>
 <script src="deps.js"></script>
 <script src="updater.js"></script>
@@ -194,5 +210,6 @@
 <script src="sfx.js"></script>
 <script src="changelog.js"></script>
 <script src="dropdown.js"></script>
+<script src="numbox.js"></script>
 </body>
 </html>

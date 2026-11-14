@@ -5,6 +5,7 @@ mod audio;
 mod bench;
 mod blur;
 mod bugreport;
+mod capmode;
 mod capture2;
 mod clip;
 mod compress;
@@ -124,6 +125,16 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--gameaudio-test") {
         // glint.exe --gameaudio-test <report.txt>: the "Game" audio track, from ring to clip to editor; then a silent live capture.
         procaudio::self_test(args.get(i + 1).map(String::as_str).unwrap_or("gameaudio.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--audio-test") {
+        // glint.exe --audio-test <report.txt>: Settings → Audio, the device choice with its fallback; records nothing.
+        audio::self_test(args.get(i + 1).map(String::as_str).unwrap_or("audio.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--capmode-test") {
+        // glint.exe --capmode-test <report.txt>: game / desktop clipping on made-up windows and sound; captures nothing.
+        capmode::self_test(args.get(i + 1).map(String::as_str).unwrap_or("capmode.txt"));
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--buffer-test") {

@@ -35,6 +35,7 @@
 //   overlays   things on the picture (ui/overlays.js), bottom to top: { id, kind, from, to, ... }
 //              kind: text, rect, ellipse, line, arrow, pen, blur. from / to: timeline seconds it
 //              is on screen; positions are fractions (0..1) of the picture.
+//              An item (and a canvas piece) may have `keys` and `smooth`: keyframes (ui/keyframes.js).
 //   fadeIn, fadeOut  seconds of the RESULT that fade from / to black (picture and sound); 0 = off
 
 const EM_MIN_SEG = 0.1; // shortest segment a split or a drag may leave, seconds
@@ -461,6 +462,13 @@ function emMovePart(m, from, to) {
     const d = newAt.get(p.i) - p.at;
     o.from += d;
     o.to += d;
+    if (Array.isArray(o.keys)) for (const k of o.keys) k.t += d; // its keyframes (keyframes.js) go with it
+  }
+  // A canvas piece's keyframes each go with the part they are in.
+  for (const pc of m.canvas?.pieces || []) {
+    if (!Array.isArray(pc.keys) || !pc.keys.length) continue;
+    for (const k of pc.keys) { const p = P[emPartAt(m, k.t)]; if (p) k.t += newAt.get(p.i) - p.at; }
+    pc.keys.sort((a, b) => a.t - b.t);
   }
   const cuts = [], removed = [], colors = [], blank = [], gains = m.audio.map(() => []), marks = [];
   let at = 0;
@@ -1000,6 +1008,9 @@ function emToOpts(m) {
     audio,
     ...emLayerOpts(m),
     ...(m.canvas ? { canvas: emCanvasOpts(m.canvas) } : {}),
+    // Pieces with keyframes: one track per piece, [] for one that stands still (keyframes.js).
+    ...(m.canvas && m.canvas.pieces.some((p) => Array.isArray(p.keys) && p.keys.length) && typeof kfPieceTrack === "function"
+      ? { canvas_tracks: m.canvas.pieces.map((p) => (Array.isArray(p.keys) && p.keys.length ? kfPieceTrack(m, p) : [])) } : {}),
   };
 }
 
@@ -1019,7 +1030,9 @@ function emLayerOpts(m) {
   const out = {}, r4 = (x) => Math.round(x * 10000) / 10000, total = emOutDuration(m);
   const blurs = (m.overlays || []).filter((o) => o.kind === "blur").map((o) => {
     const r = emOutRange(m, o.from, o.to);
-    return r && { x: r4(o.x), y: r4(o.y), w: r4(o.w), h: r4(o.h), from: r.from, to: r.to, strength: r4(o.strength) };
+    // A box with keyframes moves along its track (output seconds; keyframes.js).
+    const track = r && Array.isArray(o.keys) && o.keys.length && typeof kfOvTrack === "function" ? kfOvTrack(m, o) : null;
+    return r && { x: r4(o.x), y: r4(o.y), w: r4(o.w), h: r4(o.h), from: r.from, to: r.to, strength: r4(o.strength), ...(track && track.length ? { track } : {}) };
   }).filter(Boolean);
   if (blurs.length) out.blurs = blurs;
   if (m.fadeIn > 0) out.fade_in = emRound(Math.min(m.fadeIn, total / 2));

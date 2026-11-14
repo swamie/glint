@@ -75,8 +75,17 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .search:focus-within { border-color: var(--accent); }
 .search input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; color: var(--text); }
 .search input::placeholder { color: var(--muted); }
-/* Number fields are typed into or driven by their slider: no browser spin arrows. */
+/* Number boxes: the app's own look everywhere. The browser's spin arrows are gone; two small arrows are drawn
+   at the right edge and numbox.js makes them step (press, or hold to repeat). The editor's time boxes
+   (.ov-time) share the box. A .field keeps its own size; the color picker's small fields have no arrows. */
 input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { appearance: none; margin: 0; }
+input[type="number"], input.ov-time { appearance: textfield; color: var(--text); background-color: var(--panel); border: 1px solid var(--line-2); border-radius: var(--radius); outline: 0; font-variant-numeric: tabular-nums; }
+input[type="number"]:not(.field), input.ov-time { height: 28px; padding: 0 8px; }
+input[type="number"]:focus, input.ov-time:focus { border-color: var(--accent); }
+input[type="number"]:disabled { opacity: .5; }
+input[type="number"]:not([data-native]) { padding-right: 20px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 16'%3E%3Cpath d='M1.2 6 4 3.2 6.8 6M1.2 10 4 12.8 6.8 10' fill='none' stroke='%238591a5' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 6px center; background-size: 8px 16px; }
+input[type="number"].nb-arrow { cursor: pointer; }
+.cpk input[type="number"] { padding-right: 6px; background-image: none; }
 kbd { font: 600 11px var(--sans); padding: 2px 6px; border-radius: 5px; background: var(--raised-2); color: var(--text); border: 1px solid var(--line-2); white-space: nowrap; }
 .top-actions { display: flex; align-items: center; gap: clamp(6px, .75vw, 10px); flex: none; height: 100%; }
 .top-actions > .btn { padding: 0 clamp(9px, .9vw, 12px); }
