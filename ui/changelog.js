@@ -14,6 +14,16 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.17", date: "2026-11-14",
+    new: [
+      t("Updates install by themselves. When a new version is out, Glint installs it and restarts in the tray, with clipping on or off as it was. It does this only while its window is closed and nothing is being rendered, exported or imported, and never while a game is running. Switch it off under Settings → Updates → Install updates automatically."),
+    ],
+    improved: [
+      t("After any update, clipping carries on as it was: on if it was on, paused if you had paused it."),
+    ],
+    fixed: [],
+  },
+  {
     version: "0.1.16", date: "2026-11-14",
     new: [
       t("Editor: your editing sessions are now projects, kept on the new Editor page in the sidebar. Close one at any time and go on later. Add more clips from the library list beside the editor: click, Ctrl+click, Shift+click or drag a box, then double-click, press Enter or drag them onto the timeline."),
@@ -21,7 +31,7 @@ const wnReleases = () => [
       t("Settings → Appearance → Custom colours: set the accent, background, panels, text and more with Glint's own colour picker (drag in the square, or type a hex or RGB value)."),
       t("Capture: an Apply recommended settings button picks settings from your graphics card, screen and memory, and shows each change before it is made."),
       t("Import: choose where the imported clips go: a folder for each game, one folder you name, or no folder."),
-      t("Settings has a Credits section at the bottom."),
+      t("A thank-you note at the bottom of Settings."),
     ],
     improved: [
       t("Library: the game and folder chips each fit on one line, with a “more” chip for the rest, and a trail beside the title shows the folder and game you are in."),

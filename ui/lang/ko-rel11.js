@@ -35,4 +35,9 @@ glintAddLanguage("ko", "한국어", {
   "Credits": "크레딧",
   "Eternal thanks to my friends {a} and {b}, who helped build this project alongside me. I really appreciate you both.": "이 프로젝트를 함께 만들어 준 친구 {a}와 {b}에게 영원히 고마워. 두 사람 모두 정말 고마워.",
   "And thank you to everyone who chooses Glint over the major clipping services. It keeps me motivated to keep working on it.": "그리고 큰 클립 서비스 대신 Glint를 선택해 주신 모든 분께 감사드려요. 덕분에 계속 만들어 갈 힘이 나요.",
+  "Updates install by themselves. When a new version is out, Glint installs it and restarts in the tray, with clipping on or off as it was. It does this only while its window is closed and nothing is being rendered, exported or imported, and never while a game is running. Switch it off under Settings → Updates → Install updates automatically.": "업데이트가 저절로 설치돼요. 새 버전이 나오면 Glint가 설치한 뒤 트레이에서 다시 시작하고, 클리핑은 켜져 있던 그대로 또는 꺼져 있던 그대로 유지해요. 창이 닫혀 있고 렌더링·내보내기·가져오기가 없을 때만 하며, 게임이 실행 중일 때는 절대 하지 않아요. 설정 → 업데이트 → 업데이트 자동 설치에서 끌 수 있어요.",
+  "After any update, clipping carries on as it was: on if it was on, paused if you had paused it.": "업데이트 후에도 클리핑 상태가 그대로 이어져요. 켜져 있었으면 켜진 채로, 일시 중지했으면 중지된 채로요.",
+  "Install updates automatically": "업데이트 자동 설치",
+  "Installs a new version by itself and restarts Glint in the tray, with clipping on or off as it was. Only while Glint's window is closed and nothing is being rendered, exported or imported, and never while a game is running. Otherwise the update button in the top bar waits for your click": "새 버전을 저절로 설치하고 Glint를 트레이에서 다시 시작해요. 클리핑은 켜져 있던 그대로 또는 꺼져 있던 그대로예요. Glint 창이 닫혀 있고 렌더링·내보내기·가져오기가 없을 때만 하며, 게임이 실행 중일 때는 절대 하지 않아요. 그 밖에는 상단 바의 업데이트 버튼이 클릭을 기다려요",
+  "A thank-you note at the bottom of Settings.": "설정 맨 아래에 감사 인사가 생겼어요.",
 });

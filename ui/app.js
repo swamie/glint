@@ -1124,17 +1124,14 @@ function renderSettings() {
     <div class="section"><h2>${t("Updates")}</h2>
       ${row(t("Version"), "", `<span class="path">Glint ${esc(S.version || "")}</span><button class="btn sm" data-act="whats-new" data-sfx="open">${t("What's new")}</button>`)}
       ${row(t("Check for updates daily"), t("Asks GitHub once a day whether a newer Glint has been released. Nothing about you or this PC is sent"), toggle("update_check"))}
+      ${row(t("Install updates automatically"), t("Installs a new version by itself and restarts Glint in the tray, with clipping on or off as it was. Only while Glint's window is closed and nothing is being rendered, exported or imported, and never while a game is running. Otherwise the update button in the top bar waits for your click"), toggle("update_auto"))}
     </div>
     <div class="section"><h2>${t("Program")}</h2>
       ${row(t("ffmpeg.exe path"), S.ffmpeg ? t("Using {path}", { path: `<span class="path" title="${esc(S.ffmpeg)}">${esc(S.ffmpeg)}</span>` }) : t("Not found"), `<input class="field" type="text" data-set="ffmpeg_path" value="${esc(S.settings.ffmpeg_path)}" placeholder="${esc(S.ffmpeg ? t("Auto ({name})", { name: S.ffmpeg }) : t("Auto"))}" style="width:340px">`)}
     </div>
     ${typeof depsSection === "function" ? depsSection() : ""}
-    <div class="section credits"><h2>${t("Credits")}</h2>
-      <div class="row"><div class="txt">
-        <div class="name">${t("Eternal thanks to my friends {a} and {b}, who helped build this project alongside me. I really appreciate you both.", { a: "<b>heaven</b>", b: "<b>rubust</b>" })}</div>
-        <div class="hint">${t("And thank you to everyone who chooses Glint over the major clipping services. It keeps me motivated to keep working on it.")}</div>
-      </div></div>
-    </div>`;
+    <p class="credits-text">${t("Eternal thanks to my friends {a} and {b}, who helped build this project alongside me. I really appreciate you both.", { a: "heaven", b: "rubust" })}
+      ${t("And thank you to everyone who chooses Glint over the major clipping services. It keeps me motivated to keep working on it.")}</p>`;
   // The Capture page's settings can be found from here too: its sections are
   // added to this page, hidden until a search asks for them.
   const own = $("#view").innerHTML;
@@ -1175,6 +1172,8 @@ function applySettingsFilter() {
     sec.hidden = !any || (!q && "searchOnly" in sec.dataset);
     if (!sec.hidden) shown++;
   }
+  const credits = $("#view .credits-text"); // plain text under the settings: not a setting, so a search hides it
+  if (credits) credits.hidden = !!q;
   const none = $("#set-none");
   if (none) {
     none.hidden = shown > 0;

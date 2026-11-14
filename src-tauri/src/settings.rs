@@ -236,6 +236,9 @@ pub struct Settings {
     pub discord_app_id: String,
     /// Ask GitHub once a day whether a newer Glint has been released.
     pub update_check: bool,
+    /// Install a waiting update without being asked, while no game is running, Glint's
+    /// window is closed and nothing is being rendered, exported or imported.
+    pub update_auto: bool,
     /// Interface language: "en", "ko" or "el".
     pub language: String,
     /// How many Blur renders may run at the same time; more wait in a queue.
@@ -318,6 +321,7 @@ impl Default for Settings {
             discord_rpc: false,
             discord_app_id: String::new(),
             update_check: true,
+            update_auto: true,
             language: "en".into(),
             blur_parallel: 2,
             ui_zoom: 100,

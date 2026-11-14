@@ -180,6 +180,37 @@ pub fn descendants(root: u32) -> Vec<u32> {
     out
 }
 
+/// The full path of every running program this user may look at (others are left out).
+/// One ToolHelp snapshot plus one query per process: a few milliseconds.
+pub fn process_paths() -> Vec<String> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
+    let mut pids: Vec<u32> = Vec::new();
+    let mut out: Vec<String> = Vec::new();
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return out };
+        let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut ok = Process32FirstW(snap, &mut e).is_ok();
+        while ok {
+            if e.th32ProcessID != 0 && e.th32ProcessID != std::process::id() {
+                pids.push(e.th32ProcessID);
+            }
+            ok = Process32NextW(snap, &mut e).is_ok();
+        }
+        let _ = CloseHandle(snap);
+        for pid in pids {
+            let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { continue };
+            let mut buf = [0u16; 1024];
+            let mut len = buf.len() as u32;
+            let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
+            let _ = CloseHandle(h);
+            if ok {
+                out.push(String::from_utf16_lossy(&buf[..len as usize]));
+            }
+        }
+    }
+    out
+}
+
 /// Working set of this process plus all of its descendants (ffmpeg, the WebView2
 /// processes that draw the window), the sum Task Manager shows for the app's group.
 /// The process list is read again at most every 3 seconds; the sizes on every call.

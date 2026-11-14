@@ -255,6 +255,39 @@ pub fn identify(fg: &Foreground) -> Option<String> {
     (name != DESKTOP).then_some(name)
 }
 
+/// Parts of a program's name that mark a helper beside a game, not the game itself.
+const HELPER_WORDS: &[&str] = &["helper", "crash", "launcher", "updater", "service", "overlay", "installer", "setup", "redist", "anticheat", "easyanticheat", "battleye", "report"];
+
+/// A game among these running programs (full paths), if there is one: a game from the table, a
+/// game Glint has seen being played (`seen`: its program is remembered), Minecraft's Java, or any
+/// program inside a game store's folder that is not a launcher or helper. It errs on the side of
+/// "yes": this decides whether Glint may restart itself for an update.
+pub fn game_among(paths: &[String], seen: &[Game]) -> Option<String> {
+    for p in paths {
+        let lower = p.to_lowercase();
+        let stem = Path::new(&lower).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        if stem.is_empty() || NOT_GAMES.contains(&stem.as_str()) || NOT_GAMES_MORE.contains(&stem.as_str()) {
+            continue;
+        }
+        if stem == "javaw" || stem == "java" {
+            if MC_PATHS.iter().any(|d| lower.contains(d)) {
+                return Some("Minecraft".into());
+            }
+            continue;
+        }
+        if let Some((_, name)) = KNOWN.iter().find(|(exe, _)| *exe == stem) {
+            return Some(name.to_string());
+        }
+        if let Some(g) = seen.iter().find(|g| !g.exe.is_empty() && g.name != DESKTOP && g.exe.to_lowercase() == lower) {
+            return Some(g.name.clone());
+        }
+        if GAME_DIRS.iter().any(|d| lower.contains(d)) && !lower.contains("\\launcher\\") && !HELPER_WORDS.iter().any(|w| stem.contains(w)) {
+            return Some(Path::new(p).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or(stem));
+        }
+    }
+    None
+}
+
 /// Best name for a game executable that is not in the table: the Steam folder
 /// it sits in, else its version info, else the file name.
 fn display_name(exe: &str) -> String {

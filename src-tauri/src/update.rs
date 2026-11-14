@@ -266,9 +266,25 @@ const OLD_COPY_MAX_MS: u32 = 20_000;
 /// The command that starts `exe` again after an update. A second copy started while this one is
 /// alive would only hand over to it, so the new copy is told this process's id and waits for it
 /// to end (`wait_for_old_copy`). Glint starts itself: no shell or script in between.
-fn relaunch_cmd(exe: &Path) -> std::process::Command {
+///
+/// `minimized`: the new copy starts in the tray, with no window (an automatic update while the
+/// window was closed). `recording`: whether clipping was on, so the new copy carries on the same
+/// way instead of following "Start clipping when Glint starts".
+fn relaunch_cmd(exe: &Path, minimized: bool, recording: Option<bool>) -> std::process::Command {
     let mut c = std::process::Command::new(exe);
     c.arg(AFTER_UPDATE).arg(std::process::id().to_string());
+    if minimized {
+        c.arg("--minimized");
+    }
+    match recording {
+        Some(true) => {
+            c.arg(REC_ON);
+        }
+        Some(false) => {
+            c.arg(REC_OFF);
+        }
+        None => {}
+    }
     if let Some(dir) = exe.parent() {
         c.current_dir(dir);
     }
@@ -276,11 +292,91 @@ fn relaunch_cmd(exe: &Path) -> std::process::Command {
     c
 }
 
-/// Start `exe` again; it shows its window once this process has gone.
-pub fn relaunch(exe: &Path) {
-    if let Err(e) = relaunch_cmd(exe).spawn() {
+/// Start `exe` again; it starts up once this process has gone.
+pub fn relaunch(exe: &Path, minimized: bool, recording: Option<bool>) {
+    if let Err(e) = relaunch_cmd(exe, minimized, recording).spawn() {
         util::log(&format!("update: could not start {}: {e}", exe.display()));
     }
+}
+
+/// `--rec-on` / `--rec-off`: given by the copy an update replaced, so clipping is on or off as it
+/// was before the restart.
+pub const REC_ON: &str = "--rec-on";
+pub const REC_OFF: &str = "--rec-off";
+
+/// Whether clipping must start (or stay off) whatever the setting says: Some when the copy an
+/// update replaced said so.
+pub fn rec_override(args: &[String]) -> Option<bool> {
+    if args.iter().any(|a| a == REC_ON) {
+        Some(true)
+    } else if args.iter().any(|a| a == REC_OFF) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/* ---------- automatic install ---------- */
+
+/// Work that an automatic restart would destroy and that is not a job in the jobs list: an
+/// export, a trim, an import, a component install. Hold a `Working` for as long as it runs.
+static WORKING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub struct Working;
+pub fn working() -> Working {
+    WORKING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Working
+}
+impl Drop for Working {
+    fn drop(&mut self) {
+        WORKING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+pub fn working_now() -> usize {
+    WORKING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Minutes in a row with nothing in the way before an update is installed by itself.
+pub const AUTO_CALM_MINUTES: u32 = 3;
+
+/// What an automatic install looks at.
+#[derive(Clone, Debug, Default)]
+pub struct AutoState {
+    /// The setting "Install updates automatically".
+    pub enabled: bool,
+    /// A newer release is known.
+    pub available: bool,
+    /// Glint's window is open (the user may be in the middle of something).
+    pub window_open: bool,
+    /// A game that is running, if any (played now, or found among the running programs).
+    pub game: Option<String>,
+    /// Queued or running jobs (renders, compressions, joins).
+    pub jobs: usize,
+    /// Exports, trims, imports and installs under way (`working_now`).
+    pub working: usize,
+}
+
+/// Why an update must not be installed (and Glint restarted) right now; None when it may.
+/// A game always wins: never while one is running.
+pub fn auto_blocker(s: &AutoState) -> Option<String> {
+    if !s.enabled {
+        return Some("automatic updates are off".into());
+    }
+    if !s.available {
+        return Some("no update is waiting".into());
+    }
+    if let Some(game) = &s.game {
+        return Some(format!("a game is running ({game})"));
+    }
+    if s.window_open {
+        return Some("Glint's window is open".into());
+    }
+    if s.jobs > 0 {
+        return Some(format!("{} job(s) in the renders list", s.jobs));
+    }
+    if s.working > 0 {
+        return Some("an export, import or install is running".into());
+    }
+    None
 }
 
 /// Called first thing at start-up. With `--after-update <pid>` among `args`, wait until that
@@ -305,6 +401,7 @@ pub fn self_test(report_path: &str) {
         let _ = fs::write(report_path, "FAIL GLINT_DATA_DIR is not set\n");
         return;
     }
+    let game_note;
     {
         let mut check = |name: &str, ok: bool| lines.push(format!("{} {name}", if ok { "PASS" } else { "FAIL" }));
         check("version order", newer("0.2.0", "0.1.9") && newer("v1.0.0", "0.9.9") && newer("0.1.10", "0.1.9") && !newer("0.1.0", "0.1.0") && !newer("0.1", "0.1.0") && !newer("", "0.1.0") && newer("1.2.3-beta", "1.2.2"));
@@ -312,9 +409,49 @@ pub fn self_test(report_path: &str) {
 
         // The restart after an update: Glint starts itself and the new copy waits for the old one.
         let me = std::env::current_exe().unwrap_or_default();
-        let cmd = relaunch_cmd(&me);
-        let cmd_args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let cmd = relaunch_cmd(&me, false, None);
+        let args_of = |c: &std::process::Command| c.get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<String>>();
+        let cmd_args = args_of(&cmd);
         check("the restart starts Glint.exe itself, with this process's id", cmd.get_program() == me.as_os_str() && cmd_args == [AFTER_UPDATE.to_string(), std::process::id().to_string()]);
+        let pid = std::process::id().to_string();
+        check("an automatic restart stays in the tray and keeps clipping on", args_of(&relaunch_cmd(&me, true, Some(true))) == [AFTER_UPDATE, pid.as_str(), "--minimized", REC_ON]);
+        check("a restart while clipping was paused keeps it paused", args_of(&relaunch_cmd(&me, false, Some(false))) == [AFTER_UPDATE, pid.as_str(), REC_OFF]);
+        let a = |list: &[&str]| list.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+        check("the new copy reads whether clipping was on", rec_override(&a(&[AFTER_UPDATE, "1", REC_ON])) == Some(true) && rec_override(&a(&["--minimized", REC_OFF])) == Some(false) && rec_override(&a(&["--minimized"])).is_none());
+
+        // Automatic install: only with the setting on, an update waiting, no game, the window closed and nothing running.
+        let ready = AutoState { enabled: true, available: true, ..Default::default() };
+        check("automatic install: goes ahead when nothing is in the way", auto_blocker(&ready).is_none());
+        check("automatic install: not with the setting off", auto_blocker(&AutoState { enabled: false, ..ready.clone() }).is_some());
+        check("automatic install: not without an update", auto_blocker(&AutoState { available: false, ..ready.clone() }).is_some());
+        let in_game = auto_blocker(&AutoState { game: Some("Overwatch".into()), ..ready.clone() });
+        check("automatic install: never while a game is running", in_game.as_deref().is_some_and(|w| w.contains("Overwatch")));
+        check("automatic install: a game wins over everything else", auto_blocker(&AutoState { game: Some("osu!".into()), window_open: true, jobs: 2, working: 1, ..ready.clone() }).is_some_and(|w| w.contains("osu!")));
+        check("automatic install: not while the window is open", auto_blocker(&AutoState { window_open: true, ..ready.clone() }).is_some());
+        check("automatic install: not while a render or compression is queued", auto_blocker(&AutoState { jobs: 1, ..ready.clone() }).is_some());
+        check("automatic install: not during an export or import", auto_blocker(&AutoState { working: 1, ..ready.clone() }).is_some());
+        {
+            let before = working_now();
+            let w = working();
+            let during = working_now();
+            drop(w);
+            check("work under way is counted and released", during == before + 1 && working_now() == before);
+        }
+        // Which running programs count as a game.
+        let seen = [crate::games::Game { name: "My Indie Game".into(), exe: r"D:\Stuff\indie\Game.exe".into(), ..Default::default() }];
+        let g = |paths: &[&str]| crate::games::game_among(&a(paths), &seen);
+        check("a game from the table is found among the running programs", g(&[r"C:\Windows\explorer.exe", r"C:\Riot Games\VALORANT\live\ShooterGame\Binaries\Win64\VALORANT-Win64-Shipping.exe"]).as_deref() == Some("Valorant"));
+        check("a game Glint has seen being played is found by its program", g(&[r"d:\stuff\indie\game.exe"]).as_deref() == Some("My Indie Game"));
+        check("a program inside a game store's folder counts as a game", g(&[r"E:\SteamLibrary\steamapps\common\Some New Game\SomeNewGame.exe"]).is_some());
+        check("launchers, helpers and everyday programs are not games", g(&[r"C:\Program Files (x86)\Steam\steam.exe", r"C:\Program Files\Epic Games\Launcher\Engine\Binaries\Win64\EpicWebHelper.exe", r"C:\Program Files\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe", r"C:\Users\x\AppData\Local\Discord\app-1.0\Discord.exe", r"C:\Program Files\Mozilla Firefox\firefox.exe", r"E:\SteamLibrary\steamapps\common\Some New Game\UnityCrashHandler64.exe", r"C:\Program Files\Java\bin\javaw.exe"]).is_none());
+        check("Minecraft in Java is found by its folder", g(&[r"C:\Users\x\AppData\Roaming\.minecraft\runtime\java-runtime\bin\javaw.exe"]).as_deref() == Some("Minecraft"));
+        check("no programs, no game", g(&[]).is_none());
+        // This PC, right now (read only): the list must come back, and what counts as a game is reported.
+        let started = std::time::Instant::now();
+        let procs = crate::win::process_paths();
+        let now = crate::games::game_among(&procs, &[]);
+        check(&format!("the running programs can be listed ({} programs in {} ms)", procs.len(), started.elapsed().as_millis()), procs.len() > 10 && procs.iter().any(|p| p.to_lowercase().ends_with("explorer.exe")));
+        game_note = format!("INFO a game running on this PC now: {}", now.as_deref().unwrap_or("none"));
         check("the restart runs in Glint's folder", cmd.get_current_dir() == me.parent());
         // A stand-in for the old copy: a hidden process that ends by itself after about 2 s.
         let sleeper = || util::hidden_cmd(Path::new("cmd.exe")).args(["/c", "ping -n 3 127.0.0.1 >nul"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
@@ -342,6 +479,7 @@ pub fn self_test(report_path: &str) {
         wait_for_old_copy(&["--minimized".to_string()]);
         check("no wait for a process that is gone, for itself, or without an id", started.elapsed().as_millis() < 2000);
     }
+    lines.push(game_note);
     let info = check();
     lines.push(format!("INFO check: current={} latest={:?} available={} url={} sha={} error={:?}", info.current, info.latest, info.available, !info.url.is_empty(), !info.sha_url.is_empty(), info.error));
     lines.push(format!("{} the check reached GitHub", if info.error.is_empty() { "PASS" } else { "FAIL" }));

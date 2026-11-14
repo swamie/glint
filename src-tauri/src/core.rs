@@ -251,6 +251,19 @@ impl Core {
         })
     }
 
+    /// A game that is running now, if any: the one being played (it stays "playing" until its
+    /// process ends), else one found among the running programs (started before Glint, or never
+    /// in front). An automatic update never restarts Glint while this is Some.
+    pub fn game_running(&self) -> Option<String> {
+        if let Some(p) = self.playing.lock().unwrap().as_ref() {
+            if win::process_alive(p.pid) {
+                return Some(p.name.clone());
+            }
+        }
+        let seen = self.games.lock().unwrap().list.clone();
+        games::game_among(&win::process_paths(), &seen)
+    }
+
     /// Look at the foreground window and update which game is being played.
     /// A game stays "playing" after it loses focus, until its process ends.
     pub fn track_game(&self) {

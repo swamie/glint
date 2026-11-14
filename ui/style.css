@@ -462,3 +462,6 @@ body.moving-clips .nav-item.drop, body.moving-clips .nav-item.ghost.drop { backg
 .set-search { width: 250px; max-width: 100%; }
 .set-search svg { width: 15px; height: 15px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 #view .section[hidden], #view .section > [hidden], #set-none[hidden] { display: none; }
+
+/* The thanks under the Settings page: plain text, not a setting. */
+.credits-text { margin: 22px 4px 8px; font-size: 13px; line-height: 1.6; color: var(--muted); }

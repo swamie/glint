@@ -409,6 +409,7 @@ fn pick_folder(core: St) -> Option<String> {
 
 #[tauri::command(async)]
 fn trim_clip(core: St, id: String, start: f64, end: f64, include_mic: bool) -> Result<ClipMeta, String> {
+    let _working = crate::update::working(); // no automatic update restart meanwhile
     let meta = core.lib.lock().unwrap().get_saved(&id)?;
     let new = clip::trim(&core.settings(), &meta, start, end, include_mic)?;
     core.lib.lock().unwrap().add(new.clone());
@@ -426,6 +427,7 @@ fn editor_audio_tracks(core: St, id: String) -> Result<Vec<crate::editor::AudioT
 /// is sent as "export-progress" events: { id, pct }.
 #[tauri::command(async)]
 fn export_clip(core: St, id: String, opts: crate::editor::ExportOpts) -> Result<ClipMeta, String> {
+    let _working = crate::update::working(); // no automatic update restart meanwhile
     let meta = core.lib.lock().unwrap().get(&id).ok_or("Clip not found")?;
     let emitter = core.inner().clone();
     let source = id.clone();
@@ -491,9 +493,87 @@ fn update_install(app: AppHandle, core: St) -> Result<(), String> {
     let emitter = core.inner().clone();
     crate::update::install_into(&info, &dir, &mut |pct| emitter.emit("update-progress", serde_json::json!({ "pct": pct })))?;
     util::log(&format!("update: installed {} over {}; restarting", info.latest, info.current));
-    crate::update::relaunch(&dir.join("Glint.exe"));
+    // The new copy shows its window, and clips or stays paused as this one did.
+    crate::update::relaunch(&dir.join("Glint.exe"), false, Some(core.status().recording));
     app.exit(0);
     Ok(())
+}
+
+/// The automatic install ("Install updates automatically"), called once a minute by the update
+/// thread. It installs only after `AUTO_CALM_MINUTES` minutes in a row with nothing in the way:
+/// no game running, the window closed, no job, export, import or install under way. NEVER while
+/// a game is running: if one starts during the download, the new files are in place but Glint
+/// keeps running as it is and restarts once the game is gone (`swapped`).
+struct AutoUpdate {
+    calm: u32,
+    /// The new version's files are in place; only the restart is left.
+    swapped: bool,
+    /// A version whose install failed: not tried again until Glint starts again.
+    failed: String,
+    last_why: String,
+}
+
+impl AutoUpdate {
+    fn state(app: &AppHandle, core: &Arc<Core>, available: bool) -> crate::update::AutoState {
+        let window_open = app.get_webview_window("main").is_some_and(|w| w.is_visible().unwrap_or(true) && !w.is_minimized().unwrap_or(false));
+        crate::update::AutoState {
+            enabled: core.settings().update_auto,
+            available,
+            window_open,
+            // The process list is only read when everything else allows the install.
+            game: None,
+            jobs: core.jobs.list().iter().filter(|j| matches!(j.state.as_str(), "queued" | "running")).count(),
+            working: crate::update::working_now() + usize::from(!crate::deps::installing().is_empty()),
+        }
+    }
+
+    /// Why not now (None = go ahead), the game check last.
+    fn blocker(app: &AppHandle, core: &Arc<Core>, available: bool) -> Option<String> {
+        let mut s = Self::state(app, core, available);
+        if let Some(why) = crate::update::auto_blocker(&s) {
+            return Some(why);
+        }
+        s.game = core.game_running();
+        crate::update::auto_blocker(&s)
+    }
+
+    fn tick(&mut self, app: &AppHandle, core: &Arc<Core>) {
+        let info = crate::update::load();
+        let waiting = self.swapped || (info.available && self.failed != info.latest);
+        if let Some(why) = Self::blocker(app, core, waiting) {
+            if self.calm > 0 || (waiting && core.settings().update_auto && why != self.last_why) {
+                util::log(&format!("update: {} waits: {why}", if info.latest.is_empty() { "the update" } else { info.latest.as_str() }));
+            }
+            self.last_why = why;
+            self.calm = 0;
+            return;
+        }
+        self.calm += 1;
+        if self.calm < crate::update::AUTO_CALM_MINUTES {
+            return;
+        }
+        self.calm = 0;
+        let Ok(exe) = std::env::current_exe() else { return };
+        let Some(dir) = exe.parent().map(|d| d.to_path_buf()) else { return };
+        if !self.swapped {
+            util::log(&format!("update: installing {} by itself (no game running, window closed, nothing in progress)", info.latest));
+            if let Err(e) = crate::update::install_into(&info, &dir, &mut |_| {}) {
+                util::log(&format!("update: the automatic install of {} failed: {e}", info.latest));
+                self.failed = info.latest.clone();
+                return;
+            }
+            self.swapped = true;
+            // The download took a moment: look again before restarting.
+            if let Some(why) = Self::blocker(app, core, true) {
+                util::log(&format!("update: {} is in place; Glint restarts later: {why}", info.latest));
+                self.last_why = why;
+                return;
+            }
+        }
+        util::log(&format!("update: installed {} over {}; restarting in the tray", info.latest, info.current));
+        crate::update::relaunch(&dir.join("Glint.exe"), true, Some(core.status().recording));
+        app.exit(0);
+    }
 }
 
 /// What a bug report would carry: whether reports can be sent, the version,
@@ -537,6 +617,7 @@ fn import_scan(core: St, path: String) -> Result<Vec<crate::import::Found>, Stri
 #[tauri::command(async)]
 fn import_run(core: St, items: Vec<crate::import::Found>, copy: bool, place: Option<String>, folder: Option<String>) -> Result<usize, String> {
     // place: "games" | "one" (into `folder`) | "none"; absent = as the game folders setting says.
+    let _working = crate::update::working(); // no automatic update restart meanwhile
     crate::import::run(core.inner(), items, copy, place.as_deref(), folder.as_deref())
 }
 
@@ -817,8 +898,10 @@ pub fn run(minimized: bool) {
             crate::update::cleanup();
             core.sync_autostart();
             let up_core = core.clone();
+            let up_handle = handle.clone();
             thread::spawn(move || {
                 thread::sleep(Duration::from_secs(25));
+                let mut auto = AutoUpdate { calm: 0, swapped: false, failed: String::new(), last_why: String::new() };
                 loop {
                     if up_core.settings().update_check && crate::update::due(&crate::update::load()) {
                         let info = crate::update::check();
@@ -829,7 +912,12 @@ pub fn run(minimized: bool) {
                         }
                         up_core.emit("update-changed", info);
                     }
-                    thread::sleep(Duration::from_secs(3600));
+                    // An hour until the next look at GitHub; once a minute, see whether a waiting
+                    // update may be installed by itself.
+                    for _ in 0..60 {
+                        thread::sleep(Duration::from_secs(60));
+                        auto.tick(&up_handle, &up_core);
+                    }
                 }
             });
 
@@ -845,7 +933,9 @@ pub fn run(minimized: bool) {
                 }
             });
 
-            if core.settings().record_on_start {
+            // After an update, clipping is on or off as it was before the restart.
+            let args: Vec<String> = std::env::args().collect();
+            if crate::update::rec_override(&args).unwrap_or(core.settings().record_on_start) {
                 core.start_recording();
             }
             if !minimized {
