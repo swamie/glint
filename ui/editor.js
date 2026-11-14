@@ -9,6 +9,11 @@
 
 /* ---------- editor data ---------- */
 const ED_SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
+// How far the player's back / forward buttons and the Left / Right keys jump, in seconds.
+// Right-click either button to pick one; kept on this PC (localStorage["glint.seekStep"]).
+const ED_SEEK_STEPS = [1, 2, 3, 5, 10, 15, 30];
+const edSeekStep = () => { try { const n = +localStorage.getItem("glint.seekStep"); return ED_SEEK_STEPS.includes(n) ? n : 5; } catch { return 5; } };
+const edSetSeekStep = (n) => { try { localStorage.setItem("glint.seekStep", String(n)); } catch {} };
 const ED_COLOR_KEYS = ["brightness", "contrast", "saturation", "gamma"];
 const ED_NO_COLOR = { brightness: 1, contrast: 1, saturation: 1, gamma: 1 };
 // Names are English keys, shown through t().
@@ -150,8 +155,8 @@ const edCombo = (codes, { ctrl = false, shift = false } = {}) => ({ codes: codes
 // defaults: S.settings.editor_keys may replace them per cmd (see edKeysOf).
 const ED_KEYS = [
   { group: "Playback", what: "Play or pause", cmd: "play", once: true, keys: [edCombo("Space")] },
-  { group: "Playback", what: "Back 5 seconds", cmd: "back5", keys: [edCombo("ArrowLeft")] },
-  { group: "Playback", what: "Forward 5 seconds", cmd: "fwd5", keys: [edCombo("ArrowRight")] },
+  { group: "Playback", what: "Seek back", cmd: "back5", keys: [edCombo("ArrowLeft")] },       // by the seek step (5 s unless changed)
+  { group: "Playback", what: "Seek forward", cmd: "fwd5", keys: [edCombo("ArrowRight")] },
   { group: "Playback", what: "Back 1 second", cmd: "back1", keys: [edCombo("ArrowLeft", { shift: true })] },
   { group: "Playback", what: "Forward 1 second", cmd: "fwd1", keys: [edCombo("ArrowRight", { shift: true })] },
   { group: "Playback", what: "Back one frame", cmd: "framePrev", keys: [edCombo("Comma")] },
@@ -325,12 +330,12 @@ window.addEventListener("keydown", (e) => {
 }, true);
 
 /** Opens a speed list next to `anchor`, positioned inside `host` (which must be positioned). */
-function edOpenPop({ anchor, host, value, above = false, onPick }) {
+function edOpenPop({ anchor, host, value, above = false, onPick, items = ED_SPEEDS, label = (s) => `${s}x` }) {
   edPopClose?.();
   const pop = document.createElement("div");
   pop.className = "e-pop";
   pop.setAttribute("role", "menu");
-  pop.innerHTML = ED_SPEEDS.map((s) => `<button type="button" role="menuitemradio" aria-checked="${s === value}" tabindex="-1" data-e-pick="${s}" class="${s === value ? "on" : ""}">${s}x</button>`).join("");
+  pop.innerHTML = items.map((s) => `<button type="button" role="menuitemradio" aria-checked="${s === value}" tabindex="-1" data-e-pick="${s}" class="${s === value ? "on" : ""}">${esc(label(s))}</button>`).join("");
   host.appendChild(pop);
   const hr = host.getBoundingClientRect(), ar = anchor.getBoundingClientRect();
   pop.style.maxHeight = `${Math.max(120, hr.height - 8)}px`;
@@ -553,6 +558,19 @@ function edTracksText(n) {
   return t("{n} audio tracks", { n });
 }
 
+/**
+ * The clips before and after clip `id` in the list the library shows now (its page, folder, game,
+ * search and sort): { prev, next } ids, null at either end. A clip that is not in that list (opened
+ * from somewhere else) uses the whole library, newest first.
+ */
+function viewerNeighbours(id) {
+  let list = [];
+  try { list = typeof visibleClips === "function" && typeof isLib === "function" && isLib() ? visibleClips().list : []; } catch { list = []; }
+  if (!list.some((c) => c.id === id)) list = [...S.clips].sort((a, b) => b.created - a.created);
+  const i = list.findIndex((c) => c.id === id);
+  return { prev: i > 0 ? list[i - 1].id : null, next: i >= 0 && i < list.length - 1 ? list[i + 1].id : null };
+}
+
 function openClip(id) {
   // clipById (join.js) also finds an "Edit together" draft, which is never in S.clips.
   const c = typeof clipById === "function" ? clipById(id) : S.clips.find((x) => x.id === id);
@@ -586,10 +604,10 @@ function openClip(id) {
               <button data-p="play" tabindex="-1" aria-label="${L("Play or pause")}">${PICON.pause}</button>
               <button data-p="back" tabindex="-1" aria-label="${L("Back 5 seconds")}">${PICON.back}</button>
               <button data-p="fwd" tabindex="-1" aria-label="${L("Forward 5 seconds")}">${PICON.fwd}</button>
-              <span class="p-clock">0:00 / ${fmtClock(c.duration)}</span>
-              <span class="sp"></span>
               <button data-p="mute" tabindex="-1" aria-label="${L("Mute")}">${PICON.vol}</button>
               <input class="p-vol" type="range" min="0" max="1" step="0.02" aria-label="${L("Volume")}">
+              <span class="p-clock">0:00 / ${fmtClock(c.duration)}</span>
+              <span class="sp"></span>
               <button data-p="speed" class="p-text" tabindex="-1" aria-label="${L("Playback speed")}" aria-haspopup="menu" aria-expanded="false">1x</button>
               <button data-p="loop" tabindex="-1" aria-label="${L("Loop")}">${PICON.loop}</button>
               <button data-p="full" tabindex="-1" aria-label="${L("Fullscreen")}">${PICON.full}</button>
@@ -632,6 +650,13 @@ function openClip(id) {
       <div class="e-drop" hidden><div class="e-drop-box">${L("Drop audio files to add them as new tracks")}</div></div>
     </div>`;
   const root = $(".viewer", m);
+  // Arrows at the left and right of the viewer: the clip before and after this one in the list
+  // the library shows. Not for a project, and hidden while editing (editor.css).
+  if (!draft) {
+    const near = viewerNeighbours(id);
+    const arrow = (act, to, label, key, path) => (to ? `<button class="v-nav v-nav-${act}" data-v="${act}" data-sfx="tap" title="${esc(`${t(label)} (${key})`)}" aria-label="${L(label)}"><svg viewBox="0 0 24 24"><path d="${path}"/></svg></button>` : "");
+    m.insertAdjacentHTML("beforeend", arrow("prev", near.prev, "Previous clip", "Page Up", "m15 5-7 7 7 7") + arrow("next", near.next, "Next clip", "Page Down", "m9 5 7 7-7 7"));
+  }
   S.player = mountPlayer(root, c);
   S.player.ed = mountEditor(root, c, S.player);
   // A project: the library's clips beside the editor, to add more (projects.js).
@@ -1272,8 +1297,8 @@ function mountPlayer(root, c) {
     const now = tlNow();
     switch (cmd) {
       case "play": return P.toggle();
-      case "back5": return P.seek(now - 5, true);
-      case "fwd5": return P.seek(now + 5);
+      case "back5": return P.seek(now - edSeekStep(), true);
+      case "fwd5": return P.seek(now + edSeekStep());
       case "back1": return P.seek(now - 1, true);
       case "fwd1": return P.seek(now + 1);
       case "framePrev": v.pause(); return P.seek(now - frame, true);
@@ -1408,8 +1433,8 @@ function mountPlayer(root, c) {
     }
     switch (e.code) {
       case "Space": case "KeyK": P.toggle(); break;
-      case "ArrowLeft": P.seek(v.currentTime - (e.shiftKey ? 1 : 5)); break;
-      case "ArrowRight": P.seek(v.currentTime + (e.shiftKey ? 1 : 5)); break;
+      case "ArrowLeft": P.seek(v.currentTime - (e.shiftKey ? 1 : edSeekStep())); break;
+      case "ArrowRight": P.seek(v.currentTime + (e.shiftKey ? 1 : edSeekStep())); break;
       case "Comma": v.pause(); P.seek(v.currentTime - frame); break;
       case "Period": v.pause(); P.seek(v.currentTime + frame); break;
       case "ArrowUp": setVol(P.vol + 0.05); break;
@@ -1419,6 +1444,8 @@ function mountPlayer(root, c) {
       case "KeyL": P.setLoop(!P.loop); break;
       case "Home": P.seek(0); break;
       case "End": P.seek(dur()); break;
+      case "PageUp": viewerAction("prev"); break;   // the clip before this one in the library's list
+      case "PageDown": viewerAction("next"); break; // the clip after it
       default: return false;
     }
     return true;
@@ -1455,8 +1482,8 @@ function mountPlayer(root, c) {
     if (!b) return;
     switch (b.dataset.p) {
       case "play": P.toggle(); break;
-      case "back": P.seek(tlNow() - 5, true); break;
-      case "fwd": P.seek(tlNow() + 5); break;
+      case "back": P.seek(tlNow() - edSeekStep(), true); break;
+      case "fwd": P.seek(tlNow() + edSeekStep()); break;
       case "mute": setMuted(!P.muted); break;
       case "speed":
         if (b.classList.contains("open")) { edPopClose?.(); break; }
@@ -1466,6 +1493,27 @@ function mountPlayer(root, c) {
       case "loop": P.setLoop(!P.loop); break;
       case "full": P.fullscreen(); break;
     }
+  });
+
+  // The back / forward buttons say how far they jump; a right-click on either picks the step
+  // (1 to 30 s). The Left and Right keys use the same step.
+  const paintStep = () => {
+    const n = edSeekStep(), hint = t("Right-click to change the step");
+    for (const [p, text] of [["back", t("Back {n} seconds", { n })], ["fwd", t("Forward {n} seconds", { n })]]) {
+      const b = el(`[data-p="${p}"]`);
+      b.setAttribute("aria-label", text);
+      b.title = `${text}\n${hint}`;
+    }
+  };
+  paintStep();
+  box.addEventListener("contextmenu", (e) => {
+    const b = e.target.closest('[data-p="back"], [data-p="fwd"]');
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (b.classList.contains("open")) { edPopClose?.(); return; }
+    edOpenPop({ anchor: b, host: box, value: edSeekStep(), above: true, items: ED_SEEK_STEPS, label: (s) => t("{n}s", { n: s }), onPick: (s) => { edSetSeekStep(s); paintStep(); } });
+    wake();
   });
 
   // Seek bar: drag to scrub. While editing it shows the finished clip.
@@ -1872,6 +1920,12 @@ async function viewerAction(act) {
   if (c.draft && ["copy", "reveal", "fav", "delete", "blur", "blur-page"].includes(act)) return;
   try {
     if (act === "close" || act === "blur-done") closeClip();
+    else if (act === "prev" || act === "next") {
+      // The clip before or after this one. Not while editing: an edit is not thrown away by an arrow.
+      if (c.draft || (S.player && S.player.editing) || !$("#confirm").hidden) return;
+      const to = viewerNeighbours(id)[act];
+      if (to) openClip(to);
+    }
     else if (act === "blur-page") { S.page = "blur"; closeClip(); } // closeClip() draws the page
     else if (act === "copy") { await invoke("copy_clip", { id }); flash(t("Clip copied. Paste it anywhere.")); }
     else if (act === "reveal") await invoke("reveal_clip", { id });

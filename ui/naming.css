@@ -1,0 +1,72 @@
+/* 0.1.18: clip name blocks (Settings → Storage → Clip names) and the bulk rename dialog (naming.js). */
+
+/* The settings row: name and Reset on one line, the builder under them across the whole row. */
+.row.nm-setrow { flex-wrap: wrap; row-gap: 10px; }
+.row.nm-setrow > .txt { flex: 1 1 0; }
+.row.nm-setrow > .nm-builder { flex: 1 1 100%; }
+
+.nm-builder { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.nm-used { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 42px; padding: 6px; background: var(--bg); border: 1px solid var(--line-2); border-radius: var(--radius); }
+.nm-used.empty { border-style: dashed; }
+.nm-empty { color: var(--dim); font-size: 12px; padding: 0 6px; }
+
+/* A block in use: like a chip, with a grip, and × to remove it. */
+.nm-block { display: inline-flex; align-items: center; gap: 6px; height: 28px; max-width: 100%; padding: 0 4px 0 6px; background: var(--raised-2); border: 1px solid var(--line-2); border-radius: 999px; font-weight: 600; font-size: 12.5px; cursor: grab; white-space: nowrap; outline: 0; }
+.nm-block:hover { border-color: color-mix(in srgb, var(--line-2) 72%, var(--text)); }
+.nm-block:focus-visible, .nm-block:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.nm-grip { width: 6px; height: 12px; flex: none; opacity: .5; background-image: radial-gradient(currentColor 1px, transparent 1.2px); background-size: 3px 4px; }
+.nm-lbl { padding-right: 2px; }
+.nm-block.k-text { background: color-mix(in srgb, var(--accent) 12%, var(--raised-2)); }
+.nm-text { min-width: 0; max-width: 220px; height: 22px; padding: 0 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 5px; outline: 0; font-weight: 500; cursor: text; }
+.nm-text:focus { border-color: var(--accent); }
+.nm-text::placeholder { color: var(--dim); }
+.nm-x { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; background: none; border: 0; border-radius: 50%; color: var(--muted); cursor: pointer; }
+.nm-x:hover { background: var(--line-2); color: var(--text); }
+.nm-x svg { width: 12px; height: 12px; }
+
+/* Blocks that can be added. */
+.nm-free { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.nm-free-lbl { color: var(--muted); font-size: 12px; margin-right: 2px; }
+.nm-add { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px 0 8px; background: none; border: 1px dashed var(--line-2); border-radius: 999px; color: var(--muted); font-weight: 600; font-size: 12px; cursor: grab; white-space: nowrap; }
+.nm-add b { font-weight: 700; color: var(--accent); }
+.nm-add:hover, .nm-add:focus-visible { color: var(--text); border-color: var(--accent); outline: 0; }
+
+.nm-preview { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 12.5px; color: var(--muted); }
+.nm-pv-lbl { font-size: 12px; }
+.nm-pv-name { font-family: var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.nm-pv-name b { color: var(--text); font-weight: 600; }
+.nm-pv-hint { flex-basis: 100%; color: var(--dim); font-size: 12px; }
+
+/* Dragging. */
+body.nm-dragging, body.nm-dragging * { cursor: grabbing !important; }
+.nm-block.nm-lifted, .nm-add.nm-lifted { opacity: .35; }
+.nm-ghost { position: fixed; left: 0; top: 0; z-index: 60; pointer-events: none; margin: 0; box-shadow: 0 10px 26px rgba(0, 0, 0, .5); border-color: var(--accent) !important; }
+.nm-ghost.nm-out { opacity: .55; border-color: var(--danger) !important; text-decoration: line-through; }
+.nm-mark { position: fixed; z-index: 61; width: 2px; border-radius: 2px; background: var(--accent); pointer-events: none; }
+.nm-mark[hidden] { display: none; }
+
+/* The bulk rename dialog: Glint's prompt, wider. */
+.confirm-box.nm-dlg { width: min(640px, 94vw); display: flex; flex-direction: column; gap: 12px; max-height: 88vh; }
+.nm-dlg h3 { margin: 0; font-size: 15px; }
+.nm-num { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; font-size: 12.5px; color: var(--muted); }
+.nm-num[hidden] { display: none; }
+.nm-num label { display: inline-flex; align-items: center; gap: 8px; }
+.nm-num .field { height: 30px; color: var(--text); }
+.nm-num input.field { width: 90px; }
+.nm-list { min-height: 60px; max-height: 300px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); }
+.nm-li { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.nm-li:last-child { border-bottom: 0; }
+.nm-old, .nm-new { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nm-old { color: var(--muted); }
+.nm-new { font-weight: 600; }
+.nm-arr { color: var(--dim); }
+.nm-li.skip .nm-new { color: var(--muted); font-weight: 500; }
+.nm-li.clash .nm-new { color: var(--warn); }
+.nm-tag { font-size: 11px; color: var(--muted); padding: 1px 7px; border: 1px solid var(--line-2); border-radius: 999px; white-space: nowrap; }
+.nm-tag.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line-2)); }
+.nm-tag.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--line-2)); }
+.nm-sum { font-size: 12.5px; color: var(--muted); min-height: 18px; }
+
+/* After a bulk rename: the message with Undo, where the flash message shows. */
+.flash.nm-undo { display: flex; align-items: center; gap: 12px; max-width: min(640px, 92vw); }
+.flash.nm-undo span { min-width: 0; overflow-wrap: anywhere; }

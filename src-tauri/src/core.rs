@@ -817,6 +817,12 @@ impl Core {
             c.folder = to.clone();
         }
         lib.save();
+        drop(lib);
+        // The folder keeps its colour under its new name.
+        let mut s = self.settings.lock().unwrap();
+        if s.carry_folder_color(from, Some(&to)) {
+            s.save();
+        }
         Ok(to)
     }
 
@@ -829,7 +835,13 @@ impl Core {
         }
         let ids: Vec<String> = self.lib.lock().unwrap().clips.iter().filter(|c| c.folder.eq_ignore_ascii_case(name)).map(|c| c.id.clone()).collect();
         self.move_clips(&ids, "")?;
-        std::fs::remove_dir(&dir).map_err(|_| "The clips were moved out, but the folder still holds other files, so it was kept".to_string())
+        std::fs::remove_dir(&dir).map_err(|_| "The clips were moved out, but the folder still holds other files, so it was kept".to_string())?;
+        // A folder that is gone loses its colour (a kept one keeps it).
+        let mut s = self.settings.lock().unwrap();
+        if s.carry_folder_color(name, None) {
+            s.save();
+        }
+        Ok(())
     }
 
     /// Move every clip that sits loose in the clips folder into the folder named
@@ -889,6 +901,10 @@ impl Core {
         // A queued or running render (or "Edit together" of it) holds the old path; renaming under it would break it.
         if self.jobs.busy(id) {
             return Err("This clip is being rendered. Rename it when the render has finished".into());
+        }
+        // A clip imported in place belongs to another program: only its title changes, never its file (0.1.18).
+        if meta.kind == "import" && !in_clips_dir(Path::new(&self.settings().clips_dir), &meta.path) {
+            return self.lib.lock().unwrap().update(id, |c| c.title = title).ok_or_else(|| "Clip not found".into());
         }
         let src = PathBuf::from(&meta.path);
         if !src.is_file() {

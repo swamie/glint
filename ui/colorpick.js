@@ -86,19 +86,34 @@ const CP = {
   hex: "",
   drag: null,      // "sv" | "hue" while the pointer holds one
   raf: 0,
+  custom: null,    // cpOpen's `custom` while it picks something other than a theme variable
 };
 
-function cpOpen(v, anchor) {
+/**
+ * Open the picker for theme variable `v` beside `anchor` (an element, or anything with getBoundingClientRect).
+ * `custom` (0.1.18, folder colours) picks a colour that is not a theme variable:
+ * { name, hex, reset, resetTitle, onPreview(hex), onKeep(hex), onCancel() }; the window's colours are left alone.
+ */
+function cpOpen(v, anchor, custom) {
   if (CP.el) cpClose(true);
-  const start = cpColors();
-  const without = { ...start };
-  delete without[v];
-  CP.v = v;
-  CP.start = start;
-  CP.reset = glintEffectiveColor(cpTheme(), without, v);
-  CP.hex = glintEffectiveColor(cpTheme(), start, v) || CP.reset || "#808080";
+  CP.custom = custom || null;
+  if (custom) {
+    CP.v = "";
+    CP.start = {};
+    CP.reset = glintNormHex(custom.reset || "") || "#808080";
+    CP.hex = glintNormHex(custom.hex || "") || CP.reset;
+  } else {
+    const start = cpColors();
+    const without = { ...start };
+    delete without[v];
+    CP.v = v;
+    CP.start = start;
+    CP.reset = glintEffectiveColor(cpTheme(), without, v);
+    CP.hex = glintEffectiveColor(cpTheme(), start, v) || CP.reset || "#808080";
+  }
   CP.hsv = glintRgbToHsv(glintHexToRgb(CP.hex));
-  const [name] = cpLabel(v);
+  const name = custom ? String(custom.name || "") : cpLabel(v)[0];
+  const resetTitle = custom ? String(custom.resetTitle || "") : t("The theme's own colour: {hex}", { hex: CP.reset });
   const el = document.createElement("div");
   el.className = "cpk";
   el.setAttribute("role", "dialog");
@@ -110,7 +125,7 @@ function cpOpen(v, anchor) {
       <label class="cpk-f cpk-f-hex"><span>${t("Hex")}</span><input class="field cpk-hex" type="text" maxlength="7" spellcheck="false" autocomplete="off"></label>
       ${["r", "g", "b"].map((c) => `<label class="cpk-f"><span>${c.toUpperCase()}</span><input class="field cpk-n" data-cpk-c="${c}" type="number" min="0" max="255" step="1"></label>`).join("")}
     </div>
-    <div class="cpk-foot"><button type="button" class="btn sm" data-cpk="reset" title="${esc(t("The theme's own colour: {hex}", { hex: CP.reset }))}"><i class="cpk-dot" style="background:${esc(CP.reset)}"></i>${t("Reset")}</button><span class="cpk-tip">${t("Enter keeps it, Esc cancels")}</span></div>`;
+    <div class="cpk-foot"><button type="button" class="btn sm" data-cpk="reset" title="${esc(resetTitle)}"><i class="cpk-dot" style="background:${esc(CP.reset)}"></i>${t("Reset")}</button><span class="cpk-tip">${t("Enter keeps it, Esc cancels")}</span></div>`;
   document.body.appendChild(el);
   CP.el = el;
   cpPlace(el, anchor);
@@ -157,6 +172,7 @@ function cpPreview() {
   CP.raf = requestAnimationFrame(() => {
     CP.raf = 0;
     if (!CP.el) return;
+    if (CP.custom) { if (typeof CP.custom.onPreview === "function") CP.custom.onPreview(CP.hex); return; }
     window.glintPreviewColors({ ...CP.start, [CP.v]: CP.hex });
   });
 }
@@ -242,6 +258,13 @@ function cpClose(keep) {
   CP.drag = null;
   if (CP.raf) { cancelAnimationFrame(CP.raf); CP.raf = 0; }
   el.remove();
+  const custom = CP.custom;
+  CP.custom = null;
+  if (custom) {
+    const fn = keep ? custom.onKeep : custom.onCancel;
+    if (typeof fn === "function") fn(CP.hex);
+    return;
+  }
   if (keep) {
     const map = { ...CP.start };
     if (CP.hex === glintNormHex(CP.reset)) delete map[CP.v];

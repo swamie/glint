@@ -22,6 +22,7 @@ mod join;
 mod keys;
 mod lang;
 mod library;
+mod naming;
 mod polish;
 mod procaudio;
 mod projects;
@@ -160,6 +161,11 @@ fn main() {
     }
     if let Some(i) = args.iter().position(|a| a == "--folders-test") {
         bench::folders_test(args.get(i + 1).map(String::as_str).unwrap_or("folders.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--naming-test") {
+        // glint.exe --naming-test <report.txt>: clip name blocks, then bulk rename and undo on made-up clips.
+        naming::self_test(args.get(i + 1).map(String::as_str).unwrap_or("naming.txt"));
         return;
     }
     std::thread::spawn(deps::clean_up_at_start); // old ffmpeg copies an earlier "Reinstall" moved aside

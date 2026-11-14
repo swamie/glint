@@ -49,13 +49,18 @@ function cssColorHex(value) {
 }
 
 let iconSent = "";
-/** Read the accent the theme and custom CSS give, then tell the backend (and remember it for the next start). */
-function syncThemeIcon() {
-  if (!S.settings || !window.__TAURI__) return;
+/** The icon setting and the accent colours the theme, custom colours and custom CSS give now. */
+function themeIconArgs() {
   const on = !!S.settings.icon_theme;
   const css = getComputedStyle(document.documentElement);
   const accent = on ? cssColorHex(css.getPropertyValue("--accent")) : "";
   const accent2 = on ? cssColorHex(css.getPropertyValue("--accent-2")) : "";
+  return { on, accent, accent2 };
+}
+/** Read the accent the theme and custom CSS give, then tell the backend (and remember it for the next start). */
+function syncThemeIcon() {
+  if (!S.settings || !window.__TAURI__) return;
+  const { on, accent, accent2 } = themeIconArgs();
   const key = `${on}|${accent}|${accent2}`;
   if (key === iconSent) return;
   iconSent = key;
@@ -78,4 +83,26 @@ function syncThemeIcon() {
 }
 document.addEventListener("change", (e) => {
   if (e.target?.dataset?.set === "icon_theme") setTimeout(syncThemeIcon, 0);
+});
+
+/* "Reload icon" (0.1.18), beside the toggle: put the icon on the window, the taskbar and a rebuilt
+   tray icon right now, even when nothing changed (syncThemeIcon sends only changes). */
+function iconReloadButton() {
+  return `<button type="button" class="btn sm" data-icon-reload title="${esc(t("Puts the icon on Glint's window, its taskbar button and the tray again, right now. A pinned taskbar shortcut and the Start menu keep the program's own icon: Windows does not let a program change those."))}">${ICON.refresh}${esc(t("Reload icon"))}</button>`;
+}
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest?.("[data-icon-reload]");
+  if (!btn || !S.settings) return;
+  const args = themeIconArgs();
+  iconSent = `${args.on}|${args.accent}|${args.accent2}`;
+  btn.disabled = true;
+  try {
+    const done = await invoke("reload_app_icon", args);
+    if (args.on && args.accent && (S.settings.icon_accent !== args.accent || (S.settings.icon_accent_2 || "") !== args.accent2)) {
+      S.settings.icon_accent = args.accent;
+      S.settings.icon_accent_2 = args.accent2;
+      saveSettings();
+    }
+    flash(done && done.tray === false ? t("Icon reloaded on the window. The tray icon could not be changed.") : t("Icon reloaded"));
+  } catch (err) { fail(err); } finally { btn.disabled = false; }
 });

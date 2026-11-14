@@ -133,36 +133,146 @@ pub fn themed_rgba(s: &Settings) -> Option<(Vec<u8>, u32, u32)> {
     Some((recolor(&rgba, accent, parse_color(&s.icon_accent_2)), w, h))
 }
 
-/// Put the icon these settings ask for on the main window (taskbar, Alt+Tab) and the tray.
-pub fn apply_icon(app: &tauri::AppHandle, s: &Settings) {
+/// `rgba` (w x h) scaled to n x n by averaging (alpha-weighted, so the transparent
+/// corners do not darken the edges). Windows' own shrinking of a 256 px icon to a
+/// 32 px taskbar button keeps every 8th pixel; this keeps the stars' shape.
+pub fn scale_rgba(rgba: &[u8], w: u32, h: u32, n: u32) -> Vec<u8> {
+    let (w, h, n) = (w as usize, h as usize, n.max(1) as usize);
+    let mut out = vec![0u8; n * n * 4];
+    if rgba.len() < w * h * 4 || w == 0 || h == 0 {
+        return out;
+    }
+    for oy in 0..n {
+        let (y0, y1) = (oy * h / n, ((oy + 1) * h / n).max(oy * h / n + 1).min(h));
+        for ox in 0..n {
+            let (x0, x1) = (ox * w / n, ((ox + 1) * w / n).max(ox * w / n + 1).min(w));
+            let (mut acc, mut alpha, mut count) = ([0f64; 3], 0f64, 0f64);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let p = &rgba[(y * w + x) * 4..(y * w + x) * 4 + 4];
+                    let a = p[3] as f64;
+                    for i in 0..3 {
+                        acc[i] += p[i] as f64 * a;
+                    }
+                    alpha += a;
+                    count += 1.0;
+                }
+            }
+            let o = &mut out[(oy * n + ox) * 4..(oy * n + ox) * 4 + 4];
+            if alpha > 0.0 {
+                for i in 0..3 {
+                    o[i] = (acc[i] / alpha).round().clamp(0.0, 255.0) as u8;
+                }
+            }
+            o[3] = (alpha / count).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
+/// The window's own icons, set straight through Win32. Tauri's `set_icon` only
+/// changes the SMALL icon (title bar, Alt+Tab): the taskbar button draws the BIG
+/// one, which stayed the exe's icon. That is why the taskbar showed the old colour.
+/// Both are made at the sizes Windows asks for. Returns whether both were set.
+#[cfg(windows)]
+fn set_window_icons(hwnd: isize, rgba: &[u8], w: u32, h: u32) -> bool {
+    use std::sync::Mutex;
+    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{CreateIcon, DestroyIcon, GetSystemMetrics, SendMessageW, HICON, ICON_BIG, ICON_SMALL, SM_CXICON, SM_CXSMICON, WM_SETICON};
+    // The icons Glint made last time (big, small): destroyed once replaced.
+    static OURS: Mutex<[isize; 2]> = Mutex::new([0, 0]);
+    let mut ours = OURS.lock().unwrap();
+    let mut ok = true;
+    for (slot, kind, metric, fallback) in [(0usize, ICON_BIG, SM_CXICON, 32), (1, ICON_SMALL, SM_CXSMICON, 16)] {
+        let n = unsafe { GetSystemMetrics(metric) };
+        let n = if (8..=256).contains(&n) { n as u32 } else { fallback };
+        let px = scale_rgba(rgba, w, h, n);
+        let bgra: Vec<u8> = px.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
+        let mask = vec![0u8; n.div_ceil(16) as usize * 2 * n as usize]; // all 0: the alpha channel decides
+        let Ok(icon) = (unsafe { CreateIcon(HINSTANCE::default(), n as i32, n as i32, 1, 32, mask.as_ptr(), bgra.as_ptr()) }) else {
+            ok = false;
+            continue;
+        };
+        unsafe { SendMessageW(HWND(hwnd as *mut _), WM_SETICON, WPARAM(kind as usize), LPARAM(icon.0 as isize)) };
+        if ours[slot] != 0 {
+            let _ = unsafe { DestroyIcon(HICON(ours[slot] as *mut _)) };
+        }
+        ours[slot] = icon.0 as isize;
+    }
+    ok
+}
+
+/// What `apply_icon` reached: the main window (open) and the tray icon.
+#[derive(serde::Serialize, Default, Debug, Clone, Copy)]
+pub struct IconApplied {
+    pub window: bool,
+    pub tray: bool,
+}
+
+/// Put the icon these settings ask for on the main window (taskbar button, title bar,
+/// Alt+Tab) and the tray. `rebuild_tray`: also take the tray icon away and add it again
+/// (the "Reload icon" button), for a tray that kept showing an old picture.
+pub fn apply_icon_with(app: &tauri::AppHandle, s: &Settings, rebuild_tray: bool) -> IconApplied {
     use tauri::image::Image;
     use tauri::Manager;
     let img: Option<Image<'static>> = match themed_rgba(s) {
         Some((rgba, w, h)) => Some(Image::new_owned(rgba, w, h)),
         None => app.default_window_icon().map(|i| Image::new_owned(i.rgba().to_vec(), i.width(), i.height())),
     };
-    let Some(img) = img else { return };
+    let mut done = IconApplied::default();
+    let Some(img) = img else { return done };
     if let Some(w) = app.get_webview_window("main") {
-        let _ = w.set_icon(img.clone());
+        #[cfg(windows)]
+        {
+            done.window = w.hwnd().is_ok_and(|h| set_window_icons(h.0 as isize, img.rgba(), img.width(), img.height()));
+        }
+        if !done.window {
+            done.window = w.set_icon(img.clone()).is_ok();
+        }
     }
     if let Some(tray) = app.tray_by_id("main") {
-        let _ = tray.set_icon(Some(img));
+        done.tray = tray.set_icon(Some(img)).is_ok();
+        if rebuild_tray && done.tray {
+            // Removed and added again with the icon just set (tray-icon keeps it).
+            let _ = tray.set_visible(false);
+            let _ = tray.set_visible(true);
+        }
     }
+    done
+}
+
+/// `apply_icon_with` without rebuilding the tray: at start, and whenever the theme changes.
+pub fn apply_icon(app: &tauri::AppHandle, s: &Settings) {
+    apply_icon_with(app, s, false);
+}
+
+/// Store the icon setting and colours the UI computed (an accent that is not a colour keeps the stored one).
+fn store_icon(core: &Core, on: bool, accent: String, accent2: String) -> Settings {
+    let mut s = core.settings.lock().unwrap();
+    s.icon_theme = on;
+    if parse_color(&accent).is_some() {
+        s.icon_accent = accent;
+        s.icon_accent_2 = if parse_color(&accent2).is_some() { accent2 } else { String::new() };
+    }
+    s.clone()
 }
 
 /// The UI computed the theme's colours (or the setting was turned off): store and show them.
 #[tauri::command]
 pub fn set_app_icon(app: tauri::AppHandle, core: tauri::State<'_, Arc<Core>>, on: bool, accent: String, accent2: String) {
-    let s = {
-        let mut s = core.settings.lock().unwrap();
-        s.icon_theme = on;
-        if parse_color(&accent).is_some() {
-            s.icon_accent = accent;
-            s.icon_accent_2 = if parse_color(&accent2).is_some() { accent2 } else { String::new() };
-        }
-        s.clone()
-    };
+    let s = store_icon(&core, on, accent, accent2);
     apply_icon(&app, &s);
+}
+
+/// Settings → "Reload icon": the same, right now, on the window, the taskbar and a rebuilt tray icon.
+/// A pinned taskbar shortcut or a Start menu tile shows the exe's own icon: Windows does not let a
+/// program change that, so it stays as it is.
+#[tauri::command]
+pub fn reload_app_icon(app: tauri::AppHandle, core: tauri::State<'_, Arc<Core>>, on: bool, accent: String, accent2: String) -> IconApplied {
+    let s = store_icon(&core, on, accent, accent2);
+    let done = apply_icon_with(&app, &s, true);
+    util::log(&format!("icon reloaded: themed {}, window {}, tray {}", s.icon_theme && parse_color(&s.icon_accent).is_some(), done.window, done.tray));
+    done
 }
 
 /* ---------- thumbnails ---------- */
@@ -320,6 +430,23 @@ fn near(a: [u8; 3], b: [u8; 3], tol: i32) -> bool {
     (0..3).all(|i| (a[i] as i32 - b[i] as i32).abs() <= tol)
 }
 
+/// `set_window_icons` on a window that is created hidden (no WS_VISIBLE, never shown,
+/// no taskbar button), read back with WM_GETICON, then destroyed.
+#[cfg(windows)]
+fn icon_on_hidden_window(rgba: &[u8], w: u32, h: u32) -> bool {
+    use windows::core::w;
+    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, IsWindowVisible, SendMessageW, HMENU, ICON_BIG, ICON_SMALL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_GETICON};
+    let Ok(hwnd) = (unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!(""), WINDOW_STYLE(0), 0, 0, 10, 10, HWND::default(), HMENU::default(), HINSTANCE::default(), None) }) else { return false };
+    let set = set_window_icons(hwnd.0 as isize, rgba, w, h);
+    let got = |kind: u32| unsafe { SendMessageW(hwnd, WM_GETICON, WPARAM(kind as usize), LPARAM(0)) }.0 != 0;
+    let ok = set && got(ICON_BIG) && got(ICON_SMALL) && !unsafe { IsWindowVisible(hwnd) }.as_bool();
+    // Twice: the icons of the first call are destroyed and replaced without a failure.
+    let again = set_window_icons(hwnd.0 as isize, rgba, w, h) && got(ICON_BIG);
+    let _ = unsafe { DestroyWindow(hwnd) };
+    ok && again
+}
+
 pub fn self_test(report_path: &str) {
     let mut r = Report { lines: Vec::new(), pass: 0, fail: 0 };
 
@@ -382,6 +509,24 @@ pub fn self_test(report_path: &str) {
             r.check("setting on: themed icon", themed_rgba(&s).is_some_and(|(px, ww, hh)| ww == w && hh == h && dominant_star(&px).is_some_and(|d| near(d, [255, 92, 108], 3))), "");
             s.icon_accent = "not a colour".into();
             r.check("setting on with no colour yet: stock icon", themed_rgba(&s).is_none(), "");
+            // 0.1.18: the window's big and small icons are made at the sizes Windows asks for.
+            let crimson = recolor(&stock, [255, 92, 108], None);
+            for n in [16u32, 20, 24, 32, 48, 64] {
+                let px = scale_rgba(&crimson, w, h, n);
+                let corner_clear = stock[3] == 255 || px[3] < 128; // a transparent corner stays (mostly) transparent
+                let (tx, ty) = (n * 40 / 256, n * 215 / 256); // bare tile, below-left of the big star's tips
+                let mid = &px[((ty * n + tx) * 4) as usize..((ty * n + tx) * 4 + 3) as usize];
+                let dom = dominant_star(&px);
+                r.check(&format!("icon at {n} px: right size, corner kept, tile and star colours"), px.len() == (n * n * 4) as usize && corner_clear && near([mid[0], mid[1], mid[2]], [10, 15, 24], 6) && dom.is_some_and(|d| near(d, [255, 92, 108], 24)), &format!("corner alpha {}, tile {mid:?}, dominant {dom:?}", px[3]));
+            }
+            let flat = vec![200u8, 100, 50, 255].repeat(4);
+            r.check("scaling a flat colour keeps it; transparent stays transparent", scale_rgba(&flat, 2, 2, 1) == vec![200, 100, 50, 255] && scale_rgba(&[9, 9, 9, 0, 9, 9, 9, 0], 2, 1, 1)[3] == 0 && scale_rgba(&[], 0, 0, 4).len() == 64, "");
+            let half = [255u8, 0, 0, 255, 0, 0, 255, 0]; // a red pixel beside a fully transparent blue one
+            let s1 = scale_rgba(&half, 2, 1, 1);
+            r.check("a transparent pixel adds no colour to its neighbour", s1[0] == 255 && s1[2] == 0 && (127..=128).contains(&s1[3]), &format!("{s1:?}"));
+            // The Windows part on a hidden window of our own: never shown, destroyed again.
+            #[cfg(windows)]
+            r.check("Win32 icons set on a hidden window (big and small)", icon_on_hidden_window(&crimson, w, h), "");
         }
     }
     r.check("colour parsing", parse_color("#abc") == Some([170, 187, 204]) && parse_color(" #62B6F7 ") == Some([98, 182, 247]) && parse_color("rgb(1, 2, 3)") == Some([1, 2, 3]) && parse_color("blue").is_none(), "");

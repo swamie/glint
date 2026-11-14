@@ -14,6 +14,27 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.18", date: "2026-11-14",
+    new: [
+      t("The installer is now a normal Windows setup window: choose the folder and what to install, watch the progress, and cancel at any time. Removing Glint has its own small window too."),
+      t("Clip names: choose how new clips are named. Under Settings → Storage, drag Game, Date, Time, Length and your own words into any order, with a live preview."),
+      t("Rename several clips at once: select them, right-click → Rename, and build the names from blocks, with numbering, a preview of every name and Undo."),
+      t("Folder colours: right-click a folder → Colour."),
+      t("Viewer: arrows at the left and right go to the previous and the next clip (also Page Up and Page Down)."),
+    ],
+    improved: [
+      t("Player: the volume sits on the left, as in other players. Right-click the back or forward button to set how far it jumps, from 1 to 30 seconds; Left and Right use the same step."),
+      t("The clip button names its key: “F8 to clip the last 30s”."),
+      t("A new Glint starts with one keybind: F8 saves the last 30 seconds. Keybinds you already have stay."),
+      t("Import shows a logo in front of each program."),
+      t("Settings → Match the taskbar icon to the theme has a Reload icon button, and the taskbar icon now really changes."),
+    ],
+    fixed: [
+      t("The header of the right-click menu of a selection is lined up with its items."),
+      t("Renaming a clip that was imported without copying no longer renames the other program's file."),
+    ],
+  },
+  {
     version: "0.1.17", date: "2026-11-14",
     new: [
       t("Updates install by themselves. When a new version is out, Glint installs it and restarts in the tray, with clipping on or off as it was. It does this only while its window is closed and nothing is being rendered, exported or imported, and never while a game is running. Switch it off under Settings → Updates → Install updates automatically."),

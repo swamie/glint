@@ -13,7 +13,7 @@ Download **GlintSetup.exe** from the [latest release](https://github.com/swamie/
 | Blur v2.23 | github.com/f0e/blur | optional, asks first (about 125 MB) |
 | WebView2 runtime | microsoft.com | only if missing; Windows 11 has it built in |
 
-It adds a Start menu shortcut and an entry under Installed apps (uninstalling keeps your clips). The installer is not code-signed, so Windows SmartScreen may show "Windows protected your PC": choose More info → Run anyway.
+The installer is a normal setup window: pick the folder, tick what to install (ffmpeg, Blur, Start menu and desktop shortcuts), watch the progress, and cancel at any time; a cancelled or failed install leaves nothing half-done. It adds an entry under Installed apps; removing Glint from there opens a small window that asks whether to remove your settings too (your clips always stay). For scripts, `GlintSetup.exe --yes` installs with the defaults and no window, and writes what it did to `%TEMP%\GlintSetup.log` (other flags: `--dir <folder>`, `--no-ffmpeg`, `--force-ffmpeg`, `--no-blur`, `--no-shortcuts`, `--no-launch`, `--uninstall`). The installer is not code-signed, so Windows SmartScreen may show "Windows protected your PC": choose More info → Run anyway.
 
 **Updates.** The update button in the top bar (an arrow down into a tray) checks GitHub for a newer release about once a day; click it to check right away. When there is one, the button fills with the theme colour and reads "Update x.y.z"; a click downloads it, swaps it in and restarts Glint. The download's SHA-256 is checked against the release's checksum file. Switch the daily check off under Settings → Updates.
 
@@ -96,6 +96,10 @@ The UI in `ui/` is embedded at compile time. The outputs are `target\release\gli
 
 Clips open in Glint's own player. `Space` play/pause, `←` `→` 5 s (`Shift` 1 s), `,` `.` one frame, `↑` `↓` volume, `M` mute, `L` loop, `F` fullscreen. In trim mode drag the two handles on the timeline or press `I` / `O` to set the start and end at the playhead. Trims are lossless and snap to keyframes (one per second).
 
+**Previous and next clip.** In the viewer, the arrows at the left and right edge (or Page Up and Page Down) open the clip before and after this one, in the order the library shows them. They are hidden at the first and last clip and while editing.
+
+**Volume and jumps.** The volume is on the left of the controls, after play, back and forward. Right-click the back or forward button to choose how far it jumps (1, 2, 3, 5, 10, 15 or 30 seconds); the Left and Right keys use the same step, and Shift + Left/Right stays at 1 second.
+
 ## Clip sound, overlay, microphone
 
 **Clip sound.** Sixteen built-in sounds, all synthesised in code (no audio files), with a volume slider, or your own `.wav` file. Set under Settings. The sound plays the moment the key is pressed.
@@ -149,6 +153,12 @@ The bar that appears moves the selection to a folder, favorites it, copies the f
 Folders are real subfolders of the clips folder, one level deep. Moving a clip moves its file; a name clash in the target gets " (2)" added, never an overwrite. Deleting a folder moves its clips back to the clips folder first and deletes no clip. Rescan also picks up videos you put into those subfolders yourself.
 
 **Chip rows.** The game chips and the folder chips each stay on one line; "{n} more" opens the rest and "Show fewer" closes them again. While a folder or game filter is on, a trail beside the title (`All clips › folder › game`) steps back.
+
+**Clip names.** Settings → Storage → Clip names decides how new clips are named. Drag the blocks Game, Date, Time, Length and Text (your own words) into any order, drag one out or press × to remove it, click a block under Add to put it in; the preview shows a name as it will be. With only Game and Time a clip is called `Overwatch 13-35-44`. Two clips that would get the same file name get ` (2)` as before.
+
+**Rename several clips.** Select clips, right-click → Rename {n} clips…. The same blocks build the names, plus Number (in the order you selected the clips; choose the start and the digits) and Current name. The list shows every old and new name before anything changes; afterwards Undo puts the old names back. A clip a job is using is left out, and a clip imported without copying only changes its name inside Glint: the other program's file is never renamed.
+
+**Folder colours.** Right-click a folder in the sidebar or on its chip → Colour: eight colours, Custom… (Glint's colour picker) or No colour. The folder's icon and a marker take the colour; renaming the folder keeps it.
 
 ## Editor
 

@@ -212,6 +212,27 @@ fn rename_clip(core: St, id: String, title: String) -> Result<ClipMeta, String> 
     core.rename_clip(&id, &title)
 }
 
+/// Bulk rename (naming.rs): the preview, old → new for each clip in `ids`, in that order.
+#[tauri::command(async)]
+fn rename_plan(core: St, ids: Vec<String>, opts: crate::naming::BulkOpts) -> Vec<crate::naming::PlanRow> {
+    crate::naming::plan(&core, &ids, &opts)
+}
+
+/// Bulk rename: rename the clips as `rename_plan` showed; the result's `token` undoes it.
+#[tauri::command(async)]
+fn rename_clips(core: St, ids: Vec<String>, opts: crate::naming::BulkOpts) -> Result<crate::naming::BulkDone, String> {
+    let done = crate::naming::apply(&core, &ids, &opts)?;
+    core.emit("clips-changed", String::new());
+    Ok(done)
+}
+
+#[tauri::command(async)]
+fn undo_rename_clips(core: St, token: String) -> Result<crate::naming::BulkDone, String> {
+    let done = crate::naming::undo(&core, &token)?;
+    core.emit("clips-changed", String::new());
+    Ok(done)
+}
+
 #[tauri::command(async)]
 fn set_favorite(core: St, id: String, favorite: bool) -> Result<ClipMeta, String> {
     core.lib.lock().unwrap().get_saved(&id)?;
@@ -805,6 +826,9 @@ pub fn run(minimized: bool) {
             list_clips,
             rescan_library,
             rename_clip,
+            rename_plan,
+            rename_clips,
+            undo_rename_clips,
             set_favorite,
             delete_clip,
             copy_clip,
@@ -871,6 +895,7 @@ pub fn run(minimized: bool) {
             cancel_dep_install,
             win_action,
             crate::polish::set_app_icon,
+            crate::polish::reload_app_icon,
             crate::capture2::auto_info,
             crate::capture2::recommended_settings
         ])

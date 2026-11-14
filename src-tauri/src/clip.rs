@@ -30,7 +30,7 @@ fn write_pcm(path: &Path, pcm: &Pcm) -> std::io::Result<()> {
 /// The first free `<base>.<ext>` / `<base> (n).<ext>` in `dir`, created empty
 /// on the spot: two clips saved in the same second (one per monitor) must not
 /// both pick the same name before either file exists. ffmpeg overwrites it (`-y`).
-fn reserve_path(dir: &Path, base: &str, ext: &str) -> PathBuf {
+pub(crate) fn reserve_path(dir: &Path, base: &str, ext: &str) -> PathBuf {
     loop {
         let p = util::unique_path(dir, base, ext);
         match fs::OpenOptions::new().write(true).create_new(true).open(&p) {
@@ -62,8 +62,8 @@ pub fn write(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, Str
     let folder = if s.game_folders { util::game_folder(game) } else { String::new() };
     let dir = if folder.is_empty() { PathBuf::from(&s.clips_dir) } else { PathBuf::from(&s.clips_dir).join(&folder) };
     fs::create_dir_all(&dir).map_err(|e| format!("Cannot create clips folder: {e}"))?;
-    let stamp = chrono::Local::now().format("%Y-%m-%d %H-%M-%S").to_string();
-    let title = format!("{} {}", util::sanitize_filename(game), stamp);
+    // Settings → Storage → Clip names (0.1.18); the default blocks give "<game> <date> <time>" as before.
+    let title = crate::naming::clip_title(&s.clip_name, game, cap.snap.duration);
     let id = util::new_id();
     let tmp = util::tmp_dir();
 

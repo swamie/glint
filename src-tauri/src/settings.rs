@@ -168,6 +168,9 @@ pub struct Settings {
     pub clips_dir: String,
     /// Save each clip into a subfolder named after its game: `<clips_dir>\Overwatch\…`.
     pub game_folders: bool,
+    /// How a new clip is named: blocks in order (`naming::NameBlock`: game, date, time, length,
+    /// text). Default Game Date Time = "Overwatch 2026-11-14 13-35-44"; empty = the default.
+    pub clip_name: Vec<crate::naming::NameBlock>,
     pub monitor: u32,
     /// Output height in pixels. 0 = native.
     pub height: u32,
@@ -231,6 +234,9 @@ pub struct Settings {
     /// variable name ("accent", "bg", ...) -> "#rrggbb". Applied on top of the
     /// theme and under `custom_css` (ui/themes.js), in the window and the overlay.
     pub theme_colors: std::collections::BTreeMap<String, String>,
+    /// Library folder colours: folder name -> "#rrggbb" (right-click a folder → Colour).
+    /// Renaming a folder carries its colour along, deleting it drops it (`carry_folder_color`).
+    pub folder_colors: std::collections::BTreeMap<String, String>,
     /// Discord Rich Presence, and the Application ID it identifies as.
     pub discord_rpc: bool,
     pub discord_app_id: String,
@@ -282,6 +288,7 @@ impl Default for Settings {
         Settings {
             clips_dir: videos.to_string_lossy().into_owned(),
             game_folders: false,
+            clip_name: crate::naming::default_blocks(),
             monitor: 0,
             height: 0,
             aspect: "auto".into(),
@@ -318,6 +325,7 @@ impl Default for Settings {
             icon_accent: String::new(),
             icon_accent_2: String::new(),
             theme_colors: Default::default(),
+            folder_colors: Default::default(),
             discord_rpc: false,
             discord_app_id: String::new(),
             update_check: true,
@@ -338,10 +346,9 @@ impl Default for Settings {
             close_to_tray: true,
             ffmpeg_path: String::new(),
             blur_path: String::new(),
-            keybinds: vec![
-                Keybind { id: "kb-30s".into(), key: "F8".into(), seconds: 30, ..Default::default() },
-                Keybind { id: "kb-10m".into(), key: "F8".into(), shift: true, seconds: 600, ..Default::default() },
-            ],
+            // A fresh Glint has one keybind (0.1.18: the Shift+F8 ten-minute one is gone).
+            // Saved settings keep whatever keybinds they list.
+            keybinds: vec![Keybind { id: "kb-30s".into(), key: "F8".into(), seconds: 30, ..Default::default() }],
             blur: BlurSettings::default(),
         }
     }
@@ -374,6 +381,17 @@ impl Settings {
             .max()
             .unwrap_or(30)
             .clamp(5, 3600)
+    }
+
+    /// A library folder was renamed (`to` = Some) or deleted (None): its colour follows it or
+    /// goes. Names match ignoring letter case, as folder names do on Windows. True if it had one.
+    pub fn carry_folder_color(&mut self, from: &str, to: Option<&str>) -> bool {
+        let Some(key) = self.folder_colors.keys().find(|k| k.to_lowercase() == from.to_lowercase()).cloned() else { return false };
+        let color = self.folder_colors.remove(&key).unwrap_or_default();
+        if let Some(to) = to {
+            self.folder_colors.insert(to.to_string(), color);
+        }
+        true
     }
 
     pub fn default_clip_secs(&self) -> u32 {

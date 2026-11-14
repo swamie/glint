@@ -85,8 +85,11 @@ kbd { font: 600 11px var(--sans); padding: 2px 6px; border-radius: 5px; backgrou
 .winctl button:hover { background: var(--raised-2); color: var(--text); }
 .winctl button[data-win="close"]:hover { background: #c4313a; color: #fff; }
 .winctl svg { width: 14px; height: 14px; }
-/* Narrowest windows: the clip button keeps only its icon (its text is its tooltip). */
-@media (max-width: 860px) {
+/* Narrowest windows: the clip button keeps only its icon (its text, "F8 to clip the last 30s", is its tooltip).
+   Before that, a long key combination is cut short rather than pushing the window buttons away. */
+#btn-clip { max-width: 280px; }
+#btn-clip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 920px) {
   #btn-clip span { display: none; }
 }
 
@@ -386,8 +389,10 @@ body.has-sel #view { padding-bottom: 92px; }
 
 /* ---------- right-click menu ---------- */
 .menu.ctx { overflow: visible; max-height: none; min-width: 200px; }
-.menu-head { padding: 5px 9px 6px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-.menu button.on { color: var(--accent); }
+/* A menu's header ("5 selected", a part's name): one item's height (30 px, its text centred, so the
+   space above and below is even) with the separator under it, drawn like .menu hr (4 px in from each
+   side, 5 px to the next item). 4 + 5 px puts the text on the items' left edge, where their icons start. */
+.menu-head { display: block; flex: none; height: 31px; margin: 0 4px 5px; padding: 0 5px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 30px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }.menu button.on { color: var(--accent); }
 .menu button.on::after { content: "✓"; margin-left: auto; padding-left: 12px; }
 .menu button.danger, .menu button.danger svg { color: var(--danger); }
 .menu button.danger:hover { background: #3a1519; }
@@ -407,6 +412,21 @@ body.has-sel #view { padding-bottom: 92px; }
 .nav-item.ghost { color: var(--muted); }
 .nav-item span.label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 body.moving-clips .nav-item[data-folder] { box-shadow: inset 0 0 0 1px var(--accent); }
+/* A folder's own colour (right-click a folder → Colour; app.js fcDeco sets --fc): its icon, and a thin
+   bar inside its left edge, in the sidebar, on its chip and in Move to menus. Inside the element, so
+   no size changes (the chip rows' one-line fit, library2.js, measures the same widths). */
+.fcol > svg:first-child { color: var(--fc); }
+.nav-item.fcol, .chip.fcol, .menu button.fcol { box-shadow: inset 3px 0 0 var(--fc); }
+.nav-item.active.fcol > svg:first-child, .chip.active.fcol > svg:first-child { color: inherit; }
+/* The Colour submenu: a row of swatches, then Custom… and No colour. */
+.menu .fc-row { display: grid; grid-template-columns: repeat(4, 26px); gap: 7px; padding: 6px 9px 8px; }
+.menu .fc-row .fc-sw { width: 26px; height: 26px; padding: 0; border-radius: 50%; border: 2px solid transparent; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25); }
+.menu .fc-row .fc-sw:hover { border-color: var(--muted); background-clip: padding-box; }
+.menu .fc-row .fc-sw.on { border-color: var(--text); }
+.menu .fc-row .fc-sw.on::after { content: none; }
+.menu .fc-row .fc-sw:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.menu .fc-item .fc-dot { fill: var(--fc, none); }
+.menu button.fc-item[style] svg { color: var(--fc); }
 body.moving-clips .nav-item.drop, body.moving-clips .nav-item.ghost.drop { background: color-mix(in srgb, var(--accent) 22%, transparent); box-shadow: inset 0 0 0 1px var(--accent); color: var(--text); }
 
 /* ---------- settings: volume slider, overlay corner picker ---------- */

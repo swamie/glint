@@ -280,6 +280,23 @@ pub fn folders_test(report_path: &str) {
     check("delete folder moves clips out and removes it", core.delete_folder("Second").is_ok() && !root.join("Second").exists() && root.join("b.mp4").is_file() && get("b").folder.is_empty());
     check("move back to the main folder is a no-op there", core.move_clips(&ids(&["a"]), "") == Ok(0));
 
+    // Folder colours (0.1.18): a renamed folder keeps its colour, a deleted one drops it.
+    {
+        let colors = || core.settings().folder_colors;
+        let _ = core.create_folder("Painted");
+        core.settings.lock().unwrap().folder_colors = [("painted", "#e5484d"), ("Elsewhere", "#30a46c")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        check("rename folder keeps its colour (letter case ignored)", core.rename_folder("Painted", "Brushed").is_ok() && colors().get("Brushed").map(String::as_str) == Some("#e5484d") && !colors().contains_key("painted"));
+        check("the colour is saved under the new name", crate::settings::Settings::load().folder_colors.get("Brushed").map(String::as_str) == Some("#e5484d"));
+        check("delete folder drops its colour, the others stay", core.delete_folder("Brushed").is_ok() && !colors().contains_key("Brushed") && colors().get("Elsewhere").map(String::as_str) == Some("#30a46c"));
+        let _ = core.create_folder("Kept");
+        let _ = std::fs::write(root.join("Kept").join("stray.txt"), b"x");
+        core.settings.lock().unwrap().folder_colors.insert("Kept".into(), "#3e63dd".into());
+        check("a folder kept by delete keeps its colour", core.delete_folder("Kept").is_err() && colors().contains_key("Kept"));
+        check("a second rename leaves one entry, under the newest name", core.rename_folder("Kept", "Kept2").is_ok() && colors().len() == 2 && colors().contains_key("Kept2") && !colors().contains_key("Kept"));
+        let _ = std::fs::remove_dir_all(root.join("Kept2"));
+        core.settings.lock().unwrap().folder_colors.clear();
+    }
+
     // Rescan picks up a file found in a subfolder and records its folder.
     core.rescan();
     let found = core.lib.lock().unwrap().clips.iter().find(|c| c.path.ends_with("Top\\c.mp4")).cloned();
@@ -425,7 +442,11 @@ pub fn diag(report_path: &str, icon_exe: Option<&str>, discord_id: Option<&str>)
         use crate::settings::{Keybind, Settings};
         let bind = |monitor: i32, seconds: u32| Keybind { monitor, seconds, ..Default::default() };
         let with = |monitor: u32, binds: Vec<Keybind>| Settings { monitor, keybinds: binds, ..Default::default() };
-        check("monitors: default settings buffer the capture monitor only", capture_plan(&Settings::default(), 2) == vec![(0, 600)]);
+        check("monitors: default settings buffer the capture monitor only", capture_plan(&Settings::default(), 2) == vec![(0, 30)]);
+        let d = Settings::default();
+        check("default keybinds: one, F8 saves the last 30 s", d.keybinds.len() == 1 && d.keybinds[0].key == "F8" && !d.keybinds[0].shift && d.keybinds[0].seconds == 30 && d.keybinds[0].action == "clip");
+        let kept: Settings = serde_json::from_str(r#"{"keybinds":[{"id":"kb-30s","key":"F8","seconds":30},{"id":"kb-10m","key":"F8","shift":true,"seconds":600}]}"#).unwrap_or_default();
+        check("saved keybinds are kept (an old Shift+F8 ten-minute bind stays)", kept.keybinds.len() == 2 && kept.keybinds[1].shift && kept.keybinds[1].seconds == 600);
         check("monitors: a bind for monitor 2 adds its buffer", capture_plan(&with(0, vec![bind(-1, 30), bind(1, 60)]), 2) == vec![(0, 30), (1, 60)]);
         check("monitors: each monitor is buffered once", capture_plan(&with(0, vec![bind(1, 30), bind(1, 45), bind(-1, 20), bind(0, 10)]), 2) == vec![(0, 20), (1, 45)]);
         check("monitors: a bind for a monitor that is gone counts as the capture monitor", capture_plan(&with(1, vec![bind(5, 90), bind(-1, 30)]), 2) == vec![(1, 90)]);

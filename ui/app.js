@@ -150,8 +150,15 @@ const getPath = (obj, path) => path.split(".").reduce((o, p) => o?.[p], obj);
 
 /* ---------- chrome: nav, top bar, status bar ---------- */
 const clipBinds = () => S.settings.keybinds.filter((k) => k.action === "clip");
-const quickSecs = () => Math.min(...clipBinds().map((k) => k.seconds), 3600) || 30;
+// No clip keybind: 30 s, as the backend's default_clip_secs (Math.min alone gave 3600, "Clip last 60 min").
+const quickSecs = () => { const secs = clipBinds().map((k) => k.seconds); return secs.length ? Math.min(...secs, 3600) || 30 : 30; };
 const maxSecs = () => Math.max(30, ...clipBinds().map((k) => k.seconds));
+/** The clip keybind the top bar's button stands for: the shortest one (quickSecs) with a key, one for the capture monitor first; or null. */
+const quickBind = () => {
+  const secs = quickSecs();
+  const same = clipBinds().filter((k) => k.key && Math.min(k.seconds, 3600) === secs);
+  return same.find((k) => kbMon(k) === -1 || kbMon(k) === capMon().index) || same[0] || null;
+};
 // Monitors. A clip keybind's `monitor` is an index into S.monitors; -1, a missing field or a
 // monitor that is not connected all mean the capture monitor (Capture → Monitor).
 const monLabel = (m) => `${m.name}  ${m.width}×${m.height} @ ${m.hz} Hz${m.primary ? "  " + t("(primary)") : ""}`; // the Capture page's dropdown
@@ -194,7 +201,7 @@ function renderChrome() {
   const inFolder = S.page === "library" && !!S.folder;
   const folderList = S.folders.map((f) => {
     const n = S.clips.filter((c) => c.folder === f).length;
-    return `<button class="nav-item small${inFolder && S.folder === f ? " active" : ""}" data-folder="${esc(f)}" data-hover title="${esc(f)}">${ICON.folder}<span class="label">${esc(f)}</span>${n ? `<span class="badge">${n}</span>` : ""}</button>`;
+    return fcDeco(`<button class="nav-item small${inFolder && S.folder === f ? " active" : ""}" data-folder="${esc(f)}" data-hover title="${esc(f)}">${ICON.folder}<span class="label">${esc(f)}</span>${n ? `<span class="badge">${n}</span>` : ""}</button>`, f);
   }).join("") + `<button class="nav-item small ghost" data-act="folder-new" data-hover>${ICON.plus}<span class="label">${t("New folder")}</span></button>`;
   $("#nav-general").innerHTML =
     navItem("library", t("Library"), "library", S.clips.length).replace(' active"', S.folder ? '"' : ' active"') +
@@ -216,7 +223,11 @@ function renderChrome() {
   const on = !!st.recording;
   $("#btn-toggle").textContent = on ? t("Pause") : t("Resume");
   // In the narrowest windows the clip button shows only its icon, so its text is also its tooltip.
-  $("#btn-clip span").textContent = $("#btn-clip").title = t("Clip last {length}", { length: fmtLen(quickSecs()) });
+  // With a key set it names the keys of the clip keybind the button stands for: "F8 to clip the last 30s".
+  const clipKb = quickBind();
+  $("#btn-clip span").textContent = $("#btn-clip").title = clipKb
+    ? t("{keys} to clip the last {length}", { keys: comboText(clipKb), length: fmtLen(quickSecs()) })
+    : t("Clip last {length}", { length: fmtLen(quickSecs()) });
   $("#btn-clip").disabled = !on;
 
   // Glint keeps a replay buffer and saves clips from it; it never records to disk on its own, so the word is "Clipping".
@@ -334,7 +345,7 @@ function folderChipList(folders, clips, cur, showEmptyMain, mainLabel) {
 function folderRowHtml() {
   if (S.folder && !S.folders.includes(S.folder)) S.folder = null;
   const cur = S.folder === null ? "*" : S.folder;
-  const chip = (id, label, n, icon = "", fit = "") => `<button class="chip${cur === id ? " active" : ""}" data-folder="${esc(id)}"${fit} data-hover title="${esc(label)}">${icon}<span>${esc(label)}</span><i>${n}</i></button>`;
+  const chip = (id, label, n, icon = "", fit = "") => fcDeco(`<button class="chip${cur === id ? " active" : ""}" data-folder="${esc(id)}"${fit} data-hover title="${esc(label)}">${icon}<span>${esc(label)}</span><i>${n}</i></button>`, id === "*" ? "" : id);
   const list = folderChipList(S.folders, S.clips, S.folder, !!S.settings.show_empty_main, t("Main folder"));
   return `<div class="folders chiprow${S.folderChipsOpen ? " open" : ""}">
     ${chip("*", t("All clips"), S.clips.length)}
@@ -489,7 +500,7 @@ function closeMenu() { const m = $("#menu"); m.hidden = true; m.innerHTML = ""; 
 function folderItems(ids) {
   const clips = S.clips.filter((c) => ids.includes(c.id));
   const here = (f) => (clips.length && clips.every((c) => (c.folder || "") === f) ? "on" : "");
-  return mItem("move", t("Main folder"), ICON.library, "", here("")) + S.folders.map((f) => mItem("move", f, ICON.folder, f, here(f))).join("") + "<hr>" + mItem("move-new", t("New folder…"), ICON.plus);
+  return mItem("move", t("Main folder"), ICON.library, "", here("")) + S.folders.map((f) => fcDeco(mItem("move", f, ICON.folder, f, here(f)), f)).join("") + "<hr>" + mItem("move-new", t("New folder…"), ICON.plus);
 }
 function openMoveMenu(anchor) {
   const m = $("#menu");
@@ -533,7 +544,7 @@ function openClipMenu(id, x, y) {
   $("#menu").innerHTML = (many ? `<div class="menu-head">${t("{n} selected", { n: menuIds.length })}</div>` : mItem("open", t("Open"), PICON.play))
     + mItem("copy", many ? t("Copy files") : t("Copy file"), ICON.copy)
     + mItem("fav", allFav ? t("Remove favorite") : t("Favorite"), ICON.star, "", "", "none")
-    + (many ? "" : mItem("rename", t("Rename…"), ICON.edit))
+    + (many ? (typeof nmBulkOpen === "function" ? mItem("rename-many", t("Rename {n} clips…", { n: menuIds.length }), ICON.edit) : "") : mItem("rename", t("Rename…"), ICON.edit))
     + "<hr>" + mSub(t("Game"), ICON.game, gameItems) + mSub(t("Folder"), ICON.folder, folderItems(menuIds)) + "<hr>"
     + (many ? (typeof joinMenuItem === "function" ? joinMenuItem(clips) : "") + mSub(t("Compress for Discord"), ICON.compress, compressItems) + "<hr>"
       : mItem("edit", t("Open in editor"), ICON.cut) + (S.blur ? mItem("blur", t("Render with Blur"), ICON.blur, "", "", "launch") : "") + mSub(t("Compress for Discord"), ICON.compress, compressItems) + mItem("reveal", t("Open file location"), ICON.folder) + "<hr>")
@@ -551,8 +562,78 @@ function openGameMenu(name, x, y) {
 /** Right-click on a folder chip or a folder in the sidebar. */
 function openFolderMenu(name, x, y) {
   menuIds = [];
-  $("#menu").innerHTML = mItem("folder-open", t("Open"), ICON.folder, name) + mItem("folder-rename", t("Rename…"), ICON.edit, name) + "<hr>" + mItem("folder-del", t("Delete folder"), ICON.trash, name, "danger");
+  // Where the folder was clicked: "Custom…" opens the colour picker beside it (the menu is gone by then).
+  const at = { left: x, right: x, top: y, bottom: y };
+  fcMenu = { name, rect: { getBoundingClientRect: () => at } };
+  const cur = folderColor(name);
+  const swatches = FOLDER_COLORS.map(([hex, label]) => `<button type="button" class="fc-sw${cur === hex ? " on" : ""}" data-m="folder-color" data-arg="${hex}" style="background:${hex}" title="${esc(t(label))}" aria-label="${esc(t(label))}"></button>`).join("");
+  const custom = cur && !FOLDER_COLORS.some(([hex]) => hex === cur);
+  const colorItems = `<div class="fc-row">${swatches}</div>`
+    + mItem("folder-color-custom", t("Custom…"), FC_DOT, "", custom ? "on fc-item" : "fc-item").replace('class="', custom ? `style="--fc:${cur}" class="` : 'class="')
+    + mItem("folder-color", t("No colour"), ICON.x, "", cur ? "" : "on");
+  // The Colour item's dot shows the folder's colour.
+  const colorSub = `<div class="has-sub"><button tabindex="-1" class="fc-item"${cur ? ` style="--fc:${cur}"` : ""}>${FC_DOT}<span>${esc(t("Colour"))}</span><b class="chev">›</b></button><div class="submenu">${colorItems}</div></div>`;
+  $("#menu").innerHTML = mItem("folder-open", t("Open"), ICON.folder, name) + mItem("folder-rename", t("Rename…"), ICON.edit, name) + colorSub
+    + "<hr>" + mItem("folder-del", t("Delete folder"), ICON.trash, name, "danger");
   placeMenu(x, y);
+}
+
+/* ---------- folder colours (settings.folder_colors: folder name -> "#rrggbb") ---------- */
+// Preset swatches of the folder menu's Colour submenu.
+const FOLDER_COLORS = [["#e5484d", "Red"], ["#f76b15", "Orange"], ["#ffc53d", "Yellow"], ["#30a46c", "Green"], ["#12a594", "Teal"], ["#3e63dd", "Blue"], ["#8e4ec6", "Purple"], ["#d6409f", "Pink"]];
+const FC_DOT = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5" class="fc-dot"/></svg>';
+let fcMenu = null; // { name, rect } of the folder whose menu is open
+/** A folder's own colour ("#rrggbb"), or "". Names match ignoring letter case, as folder names do on Windows. */
+function folderColor(name) {
+  const map = (S.settings && S.settings.folder_colors) || {};
+  const key = Object.keys(map).find((k) => k.toLowerCase() === String(name).toLowerCase());
+  return (key && typeof glintNormHex === "function" && glintNormHex(map[key])) || "";
+}
+/** `html` (one element) with the folder's colour: class "fcol" and --fc on its first tag. style.css colours the icon and a thin marker. */
+function fcDeco(html, name) {
+  const hex = name ? folderColor(name) : "";
+  if (!hex) return html;
+  return html.replace(/^<(\w+)([^>]*?) class="/, (_, tag, attrs) => `<${tag}${attrs} style="--fc:${hex}" class="fcol `);
+}
+/** Show `hex` ("" = none) on every element of the folder now on screen (the picker's live preview). */
+function fcPaint(name, hex) {
+  for (const el of $$("[data-folder], .menu button[data-m='move']")) {
+    const f = el.dataset.folder ?? el.dataset.arg;
+    if (!f || f.toLowerCase() !== String(name).toLowerCase()) continue;
+    el.classList.toggle("fcol", !!hex);
+    if (hex) el.style.setProperty("--fc", hex); else el.style.removeProperty("--fc");
+  }
+}
+/** Set (or with "" clear) a folder's colour and save it. */
+function setFolderColor(name, hex) {
+  const map = fcCarry({ ...(S.settings.folder_colors || {}) }, name, null);
+  const n = hex && glintNormHex(hex);
+  if (n) map[name] = n;
+  S.settings.folder_colors = map;
+  saveSettings(true);
+}
+/** The colour map with `from`'s colour moved to `to` (null: dropped). The backend does the same in rename_folder / delete_folder. */
+function fcCarry(map, from, to) {
+  const key = Object.keys(map).find((k) => k.toLowerCase() === String(from).toLowerCase());
+  if (key === undefined) return map;
+  const hex = map[key];
+  delete map[key];
+  if (to) map[to] = hex;
+  return map;
+}
+/** "Custom…": Glint's own picker (colorpick.js), previewing on the folder; Enter or a click outside keeps it. */
+function folderColorCustom(name, anchor) {
+  const cur = folderColor(name);
+  if (typeof cpOpen !== "function") return;
+  cpOpen("", anchor, {
+    name,
+    hex: cur || FOLDER_COLORS[5][0],
+    reset: cur || FOLDER_COLORS[5][0],
+    resetTitle: cur ? t("Back to the colour it had") : t("Back to the first colour"),
+    onPreview: (hex) => fcPaint(name, hex),
+    onKeep: (hex) => { if (hex !== cur) setFolderColor(name, hex); else fcPaint(name, cur); },
+    onCancel: () => fcPaint(name, cur),
+  });
 }
 
 async function renameFolder(name) {
@@ -560,12 +641,18 @@ async function renameFolder(name) {
   if (!to || to === name) return;
   const made = (await invoke("rename_folder", { from: name, to })) || to;
   if (S.folder === name) S.folder = made;
+  // The backend moved the colour too (and saved it): the same here, so a later save keeps it.
+  if (S.settings.folder_colors) fcCarry(S.settings.folder_colors, name, made);
   await refreshClips();
 }
 async function deleteFolder(name) {
   const n = S.clips.filter((c) => c.folder === name).length;
   if (!(await ask(n ? t('Delete the folder "{name}"? Its {clips} move back to the main folder. No clip is deleted.', { name, clips: plural(n) }) : t('Delete the empty folder "{name}"?', { name }), t("Delete folder")))) return;
-  try { await invoke("delete_folder", { name }); flash(t("Folder deleted")); } finally { if (S.folder === name) S.folder = null; await refreshClips(); }
+  try {
+    await invoke("delete_folder", { name });
+    if (S.settings.folder_colors) fcCarry(S.settings.folder_colors, name, null); // the backend dropped it too
+    flash(t("Folder deleted"));
+  } finally { if (S.folder === name) S.folder = null; await refreshClips(); }
 }
 
 async function menuAction(m, arg) {
@@ -590,6 +677,7 @@ async function menuAction(m, arg) {
       return render();
     }
     case "rename": return editTitle(id);
+    case "rename-many": return nmBulkOpen(ids); // naming.js
     case "compress": return compressIds(ids, +arg || 10);
     case "compress-more": return compressOpenPage(ids); // compresspage.js
     case "join": return joinClips(ids); // join.js
@@ -635,6 +723,8 @@ async function menuAction(m, arg) {
     case "folder-open": S.page = "library"; S.folder = arg; S.tab = "all"; S.sel.clear(); return render();
     case "folder-rename": return renameFolder(arg);
     case "folder-del": return deleteFolder(arg);
+    case "folder-color": return fcMenu && setFolderColor(fcMenu.name, arg); // arg "" = No colour
+    case "folder-color-custom": return fcMenu && folderColorCustom(fcMenu.name, fcMenu.rect);
   }
 }
 
@@ -1065,7 +1155,7 @@ function renderSettings() {
     <div class="section"><h2>${t("Appearance")}</h2>
       <div class="themes">${window.GLINT_THEMES.map((th) => `<button class="theme${(s.theme || "glint") === th.id ? " active" : ""}" data-theme="${th.id}" style="background:${th.vars.panel || "#0a0e16"};color:${th.vars.text || "#e8edf6"}"><i style="background:${th.vars.accent || "#62b6f7"}"></i>${esc(th.name)}</button>`).join("")}</div>
       ${typeof colorRowsHtml === "function" ? colorRowsHtml() : ""}
-      ${row(t("Match the taskbar icon to the theme"), t("Colours Glint's icon in the taskbar and the tray with the theme's accent, including a custom theme's and your own accent colour"), toggle("icon_theme"))}
+      ${row(t("Match the taskbar icon to the theme"), t("Colours Glint's icon in the taskbar and the tray with the theme's accent, including a custom theme's and your own accent colour"), (typeof iconReloadButton === "function" ? iconReloadButton() : "") + toggle("icon_theme"))}
       ${row(t("Renders button"), t("The button in the top bar that lists Blur renders and their progress"), select("renders_button", [["auto", t("While rendering")], ["always", t("Always")], ["never", t("Never")]]))}
       ${row(t("Interface size"), t("Makes everything in the window bigger or smaller, so more or less fits on screen"), select("ui_zoom", [70, 80, 90, 100, 110, 125, 150].map((z) => [z, `${z}%`]), true))}
       <details class="css-box"${S.cssOpen || s.custom_css ? " open" : ""}>
@@ -1087,6 +1177,7 @@ function renderSettings() {
     <div class="section"><h2>${t("Storage")}</h2>
       ${row(t("Clips folder"), `<span class="path" title="${esc(S.settings.clips_dir)}">${esc(S.settings.clips_dir)}</span>`, `<button class="btn sm" data-act="pick-dir">${t("Change")}</button><button class="btn sm" data-act="open-dir">${t("Open")}</button>`)}
       ${row(t("Game folders"), t("Save each new clip into a subfolder named after its game, such as Overwatch or Risk of Rain 2"), toggle("game_folders"))}
+      ${typeof namingRowHtml === "function" ? namingRowHtml() : ""}
       ${row(t("Show the main folder when it is empty"), t("Otherwise its chip above the library is hidden while no clip sits loose in the clips folder"), toggle("show_empty_main"))}
       ${row(t("Sort existing clips"), t("Move the clips that sit loose in the clips folder into their game's folder. Clips you already filed stay put"), `<button class="btn sm" data-act="sort-games">${t("Sort by game")}</button>`)}
     </div>

@@ -85,6 +85,20 @@
 .imp-opt input.imp-name { flex: none; margin: 6px 0 0; width: min(320px, 100%); height: 30px; cursor: text; }
 .imp-sec .imp-note[data-imp-placenote] { margin: 8px 0 0; }
 
+/* 0.1.18: each source's one-colour mark (importer.js IMP_LOGO), 15 px like the dialog's other icons. */
+.imp-logo { width: 15px; height: 15px; flex: none; }
+.imp-src-name { display: flex; align-items: center; gap: 8px; }
+.imp-src-name > span { min-width: 0; }
+.imp-src-name .imp-logo { color: var(--muted); }
+.imp-scanned { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
+.imp-scanned-src { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--text); font-weight: 600; }
+/* The folder name field; while its text is the source's name, the source's logo sits inside it on the left. */
+.imp-name-wrap { position: relative; display: block; width: min(320px, 100%); margin-top: 6px; }
+.imp-opt .imp-name-wrap input.imp-name { width: 100%; margin: 0; }
+.imp-name-wrap > .imp-logo { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.imp-opt .imp-name-wrap.logo input.imp-name { padding-left: 31px; }
+.imp-name-wrap:not(.logo) > .imp-logo { display: none; }
+
 /* Nothing found */
 .imp-empty { padding: 30px 12px; text-align: center; color: var(--muted); }
 .imp-empty h3 { margin: 0 0 5px; font: 400 22px var(--serif); color: var(--text); }

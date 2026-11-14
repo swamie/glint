@@ -11,16 +11,15 @@ if (!window.__TAURI__) {
   window.__mockCalls = [];
   const state = {
     settings: {
-      clips_dir: "C:\\Users\\you\\Videos\\Glint", game_folders: false, monitor: 0, height: 0, fps: 60, quality: "high", bitrate: 0, encoder: "auto", method: "auto", buffer: "mixed", buffer_ram_secs: 30, buffer_dir: "",
+      clips_dir: "C:\\Users\\you\\Videos\\Glint", game_folders: false, clip_name: [{ kind: "game" }, { kind: "date" }, { kind: "time" }], monitor: 0, height: 0, fps: 60, quality: "high", bitrate: 0, encoder: "auto", method: "auto", buffer: "mixed", buffer_ram_secs: 30, buffer_dir: "",
       cursor: true, desktop_audio: true, mic: true, mic_denoise: false, game_audio: false, record_on_start: true, sound: true, sound_name: "chirp", sound_volume: 40, sound_file: "",
       toast: true, toast_pos: "tr", toast_opacity: 96, toast_scale: 100, toast_secs: 3.5, toast_length: true, toast_game: true, toast_mic: true,
       ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", icon_theme: false, icon_accent: "", icon_accent_2: "", discord_rpc: false, discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true, update_check: true, update_auto: true,
       compress_mb: 10, ui_sounds: false, ui_sounds_hover: false, ui_sounds_volume: 50,
-      compress: { sizes: [10, 20, 50, 500], preset: "veryfast", audio_kbps: 0, max_height: 0, max_fps: 0, audio: "first", dest: "beside", dest_dir: "", copy: true }, theme_colors: {},
+      compress: { sizes: [10, 20, 50, 500], preset: "veryfast", audio_kbps: 0, max_height: 0, max_fps: 0, audio: "first", dest: "beside", dest_dir: "", copy: true }, theme_colors: {}, folder_colors: { "Best of": "#e5484d" },
       ffmpeg_path: "", blur_path: "",
       keybinds: [
         { id: "a", ctrl: false, shift: false, alt: false, win: false, key: "F8", action: "clip", seconds: 30, monitor: -1 },
-        { id: "b", ctrl: false, shift: true, alt: false, win: false, key: "F8", action: "clip", seconds: 600, monitor: -1 },
         { id: "c", ctrl: true, shift: false, alt: true, win: false, key: "KeyR", action: "toggle", seconds: 30, monitor: -1 },
       ],
       blur: {
@@ -184,6 +183,7 @@ if (!window.__TAURI__) {
   // A pretend render queue: each job takes about 4 s. Blur jobs run at most settings.blur_parallel
   // at once; compress jobs ("Compress for Discord") one at a time in their own lane, as in jobs.rs.
   let jobs = [];
+  let mockUndo = null; // the last bulk rename: { token, items: [[id, old title]] }
   const pumpJobs = () => {
     const limit = state.settings.blur_parallel || 2;
     for (const j of jobs) {
@@ -292,6 +292,7 @@ if (!window.__TAURI__) {
           case "list_games": return games;
           case "pick_game_icon": return null;
           case "find_game_icon": return null;
+          case "reload_app_icon": return { window: true, tray: true };
           case "bug_report_info": return { configured: true, version: "0.1.6", system: "Glint 0.1.6\nWindows 11 (build 26300)\nNVIDIA GeForce RTX 5060 Ti\nCapture 2560x1440 @ 120 fps, nvenc, wgc, buffer mixed", log: "2026-11-13 09:13:54 hotkey kb-30s -> clip 30s\n2026-11-13 09:13:56 clip 30s: saved 30.4s, 184.2 MB in 1743 ms -> ~\\Videos\\Glint\\Risk of Rain 2\\Risk of Rain 2 2026-11-13 09-13-54.mp4" };
           case "send_bug_report": await new Promise((r) => setTimeout(r, 600)); if (/fail/i.test(args.text)) throw "Discord did not accept the report (HTTP 400)"; return null;
           case "editor_audio_tracks": return [{ index: 0, title: "Mix", path: "/__test.mp4" }, { index: 1, title: "Desktop", path: "/__test.mp4" }, { index: 2, title: "Microphone", path: "/__test.mp4" }];
@@ -506,6 +507,41 @@ if (!window.__TAURI__) {
           case "list_clips": case "rescan_library": return clips;
           case "set_favorite": { const c = clips.find((x) => x.id === args.id); c.favorite = args.favorite; return c; }
           case "rename_clip": { const c = clips.find((x) => x.id === args.id); c.title = args.title; return c; }
+          // Bulk rename (naming.js / naming.rs). Names from nmFormat; unique per folder among the other
+          // clips' titles; a clip with a queued or running job is refused; an import changes its title only.
+          // window.__mockRenameFails = true: rename_clips leaves every clip as it was, with a reason.
+          case "rename_plan": case "rename_clips": {
+            const o = args.opts || {};
+            const picked = [...new Set(args.ids)].map((id) => clips.find((x) => x.id === id)).filter(Boolean);
+            const mine = new Set(picked.map((c) => c.id));
+            const taken = new Set(clips.filter((c) => !mine.has(c.id)).map((c) => `${c.folder}\\${c.title}`.toLowerCase()));
+            let n = o.start ?? 1;
+            const rows = picked.map((c) => {
+              const busy = jobs.some((j) => j.clip_id === c.id && (j.state === "queued" || j.state === "running"));
+              if (busy) return { id: c.id, old: c.title, new: c.title, clash: false, skip: "This clip is being rendered", title_only: false };
+              const name = nmFormat(o.blocks, { game: c.game, when: new Date(c.created), secs: c.duration, number: nmNumber(n++, o.pad || 1), current: c.title });
+              let i = 1, cand = name;
+              while (taken.has(`${c.folder}\\${cand}`.toLowerCase())) cand = `${name} (${++i})`;
+              taken.add(`${c.folder}\\${cand}`.toLowerCase());
+              return { id: c.id, old: c.title, new: cand, clash: i > 1, skip: "", title_only: c.kind === "import" };
+            });
+            if (cmd === "rename_plan") return rows;
+            if (window.__mockRenameFails) return { renamed: 0, failed: rows.map((r) => `${r.old} (it is open in another program)`), token: "", clips: [] };
+            const changed = rows.filter((r) => !r.skip && r.new !== r.old);
+            for (const r of changed) clips.find((x) => x.id === r.id).title = r.new;
+            const token = changed.length ? "u" + Date.now() : "";
+            mockUndo = { token, items: changed.map((r) => [r.id, r.old]) };
+            window.__mockEmit("clips-changed", "");
+            return { renamed: changed.length, failed: rows.filter((r) => r.skip).map((r) => `${r.old} (${r.skip})`), token, clips: changed.map((r) => clips.find((x) => x.id === r.id)) };
+          }
+          case "undo_rename_clips": {
+            if (!mockUndo || !args.token || mockUndo.token !== args.token) throw "There is nothing to undo";
+            for (const [id, title] of mockUndo.items) { const c = clips.find((x) => x.id === id); if (c) c.title = title; }
+            const n = mockUndo.items.length;
+            mockUndo = null;
+            window.__mockEmit("clips-changed", "");
+            return { renamed: n, failed: [], token: "", clips: [] };
+          }
           // Settings → Components (deps.js). Blur starts missing. localStorage["glint.mockNoFfmpeg"] = "1" (then reload):
           // ffmpeg and ffprobe are missing too and the status bar shows the "not found" error with its
           // Install button. window.__mockOffline = true: installs fail as with no internet.

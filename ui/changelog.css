@@ -36,7 +36,8 @@
 .thumb .tag.tag-discord { background: #5865f2; color: #fff; }
 
 /* The clip menu's Compress for Discord submenu: the hint under the sizes. */
-.menu .menu-hint { max-width: 240px; padding: 6px 10px 4px; color: var(--dim); font-size: 11.5px; line-height: 1.4; white-space: normal; }
+/* 9 px in: the items' left edge (style.css .menu button). */
+.menu .menu-hint { max-width: 240px; padding: 5px 9px 5px; color: var(--dim); font-size: 11.5px; line-height: 1.4; white-space: normal; }
 
 /* Settings → Interface sounds → Hear them: a wrapping row of small buttons. */
 .sfx-try { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 420px; }

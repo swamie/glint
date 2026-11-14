@@ -23,6 +23,7 @@ const IMP = {
   folderName: "",       // the folder for "one"
   nameTyped: false,     // the user changed it (else it follows the source: "Medal", or the folder's name)
   srcName: "",          // the program (or folder) scanned
+  srcId: "",            // its source id for the logo (IMP_LOGO), "folder" for Another folder
   scanId: 0,            // ignores a scan the user has moved on from
   running: false,
   progress: { done: 0, total: 0, title: "" },
@@ -37,6 +38,22 @@ const IMP_ICON = {
   download: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14"/></svg>',
   search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>',
 };
+
+/**
+ * A one-colour mark before each source's name (currentColor), by source id (import.rs `sources`).
+ * nvidia, steelseries: path data from the Simple Icons set (simple-icons@13.21.0, CC0 1.0; the
+ * marks themselves are their owners' trademarks, shown only to name the program).
+ * Simple Icons has no Medal or Overwolf/Outplayed mark, so those two are plain neutral glyphs
+ * drawn for Glint (a medal; a play sign in a ring), not the vendors' logos. "folder" = Another folder.
+ */
+const IMP_LOGO = {
+  shadowplay: '<svg class="imp-logo" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" stroke="none" d="M8.948 8.798v-1.43a6.7 6.7 0 0 1 .424-.018c3.922-.124 6.493 3.374 6.493 3.374s-2.774 3.851-5.75 3.851c-.398 0-.787-.062-1.158-.185v-4.346c1.528.185 1.837.857 2.747 2.385l2.04-1.714s-1.492-1.952-4-1.952a6.016 6.016 0 0 0-.796.035m0-4.735v2.138l.424-.027c5.45-.185 9.01 4.47 9.01 4.47s-4.08 4.964-8.33 4.964c-.37 0-.733-.035-1.095-.097v1.325c.3.035.61.062.91.062 3.957 0 6.82-2.023 9.593-4.408.459.371 2.34 1.263 2.73 1.652-2.633 2.208-8.772 3.984-12.253 3.984-.335 0-.653-.018-.971-.053v1.864H24V4.063zm0 10.326v1.131c-3.657-.654-4.673-4.46-4.673-4.46s1.758-1.944 4.673-2.262v1.237H8.94c-1.528-.186-2.73 1.245-2.73 1.245s.68 2.412 2.739 3.11M2.456 10.9s2.164-3.197 6.5-3.533V6.201C4.153 6.59 0 10.653 0 10.653s2.35 6.802 8.948 7.42v-1.237c-4.84-.6-6.492-5.936-6.492-5.936z"/></svg>',
+  medal: '<svg class="imp-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h3l1.6 5.2M16 3h-3l-1 3.2"/><circle cx="12" cy="15" r="5.5"/><path d="m12 12.4.9 1.8 2 .3-1.45 1.4.35 2-1.8-.95-1.8.95.35-2-1.45-1.4 2-.3z"/></svg>',
+  outplayed: '<svg class="imp-logo" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M10 8.6v6.8l5.4-3.4z" fill="currentColor"/></svg>',
+  steelseries: '<svg class="imp-logo" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" stroke="none" d="M14.08008 0c-1.00234 0-1.8125.80893-1.8125 1.8086v2.57226c-4.01871.7444-7.19505 3.9119-7.93946 7.91992H1.8125c-1.001 0-1.8125.80698-1.8125 1.80664 0 .99833.8115 1.8086 1.8125 1.8086h2.51563C5.18077 20.5094 9.22875 24 14.08008 24 19.54884 24 24 19.56148 24 14.10742c0-4.83662-3.50067-8.87524-8.10742-9.72656V1.80859C15.89258.80893 15.08108 0 14.08008 0ZM4.69336 3.17578c-1.00368 0-1.8164.80955-1.8164 1.81055 0 .99966.81272 1.8125 1.8164 1.8125 1.001 0 1.8164-.81284 1.8164-1.8125 0-1.001-.8154-1.81055-1.8164-1.81055zm9.38672 4.65625c3.46809 0 6.29297 2.81398 6.29297 6.2754 0 3.46006-2.82488 6.27734-6.29297 6.27734-3.46943 0-6.29297-2.81728-6.29297-6.27735 0-3.4614 2.82354-6.27539 6.29297-6.27539zm-.01758 2.4043c-2.14634 0-3.89258 1.73986-3.89258 3.88086S11.91616 18 14.0625 18c2.14634 0 3.89258-1.74182 3.89258-3.88281 0-2.141-1.74624-3.88086-3.89258-3.88086zm0 2.7168c.6455 0 1.16797.51989 1.16797 1.16406 0 .64283-.52246 1.16797-1.16797 1.16797-.64417 0-1.16992-.52514-1.16992-1.16797 0-.64417.52575-1.16407 1.16992-1.16407z"/></svg>',
+};
+/** The mark of source `id` ("folder" = the folder icon), or "" for none. */
+const impLogo = (id) => (id === "folder" ? (typeof ICON === "object" ? ICON.folder.replace("<svg", '<svg class="imp-logo" aria-hidden="true"') : "") : IMP_LOGO[id] || "");
 
 /** Open the import dialog (the Library page's Import button). */
 async function openImport() {
@@ -170,7 +187,7 @@ function impWhere() {
     ? IMP.sources.map((s, i) => `
       <div class="imp-src${s.found ? "" : " off"}">
         <div class="imp-src-txt">
-          <div class="imp-src-name">${esc(s.name)}</div>
+          <div class="imp-src-name">${impLogo(s.id)}<span>${esc(s.name)}</span></div>
           ${s.found
             ? `<div class="imp-path" title="${esc(s.path)}">${esc(s.path)}</div>`
             : `<div class="imp-hint">${esc(t("Not found on this PC"))}</div>`}
@@ -185,7 +202,7 @@ function impWhere() {
       <div class="imp-list">${rows}
         <div class="imp-src">
           <div class="imp-src-txt">
-            <div class="imp-src-name">${esc(t("Another folder"))}</div>
+            <div class="imp-src-name">${impLogo("folder")}<span>${esc(t("Another folder"))}</span></div>
             <div class="imp-hint">${esc(t("Any folder with videos in it, such as OBS recordings or an old backup."))}</div>
           </div>
           <button class="btn sm" data-imp-act="pick">${ICON.folder}<span>${esc(t("Choose a folder"))}</span></button>
@@ -197,7 +214,7 @@ function impWhere() {
 function impFound() {
   const head = `
     <div class="imp-from">
-      <div class="imp-src-txt"><div class="imp-hint">${esc(t("Scanned"))}</div><div class="imp-path" title="${esc(IMP.path)}">${esc(IMP.path)}</div></div>
+      <div class="imp-src-txt"><div class="imp-hint imp-scanned">${esc(t("Scanned"))}${IMP.srcId ? `<span class="imp-scanned-src">${impLogo(IMP.srcId)}<span>${esc(IMP.srcName)}</span></span>` : ""}</div><div class="imp-path" title="${esc(IMP.path)}">${esc(IMP.path)}</div></div>
       <button class="btn sm" data-imp-act="back">${esc(t("Choose another"))}</button>
     </div>`;
   if (!IMP.items.length) {
@@ -250,8 +267,10 @@ function impWhereTo() {
       <span class="imp-opt-txt"><b>${esc(title)}</b>${hint ? `<span class="imp-hint">${esc(hint)}</span>` : ""}${extra}</span>
     </label>`;
   const names = (Array.isArray(S.folders) ? S.folders : []).map((f) => `<option value="${esc(f)}"></option>`).join("");
-  const field = `<input type="text" class="field imp-name" data-imp-name maxlength="60" list="imp-folder-list" value="${esc(IMP.folderName)}"
-      placeholder="${esc(t("Folder name"))}" aria-label="${esc(t("Folder name"))}" spellcheck="false"><datalist id="imp-folder-list">${names}</datalist>`;
+  // While the name is still the one taken from the source, the source's logo sits in the field.
+  const logo = !IMP.nameTyped && IMP.srcId && IMP.folderName === IMP.srcName ? impLogo(IMP.srcId) : "";
+  const field = `<span class="imp-name-wrap${logo ? " logo" : ""}">${logo}<input type="text" class="field imp-name" data-imp-name maxlength="60" list="imp-folder-list" value="${esc(IMP.folderName)}"
+      placeholder="${esc(t("Folder name"))}" aria-label="${esc(t("Folder name"))}" spellcheck="false"></span><datalist id="imp-folder-list">${names}</datalist>`;
   const note = !IMP.copy
     ? `<p class="imp-note" data-imp-placenote ${place === "none" ? "hidden" : ""}>${esc(t("The files stay where they are, outside Glint's clips folder. The library folder only lists them: nothing is moved into it."))}</p>`
     : "";
@@ -362,8 +381,8 @@ async function impClick(e) {
   try {
     switch (d.impAct) {
       case "close": return closeImport();
-      case "scan": { const s = IMP.sources[+d.impSrc]; if (s?.found) await impScan(s.path, s.name); return; }
-      case "pick": { const dir = await invoke("pick_import_folder"); if (dir) await impScan(dir, String(dir).replace(/[\\/]+$/, "").split(/[\\/]/).pop()); return; }
+      case "scan": { const s = IMP.sources[+d.impSrc]; if (s?.found) await impScan(s.path, s.name, s.id); return; }
+      case "pick": { const dir = await invoke("pick_import_folder"); if (dir) await impScan(dir, String(dir).replace(/[\\/]+$/, "").split(/[\\/]/).pop(), "folder"); return; }
       case "back": IMP.scanId++; impReset(); impRender(); if (!IMP.sources.length) IMP.sources = (await invoke("import_sources")) || []; return impRender();
       case "again": impReset(); return impRender();
       case "all": IMP.items.forEach((it, i) => { if (!it.known) IMP.sel.add(i); }); return impRender();
@@ -403,6 +422,7 @@ function impInput(e) {
   if (!("impName" in el.dataset)) return;
   IMP.folderName = el.value;
   IMP.nameTyped = true;
+  el.closest(".imp-name-wrap")?.classList.remove("logo"); // the logo marks only the name taken from the source
   if (impPlace() !== "one") {
     IMP.place = "one";
     for (const lab of IMP.el.querySelectorAll("[data-imp-opt]")) {
@@ -418,9 +438,9 @@ function impInput(e) {
   if (run) run.disabled = !(impSelected().n && impPlaceOk());
 }
 
-async function impScan(path, srcName = "") {
+async function impScan(path, srcName = "", srcId = "") {
   const id = ++IMP.scanId;
-  Object.assign(IMP, { view: "scanning", path, items: [], groups: [], srcName: srcName || "" });
+  Object.assign(IMP, { view: "scanning", path, items: [], groups: [], srcName: srcName || "", srcId: srcId || "" });
   // "One folder" is named after the program (or folder) scanned until the user types a name.
   if (!IMP.nameTyped || !IMP.folderName.trim()) Object.assign(IMP, { folderName: IMP.srcName, nameTyped: false });
   IMP.sel.clear();
