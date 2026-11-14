@@ -344,6 +344,39 @@ pub fn folders_test(report_path: &str) {
     check("an unknown clip is refused", core.rename_clip("nope", "Name").is_err());
     core.lib.lock().unwrap().remove("gone");
 
+    // An export that replaces its clip (replace_clips). The test's own "bin" deletes the file: nothing goes to the real Recycle Bin.
+    {
+        let bin = |p: &Path| std::fs::remove_file(p).map_err(|e| e.to_string());
+        let put = |id: &str, file: &str, title: &str, kind: &str, created: u64, favorite: bool| {
+            let p = fort.join(file);
+            let _ = std::fs::write(&p, id.as_bytes());
+            core.lib.lock().unwrap().add(library::ClipMeta { id: id.into(), path: p.to_string_lossy().into_owned(), title: title.into(), folder: "Fortnite".into(), game: "Fortnite".into(), kind: kind.into(), created, favorite, ..Default::default() });
+            p
+        };
+        let has = |id: &str| core.lib.lock().unwrap().get(id).is_some();
+        let orig = put("o", "Ace round.mp4", "Ace round", "clip", 1234, true);
+        let made = put("t", "Ace round (trim).mp4", "Ace round (trim)", "trim", 9999, false);
+        let r = core.replace_clips("t", &ids(&["o"]), true, &bin);
+        check("replace: the export takes the original's name, file name, date and favourite", r.as_ref().is_ok_and(|d| d.replaced == ["o"] && d.failed.is_empty() && d.clip.id == "t" && d.clip.title == "Ace round" && d.clip.created == 1234 && d.clip.favorite && d.clip.kind == "trim" && d.clip.path == orig.to_string_lossy()) && std::fs::read(&orig).ok().as_deref() == Some(&b"t"[..]) && !made.exists());
+        check("replace: the original is gone from the library and the change is saved", !has("o") && get("t").title == "Ace round" && library::Library::load().get("o").is_none() && library::Library::load().get("t").is_some_and(|c| c.title == "Ace round"));
+        // A project's export: only the chosen clips go, and the export keeps its own name.
+        let x1 = put("x1", "Part one.mp4", "Part one", "clip", 1, false);
+        let x2 = put("x2", "Part two.mp4", "Part two", "clip", 2, false);
+        let joined = put("j", "Montage (edit).mp4", "Montage (edit)", "edit", 5000, false);
+        let r = core.replace_clips("j", &ids(&["x1", "nope", "x1", "j"]), false, &bin);
+        check("replace: only the chosen clips go; an unknown clip, a repeat and the export itself are skipped", r.as_ref().is_ok_and(|d| d.replaced == ["x1"] && d.failed.is_empty() && d.clip.title == "Montage (edit)" && d.clip.created == 5000) && !has("x1") && !x1.exists() && has("x2") && x2.is_file() && joined.is_file());
+        let r = core.replace_clips("j", &ids(&["x2"]), false, &|_: &Path| Err("the bin said no".to_string()));
+        check("replace: a clip that cannot be removed stays and is named with the reason", r.as_ref().is_ok_and(|d| d.replaced.is_empty() && d.failed == ["Part two: the bin said no"]) && has("x2") && x2.is_file());
+        let _ = std::fs::remove_file(&joined);
+        check("replace: nothing is removed when the export's own file is missing", core.replace_clips("j", &ids(&["x2"]), false, &bin).is_err() && has("x2") && x2.is_file());
+        check("replace: an unknown export is refused", core.replace_clips("nope", &ids(&["x2"]), false, &bin).is_err() && has("x2"));
+        for id in ["t", "x2", "j"] {
+            core.lib.lock().unwrap().remove(id);
+        }
+        let _ = std::fs::remove_file(&orig);
+        let _ = std::fs::remove_file(&x2);
+    }
+
     // A keybind that switches the capture monitor: to the next one, or to a named one.
     {
         use crate::settings::Keybind;

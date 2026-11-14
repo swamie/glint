@@ -53,6 +53,16 @@ body.pj-dragging #modal .e-tl, body.pj-dragging #modal .player, body.pj-dragging
 .pj-empty-box p { margin: 0; line-height: 1.45; }
 .pj-empty-busy { margin-top: 14px; }
 
+/* ---------- the question before an export that replaces clips of the project ---------- */
+.confirm-box.pj-rep { width: min(520px, 94vw); }
+.pj-rep-list { max-height: min(46vh, 360px); overflow-y: auto; margin: -4px 0 10px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; }
+.pj-rep-item { display: flex; align-items: center; gap: 9px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.pj-rep-item:hover { background: var(--raised); }
+.pj-rep-item input { flex: none; width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.pj-rep-title { flex: 1; min-width: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pj-rep-dur { flex: none; color: var(--muted); font-size: 12px; }
+.pj-rep-tools { display: flex; gap: 6px; margin-bottom: 14px; }
+
 /* Narrow windows: the list gets a little less room. */
 @media (max-width: 1100px) {
   .viewer.pj-on { grid-template-columns: 210px minmax(0, 1fr) 250px; }

@@ -528,6 +528,11 @@ function edKillMedia(a) {
   a.remove();
 }
 
+/* "Replace the original" in the Export box (0.1.23): the export takes the clip's place instead of
+   being saved beside it; the original goes to the Recycle Bin. Remembered on this PC. */
+const edReplaceOn = () => { try { return localStorage.getItem("glint.exportReplace") === "1"; } catch { return false; } };
+const edSetReplace = (on) => { try { localStorage.setItem("glint.exportReplace", on ? "1" : "0"); } catch { /* not remembered */ } };
+
 /* ---------- viewer ---------- */
 function blurPanel(c) {
   const job = S.jobs[c.id];
@@ -1670,15 +1675,20 @@ function mountEditor(root, c, P) {
     else if (!emChanged(m) && c.draft) lines.push(t("Saves the clips joined, as they are."));
     else if (!changed) lines.push(t("No changes yet."));
     else {
-      lines.push(t("New clip, {len} long.", { len: fmtDurMs(emOutDuration(m)) }));
+      lines.push(edReplaceOn() && !c.draft ? t("The clip will be {len} long.", { len: fmtDurMs(emOutDuration(m)) }) : t("New clip, {len} long.", { len: fmtDurMs(emOutDuration(m)) }));
       lines.push(emIsPlainCut(m) ? t("Quick cut, no quality loss.") : t("Re-encodes the video."));
       if (emToOpts(m).audio.length && m.audio.length > 1) lines.push(t("The audio is mixed into one track."));
     }
+    // Replace instead of saving beside the original. A project asks which of its clips go when it is exported.
+    const rep = edReplaceOn();
+    const repNote = !rep ? "" : c.draft ? t("You choose which clips go to the Recycle Bin when you export.") : t("The original goes to the Recycle Bin. The export takes its name and its place.");
     const html = `<div class="e-title">${esc(t("Export"))}</div>
       <div class="small">${lines.map(esc).join(" ")}</div>
       ${audioNotes().map((n) => `<div class="small e-note">${esc(n)}</div>`).join("")}
+      <label class="check e-replace"><input type="checkbox" data-e-replace ${rep ? "checked" : ""} ${job ? "disabled" : ""}><span>${esc(c.draft ? t("Replace clips of the project") : t("Replace the original clip"))}</span></label>
+      ${repNote ? `<div class="small e-replace-note">${esc(repNote)}</div>` : ""}
       ${job ? `<div class="e-prog"><div class="small e-prog-txt">${esc(t("Exporting… {pct}%", { pct: job.pct.toFixed(0) }))}</div><div class="progress"><i style="width:${job.pct}%"></i></div></div>` : ""}
-      <button class="btn primary wide" data-v="export" ${job || !changed ? "disabled" : ""}><span>${esc(t("Export"))}</span></button>
+      <button class="btn primary wide" data-v="export" ${job || !changed ? "disabled" : ""}><span>${esc(rep && !c.draft ? t("Export and replace") : t("Export"))}</span></button>
       <button class="btn wide" data-v="export-blur" ${job || !S.blur || !m ? "disabled" : ""}>${ICON.blur}<span>${esc(changed ? t("Export and render with Blur") : t("Render with Blur"))}</span></button>
       ${S.blur ? "" : `<div class="small">${esc(t("blur-cli.exe not found. Set its path under Blur."))}</div>`}`;
     if (html === lastExport) return;
@@ -1693,6 +1703,12 @@ function mountEditor(root, c, P) {
     txt.textContent = t("Exporting… {pct}%", { pct: job.pct.toFixed(0) });
   }
 
+  pane.addEventListener("change", (e) => {
+    if (!e.target.matches?.("[data-e-replace]")) return;
+    edSetReplace(e.target.checked);
+    e.target.blur(); // Space goes on playing the video, not ticking the box
+    renderExport();
+  });
   pane.addEventListener("input", (e) => {
     const d = e.target.dataset, m = model();
     if (!("eColor" in d) || !m) return;
@@ -1863,6 +1879,15 @@ async function edExport(withBlur) {
     return viewerAction("blur");
   }
   const opts = emToOpts(m);
+  // "Replace the original": one clip replaces itself; a project asks which of its clips go (projects.js).
+  let repIds = [];
+  if (edReplaceOn()) {
+    if (P.draft) {
+      const picked = typeof projAskReplace === "function" ? await projAskReplace(id) : [];
+      if (picked === null || S.open !== id || S.player !== P) return; // cancelled, or closed meanwhile: no export
+      repIds = picked;
+    } else repIds = [id];
+  }
   try { await edListen(); }
   catch (e) { edListening = null; console.error("Glint: could not subscribe to export-progress; exporting without a progress bar.", e); }
   S.exports[id] = { pct: 0 };
@@ -1880,9 +1905,30 @@ async function edExport(withBlur) {
   delete S.exports[id];
   const stillOpen = S.open === id;
   const fromProject = !!P.draft; // a project stays open after an export (the new clip is in the library)
+  let gone = [], kept = [];
+  if (repIds.length) {
+    // The player lets go of the original's file first: a file that is still open cannot go to the Recycle Bin.
+    if (stillOpen && !fromProject) closeClip();
+    try {
+      const r = await invoke("replace_clips", { id: meta.id, ids: repIds, adopt: !fromProject });
+      if (r && r.clip && r.clip.id) meta = r.clip; // with the original's name, date and favourite now
+      gone = (r && r.replaced) || [];
+      kept = (r && r.failed) || [];
+    } catch (e) {
+      console.error("Glint: replace_clips failed", meta.id, repIds, e);
+      kept = [t(String(e?.message ?? e))];
+    }
+    if (gone.length) S.clips = S.clips.filter((x) => !gone.includes(x.id));
+  }
   replaceClip(meta);
   if (stillOpen && !fromProject) openClip(meta.id); // the source clip is still (or again) open: show the result
-  flash(withBlur ? t("Exported. Rendering with Blur…") : stillOpen && fromProject ? t("Exported as a new clip. It is in your library.") : stillOpen ? t("Exported as a new clip") : t("Export finished: {title}", { title: meta.title }));
+  // A project stays open: its Export box was drawn while the export ran (buttons off) and nothing else redraws it.
+  else if (S.open === id) S.player?.ed?.renderExport();
+  if (gone.length && typeof projRenderPanel === "function") projRenderPanel();
+  if (kept.length) flash(t("Exported as a new clip, but not everything could be replaced: {reason}", { reason: kept.join("; ") }), true);
+  else if (gone.length && fromProject) flash(t("Exported as a new clip. {clips} moved to the Recycle Bin.", { clips: plural(gone.length) }));
+  else if (gone.length) flash(withBlur ? t("Exported and replaced. Rendering with Blur…") : t("Exported. The original is in the Recycle Bin."));
+  else flash(withBlur ? t("Exported. Rendering with Blur…") : stillOpen && fromProject ? t("Exported as a new clip. It is in your library.") : stillOpen ? t("Exported as a new clip") : t("Export finished: {title}", { title: meta.title }));
   if (!withBlur) return;
   const show = () => { if (S.open === meta.id) $("#v-blur").innerHTML = blurPanel(meta); else render(); };
   S.jobs[meta.id] = { pct: 0, state: "running", message: "" };

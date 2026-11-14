@@ -941,6 +941,75 @@ impl Core {
             .ok_or_else(|| "Clip not found".into())
     }
 
+    /// The exported clip `id` takes the place of clips `ids` (since 0.1.23, when
+    /// the owner asked for "replace the clip" beside "save as a new copy").
+    /// Each of `ids` is removed with `bin` (the Recycle Bin; a test passes its
+    /// own) and dropped from the library. With `adopt` (one clip was trimmed
+    /// or edited) the new clip then takes the first one's name (its file too,
+    /// as `rename_clip` does), date and favourite, so it sits where the
+    /// original was. A clip a job still uses, or whose file cannot be removed,
+    /// stays and is named in `failed`. Nothing is removed unless the new
+    /// clip's file exists.
+    pub fn replace_clips(&self, id: &str, ids: &[String], adopt: bool, bin: &dyn Fn(&Path) -> Result<(), String>) -> Result<Replaced, String> {
+        let new = self.lib.lock().unwrap().get_saved(id)?;
+        if !Path::new(&new.path).is_file() {
+            return Err("The exported clip's file is missing, so nothing was replaced".into());
+        }
+        let mut out = Replaced::default();
+        let mut first: Option<ClipMeta> = None;
+        let mut seen: Vec<&String> = Vec::new();
+        for (n, old) in ids.iter().enumerate() {
+            if old == id || seen.contains(&old) {
+                continue;
+            }
+            seen.push(old);
+            // A draft, or a clip that is gone already: nothing to replace.
+            let Ok(meta) = self.lib.lock().unwrap().get_saved(old) else { continue };
+            if self.jobs.busy(old) {
+                out.failed.push(format!("{}: it is being rendered", meta.title));
+                continue;
+            }
+            let file = Path::new(&meta.path);
+            if file.exists() {
+                // The player that showed the clip may need a moment to let go of the file.
+                let mut res = bin(file);
+                for _ in 0..5 {
+                    if res.is_ok() {
+                        break;
+                    }
+                    thread::sleep(std::time::Duration::from_millis(200));
+                    res = bin(file);
+                }
+                if let Err(e) = res {
+                    out.failed.push(format!("{}: {e}", meta.title));
+                    continue;
+                }
+            }
+            if !meta.thumb.is_empty() {
+                let _ = std::fs::remove_file(&meta.thumb);
+            }
+            self.lib.lock().unwrap().remove(old);
+            util::log(&format!("replace: clip {old} ({}) replaced by {id}", meta.path));
+            if n == 0 {
+                first = Some(meta);
+            }
+            out.replaced.push(old.clone());
+        }
+        if let (true, Some(o)) = (adopt, first) {
+            // The name, and the file's name with it. If the file cannot be renamed the title still follows.
+            if let Err(e) = self.rename_clip(id, &o.title) {
+                util::log(&format!("replace: {id} keeps its file name ({e})"));
+                self.lib.lock().unwrap().update(id, |c| c.title = o.title.clone());
+            }
+            self.lib.lock().unwrap().update(id, |c| {
+                c.created = o.created;
+                c.favorite = o.favorite;
+            });
+        }
+        out.clip = self.lib.lock().unwrap().get(id).unwrap_or(new);
+        Ok(out)
+    }
+
     /// Move clip files into a library folder ("" = the clips folder itself).
     /// Returns how many files moved; clips already there are skipped.
     pub fn move_clips(&self, ids: &[String], folder: &str) -> Result<usize, String> {
@@ -993,6 +1062,17 @@ impl Core {
             Err(format!("{} of {} clips could not be moved: {}", failed.len(), ids.len(), failed.join("; ")))
         }
     }
+}
+
+/// What `Core::replace_clips` did.
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct Replaced {
+    /// The new clip as it is now (with the original's name when it adopted one).
+    pub clip: ClipMeta,
+    /// Ids of the clips that were removed.
+    pub replaced: Vec<String>,
+    /// Why each of the others stayed: "<title>: <reason>".
+    pub failed: Vec<String>,
 }
 
 /// A folder name the user typed, made safe for the file system.

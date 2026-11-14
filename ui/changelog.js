@@ -14,6 +14,17 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.23", date: "2026-11-15",
+    new: [
+      t("Export can replace the clip instead of saving a new one beside it. Tick “Replace the original clip” in the editor's Export box: the original goes to the Recycle Bin and the export takes its name, date and favourite. Glint remembers the choice."),
+      t("In a project with several clips, the same option asks which of its clips the export replaces. The ticked clips go to the Recycle Bin and the others stay in your library."),
+    ],
+    improved: [],
+    fixed: [
+      t("After a project was exported, its Export button stayed greyed out until the next edit."),
+    ],
+  },
+  {
     version: "0.1.22", date: "2026-11-15",
     new: [
       t("Editor page: pick several projects with Ctrl or Shift and a click, the tick on a card, or a box drawn over the cards. Rename or delete them together from the bar at the bottom, the right-click menu, F2 or Delete."),

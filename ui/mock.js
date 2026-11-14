@@ -488,6 +488,17 @@ if (!window.__TAURI__) {
           case "rename_folder": folders[folders.indexOf(args.from)] = args.to; clips.forEach((c) => { if (c.folder === args.from) c.folder = args.to; }); return args.to;
           case "delete_folder": folders.splice(folders.indexOf(args.name), 1); clips.forEach((c) => { if (c.folder === args.name) c.folder = ""; }); return null;
           case "move_clips": { let n = 0; clips.forEach((c) => { if (args.ids.includes(c.id) && c.folder !== args.folder) { c.folder = args.folder; n++; } }); return n; }
+          case "replace_clips": {
+            // As core.rs replace_clips: the chosen clips go, and with `adopt` the export takes the first one's name, date and favourite.
+            const made = clips.find((c) => c.id === args.id);
+            if (!made) throw "Clip not found";
+            const gone = [...new Set(args.ids)].filter((id) => id !== args.id && clips.some((c) => c.id === id));
+            const first = clips.find((c) => c.id === args.ids[0]);
+            if (args.adopt && first && gone.includes(first.id)) Object.assign(made, { title: first.title, created: first.created, favorite: first.favorite });
+            clips = clips.filter((c) => !gone.includes(c.id));
+            window.__mockEmit("clips-changed", "");
+            return { clip: { ...made }, replaced: gone, failed: window.__mockReplaceFails ? ["Some clip: it is being rendered"] : [] };
+          }
           case "delete_clips": { const n = clips.length; clips = clips.filter((c) => !args.ids.includes(c.id)); return n - clips.length; }
           case "copy_clips": return args.ids.length;
           case "set_favorites": clips.forEach((c) => { if (args.ids.includes(c.id)) c.favorite = args.favorite; }); return null;

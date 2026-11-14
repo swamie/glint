@@ -620,6 +620,48 @@ function projReload(p) {
   if (N && at != null) N.whenModel?.().then((m) => { if (m && S.player === N && N.alive()) N.seek(Math.min(at, m.duration), false, true); });
 }
 
+/* ---------- an export that replaces clips of the project ---------- */
+
+/**
+ * editor.js, before a project's export with "Replace clips of the project" on: ask which of the
+ * project's clips the export replaces. Resolves to the ids picked (they go to the Recycle Bin after
+ * the export; [] = none, or none of the clips is in the library any more), or null when cancelled.
+ */
+function projAskReplace(pid) {
+  const byId = new Map((S.clips || []).map((c) => [c.id, c]));
+  const seen = new Set();
+  const clips = (projById(pid)?.clips || []).map((c) => byId.get(c.id)).filter((c) => c && !c.draft && !seen.has(c.id) && seen.add(c.id));
+  if (!clips.length) return Promise.resolve([]);
+  return new Promise((resolve) => {
+    const el = $("#confirm");
+    el.innerHTML = `<div class="confirm-box pj-rep">
+      <p>${esc(t("Which clips does this export replace? The ticked clips go to the Recycle Bin. The others stay in your library."))}</p>
+      <div class="pj-rep-list">${clips.map((c) => `<label class="pj-rep-item"><input type="checkbox" checked data-rep="${esc(c.id)}"><span class="pj-rep-title" title="${esc(c.title)}">${esc(c.title)}</span><span class="pj-rep-dur">${fmtDur(c.duration)}</span></label>`).join("")}</div>
+      <div class="pj-rep-tools"><button class="btn sm" data-rep-all="1">${esc(t("Select all"))}</button><button class="btn sm" data-rep-all="0">${esc(t("Clear selection"))}</button></div>
+      <div class="confirm-row"><button class="btn" data-c="no">${esc(t("Cancel"))}</button><button class="btn" data-c="yes"></button></div></div>`;
+    el.hidden = false;
+    const picked = () => [...el.querySelectorAll("[data-rep]")].filter((i) => i.checked).map((i) => i.dataset.rep);
+    const paint = () => {
+      const n = picked().length, b = el.querySelector('[data-c="yes"]');
+      b.textContent = n ? t("Export and replace {clips}", { clips: plural(n) }) : t("Export without replacing");
+      b.classList.toggle("solid-danger", n > 0);
+      b.classList.toggle("primary", !n);
+    };
+    const done = (v) => { el.hidden = true; el.innerHTML = ""; el.onclick = null; el.onchange = null; askKey = null; resolve(v); };
+    // "pass" lets the key through (Space ticks a box).
+    askKey = (e) => { if (e.code === "Enter" || e.code === "NumpadEnter") done(picked()); else if (e.code === "Escape") done(null); else return "pass"; };
+    el.onchange = paint;
+    el.onclick = (e) => {
+      const all = e.target.closest("[data-rep-all]");
+      if (all) { for (const i of el.querySelectorAll("[data-rep]")) i.checked = all.dataset.repAll === "1"; return paint(); }
+      const b = e.target.closest("[data-c]");
+      if (b) done(b.dataset.c === "yes" ? picked() : null);
+      else if (e.target === el) done(null);
+    };
+    paint();
+  });
+}
+
 /* ---------- the saved edit ---------- */
 
 /** The open project's edit as the text that is saved. */

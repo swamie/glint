@@ -462,6 +462,16 @@ fn export_clip(core: St, id: String, opts: crate::editor::ExportOpts) -> Result<
     Ok(new)
 }
 
+/// The exported clip `id` replaces clips `ids`: they go to the Recycle Bin
+/// (`Core::replace_clips`). `adopt`: it takes the first one's name, date and
+/// favourite (one clip trimmed or edited, not a project).
+#[tauri::command(async)]
+fn replace_clips(core: St, id: String, ids: Vec<String>, adopt: bool) -> Result<crate::core::Replaced, String> {
+    let done = core.replace_clips(&id, &ids, adopt, &|p| trash::delete(p).map_err(|e| format!("it could not be moved to the Recycle Bin ({e})")))?;
+    core.emit("clips-changed", String::new());
+    Ok(done)
+}
+
 /// Loudness outlines of the clip's audio streams, for the timeline's waveforms.
 #[tauri::command(async)]
 fn editor_waveforms(core: St, id: String) -> Result<Vec<crate::editor::Waveform>, String> {
@@ -871,6 +881,7 @@ pub fn run(minimized: bool) {
             import_run,
             pick_import_folder,
             export_clip,
+            replace_clips,
             blur_clip,
             compress_clip,
             crate::compress::compress_plan,

@@ -134,6 +134,10 @@
 
 .e-export .btn + .btn { margin-top: -2px; }
 .e-prog { display: flex; flex-direction: column; gap: 5px; }
+/* "Replace the original clip" in the Export box. */
+.e-replace { font-size: 13px; }
+.e-replace input:disabled + span { opacity: .6; }
+.e-replace-note { margin-top: -4px; }
 
 /* Arrows beside the viewer: the previous and the next clip of the library's list. They sit in
    the backdrop's margin (the viewer clips its own overflow), and go away while editing. */
