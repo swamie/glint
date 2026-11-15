@@ -37,19 +37,25 @@ function capRender() {
   if (!slot || typeof S === "undefined" || !S.settings) return;
   let pill = slot.querySelector(".cm-pill");
   if (!pill) {
-    slot.innerHTML = `<div class="cm-pill" role="radiogroup">
-      <span class="cm-thumb" aria-hidden="true"></span>
-      <button type="button" class="cm-half" role="radio" data-cm="game">${CAP_ICON_GAME}<span class="cm-label"></span></button>
-      <button type="button" class="cm-half" role="radio" data-cm="desktop">${CAP_ICON_DESK}<span class="cm-label"></span></button>
+    // The two halves with the sliding thumb, then a small arrow that opens the menu a right-click opens.
+    slot.innerHTML = `<div class="cm-pill">
+      <div class="cm-halves" role="radiogroup">
+        <span class="cm-thumb" aria-hidden="true"></span>
+        <button type="button" class="cm-half" role="radio" data-cm="game">${CAP_ICON_GAME}<span class="cm-label"></span></button>
+        <button type="button" class="cm-half" role="radio" data-cm="desktop">${CAP_ICON_DESK}<span class="cm-label"></span></button>
+      </div>
+      <button type="button" class="cm-more" data-cm-menu data-sfx="tap" aria-haspopup="menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg></button>
     </div>`;
     pill = slot.querySelector(".cm-pill");
   }
+  const more = pill.querySelector(".cm-more");
+  if (more) { more.title = t("Choose the game"); more.setAttribute("aria-label", more.title); }
   const game = capIsGame();
   const tips = capTips();
   pill.classList.toggle("is-game", game);
   // Waiting for a game: the game half breathes a little (capmode.css), so the reason no clip comes is visible.
   pill.classList.toggle("waiting", game && !!S.status?.recording && S.status?.capture_target === "waiting");
-  pill.setAttribute("aria-label", t("What to record"));
+  (pill.querySelector(".cm-halves") || pill).setAttribute("aria-label", t("What to record"));
   for (const b of pill.querySelectorAll(".cm-half")) {
     const on = (b.dataset.cm === "game") === game;
     const label = b.dataset.cm === "game" ? t("GAME") : t("DESKTOP");
@@ -60,6 +66,13 @@ function capRender() {
     b.tabIndex = on ? 0 : -1; // one stop for Tab; the arrows move between the halves
     b.dataset.sfx = on ? "none" : b.dataset.cm === "game" ? "on" : "off"; // sfx.js: a switch's sound, none for the half already chosen
     b.title = b.dataset.cm === "game" ? tips.game : tips.desk;
+  }
+  // The halves are only as wide as their words, so the thumb takes the chosen half's place and width (it
+  // slides and resizes with a transition, capmode.css). Not measurable (hidden): the CSS fallback of two equal halves.
+  const on = pill.querySelector('.cm-half[aria-checked="true"]'), thumb = pill.querySelector(".cm-thumb");
+  if (on && thumb && on.offsetWidth > 0) {
+    thumb.style.width = `${on.offsetWidth}px`;
+    thumb.style.transform = `translateX(${on.offsetLeft}px)`;
   }
 }
 
@@ -136,6 +149,9 @@ if (typeof document !== "undefined") {
   document.addEventListener("click", (e) => {
     const half = e.target.closest?.("#capmode-slot [data-cm]");
     if (half) return capSet(half.dataset.cm);
+    // The arrow: the same menu as a right-click, under the switch.
+    const more = e.target.closest?.("#capmode-slot [data-cm-menu]");
+    if (more) { const r = more.closest(".cm-pill").getBoundingClientRect(); e.stopPropagation(); return capOpenMenu(r.left, r.bottom + 6); }
     const item = e.target.closest?.("#menu [data-capm]");
     if (!item) return;
     if (typeof closeMenu === "function") closeMenu();

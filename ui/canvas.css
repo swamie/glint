@@ -30,6 +30,11 @@
 /* Edge handles are bars (they crop), corner handles are squares (they scale). */
 .cv-h-n, .cv-h-s { width: 22px; height: 8px; margin: -4px 0 0 -11px; border-radius: 4px; }
 .cv-h-e, .cv-h-w { width: 8px; height: 22px; margin: -11px 0 0 -4px; border-radius: 4px; }
+/* A crop: what the box cuts away is dimmed, and the box needs no number. */
+.cv-layer.crop { overflow: hidden; }
+.cv-layer.crop .cv-box { box-shadow: 0 0 0 9999px rgba(0, 0, 0, .58); background: none; }
+.cv-layer.crop .cv-box > b { display: none; }
+.cv-size { color: var(--text); font: 600 12.5px var(--mono); }
 .cv-band { position: absolute; box-sizing: border-box; border: 2px dashed #fff; background: rgba(255, 255, 255, .12); pointer-events: none; }
 /* While arranging, the controls' shaded strip lets the pointer through to the boxes (as while drawing). */
 .player.cv-arranging .p-ui { pointer-events: none; }

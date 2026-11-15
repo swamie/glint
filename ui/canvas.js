@@ -157,6 +157,30 @@ function cvSourceDrag(p0, handle, dx, dy) {
 }
 
 /**
+ * A drag of a crop box (a canvas that IS one box of the clip's picture): the box moved, or an edge or a
+ * corner pulled freely, inside the picture. `dx`, `dy` are fractions of the clip's picture.
+ */
+function cvCropDrag(p0, handle, dx, dy) {
+  if (handle === "move") return { ...p0, sx: cvClamp(p0.sx + dx, 0, 1 - p0.sw), sy: cvClamp(p0.sy + dy, 0, 1 - p0.sh) };
+  const min = CV_SRC_MIN * 2;
+  let x0 = p0.sx, y0 = p0.sy, x1 = p0.sx + p0.sw, y1 = p0.sy + p0.sh;
+  if (handle.includes("w")) x0 = cvClamp(x0 + dx, 0, x1 - min);
+  if (handle.includes("e")) x1 = cvClamp(x1 + dx, x0 + min, 1);
+  if (handle.includes("n")) y0 = cvClamp(y0 + dy, 0, y1 - min);
+  if (handle.includes("s")) y1 = cvClamp(y1 + dy, y0 + min, 1);
+  return { ...p0, sx: x0, sy: y0, sw: x1 - x0, sh: y1 - y0 };
+}
+/** A crop's canvas: as large as its box is in the clip's own pixels (even numbers), the box filling it. */
+function cvCropFit(C, src) {
+  const p = C.pieces[0];
+  if (!p) return C;
+  C.width = cvEven(p.sw * src.w);
+  C.height = cvEven(p.sh * src.h);
+  Object.assign(p, { x: 0, y: 0, w: 1, h: 1 });
+  return C;
+}
+
+/**
  * Where a new piece cut out as source box `b` goes on canvas `C`: as wide as the canvas (or as
  * tall, if that is what fits), in the middle of the largest free band between the other pieces.
  */
@@ -204,7 +228,7 @@ function cvNorm(c) {
     return { id: typeof p.id === "string" && p.id ? p.id : cvNewId(), sx: cvClamp(n(p.sx, 0), 0, 1 - sw), sy: cvClamp(n(p.sy, 0), 0, 1 - sh), sw, sh, x: cvClamp(n(p.x, 0), -4, 4), y: cvClamp(n(p.y, 0), -4, 4), w, h, ...(keys.length ? { keys, smooth: !!p.smooth } : {}) };
   }).filter(Boolean);
   const bg = typeof c.background === "string" && (c.background === "blur" || c.background === "black" || /^#[0-9a-f]{6}$/i.test(c.background)) ? c.background : "black";
-  return { width: cvEven(c.width), height: cvEven(c.height), background: bg, pieces };
+  return { width: cvEven(c.width), height: cvEven(c.height), background: bg, pieces, ...(c.crop === true && pieces.length === 1 ? { crop: true } : {}) };
 }
 
 /** A small picture of a layout: the canvas with its pieces as boxes. */
@@ -356,6 +380,7 @@ function cvMount(root, c, P) {
     box.classList.toggle("cv-arranging", show);
     box.classList.toggle("cv-src", srcView());
     layer.classList.toggle("drawing", show && st.draw);
+    layer.classList.toggle("crop", show && !!cv().crop && st.view === "source"); // what the crop cuts away is dimmed
     if (!show) { st.lastLayer = ""; layer.innerHTML = ""; return; }
     const tm = P.time();
     const html = cv().pieces.map((p, i) => `<div class="cv-box${p.id === st.sel ? " on" : ""}${kfHas(p) ? " kf-moving" : ""}" data-cv-id="${esc(p.id)}" style="--cvc:${CV_COLORS[i % CV_COLORS.length]};${boxCss(rectOf(shown(p, tm)))}"><b>${i + 1}</b>${p.id === st.sel ? HANDLES.map((h) => `<i class="cv-h cv-h-${h}" data-cv-h="${h}"></i>`).join("") : ""}</div>`).join("")
@@ -401,6 +426,7 @@ function cvMount(root, c, P) {
     if (e.button !== 0 || !on()) return;
     e.preventDefault();
     e.stopPropagation();
+    if (cv().crop && st.view !== "source") return; // a crop is changed on the clip's picture only
     const q = at(e);
     if (st.draw) {
       st.drag = { kind: "new", x0: cvClamp(q.fx, 0, 1), y0: cvClamp(q.fy, 0, 1) };
@@ -436,7 +462,7 @@ function cvMount(root, c, P) {
     if (!p) return;
     let dx = q.fx - d.x0, dy = q.fy - d.y0;
     let next;
-    if (st.view === "source") next = cvSourceDrag(d.p0, d.handle, dx, dy);
+    if (st.view === "source") next = cv().crop ? cvCropDrag(d.p0, d.handle, dx, dy) : cvSourceDrag(d.p0, d.handle, dx, dy);
     else {
       // Snap (not with Alt held): a moved box by its edges and middle, a dragged edge by itself.
       if (!e.altKey) {
@@ -452,7 +478,8 @@ function cvMount(root, c, P) {
       next = cvResultDrag(d.p0, d.handle, dx, dy);
     }
     // Auto-key: a piece with keyframes gets (or changes) the one at the playhead.
-    Object.assign(p, kfHas(d.own) ? kfPieceSet(d.own, d.tm, next, cv(), src()) : next);
+    Object.assign(p, !cv().crop && kfHas(d.own) ? kfPieceSet(d.own, d.tm, next, cv(), src()) : next);
+    if (cv().crop) { cvCropFit(cv(), src()); const sz = panel.querySelector(".cv-size"); if (sz) sz.textContent = `${cv().width} × ${cv().height}`; }
     st.dirty = true;
     draw();
     renderLayer();
@@ -490,7 +517,7 @@ function cvMount(root, c, P) {
   // The wheel over a piece on the canvas zooms what it shows (one undo step per burst).
   layer.addEventListener("wheel", (e) => {
     const el = e.target.closest?.(".cv-box"), p = el && piece(el.dataset.cvId);
-    if (!p || st.view !== "result" || st.drag) return;
+    if (!p || st.view !== "result" || st.drag || cv().crop) return;
     e.preventDefault();
     if (!st.wheel) st.wheel = { tx: begin(), timer: 0 };
     clearTimeout(st.wheel.timer);
@@ -509,11 +536,16 @@ function cvMount(root, c, P) {
     let html = `<div class="e-title">${esc(t("Canvas"))}</div>`;
     if (!mm) html += `<div class="small">${esc(t("Loading…"))}</div>`;
     else {
-      const shape = !C ? "off" : st.custom ? "custom" : cvShapeOf(C);
+      const shape = !C ? "off" : C.crop ? "crop" : st.custom ? "custom" : cvShapeOf(C);
       const opt = (val, label, cur) => `<option value="${esc(val)}"${val === cur ? " selected" : ""}>${esc(label)}</option>`;
-      html += `<label class="cv-row"><span>${esc(t("Shape"))}</span><select data-cv="shape">${opt("off", t("Same as the clip"), shape)}${CV_SHAPES.map(([id]) => opt(id, cvShapeName(id), shape)).join("")}${opt("custom", t("Custom size"), shape)}</select></label>`;
+      html += `<label class="cv-row"><span>${esc(t("Shape"))}</span><select data-cv="shape">${opt("off", t("Same as the clip"), shape)}${opt("crop", t("Crop to a part of the picture"), shape)}${CV_SHAPES.map(([id]) => opt(id, cvShapeName(id), shape)).join("")}${opt("custom", t("Custom size"), shape)}</select></label>`;
       if (!C) html += `<div class="small">${esc(t("Pick a shape to turn the clip into a vertical video: choose which parts of the picture show and where."))}</div>`;
-      else {
+      else if (C.crop) {
+        // A crop: one box of the clip's picture, at its own size. Chosen on the picture itself.
+        html += `<div class="cv-row"><span>${esc(t("Size"))}</span><b class="cv-size">${C.width} × ${C.height}</b></div>`;
+        html += `<div class="seg cv-views" role="group" aria-label="${esc(t("What the player shows"))}"><button type="button" class="${srcView() ? "on" : ""}" data-cv-view="source">${esc(t("Choose the part"))}</button><button type="button" class="${srcView() ? "" : "on"}" data-cv-view="result">${esc(t("See the result"))}</button></div>`;
+        html += `<div class="small">${esc(t("Drag the box on the picture, or pull its edges and corners. What is inside the box stays, the rest is cut away."))}</div>`;
+      } else {
         if (shape === "custom") {
           html += `<div class="cv-row"><span>${esc(t("Size"))}</span><input type="number" class="ov-num" min="16" max="4096" step="2" data-cv="w" value="${C.width}" aria-label="${esc(t("Width"))}"><span class="ov-dash">×</span><input type="number" class="ov-num" min="16" max="4096" step="2" data-cv="h" value="${C.height}" aria-label="${esc(t("Height"))}"></div>`;
         } else {
@@ -545,7 +577,7 @@ function cvMount(root, c, P) {
         }
       }
       const mine = presets();
-      if (mine.length || C) {
+      if ((mine.length || C) && !C?.crop) {
         html += `<div class="cv-row cv-mine"><span>${esc(t("My layouts"))}</span><div class="cv-chips">${mine.map((p) => `<span class="cv-chip"><button type="button" data-cv-preset="${esc(p.id)}" title="${esc(`${p.canvas?.width} × ${p.canvas?.height}`)}">${esc(p.name)}</button><button type="button" class="cv-mini" data-cv-unsave="${esc(p.id)}" title="${esc(t("Delete this layout"))}" aria-label="${esc(t("Delete this layout"))}">×</button></span>`).join("")}${C ? `<button type="button" class="btn sm" data-cv-act="save">${esc(t("Save this layout…"))}</button>` : ""}</div></div>`;
       }
     }
@@ -564,6 +596,7 @@ function cvMount(root, c, P) {
         C.pieces = withIds(cvLayout("fill", C, s));
         mm.canvas = C;
       } else {
+        delete mm.canvas.crop; // a crop given another shape is a canvas with that one piece
         const C0 = { width: mm.canvas.width, height: mm.canvas.height };
         mm.canvas.width = w;
         mm.canvas.height = h;
@@ -651,7 +684,7 @@ function cvMount(root, c, P) {
     else if (d.cvAct === "arrange") setArrange(!st.arrange || st.draw, "result");
     else if (d.cvAct === "add") { if (st.draw) { st.draw = false; refresh(); P.ov?.sync("canvas"); } else { st.draw = true; st.sel = null; setArrange(true, "source"); } }
     else if (d.cvAct === "save") savePreset();
-    else if (d.cvView) { st.draw = false; setArrange(true, d.cvView); }
+    else if (d.cvView) { st.draw = false; if (cv()?.crop && d.cvView === "result") setArrange(false); else setArrange(true, d.cvView); }
     else if (d.cvFront) change((mm) => { const p = mm.canvas.pieces.find((x) => x.id === d.cvFront); if (p) mm.canvas.pieces = [...mm.canvas.pieces.filter((x) => x !== p), p]; });
     else if (d.cvDel) removePiece(d.cvDel);
     else if (d.cvPreset) applyPreset(d.cvPreset);
@@ -664,7 +697,17 @@ function cvMount(root, c, P) {
     if (!k || !m()) return;
     if (k === "shape") {
       if (el.value === "off") { st.custom = false; st.sel = null; change((mm) => { mm.canvas = null; }); setArrange(false); }
-      else if (el.value === "custom") { st.custom = true; if (!cv()) setSize(1080, 1920); else { st.lastPanel = ""; renderPanel(); } }
+      else if (el.value === "crop") {
+        // Crop: the canvas becomes one box of the picture (the middle 80 % to begin with), shown on the picture to adjust.
+        st.custom = false;
+        change((mm) => {
+          const id = cvNewId();
+          mm.canvas = cvCropFit({ width: 16, height: 16, background: "black", crop: true, pieces: [{ id, sx: 0.1, sy: 0.1, sw: 0.8, sh: 0.8, x: 0, y: 0, w: 1, h: 1 }] }, src());
+          st.sel = id;
+        });
+        setArrange(true, "source");
+      }
+      else if (el.value === "custom") { st.custom = true; const C = cv(); if (!C) setSize(1080, 1920); else if (C.crop) setSize(C.width, C.height); else { st.lastPanel = ""; renderPanel(); } }
       else { st.custom = false; const [w, h] = CV_SHAPES.find(([id]) => id === el.value)[1][1]; setSize(w, h); }
     } else if (k === "size") { const [w, h] = el.value.split("x").map(Number); setSize(w, h); }
     else if (k === "w" || k === "h") { const C = cv(); if (C) setSize(k === "w" ? el.value : C.width, k === "h" ? el.value : C.height); }
@@ -757,5 +800,5 @@ function cvMount(root, c, P) {
 
 // Lets the pure functions be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { CV_SHAPES, CV_MIN, CV_SRC_MIN, cvShapeOf, cvCrop, cvLayoutsFor, cvLayout, cvRefit, cvZoom, cvResultDrag, cvSourceDrag, cvPlaceNew, cvSnap, cvSnapBox, cvNorm, cvEven };
+  module.exports = { CV_SHAPES, CV_MIN, CV_SRC_MIN, cvShapeOf, cvCrop, cvLayoutsFor, cvLayout, cvRefit, cvZoom, cvResultDrag, cvSourceDrag, cvCropDrag, cvCropFit, cvPlaceNew, cvSnap, cvSnapBox, cvNorm, cvEven };
 }

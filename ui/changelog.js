@@ -14,6 +14,17 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.31", date: "2026-11-15",
+    new: [
+      t("Editor: crop the picture. Under Canvas, pick “Crop to a part of the picture” and drag the box, or its edges and corners, on the picture. The export is the box at its own size."),
+      t("Custom clip sound: MP3 and other audio files work, not only WAV. The volume slider now applies to it, and you can choose the part of the file that is played by dragging the ends of its bar."),
+      t("Settings has categories: Appearance, General, Audio and sounds, Clip overlay, Updates and program. They show under Settings in the sidebar."),
+    ],
+    improved: [
+      t("The GAME / DESKTOP switch is narrower and has an arrow that opens its menu (pick the game, “This is not a game”); a right-click still opens it too."),
+    ],
+  },
+  {
     version: "0.1.30", date: "2026-11-15",
     fixed: [
       t("The canvas preview (vertical formats) stuttered. It is now drawn once for each video frame instead of on every screen refresh, and the blurred background is done by the graphics card."),

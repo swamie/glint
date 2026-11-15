@@ -1,6 +1,10 @@
 //! Clip sounds. Every built-in sound is synthesised here, so Glint ships no
-//! audio files. A custom .wav file can be used instead.
+//! audio files. A custom file (WAV, MP3 or anything else ffmpeg reads) can be
+//! used instead: it is decoded once, cut to the part the user chose and set to
+//! the chosen volume, and that copy is kept in memory so it plays at once.
+use crate::settings::Settings;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Mutex;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::HMODULE;
@@ -149,36 +153,136 @@ pub fn wav(id: &str, volume: u32) -> Vec<u8> {
     // 100 = 60 % of full scale: loud, with headroom over game audio.
     let gain = 0.6 * (volume.min(100) as f32 / 100.0) / peak;
     let pcm: Vec<u8> = samples.iter().flat_map(|v| ((v * gain * 32767.0) as i16).to_le_bytes()).collect();
+    wav_file(&pcm, 1)
+}
+
+/// A complete WAV file around 16-bit PCM at `RATE` with `channels` channels.
+fn wav_file(pcm: &[u8], channels: u16) -> Vec<u8> {
     let mut w = Vec::with_capacity(44 + pcm.len());
     w.extend_from_slice(b"RIFF");
     w.extend_from_slice(&(36 + pcm.len() as u32).to_le_bytes());
     w.extend_from_slice(b"WAVEfmt ");
     w.extend_from_slice(&16u32.to_le_bytes());
     w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
+    w.extend_from_slice(&channels.to_le_bytes());
     w.extend_from_slice(&RATE.to_le_bytes());
-    w.extend_from_slice(&(RATE * 2).to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
+    w.extend_from_slice(&(RATE * 2 * channels as u32).to_le_bytes());
+    w.extend_from_slice(&(2 * channels).to_le_bytes());
     w.extend_from_slice(&16u16.to_le_bytes());
     w.extend_from_slice(b"data");
     w.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
-    w.extend_from_slice(&pcm);
+    w.extend_from_slice(pcm);
     w
 }
 
-/// Play a clip sound without blocking. `id` is one of `SOUNDS` or "custom"
-/// (then `file` is a .wav path; its own loudness is used). Falls back to the
-/// chirp if the custom file is missing.
-pub fn play(id: &str, volume: u32, file: &str) {
+/// The longest custom sound that is played, in seconds: a clip sound is a short signal.
+pub const CUSTOM_MAX_SECS: f32 = 15.0;
+
+/// The part of a custom file that is played: `start` seconds in, to `end`
+/// (0 or not after `start` = to the file's end), at most `CUSTOM_MAX_SECS`.
+pub fn custom_span(start: f32, end: f32) -> (f32, f32) {
+    let start = if start.is_finite() { start.clamp(0.0, 3600.0) } else { 0.0 };
+    let len = if end.is_finite() && end > start + 0.02 { (end - start).min(CUSTOM_MAX_SECS) } else { CUSTOM_MAX_SECS };
+    (start, len)
+}
+
+/// Volume in steps of 5 (5..=100), as the custom sound is prepared and kept.
+fn volume_step(volume: u32) -> u32 {
+    ((volume.min(100) + 4) / 5 * 5).max(5)
+}
+
+/// What a prepared custom sound was made from: the file (with its size and
+/// time, so a replaced file is noticed), the part and the volume.
+fn custom_key(file: &str, start: f32, end: f32, volume: u32) -> String {
+    let (start, len) = custom_span(start, end);
+    let meta = std::fs::metadata(file.trim()).ok();
+    let stamp = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis()).unwrap_or(0);
+    format!("{}|{}|{stamp}|{start:.3}|{len:.3}|{}", file.trim(), meta.map(|m| m.len()).unwrap_or(0), volume_step(volume))
+}
+
+/// Decode the chosen part of `file` with ffmpeg to a WAV file in memory:
+/// stereo, 16 bit, `RATE`, the volume applied (100 = the file's own loudness).
+pub fn decode_custom(ffmpeg: &Path, file: &str, start: f32, end: f32, volume: u32) -> Result<Vec<u8>, String> {
+    let (start, len) = custom_span(start, end);
+    let gain = volume_step(volume) as f32 / 100.0;
+    let out = crate::util::hidden_cmd(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-ss", &format!("{start:.3}"), "-i"])
+        .arg(file.trim())
+        .args(["-vn", "-t", &format!("{len:.3}"), "-af", &format!("volume={gain:.3}"), "-ac", "2", "-ar", &RATE.to_string(), "-f", "s16le", "pipe:1"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("Could not start ffmpeg: {e}"))?;
+    let frames = out.stdout.len() / 4;
+    if !out.status.success() || frames < RATE as usize / 100 {
+        return Err("That sound file could not be read".into());
+    }
+    Ok(wav_file(&out.stdout[..frames * 4], 2))
+}
+
+/// The custom sound as prepared (key, WAV). One at a time: before it is
+/// replaced, a sound that is still playing from it is stopped.
+static CUSTOM: Mutex<Option<(String, Vec<u8>)>> = Mutex::new(None);
+
+/// Prepare the custom sound of `s` if it is not ready yet (decodes the file:
+/// call it off the clip path). `min_volume` as in `play`. True when ready.
+pub fn warm(s: &Settings, min_volume: u32) -> bool {
+    if s.sound_name != "custom" || !Path::new(s.sound_file.trim()).is_file() {
+        return false;
+    }
+    let volume = s.sound_volume.max(min_volume);
+    let key = custom_key(&s.sound_file, s.sound_start, s.sound_end, volume);
+    if CUSTOM.lock().unwrap().as_ref().is_some_and(|(k, _)| *k == key) {
+        return true;
+    }
+    let Some(ffmpeg) = crate::util::find_exe(&s.ffmpeg_path, "ffmpeg") else { return false };
+    match decode_custom(&ffmpeg, &s.sound_file, s.sound_start, s.sound_end, volume) {
+        Ok(data) => {
+            let mut slot = CUSTOM.lock().unwrap();
+            // The old copy may be playing right now: stop it before its memory goes.
+            unsafe {
+                let _ = PlaySoundW(PCWSTR::null(), HMODULE::default(), SND_ASYNC);
+            }
+            *slot = Some((key, data));
+            true
+        }
+        Err(e) => {
+            crate::util::log(&format!("clip sound: {e} ({})", s.sound_file.trim()));
+            false
+        }
+    }
+}
+
+/// Play the clip sound of `s` without blocking. A custom file plays from its
+/// prepared copy (`warm`); if that is not ready, a .wav plays as it is and
+/// anything else falls back to the chirp. `min_volume` lifts a very low
+/// setting for the Settings page's Play button (0 for a real clip).
+pub fn play(s: &Settings, min_volume: u32) {
+    let volume = s.sound_volume.max(min_volume);
     if volume == 0 {
         return;
     }
-    if id == "custom" && std::path::Path::new(file.trim()).is_file() {
-        let wide: Vec<u16> = file.trim().encode_utf16().chain(Some(0)).collect();
-        unsafe {
-            let _ = PlaySoundW(PCWSTR(wide.as_ptr()), HMODULE::default(), SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
+    let (id, file) = (s.sound_name.as_str(), s.sound_file.trim());
+    if id == "custom" && Path::new(file).is_file() {
+        let key = custom_key(file, s.sound_start, s.sound_end, volume);
+        {
+            let slot = CUSTOM.lock().unwrap();
+            if let Some((k, data)) = slot.as_ref() {
+                if *k == key {
+                    unsafe {
+                        let _ = PlaySoundW(PCWSTR(data.as_ptr() as *const u16), HMODULE::default(), SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+                    }
+                    return;
+                }
+            }
         }
-        return;
+        if file.to_ascii_lowercase().ends_with(".wav") {
+            let wide: Vec<u16> = file.encode_utf16().chain(Some(0)).collect();
+            unsafe {
+                let _ = PlaySoundW(PCWSTR(wide.as_ptr()), HMODULE::default(), SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
+            }
+            return;
+        }
     }
     // An async sound plays from the buffer it was given, so each rendered sound
     // is kept for the life of the process. Volume moves in steps of 5 to bound that.
@@ -193,4 +297,52 @@ pub fn play(id: &str, volume: u32, file: &str) {
     unsafe {
         let _ = PlaySoundW(PCWSTR(data.as_ptr() as *const u16), HMODULE::default(), SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
     }
+}
+
+/// Checks of the custom sound's preparation for `--polish-test`: (name, ok, detail).
+/// A one-second tone is made with ffmpeg as WAV and MP3 and decoded; no sound is played.
+pub fn self_checks() -> Vec<(String, bool, String)> {
+    let mut out = Vec::new();
+    let mut add = |name: &str, ok: bool, detail: String| out.push((name.to_string(), ok, detail));
+    add("custom sound: no end means to the end, capped", custom_span(0.5, 0.0) == (0.5, CUSTOM_MAX_SECS) && custom_span(0.5, 0.2) == (0.5, CUSTOM_MAX_SECS), format!("{:?}", custom_span(0.5, 0.0)));
+    add("custom sound: a part is start and length", custom_span(0.25, 0.75) == (0.25, 0.5) && custom_span(f32::NAN, f32::INFINITY) == (0.0, CUSTOM_MAX_SECS) && custom_span(-3.0, 100.0) == (0.0, CUSTOM_MAX_SECS), format!("{:?}", custom_span(0.25, 0.75)));
+    add("custom sound: volume in steps of 5, never 0", volume_step(0) == 5 && volume_step(42) == 45 && volume_step(100) == 100 && volume_step(900) == 100, format!("{} {}", volume_step(0), volume_step(42)));
+    let Some(ffmpeg) = crate::util::find_exe("", "ffmpeg") else {
+        add("custom sound: ffmpeg found for the decode checks", false, "ffmpeg.exe not found".into());
+        return out;
+    };
+    let dir = crate::util::tmp_dir().join("soundtest");
+    let _ = std::fs::create_dir_all(&dir);
+    let peak = |wav: &[u8]| wav[44..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs()).max().unwrap_or(0) as f32 / 32768.0;
+    let secs = |wav: &[u8]| (wav.len() - 44) as f32 / (RATE as f32 * 4.0);
+    for ext in ["wav", "mp3"] {
+        let file = dir.join(format!("tone.{ext}"));
+        let made = crate::util::hidden_cmd(&ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-af", "volume=6dB", "-ac", "1"])
+            .arg(&file)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            add(&format!("custom sound: a test {ext} was made"), false, "ffmpeg could not write it".into());
+            continue;
+        }
+        let path = file.to_string_lossy().into_owned();
+        let full = decode_custom(&ffmpeg, &path, 0.0, 0.0, 100);
+        let part = decode_custom(&ffmpeg, &path, 0.25, 0.75, 100);
+        let half = decode_custom(&ffmpeg, &path, 0.25, 0.75, 50);
+        match (full, part, half) {
+            (Ok(full), Ok(part), Ok(half)) => {
+                add(&format!("custom sound ({ext}): the whole file is about a second of stereo WAV"), &full[..4] == b"RIFF" && full[22] == 2 && (secs(&full) - 1.0).abs() < 0.08, format!("{:.3} s", secs(&full)));
+                add(&format!("custom sound ({ext}): 0.25 to 0.75 s is half a second"), (secs(&part) - 0.5).abs() < 0.03, format!("{:.3} s", secs(&part)));
+                let (a, b) = (peak(&part), peak(&half));
+                add(&format!("custom sound ({ext}): volume 50 is half as loud as 100"), a > 0.1 && (b / a - 0.5).abs() < 0.06, format!("{a:.3} -> {b:.3}"));
+            }
+            (a, b, c) => add(&format!("custom sound ({ext}): decodes"), false, format!("{:?} {:?} {:?}", a.err(), b.err(), c.err())),
+        }
+    }
+    add("custom sound: a file that is not audio is refused", decode_custom(&ffmpeg, &dir.join("missing.wav").to_string_lossy(), 0.0, 0.0, 100).is_err(), String::new());
+    let _ = std::fs::remove_dir_all(&dir);
+    out
 }

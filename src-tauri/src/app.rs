@@ -365,12 +365,14 @@ fn audio_devices() -> crate::audio::DeviceList {
 #[tauri::command(async)]
 fn preview_sound(core: St) {
     let s = core.settings();
-    crate::sound::play(&s.sound_name, s.sound_volume.max(5), &s.sound_file);
+    // A custom file is decoded first (its part and volume may just have changed), then played.
+    crate::sound::warm(&s, 5);
+    crate::sound::play(&s, 5);
 }
 
 #[tauri::command(async)]
 fn pick_sound_file() -> Option<String> {
-    rfd::FileDialog::new().add_filter("WAV audio", &["wav"]).pick_file().map(|p| p.to_string_lossy().into_owned())
+    rfd::FileDialog::new().add_filter("Audio", &["wav", "mp3", "m4a", "aac", "ogg", "opus", "flac", "wma"]).pick_file().map(|p| p.to_string_lossy().into_owned())
 }
 
 /// Show the clip overlay as currently set, so the user can see where it lands.

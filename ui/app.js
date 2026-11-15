@@ -325,7 +325,9 @@ function renderChrome() {
     navItem("keybinds", t("Keybinds"), "keys", S.settings.keybinds.length) +
     navItem("recording", t("Capture"), "rec") +
     navItem("blur", t("Blur"), "blur") +
-    navItem("settings", t("Settings"), "gear");
+    // Settings is long: its categories are sub-items under it while the page is open. The item itself shows everything.
+    navItem("settings", t("Settings"), "gear").replace(' active"', S.setCat ? '"' : ' active"') +
+    `<div class="nav-sub" id="nav-settings"${S.page === "settings" ? "" : " hidden"}>${setCats().map(([id, name]) => `<button class="nav-item small${S.page === "settings" && S.setCat === id ? " active" : ""}" data-page="settings" data-setcat="${id}" data-hover title="${esc(name)}"><span class="nav-dot" aria-hidden="true"></span><span class="label">${esc(name)}</span></button>`).join("")}</div>`;
 
   const st = S.status || {};
   const on = !!st.recording;
@@ -1357,14 +1359,20 @@ function renderRecording() {
   if (typeof cap2AfterRender === "function") cap2AfterRender(); // "Auto (what it uses now)" in the dropdowns
 }
 
+/** The Settings page's categories, the sub-items under "Settings" in the sidebar: [id, name]. Each section of
+ *  the page carries one as data-cat. */
+const setCats = () => [["look", t("Appearance")], ["general", t("General")], ["audio", t("Audio and sounds")], ["overlay", t("Clip overlay")], ["program", t("Updates and program")]];
+
 function renderSettings() {
   const s = S.settings;
+  const catName = (setCats().find(([id]) => id === S.setCat) || [])[1];
+  const inCat = (cat, html) => String(html || "").replace('class="section', () => `data-cat="${cat}" class="section`); // a section made elsewhere (audiodev.js, deps.js)
   const slider = (path, min, max, step, unit) => `<input class="range" type="range" min="${min}" max="${max}" step="${step}" data-set="${path}" data-num value="${getPath(s, path)}"><span class="range-val">${getPath(s, path)}${unit}</span>`;
   const searchBox = `<label class="search set-search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.500-3.500"/></svg><input id="set-q" type="text" value="${esc(S.setQ || "")}" placeholder="${esc(t("Search settings"))}" aria-label="${esc(t("Search settings"))}" spellcheck="false" autocomplete="off"></label>`;
   const langSelect = `<select class="field" data-lang aria-label="${esc(t("Language"))}">${Object.entries(window.GLINT_LANGS).map(([code, lang]) => `<option value="${code}"${(s.language || "en") === code ? " selected" : ""}>${esc(lang.name)}</option>`).join("")}</select>`;
-  $("#view").innerHTML = pageHead(t("Settings"), t("Look, storage, startup and notifications")).replace(/<\/div>$/, () => `<div class="head-actions">${searchBox}</div></div>`) + `
+  $("#view").innerHTML = pageHead(t("Settings"), catName || t("Look, storage, startup and notifications")).replace(/<\/div>$/, () => `<div class="head-actions">${searchBox}</div></div>`) + `
     ${S.ffmpeg ? "" : `<div class="note bad">${t("<b>ffmpeg.exe was not found.</b> Glint needs ffmpeg 8 or newer. Install it or set its path below.")}</div>`}
-    <div class="section"><h2>${t("Appearance")}</h2>
+    <div class="section" data-cat="look"><h2>${t("Appearance")}</h2>
       ${presetTilesHtml() /* colorpick.js: built-in tiles, the user's presets, "+ New preset" */}
       ${colorRowsHtml() /* colorpick.js: the "Customise colors" box (colors and custom CSS) */}
       ${row(t("Match the taskbar icon to the theme"), t("Colors Glint's icon in the taskbar and the tray with the theme's accent, including a custom theme's and your own accent color"), (typeof iconReloadButton === "function" ? iconReloadButton() : "") + toggle("icon_theme"))}
@@ -1373,37 +1381,38 @@ function renderSettings() {
       ${row(t("Clip arrows in fullscreen"), t("How visible the previous and next clip arrows are while you watch a clip fullscreen. They show with the controls, when the pointer moves"), slider("nav_opacity", 20, 100, 5, "%"))}
       ${row(t("Interface size"), t("Makes everything in the window bigger or smaller, so more or less fits on screen"), select("ui_zoom", [70, 80, 90, 100, 110, 125, 150].map((z) => [z, `${z}%`]), true))}
     </div>
-    <div class="section"><h2>${t("Language")}</h2>
+    <div class="section" data-cat="general"><h2>${t("Language")}</h2>
       ${row(t("Language"), t("Used in Glint's window, the clip overlay and the tray menu. The tray menu changes the next time Glint starts"), langSelect)}
     </div>
-    <div class="section"><h2>${t("Storage")}</h2>
+    <div class="section" data-cat="general"><h2>${t("Storage")}</h2>
       ${row(t("Clips folder"), `<span class="path" title="${esc(S.settings.clips_dir)}">${esc(S.settings.clips_dir)}</span>`, `<button class="btn sm" data-act="pick-dir">${t("Change")}</button><button class="btn sm" data-act="open-dir">${t("Open")}</button>`)}
       ${row(t("Game folders"), t("Save each new clip into a subfolder named after its game, such as Overwatch or Risk of Rain 2"), toggle("game_folders"))}
       ${typeof namingRowHtml === "function" ? namingRowHtml() : ""}
       ${row(t("Show the main folder when it is empty"), t("Otherwise its chip above the library is hidden while no clip sits loose in the clips folder"), toggle("show_empty_main"))}
       ${row(t("Sort existing clips"), t("Move the clips that sit loose in the clips folder into their game's folder. Clips you already filed stay put"), `<button class="btn sm" data-act="sort-games">${t("Sort by game")}</button>`)}
     </div>
-    <div class="section"><h2>${t("Startup")}</h2>
+    <div class="section" data-cat="general"><h2>${t("Startup")}</h2>
       ${row(t("Start with Windows"), t("Launches hidden in the tray with the buffer running"), toggle("autostart"))}
       ${row(t("When I close the window (X)"), S.settings.close_to_tray
         ? t("Glint stays in the tray: the buffer keeps running and your clip keys still work. Quit from the tray icon's menu")
         : t("Glint quits: the buffer stops and clip keys do nothing until you open Glint again"),
         select("close_to_tray", [["true", t("Keep Glint running in the tray")], ["false", t("Quit Glint")]]))}
     </div>
-    ${typeof audSectionHtml === "function" ? audSectionHtml() /* audiodev.js: desktop audio, microphone and their devices (moved from Capture in 0.1.27) */ : ""}
-    <div class="section"><h2>${t("Clip sound")}</h2>
+    ${typeof audSectionHtml === "function" ? inCat("audio", audSectionHtml()) /* audiodev.js: desktop audio, microphone and their devices (moved from Capture in 0.1.27) */ : ""}
+    <div class="section" data-cat="audio"><h2>${t("Clip sound")}</h2>
       ${row(t("Clip sound"), t("Plays the moment a clip key is pressed"), toggle("sound"))}
       ${row(t("Sound"), t("Picking one plays it"), `${select("sound_name", [...S.sounds.map((x) => [x.id, x.name]), ["custom", t("Custom file…")]])}<button class="btn sm" data-act="sound-play">${t("Play")}</button>`)}
-      ${S.settings.sound_name !== "custom" ? row(t("Volume"), "", `<input class="range" type="range" min="5" max="100" step="5" data-set="sound_volume" data-num value="${S.settings.sound_volume}"><span class="range-val">${S.settings.sound_volume}%</span>`)
-        : row(t("Sound file"), S.settings.sound_file ? `<span class="path" title="${esc(S.settings.sound_file)}">${esc(S.settings.sound_file)}</span>` : t("A .wav file. It plays at its own loudness"), `<button class="btn sm" data-act="sound-pick">${t("Choose file")}</button>`)}
+      ${row(t("Volume"), S.settings.sound_name === "custom" ? t("100% is the file's own loudness") : "", `<input class="range" type="range" min="5" max="100" step="5" data-set="sound_volume" data-num value="${S.settings.sound_volume}"><span class="range-val">${S.settings.sound_volume}%</span>`)}
+      ${S.settings.sound_name !== "custom" ? "" : row(t("Sound file"), S.settings.sound_file ? `<span class="path" title="${esc(S.settings.sound_file)}">${esc(S.settings.sound_file)}</span>` : t("A WAV or MP3 file. Other audio files work too"), `<button class="btn sm" data-act="sound-pick">${t("Choose file")}</button>`)
+        + (S.settings.sound_file && typeof csTrimRow === "function" ? csTrimRow() /* clipsound.js: the part of the file that is played */ : "")}
     </div>
-    <div class="section"><h2>${t("Interface sounds")}</h2>
+    <div class="section" data-cat="audio"><h2>${t("Interface sounds")}</h2>
       ${row(t("Interface sounds"), t("Soft sounds when you click, switch, open and close things in this window"), toggle("ui_sounds"))}
       ${row(t("Sounds when the pointer moves over things"), t("A very quiet tick over the sidebar, clips, chips and top bar buttons"), toggle("ui_sounds_hover"))}
       ${row(t("Volume"), "", `<input class="range" type="range" min="0" max="100" step="5" data-set="ui_sounds_volume" data-num value="${s.ui_sounds_volume ?? 50}"><span class="range-val">${s.ui_sounds_volume ?? 50}%</span>`)}
       ${row(t("Hear them"), t("Each button plays its sound, even while interface sounds are off"), `<div class="sfx-try">${sfxTryButtons()}</div>`)}
     </div>
-    <div class="section"><h2>${t("Clip overlay")}</h2>
+    <div class="section" data-cat="overlay"><h2>${t("Clip overlay")}</h2>
       ${row(t("Clip overlay"), t("A small box on the captured monitor when a clip is saved. It never takes focus or clicks"), toggle("toast"))}
       ${row(t("Compact"), t("Shows only the two stars in a small square, with no text. Problems, such as a clip that failed, still show the full box"), toggle("toast_compact"))}
       ${row(t("Position"), t("The corner it appears in"), `<div class="corner-pick" role="group" aria-label="${esc(t("Overlay position"))}">${[["tl", t("Top left")], ["tr", t("Top right")], ["bl", t("Bottom left")], ["br", t("Bottom right")]].map(([v, l]) => `<button class="${S.settings.toast_pos === v ? "active" : ""}" data-corner="${v}" title="${esc(l)}" aria-label="${esc(l)}"><i></i></button>`).join("")}</div><button class="btn sm" data-act="toast-show">${t("Show it")}</button>`)}
@@ -1414,15 +1423,15 @@ function renderSettings() {
       ${row(t("Show game"), t("“Captured last 30s of Overwatch”"), toggle("toast_game"))}
       ${row(t("Show microphone icon"), t("Appears while your microphone is being recorded"), toggle("toast_mic"))}
     </div>
-    <div class="section"><h2>${t("Updates")}</h2>
+    <div class="section" data-cat="program"><h2>${t("Updates")}</h2>
       ${row(t("Version"), "", `<span class="path">Glint ${esc(S.version || "")}</span><button class="btn sm" data-act="whats-new" data-sfx="open">${t("What's new")}</button>`)}
       ${row(t("Check for updates daily"), t("Asks GitHub once a day whether a newer Glint has been released. Nothing about you or this PC is sent"), toggle("update_check"))}
       ${row(t("Install updates automatically"), t("Installs a new version by itself and restarts Glint in the tray, with clipping on or off as it was. Only while Glint's window is closed and nothing is being rendered, exported or imported, and never while a game is running. Otherwise the update button in the top bar waits for your click"), toggle("update_auto"))}
     </div>
-    <div class="section"><h2>${t("Program")}</h2>
+    <div class="section" data-cat="program"><h2>${t("Program")}</h2>
       ${row(t("ffmpeg.exe path"), S.ffmpeg ? t("Using {path}", { path: `<span class="path" title="${esc(S.ffmpeg)}">${esc(S.ffmpeg)}</span>` }) : t("Not found"), `<input class="field" type="text" data-set="ffmpeg_path" value="${esc(S.settings.ffmpeg_path)}" placeholder="${esc(S.ffmpeg ? t("Auto ({name})", { name: S.ffmpeg }) : t("Auto"))}" style="width:340px">`)}
     </div>
-    ${typeof depsSection === "function" ? depsSection() : ""}
+    ${typeof depsSection === "function" ? inCat("program", depsSection()) : ""}
     <p class="credits-text">${t("Eternal thanks to my friends {a} and {b}, who helped build this project alongside me. I really appreciate you both.", { a: "heaven", b: "rubust" })}
       ${t("And thank you to everyone who chooses Glint over the major clipping services. It keeps me motivated to keep working on it.")}</p>`;
   // The Capture page's settings can be found from here too: its sections are
@@ -1438,6 +1447,7 @@ function renderSettings() {
   $("#view").innerHTML = own + capture + `<div class="note" id="set-none" hidden></div>`;
   markRecommended(["encoder", "method", "aspect", "bitrate", "height"]);
   applySettingsFilter();
+  if (typeof csAfterRender === "function") csAfterRender(); // clipsound.js: the custom sound's waveform and its chosen part
 }
 
 /** The "Hear them" buttons of Settings → Interface sounds: one per sound in sfx.js. */
@@ -1451,6 +1461,7 @@ function sfxTryButtons() {
 /** Show only the settings that match the search box on the Settings page. */
 function applySettingsFilter() {
   const q = (S.setQ || "").trim().toLowerCase();
+  const cat = q ? "" : S.setCat || ""; // a search looks through every category
   let shown = 0;
   for (const sec of $$("#view .section")) {
     // A match in the section's title shows all of it; otherwise only the matching settings.
@@ -1462,11 +1473,11 @@ function applySettingsFilter() {
       el.hidden = !hit;
       any = any || hit;
     }
-    sec.hidden = !any || (!q && "searchOnly" in sec.dataset);
+    sec.hidden = !any || (!q && "searchOnly" in sec.dataset) || (!!cat && sec.dataset.cat !== cat);
     if (!sec.hidden) shown++;
   }
   const credits = $("#view .credits-text"); // plain text under the settings: not a setting, so a search hides it
-  if (credits) credits.hidden = !!q;
+  if (credits) credits.hidden = !!q || (!!cat && cat !== "program");
   cpSearchOpen(q); // colorpick.js: a match inside "Customise colors" opens it
   const none = $("#set-none");
   if (none) {
@@ -1491,9 +1502,11 @@ function render() {
 }
 
 /** Open a page of the sidebar. */
-function goPage(page) {
+function goPage(page, setCat = "") {
   endCapture();
   S.page = page;
+  S.setCat = page === "settings" ? setCat : ""; // a category of the Settings page (its sub-items in the sidebar)
+  if (setCat) S.setQ = ""; // a search would look through every category
   S.tab = "all";
   S.folder = null;
   S.sel.clear();
@@ -1510,7 +1523,7 @@ document.addEventListener("pointerdown", (e) => {
   navPressAt = performance.now();
   pressEl = null; // this press is done: the redraw below may replace the button
   if (!$("#menu").hidden) closeMenu();
-  goPage(nav.dataset.page);
+  goPage(nav.dataset.page, nav.dataset.setcat || "");
 });
 
 /* ---------- events ---------- */
@@ -1544,7 +1557,7 @@ document.addEventListener("click", async (e) => {
     if (d.m) return await menuAction(d.m, d.arg || "");
     if (d.page) {
       if (e.detail !== 0 && performance.now() - navPressAt < 700) return; // its press already opened the page (navPress)
-      return goPage(d.page);
+      return goPage(d.page, d.setcat || "");
     }
     if (d.tab) { S.tab = d.tab; S.sel.clear(); return render(); }
     if (d.size) { S.size = d.size; try { localStorage.setItem("glint.size", d.size); } catch {} return render(); }
@@ -1602,7 +1615,7 @@ document.addEventListener("click", async (e) => {
       S.settings.card_tags = CARD_TAGS.filter((k) => have.has(k));
       return saveSettings(true);
     }
-      case "sound-pick": { const file = await invoke("pick_sound_file"); if (file) { S.settings.sound_file = file; saveSettings(true); setTimeout(() => invoke("preview_sound"), 350); } return; }
+      case "sound-pick": { const file = await invoke("pick_sound_file"); if (file) { S.settings.sound_file = file; S.settings.sound_start = 0; S.settings.sound_end = 0; saveSettings(true); setTimeout(() => invoke("preview_sound"), 350); } return; }
       case "toast-show": return await invoke("preview_toast");
       case "sfx-try": return typeof sfxPlay === "function" && sfxPlay(d.name, true); // heard even while sounds are off
       case "whats-new": return typeof wnOpen === "function" && wnOpen();

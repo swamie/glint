@@ -233,6 +233,10 @@ impl Core {
         let settings = Settings::load();
         hotkeys::set_binds(&settings.keybinds);
         crate::audio::set_devices(&settings.desktop_device, &settings.mic_device);
+        if settings.sound_name == "custom" {
+            let s = settings.clone();
+            std::thread::spawn(move || { crate::sound::warm(&s, 0); });
+        }
         // Clips tagged by an older version or an import: one name per game, and
         // "games" that are not games (a VPN, "Screen Recording") go to Desktop.
         let mut lib = Library::load();
@@ -588,7 +592,7 @@ impl Core {
             }
         };
         if s.sound {
-            crate::sound::play(&s.sound_name, s.sound_volume, &s.sound_file);
+            crate::sound::play(&s, 0);
         }
         // The overlay goes where the picture came from.
         let mon = cfg.monitor;
@@ -706,6 +710,11 @@ impl Core {
         hotkeys::set_binds(&new.keybinds);
         // A running audio capture switches device on its own (audio.rs); nothing else restarts.
         crate::audio::set_devices(&new.desktop_device, &new.mic_device);
+        // A custom clip sound is decoded now, so the next clip key plays it at once.
+        if new.sound_name == "custom" && (new.sound_name != old.sound_name || new.sound_file != old.sound_file || new.sound_start != old.sound_start || new.sound_end != old.sound_end || new.sound_volume != old.sound_volume || new.ffmpeg_path != old.ffmpeg_path) {
+            let s = new.clone();
+            std::thread::spawn(move || { crate::sound::warm(&s, 0); });
+        }
         if new.autostart != old.autostart {
             set_autostart(new.autostart);
         }

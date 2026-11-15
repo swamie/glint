@@ -479,6 +479,10 @@ pub fn self_test(report_path: &str) {
     for (name, ok, detail) in crate::blur::gpu_self_checks() {
         r.check(&name, ok, &detail);
     }
+    // 0.1.31: a custom clip sound is cut to its part and set to its volume (sound.rs). Nothing is played.
+    for (name, ok, detail) in crate::sound::self_checks() {
+        r.check(&name, ok, &detail);
+    }
 
     // 2. Icon.
     match stock_rgba() {

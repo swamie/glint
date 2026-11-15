@@ -249,6 +249,10 @@ pub struct Settings {
     /// 0..=100. Not applied to a custom file.
     pub sound_volume: u32,
     pub sound_file: String,
+    /// The part of a custom sound file that is played: from sound_start seconds
+    /// to sound_end (0 = to the file's end).
+    pub sound_start: f32,
+    pub sound_end: f32,
     pub toast: bool,
     /// Corner of the recorded monitor for the clip overlay: "tl" | "tr" | "bl" | "br".
     pub toast_pos: String,
@@ -381,6 +385,8 @@ impl Default for Settings {
             sound_name: "chirp".into(),
             sound_volume: 40,
             sound_file: String::new(),
+            sound_start: 0.0,
+            sound_end: 0.0,
             toast: true,
             toast_pos: "tr".into(),
             toast_opacity: 96,
