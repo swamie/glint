@@ -40,6 +40,7 @@ function bugRender() {
   const tip = t("Report a bug");
   if (btn.title !== tip) { btn.title = tip; btn.setAttribute("aria-label", tip); }
   btn.setAttribute("aria-expanded", String(!!bugCur));
+  if (typeof fbRender === "function") fbRender(); // the heart button beside this one (feedback.js)
 }
 
 async function bugOpen() {

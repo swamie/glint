@@ -105,6 +105,82 @@ pub fn monitors() -> Vec<Monitor> {
     out
 }
 
+/// How ffmpeg is told to capture one monitor of `monitors()` so that it cannot take another.
+///
+/// Glint numbers the monitors "main first". ffmpeg's `monitor_idx` (Graphics Capture) counts
+/// them in the order Windows enumerates them, and `output_idx` (Desktop Duplication) counts the
+/// graphics card's outputs. On a PC where those orders differ the same number meant another
+/// screen: clips of the main monitor showed the second one (reported on 0.1.34). So the
+/// monitor is named by what cannot be mixed up: its handle for Graphics Capture, and its place
+/// among the card's outputs, found by device name, for Desktop Duplication.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MonitorSource {
+    /// The device name without the `\\.\` in front ("DISPLAY1").
+    pub name: String,
+    /// The HMONITOR; 0 when Windows did not list a monitor of that name.
+    pub hmonitor: u64,
+    /// Its index among the outputs of the first graphics adapter; None when it is not one of them.
+    pub dxgi_output: Option<u32>,
+}
+
+/// The device name of a monitor as an API gives it ("\\.\DISPLAY1", zero-terminated UTF-16), bare.
+fn device_name(wide: &[u16]) -> String {
+    wide_to_string(wide).trim_start_matches("\\\\.\\").to_string()
+}
+
+/// Every monitor handle with its device name, in the order Windows enumerates them.
+pub fn monitor_handles() -> Vec<(u64, String)> {
+    use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
+    use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW};
+    unsafe extern "system" fn each(h: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> BOOL {
+        let out = &mut *(data.0 as *mut Vec<(u64, String)>);
+        let mut info = MONITORINFOEXW::default();
+        info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+        if GetMonitorInfoW(h, &mut info as *mut MONITORINFOEXW as *mut MONITORINFO).as_bool() {
+            out.push((h.0 as usize as u64, device_name(&info.szDevice)));
+        }
+        BOOL(1)
+    }
+    let mut out: Vec<(u64, String)> = Vec::new();
+    unsafe {
+        let _ = EnumDisplayMonitors(HDC::default(), None, Some(each), LPARAM(&mut out as *mut Vec<(u64, String)> as isize));
+    }
+    out
+}
+
+/// The device names of the first graphics adapter's outputs, in the order Desktop Duplication counts them.
+pub fn dxgi_outputs() -> Vec<String> {
+    use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
+    let mut out = Vec::new();
+    unsafe {
+        let Ok(factory) = CreateDXGIFactory1::<IDXGIFactory1>() else { return out };
+        let Ok(adapter) = factory.EnumAdapters1(0) else { return out };
+        let mut i = 0u32;
+        while let Ok(output) = adapter.EnumOutputs(i) {
+            out.push(output.GetDesc().map(|d| device_name(&d.DeviceName)).unwrap_or_default());
+            i += 1;
+        }
+    }
+    out
+}
+
+/// `MonitorSource` of the monitor called `name`, from the two lists (split out so it can be tested on made-up lists).
+pub fn source_among(name: &str, handles: &[(u64, String)], outputs: &[String]) -> MonitorSource {
+    let same = |n: &str| n.eq_ignore_ascii_case(name);
+    MonitorSource {
+        name: name.to_string(),
+        hmonitor: handles.iter().find(|(_, n)| same(n)).map_or(0, |(h, _)| *h),
+        dxgi_output: outputs.iter().position(|n| same(n)).map(|i| i as u32),
+    }
+}
+
+/// `MonitorSource` of monitor `index` of `monitors()`; None when there is no such monitor.
+pub fn monitor_source(index: u32) -> Option<MonitorSource> {
+    let mons = monitors();
+    let m = mons.get(index as usize)?;
+    Some(source_among(&m.name, &monitor_handles(), &dxgi_outputs()))
+}
+
 unsafe fn version_string(path: &str, key: &str) -> Option<String> {
     let wpath: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
     let size = GetFileVersionInfoSizeW(PCWSTR(wpath.as_ptr()), None);

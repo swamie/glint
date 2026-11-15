@@ -103,7 +103,11 @@ fn write_as(s: &Settings, mut cap: Capture, game: &str, game_mode: bool) -> Resu
         cmd.args(["-f", "s16le", "-ar", &rate.to_string(), "-ac", "2", "-i"]).arg(f);
     }
     let names: Vec<&str> = inputs.iter().map(|(_, _, name)| *name).collect();
-    let titles = if game_mode { audio_layout_game(&mut cmd, &names) } else { audio_layout(&mut cmd, &names) };
+    // The desktop's sound holds the game's only when the game plays on the output Glint records
+    // (0.1.35: a game on other headphones gave a track 1 with the microphone alone).
+    let game_in_mix = !game_mode && game_missing_from_desktop(cap.desk.as_ref(), cap.game.as_ref());
+    let titles = if game_mode { audio_layout_game(&mut cmd, &names) } else { audio_layout(&mut cmd, &names, game_in_mix) };
+    util::log(&audio_note(&cap, &titles, game_mode, game_in_mix));
     // The "fast" AAC coder halves audio encode time on long clips (measured 11.8 s -> 5.5 s for 10 min x 3 tracks).
     cmd.args(["-c:v", "copy", "-c:a", "aac", "-aac_coder", "fast", "-b:a", "160k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart"]);
     cmd.arg("-metadata").arg(format!("title={title}"));
@@ -167,13 +171,21 @@ fn write_as(s: &Settings, mut cap: Capture, game: &str, game_mode: bool) -> Resu
 /// input (the desktop sound holds the game): Microphone + Game then get their
 /// mix as track 1, because players, chat apps, Compress for Discord and joins
 /// take track 1 only.
-pub fn audio_layout(cmd: &mut std::process::Command, names: &[&str]) -> Vec<&'static str> {
+///
+/// `game_in_mix` (0.1.35): the desktop's sound does NOT hold the game's (it
+/// plays on another output; see `game_missing_from_desktop`), so the game is
+/// mixed into track 1 beside the desktop: Mix (desktop + mic + game), Desktop,
+/// Microphone, Game; or Mix (desktop + game), Desktop, Game. Track 1 always
+/// holds everything that was recorded.
+pub fn audio_layout(cmd: &mut std::process::Command, names: &[&str], game_in_mix: bool) -> Vec<&'static str> {
     let game = names.iter().position(|n| *n == "Game");
     let base: Vec<(usize, &str)> = names.iter().copied().enumerate().filter(|(_, n)| *n != "Game").collect();
-    let mix_game = match (game, base.as_slice()) {
-        (Some(g), [(m, n)]) if *n != "Desktop" => Some((*m, g)),
-        _ => None,
-    };
+    let has_desk = base.iter().any(|(_, n)| *n == "Desktop");
+    // The inputs of track 1: every source but the game, and the game where the desktop lacks it.
+    let mut mixed: Vec<usize> = base.iter().map(|(i, _)| *i).collect();
+    if let Some(g) = game.filter(|_| !has_desk || game_in_mix) {
+        mixed.push(g);
+    }
     let mut maps: Vec<String> = Vec::new();
     let mut titles: Vec<&'static str> = Vec::new();
     let title_of = |n: &str| -> &'static str {
@@ -184,9 +196,9 @@ pub fn audio_layout(cmd: &mut std::process::Command, names: &[&str]) -> Vec<&'st
             _ => "Audio",
         }
     };
-    let pair = if base.len() == 2 { Some((base[0].0, base[1].0)) } else { mix_game };
-    if let Some((a, b)) = pair {
-        cmd.arg("-filter_complex").arg(format!("[{}:a][{}:a]amix=inputs=2:duration=longest:normalize=0[mix]", a + 1, b + 1));
+    if mixed.len() >= 2 {
+        let ins: String = mixed.iter().map(|i| format!("[{}:a]", i + 1)).collect();
+        cmd.arg("-filter_complex").arg(format!("{ins}amix=inputs={}:duration=longest:normalize=0[mix]", mixed.len()));
         maps.push("[mix]".into());
         titles.push("Mix");
     }
@@ -241,6 +253,135 @@ pub fn audio_layout_game(cmd: &mut std::process::Command, names: &[&str]) -> Vec
         }
     }
     titles
+}
+
+/// The loudest sample of `p` in dB below full scale; None when it has no samples.
+/// Pure digital silence gives -120.
+pub fn peak_db(p: &Pcm) -> Option<f64> {
+    if p.data.is_empty() {
+        return None;
+    }
+    let peak = p.data.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0) as f64 / 32768.0;
+    Some(if peak > 1e-6 { (20.0 * peak.log10()).max(-120.0) } else { -120.0 })
+}
+
+/// How a source reads in the clip's log line: "none" (not recorded), "empty", "silent" or its peak.
+fn source_note(p: Option<&Pcm>) -> String {
+    match p.map(|p| (p, peak_db(p))) {
+        None => "none".into(),
+        Some((_, None)) => "empty".into(),
+        Some((p, Some(db))) if db <= -90.0 => format!("silent ({:.1} s)", p.data.len() as f64 / 2.0 / p.rate.max(1) as f64),
+        Some((p, Some(db))) => format!("peak {db:.1} dB ({:.1} s)", p.data.len() as f64 / 2.0 / p.rate.max(1) as f64),
+    }
+}
+
+/// One log line per clip: what went in, how loud, and what track 1 holds.
+fn audio_note(cap: &Capture, titles: &[&str], game_mode: bool, game_in_mix: bool) -> String {
+    let track1 = match titles.first() {
+        None => "no sound".to_string(),
+        Some(&"Mix") => {
+            let mut v: Vec<&str> = Vec::new();
+            if cap.desk.as_ref().is_some_and(|p| !p.data.is_empty()) {
+                v.push("Desktop");
+            }
+            if cap.mic.as_ref().is_some_and(|p| !p.data.is_empty()) {
+                v.push("Microphone");
+            }
+            if titles.contains(&"Game") && (game_mode || game_in_mix || !v.contains(&"Desktop")) {
+                v.push("Game");
+            }
+            format!("Mix of {}", v.join(" + "))
+        }
+        Some(t) => t.to_string(),
+    };
+    format!(
+        "clip audio{}: Desktop {}, Microphone {}, Game {}; tracks {}; track 1 = {track1}{}",
+        if game_mode { " (game mode)" } else { "" },
+        source_note(cap.desk.as_ref()),
+        source_note(cap.mic.as_ref()),
+        source_note(cap.game.as_ref()),
+        titles.join(", "),
+        if game_in_mix { " (the desktop sound did not hold the game's, so the game was mixed in)" } else { "" }
+    )
+}
+
+/// Whether the desktop's sound lacks the game's sound although the game was heard: the game
+/// plays on another output than the one Glint records (gaming headsets with a "Game" and a
+/// "Chat" device, a game set to the headphones while Windows' default is the speakers), or
+/// nothing at all came from that output. Then track 1 needs the game mixed in.
+///
+/// Measured on the waveforms, not the levels (a desktop with music or chat as loud as the game
+/// must still count as lacking it): in up to 8 one-second windows where the game is loudest
+/// (above -50 dBFS), both are taken to mono at 8 kHz and the desktop is searched for the
+/// game's waveform within 100 ms either side (the two captures' clocks differ a little). A
+/// window holds the game when the normalized correlation reaches 0.35 (a desktop that is the
+/// game plus something as loud gives about 0.7; unrelated sound about 0); a desktop under
+/// -70 dBFS there does not hold it. The desktop lacks the game when fewer than half of the
+/// windows hold it. The faders of Settings → Audio scale a whole source, which a correlation
+/// does not see. A game that is silent throughout, or no game, changes nothing.
+pub fn game_missing_from_desktop(desk: Option<&Pcm>, game: Option<&Pcm>) -> bool {
+    const LOW: f64 = 8000.0;
+    const LAG: usize = 800; // 100 ms at 8 kHz
+    let Some(game) = game.filter(|p| !p.data.is_empty()) else { return false };
+    let Some(desk) = desk.filter(|p| !p.data.is_empty()) else { return false };
+    let secs = |p: &Pcm| p.data.len() as f64 / 2.0 / p.rate.max(1) as f64;
+    // Mono at 8 kHz from `t0` for `n` samples: the mean of the frames in each 1/8000 s (0 outside the PCM).
+    let low = |p: &Pcm, t0: f64, n: usize| -> Vec<f32> {
+        let rate = p.rate.max(1) as f64;
+        let frames = p.data.len() / 2;
+        (0..n)
+            .map(|k| {
+                let t = t0 + k as f64 / LOW;
+                if t < 0.0 {
+                    return 0.0;
+                }
+                let a = (t * rate) as usize;
+                let b = (((t + 1.0 / LOW) * rate) as usize).max(a + 1).min(frames);
+                if a >= b {
+                    return 0.0;
+                }
+                let sum: f64 = (a..b).map(|i| (p.data[i * 2] as f64 + p.data[i * 2 + 1] as f64) * 0.5).sum();
+                (sum / (b - a) as f64 / 32768.0) as f32
+            })
+            .collect()
+    };
+    let rms = |v: &[f32]| (v.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>() / v.len().max(1) as f64).sqrt();
+    // The game's loudest one-second windows.
+    let whole = secs(game).min(secs(desk)).floor() as usize;
+    let mut wins: Vec<(f64, usize)> = (0..whole).map(|w| (rms(&low(game, w as f64, LOW as usize)), w)).filter(|(r, _)| *r > 10f64.powf(-50.0 / 20.0)).collect();
+    if wins.is_empty() {
+        return false;
+    }
+    wins.sort_by(|a, b| b.0.total_cmp(&a.0));
+    wins.truncate(8);
+    let n = LOW as usize;
+    let mut held = 0usize;
+    for (_, w) in &wins {
+        let g = low(game, *w as f64, n);
+        let d = low(desk, *w as f64 - LAG as f64 / LOW, n + 2 * LAG);
+        if rms(&d) < 10f64.powf(-70.0 / 20.0) {
+            continue;
+        }
+        let gg: f64 = g.iter().map(|x| (*x as f64) * (*x as f64)).sum();
+        // Sliding energy of the desktop under the window.
+        let mut dd: f64 = d[..n].iter().map(|x| (*x as f64) * (*x as f64)).sum();
+        let mut best = 0f64;
+        for lag in 0..=2 * LAG {
+            if lag > 0 {
+                let (out, inn) = (d[lag - 1] as f64, d[lag + n - 1] as f64);
+                dd = (dd - out * out + inn * inn).max(0.0);
+            }
+            if dd <= 1e-12 || gg <= 1e-12 {
+                continue;
+            }
+            let dot: f64 = g.iter().zip(&d[lag..lag + n]).map(|(a, b)| *a as f64 * *b as f64).sum();
+            best = best.max(dot / (gg * dd).sqrt());
+        }
+        if best >= 0.35 {
+            held += 1;
+        }
+    }
+    held * 2 < wins.len()
 }
 
 /// Titles of the audio streams of `file`, in stream order ("" = untitled).

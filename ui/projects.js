@@ -403,6 +403,7 @@ function projOpenEmpty(p) {
       </div></div>
     </div>`;
   projMountPanel($(".viewer", m), p.id);
+  if (typeof wsMount === "function") wsMount($(".viewer", m), { title: p.name }); // the editor's full-window layout (workspace.js)
 }
 
 /** Put the clip list beside the editor of project `id` (editor.js calls it for a draft; projOpenEmpty too). */
@@ -464,7 +465,7 @@ function projMountPanel(root, id) {
     root.querySelector(".pj-preview")?.remove();
     const el = document.createElement("div");
     el.className = "pj-preview";
-    el.innerHTML = `<video muted autoplay loop playsinline disablepictureinpicture${c.thumb ? ` poster="${esc(fileSrc(c.thumb))}"` : ""} src="${esc(fileSrc(c.path))}"></video>
+    el.innerHTML = `<video muted autoplay loop playsinline disablepictureinpicture${c.thumb ? ` poster="${esc(fileSrc(c.thumb))}"` : ""} src="${esc(typeof edClipUrl === "function" ? edClipUrl(c) : fileSrc(c.path))}"></video>
       <div class="pj-pv-cap"><b>${esc(c.title)}</b><span>${fmtDur(c.duration)}</span></div>`;
     const r = item.getBoundingClientRect(), ar = aside.getBoundingClientRect(), W = Math.min(400, Math.max(240, window.innerWidth - ar.right - 30)), H = Math.round((W * 9) / 16) + 32;
     Object.assign(el.style, { left: `${ar.right + 10}px`, top: `${clamp(r.top + r.height / 2 - H / 2, 8, Math.max(8, window.innerHeight - H - 8))}px`, width: `${W}px` });
@@ -566,7 +567,9 @@ function projOpenLibMenu(x, y) {
     + projMItem("add", n ? t("Add {clips} to the project", { clips: plural(n) }) : t("Add to the project"), ICON.plus, "", "", !n)
     + "<hr>" + projMItem("all", t("Select all"), ICON.check)
     + projMItem("none", t("Clear selection"), ICON.x, "", "", !n)
-    + projMItem("show", t("Show in library"), ICON.library, "", "", !n);
+    + projMItem("show", t("Show in library"), ICON.library, "", "", !n)
+    // One clip picked: "Put on the picture" of the open edit, as a clip in the picture (0.1.35, media.js).
+    + (n === 1 && typeof medLibMenuItem === "function" ? medLibMenuItem(projLib.sel[0]) : "");
   placeMenu(x, y);
 }
 

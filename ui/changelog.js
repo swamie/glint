@@ -14,6 +14,27 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.35", date: "2026-11-16",
+    new: [
+      t("The editor fills the whole window while you edit, arranged like an editing program: the picture in the middle, the settings on the right, the library on the left in a project, the timeline along the bottom. Drag the borders, fold panels and sections, and use minimize, maximize and close without leaving the editor."),
+      t("Pictures, GIFs and clips on the picture: add one with the button over the picture or by dropping the file, then move, resize, keyframe and crop it. A clip can bring its sound along as an audio row."),
+      t("The timeline goes on past the end of the video: move the playhead there, and let texts, pictures and songs run on over a black picture. Everything on the picture shows as a block on its own row (V2, V3) that you can drag and trim."),
+      t("Right-click the picture in the editor for a freeform crop: of a picture, GIF or clip you added, or of the clip itself."),
+      t("Blur boxes can have round corners and a soft edge."),
+      t("A heart button beside the bug button: give Glint one to five stars and tell us what you like or what should be better."),
+    ],
+    improved: [
+      t("With an added audio file selected, the mouse wheel over it moves the song inside its block, so another part of it plays at the same place."),
+      t("Timeline rows are named like an editor's (V1 for the picture, A1, A2 for the sound), with a timecode of the playhead and a + to add an audio file."),
+      t("Turning Desktop audio or the microphone on or off no longer empties the replay buffer."),
+    ],
+    fixed: [
+      t("With two monitors, clips could show the other monitor than the one chosen under Capture."),
+      t("GAME mode with desktop sound: when the game plays on other headphones or speakers than the ones Glint records, the clip's first track held only the microphone. The game is now mixed into it."),
+      t("An exported clip that took the place or the name of another file played the old file's sound until you skipped back."),
+    ],
+  },
+  {
     version: "0.1.34", date: "2026-11-15",
     new: [
       t("Editor: an audio file you add (a song) plays on through every cut in the video. Cutting a part out no longer chops the song; the clip's own sound is still cut with the picture. A button on the file's row switches it back to being cut with the video."),

@@ -36,12 +36,21 @@
 // seconds (the model's); only the film strip and the clip's own track waveforms are source-time data and
 // are looked up through emToSrc, so each block shows its own pictures and sound.
 //
+// After the video (0.1.35): the result ends where its last thing ends (emEnd: the video, an overlay item, a file
+// row). The lanes run on past that by free space (tlViewSpan) where the playhead can stand and things can be put.
+// Overlay rows (lanes "ov0", "ov1", ... kind "ov", ov0 just above the video, drawn top-down from the highest):
+// one block per item of m.overlays, laid out by tlOvRows. Drag a block to move it, an end to trim it (emMoveOverlay,
+// emTrimOverlay), up or down to bring it to the front or send it to the back; a click selects it (opts.onOverlayPick,
+// and the overlay code lights it with handle.overlaySel). Row heads are named like an editor's: V2, V3 ... for the
+// overlay rows, V1 the video, A1, A2 ... the audio rows. The wheel over a selected file block slips its sound.
+//
 // NOTE: never name a variable `t` here: it would hide the translation function t().
 
 const tlRulerH = 26;    // px, ruler height (keep in sync with timeline.css)
 const tlVideoH = 56;    // px, video row height
 const tlAudioH = 50;    // px, audio row height
 const tlPartsH = 28;    // px, the strip of clip blocks above the video row (only for a model with parts)
+const tlOvH = 30;       // px, one row of overlay blocks (texts, shapes, blur boxes, pictures) above the video (0.1.35)
 const tlPad = 14;       // px of empty lane before 0 and after the end, so the end handles can be grabbed
 const tlMaxPps = 400;   // most pixels per second
 const tlSnapPx = 6;     // snapping distance
@@ -90,6 +99,10 @@ const tlPaths = {
   trimEnd: "M15 4h4v16h-4M14 12H4M8 8l-4 4 4 4",    // <- ]
   partLeft: "M20 12H6M11 7l-5 5 5 5",
   partRight: "M4 12h14M13 7l5 5-5 5",
+  crop: "M6 2v16h16M2 6h16v16",
+  dup: "M8 8h12v12H8zM4 16V4h12",
+  front: "M4 14h8v6H4zM10 4h10v10H10z",
+  back: "M10 4h10v10H10zM4 10h8v10H4z",
 };
 const tlSvg = (d) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
 let tlPath2d = null; // Path2D objects, made on first draw
@@ -183,12 +196,14 @@ function tlSrcToView(map, sec) {
   if (i === R.length - 1 && sec > map.lastSrc) return map.total + (sec - map.lastSrc);
   return r.v0 + (r.s1 - r.s0);
 }
-/** View time -> source time. At a joint: the start of the kept part after it. Clamped to the kept parts. */
+/** View time -> source time. At a joint: the start of the kept part after it. Clamped to the kept parts, but after
+ *  the end it is the time after the video (0.1.35), as tlSrcToView maps it. */
 function tlViewToSrc(map, v) {
   if (!map.collapse) return v;
   const R = map.ranges;
   if (!R.length) return 0;
   if (v <= 0) return R[0].s0;
+  if (v > map.total + 1e-9) return map.lastSrc + (v - map.total);
   if (v >= map.total) return R[R.length - 1].s1;
   const r = R[Math.max(0, tlRangeIdx(R, "v0", v))];
   return Math.min(r.s1, r.s0 + (v - r.v0));
@@ -253,6 +268,29 @@ function tlPartSlot(mids, from, x) {
   while (slot < mids.length && x > mids[slot]) slot++;
   return { slot, to: slot > from ? slot - 1 : slot };
 }
+
+/** The overlay rows (0.1.35): which row each item of `items` (m.overlays, in draw order: later = on top) goes on,
+ *  0 = the row just above the video. An item goes one row above every earlier item it overlaps in time, so of two
+ *  overlapping items the one drawn on top is always the higher block. Returns { rows: [row per item], n: rows used }. */
+function tlOvRows(items) {
+  const rows = [], list = Array.isArray(items) ? items : [];
+  let n = 0;
+  list.forEach((o, i) => {
+    let k = 0;
+    for (let j = 0; j < i; j++) {
+      const p = list[j];
+      if (p && o && p.from < o.to - 1e-9 && o.from < p.to - 1e-9) k = Math.max(k, rows[j] + 1);
+    }
+    rows.push(k);
+    n = Math.max(n, k + 1);
+  });
+  return { rows, n };
+}
+/** How long (view seconds) the timeline is when the result ends at view second `end`: free space after it, at least
+ *  10 s and a quarter of the whole (so a third of `end`), for the playhead and for placing things. */
+const tlViewSpan = (end) => Math.max(0, end) + Math.max(10, Math.max(0, end) / 3);
+/** The wheel over a selected file block slips its sound: seconds per notch (Shift: fine, Ctrl: 1 s), signed by `dy`. */
+const tlSlipStep = (dy, shift, ctrl) => (dy > 0 ? 1 : dy < 0 ? -1 : 0) * (ctrl ? 1 : shift ? 0.05 : 0.25);
 
 /** "3.2 s" style length for a tooltip. */
 const tlFmtLen = (sec) => (Math.round(Math.max(0, sec) * 10) / 10).toFixed(1);
@@ -366,6 +404,10 @@ function mountTimeline(host, opts) {  const m = opts.model;
     raf: 0, dead: false, swallowTimer: 0,
     rowK: 1,               // row height factor (the grip under the tracks)
     rdrag: null,           // the grip drag in progress { y, k0, base, moved }
+    ovSel: null,           // id of the selected overlay block (0.1.35), or null
+    ovSigShown: "",        // the overlay items the lanes were last drawn for (they may change outside the timeline)
+    slip: null,            // a burst of wheel turns slipping a file row { id, timer }: one undo step
+    tcText: "",            // the timecode shown in the toolbar
   };
   try { st.hideCuts = localStorage.getItem("glint.tl.hideCuts") === "1"; } catch {}
   st.names = true; // the name written on each audio row's block (a song's title); remembered like "Hide cut parts"
@@ -379,6 +421,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
   const btn = (act, path, title, extra = "") => `<button type="button" class="tl-btn" data-tl-act="${act}" title="${esc(title)}" aria-label="${esc(title)}"${extra}>${tlSvg(path)}</button>`;
   host.innerHTML = `
     <div class="tl-bar" role="toolbar" aria-label="${esc(t("Timeline"))}">
+      <span class="tl-tc" role="timer" aria-live="off" title="${esc(t("Playhead"))}">0:00.00</span>
       ${btn("split", tlPaths.split, t("Split at the playhead (S)"))}
       <button type="button" class="tl-btn" data-tl-act="remove"></button>
       <button type="button" class="tl-btn" data-tl-act="mute"></button>
@@ -412,7 +455,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     bar: q(".tl-bar"), body: q(".tl-body"), sbar: q(".tl-sbar"), grip: q(".tl-grip"), hrows: q(".tl-hrows"), lanes: q(".tl-lanes"), rows: q(".tl-rows"),
     ruler: q(".tl-ruler canvas"), phK: q(".tl-ph-k"), ph: q(".tl-ph"), cuts: q(".tl-cuts"), joints: q(".tl-joints"), tip: q(".tl-tip"), band: q(".tl-band"),
     bHide: q('[data-tl-act="hide-cuts"]'), bNames: q('[data-tl-act="names"]'), bFit: q('[data-tl-act="fit"]'),
-    bmFlags: q(".tl-bmks"), bmLines: q(".tl-bmls"),
+    bmFlags: q(".tl-bmks"), bmLines: q(".tl-bmls"), tc: q(".tl-tc"),
     trimS: q('[data-tl-trim="start"]'), trimE: q('[data-tl-trim="end"]'), pdrop: q(".tl-pdrop"),
     scroll: q(".tl-scroll"), spacer: q(".tl-spacer"),
     level: q("[data-tl-level]"), levelPct: q(".tl-level .tl-pct"), levelBox: q(".tl-level"),
@@ -465,21 +508,34 @@ function mountTimeline(host, opts) {  const m = opts.model;
   const vmap = () => st.mapHold || (st.map ||= Object.assign(tlViewMap(st.hideCuts ? emKept(m) : null, st.hideCuts, dur()), { sig: mapSig() }));
   const toV = (sec) => tlSrcToView(vmap(), sec);
   const toS = (v) => tlViewToSrc(vmap(), v);
-  const vdur = () => vmap().total;
+  const vdur = () => vmap().total; // the video's length in view time
+  /** Where the result ends (timeline seconds; emEnd), in view time, and the whole length of the lanes with the free space after it. */
+  const endT = () => (typeof emEnd === "function" ? emEnd(m) : dur());
+  const vEnd = () => toV(endT());
+  const vspan = () => tlViewSpan(vEnd());
+  /** The latest timeline second the playhead can be put at: the end of the free space. */
+  const maxT = () => toS(vspan());
   const XV = (v) => tlPad + v * st.pps - st.scrollX;
   const vAtX = (x) => (x + st.scrollX - tlPad) / st.pps;
   const X = (sec) => XV(toV(sec));
   const timeAtX = (x) => toS(vAtX(x));
-  const contentW = () => vdur() * st.pps + 2 * tlPad;
-  const minPps = () => (st.laneW > 2 * tlPad + 10 && vdur() > 0 ? (st.laneW - 2 * tlPad) / vdur() : 1);
+  const contentW = () => vspan() * st.pps + 2 * tlPad;
+  const minPps = () => (st.laneW > 2 * tlPad + 10 && vspan() > 0 ? (st.laneW - 2 * tlPad) / vspan() : 1);
   const maxPps = () => Math.max(tlMaxPps, minPps());
   const markAll = () => { st.dirtyAll = true; st.dirtyRuler = true; st.map = null; };
   /** A segment is drawn (and can be picked) unless it is cut out while cut parts are hidden. */
   const segShown = (i) => !(st.hideCuts && m.removed[i]);
   /** True for a clip made of parts ("Edit together"): the clip blocks strip is shown. */
   const hasParts = () => Array.isArray(m.parts) && m.parts.length > 1;
+  /* Overlay items (0.1.35, see the file header): m.overlays, their rows (tlOvRows, cached by a signature). */
+  const ovItems = () => (Array.isArray(m.overlays) ? m.overlays : []);
+  const ovSig = () => ovItems().map((o) => `${o.id}:${o.from}:${o.to}`).join("|");
+  let ovCache = { sig: null, rows: [], n: 0 };
+  const ovLayout = () => { const s = ovSig(); if (ovCache.sig !== s) ovCache = { sig: s, ...tlOvRows(ovItems()) }; return ovCache; };
+  const ovN = () => ovLayout().n;
+  const ovById = (id) => ovItems().find((o) => o.id === id) || null;
   /** Top of the rows that the cut handles, brackets and bookmark lines reach down from: the video row. */
-  const rowsTop = () => tlRulerH + (hasParts() ? tlPartsH : 0);
+  const rowsTop = () => tlRulerH + ovN() * tlOvH + (hasParts() ? tlPartsH : 0);
   /** True if cut `c` is a part border (no handle, cannot be joined or dragged). */
   const lockedCut = (c) => hasParts() && emCutLocked(m, c);
   /** Timeline second -> source second, for the source-time data (film strip, track waveforms). */
@@ -536,11 +592,12 @@ function mountTimeline(host, opts) {  const m = opts.model;
   }
 
   /* ----- rows ----- */
-  const rowSig = () => m.audio.map((r) => `${r.id}/${r.kind}`).join("|");
-  function headHtml(r) {
+  const rowSig = () => `${ovN()}|${hasParts() ? 1 : 0}|` + m.audio.map((r) => `${r.id}/${r.kind}`).join("|");
+  function headHtml(r, i) {
     const file = r.kind === "file";
     return `<div class="tl-head${r.muted ? " off" : ""}" data-tl-row="${esc(r.id)}" style="height:${audH()}px">
       <div class="tl-hline">
+        <span class="tl-htag">A${i + 1}</span>
         <button type="button" class="tl-btn tl-hmute" data-tl-act="row-mute" data-tl-row="${esc(r.id)}"></button>
         <span class="tl-hname"></span>
         ${file ? `<button type="button" class="tl-btn tl-hthru" data-tl-act="row-through" data-tl-row="${esc(r.id)}"></button>` : ""}
@@ -552,11 +609,18 @@ function mountTimeline(host, opts) {  const m = opts.model;
   function buildRows() {
     st.rowsSig = rowSig();
     const partsTip = esc(t("Drag a clip to change the order. Right-click for more."));
-    el.hrows.innerHTML = (hasParts() ? `<div class="tl-head tl-head-parts" style="height:${tlPartsH}px" title="${partsTip}">${esc(t("Clips"))}</div>` : "") +
-      `<div class="tl-head tl-head-video" style="height:${vidH()}px" title="${esc(opts.title || t("Video"))}" aria-label="${esc(t("Video"))}">${tlSvg(tlPaths.film)}</div>` + m.audio.map(headHtml).join("");
-    const list = [...(hasParts() ? [{ id: "parts", kind: "parts", h: tlPartsH }] : []), { id: "video", kind: "video", h: vidH() }, ...m.audio.map((r) => ({ id: r.id, kind: r.kind, h: audH() }))];
+    const ovTip = esc(t("Texts, shapes, blur boxes and pictures on the video. Drag a block to move it, an end to trim it, up or down to bring it to the front or send it to the back."));
+    const ovRows = Array.from({ length: ovN() }, (_, i) => ovN() - 1 - i); // the highest row on top
+    el.hrows.innerHTML = ovRows.map((k) => `<div class="tl-head tl-head-ov" style="height:${tlOvH}px" title="${ovTip}"><span class="tl-htag">V${k + 2}</span><span class="tl-hname">${esc(t("Overlays"))}</span></div>`).join("") +
+      (hasParts() ? `<div class="tl-head tl-head-parts" style="height:${tlPartsH}px" title="${partsTip}">${esc(t("Clips"))}</div>` : "") +
+      `<div class="tl-head tl-head-video" style="height:${vidH()}px" title="${esc(opts.title || t("Video"))}" aria-label="${esc(t("Video"))}"><span class="tl-htag">V1</span>${tlSvg(tlPaths.film)}<span class="tl-hname">${esc(t("Video"))}</span></div>` + m.audio.map(headHtml).join("") +
+      `<div class="tl-head tl-head-add"><button type="button" class="tl-btn tl-hadd" data-tl-act="add" title="${esc(t("Add an audio file as a new track"))}" aria-label="${esc(t("Add an audio file as a new track"))}">${ICON.plus}</button><span class="tl-hname">${esc(t("Add audio"))}</span></div>`;
+    const list = [...ovRows.map((k) => ({ id: `ov${k}`, kind: "ov", k, h: tlOvH })), ...(hasParts() ? [{ id: "parts", kind: "parts", h: tlPartsH }] : []), { id: "video", kind: "video", h: vidH() }, ...m.audio.map((r) => ({ id: r.id, kind: r.kind, h: audH() }))];
     el.rows.innerHTML = list.map((L) => `<div class="tl-lane" data-tl-lane="${esc(L.id)}" data-tl-kind="${L.kind}" style="height:${L.h}px"${L.kind === "parts" ? ` title="${partsTip}"` : ""}><canvas></canvas></div>`).join("");
-    if (hasParts()) el.trimS.style.top = el.trimE.style.top = `${rowsTop()}px`;
+    el.trimS.style.top = el.trimE.style.top = `${rowsTop()}px`;
+    // The cut handles, joints and bookmark lines start at the video row: made again with the new top on the next draw.
+    el.cuts.innerHTML = "";
+    st.jointSig = st.markSig = "";
     const els = el.rows.querySelectorAll(".tl-lane");
     st.lanes = list.map((L, i) => {
       const canvas = els[i].firstChild;
@@ -569,12 +633,12 @@ function mountTimeline(host, opts) {  const m = opts.model;
   /** The rows at the current height factor, without rebuilding them (the grip drag). */
   function applyRowK() {
     for (const L of st.lanes) {
-      if (L.kind === "parts") continue;
+      if (L.kind === "parts" || L.kind === "ov") continue;
       L.h = L.kind === "video" ? vidH() : audH();
       L.el.style.height = `${L.h}px`;
     }
     for (const h of el.hrows.querySelectorAll(".tl-head")) {
-      if (h.classList.contains("tl-head-parts")) continue;
+      if (h.classList.contains("tl-head-parts") || h.classList.contains("tl-head-ov") || h.classList.contains("tl-head-add")) continue;
       h.style.height = `${h.classList.contains("tl-head-video") ? vidH() : audH()}px`;
     }
     st.needSize = true;
@@ -703,6 +767,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     st.selNotify = false;
     st.sels = next;
     st.sel = prim;
+    if (next.length) st.ovSel = null; // a piece picked: the overlay block is no longer the selection
     markAll();
     updateBar();
     opts.onSelect?.(prim ? { ...prim } : null, next.map((s) => ({ ...s })));
@@ -812,8 +877,56 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (rows) syncRows();
     validateSel();
     if (st.hideCuts) relayout(); // the view length follows what is cut out
+    else syncSpacer();           // the result may have become longer or shorter (emEnd)
     updateBar();
     opts.onChange?.(what);
+  }
+  /* ----- overlay blocks (0.1.35) ----- */
+  /** The overlay code's handle (C's P.ov) and the canvas's (P.cv), or null: menu entries whose function is missing are left out. */
+  const ovApi = () => { try { return opts.ovApi?.() || null; } catch { return null; } };
+  const cvApi = () => { try { return opts.cvApi?.() || null; } catch { return null; } };
+  const isMedia = (o) => !!o && ["image", "gif", "video"].includes(o.kind);
+  /** Select overlay block `id` (null: none): its pieces selection goes, and the overlay code is told. */
+  function pickOv(id) {
+    if (id && st.sels.length) setSels([], null);
+    if (st.ovSel !== (id || null)) { st.ovSel = id || null; markAll(); }
+    try { opts.onOverlayPick?.(id || null); } catch (e) { console.error("Glint timeline: onOverlayPick failed", e); }
+  }
+  /** Remove overlay item `id`: through the overlay code when it can (it takes the undo step), else here. */
+  function doOvRemove(id) {
+    const o = ovById(id);
+    if (!o) return false;
+    const api = ovApi();
+    if (typeof api?.remove === "function") {
+      try { api.remove(id); } catch (e) { console.error("Glint timeline: ov.remove failed", e); return false; }
+      if (ovById(id)) return false;
+    } else {
+      emSnapshot(m);
+      m.overlays.splice(m.overlays.indexOf(o), 1);
+      changed("overlay");
+    }
+    if (st.ovSel === id) st.ovSel = null;
+    ovChanged();
+    return true;
+  }
+  /** Bring item `id` to the front (the end of m.overlays: drawn last) or send it to the back. One undo step. */
+  function doOvOrder(id, front) {
+    const L = ovItems(), i = L.findIndex((o) => o.id === id);
+    if (i < 0 || (front ? i === L.length - 1 : i === 0)) return false;
+    emSnapshot(m);
+    const [o] = L.splice(i, 1);
+    if (front) L.push(o); else L.unshift(o);
+    ovChanged();
+    changed("overlay");
+    return true;
+  }
+  /** The overlay items changed (here or in the overlay code): rows again if their number changed, redraw. */
+  function ovChanged() {
+    st.ovSigShown = ovSig();
+    if (rowSig() !== st.rowsSig) buildRows();
+    if (st.ovSel && !ovById(st.ovSel)) st.ovSel = null;
+    markAll();
+    syncSpacer();
   }
   // Each do... below takes one undo snapshot, changes the model, then calls changed(). They return true if they did something.
   function doSplit(at = st.shownT) {
@@ -1126,12 +1239,13 @@ function mountTimeline(host, opts) {  const m = opts.model;
     prep(ctx, h);
     ctx.fillStyle = C.panel;
     ctx.fillRect(0, 0, w, h);
-    const end = XV(vdur());
+    // The free space after the result's end (emEnd) is dimmed; the ticks run on through it (the playhead may stand there).
+    const end = XV(vEnd());
     if (end < w) { ctx.fillStyle = C.bg; ctx.globalAlpha = 0.6; ctx.fillRect(Math.max(0, end), 0, w - Math.max(0, end), h); ctx.globalAlpha = 1; }
     const x0 = XV(0);
     if (x0 > 0) { ctx.fillStyle = C.bg; ctx.globalAlpha = 0.6; ctx.fillRect(0, 0, x0, h); ctx.globalAlpha = 1; }
     const { major, minor } = tlPickStep(st.pps);
-    const t0 = Math.max(0, vAtX(-80)), t1 = Math.min(vdur(), vAtX(w + 4));
+    const t0 = Math.max(0, vAtX(-80)), t1 = Math.min(vspan(), vAtX(w + 4));
     ctx.fillStyle = C.dim;
     if (minor < major) {
       for (let k = Math.ceil(t0 / minor - 1e-9); k * minor <= t1 + 1e-9; k++) {
@@ -1364,6 +1478,137 @@ function mountTimeline(host, opts) {  const m = opts.model;
     ctx.stroke();
     selOutline(ctx, C, 0, dur(), y, bh, "video");
     label(ctx, C, "film", opts.title || t("Video"), bx0, bx1, y + 5);
+    drawTail(ctx, C, y, bh);
+  }
+  /** After the video, up to where the result ends (0.1.35): a black block, as the result is there. */
+  function drawTail(ctx, C, y, bh) {
+    const E = endT();
+    if (!(E > dur() + 1e-6)) return;
+    const sp = span(dur(), E);
+    if (!sp) return;
+    const [x0, x1] = [sp[0] + 2, sp[1]];
+    if (x1 - x0 < 2) return;
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = "#000";
+    rr(ctx, x0, y, x1 - x0, bh, 8);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = C["line-2"];
+    rr(ctx, x0 + 0.5, y + 0.5, x1 - x0 - 1, bh - 1, 8);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const lx = Math.max(x0, 0) + 8, room = Math.min(x1, st.laneW) - lx - 8;
+    if (room > 30) {
+      ctx.font = `600 11px ${C.sans}`;
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = C.muted;
+      ctx.fillText(tlEllipsize(ctx, t("Black after the video"), room), lx, y + bh / 2);
+    }
+  }
+
+  /** The overlay rows: one block per item on row L.k (tlOvRows), with the item's icon and label, keyframe dots,
+   *  and the selected one outlined. A media item that loops shows a faint mark where its media starts again. */
+  const ovPath = new Map(); // kind -> Path2D of ovKindPath(kind)
+  function ovIcon(kind) {
+    if (ovPath.has(kind)) return ovPath.get(kind);
+    let p = null;
+    try { const d = typeof ovKindPath === "function" ? ovKindPath(kind) : ""; if (d) p = new Path2D(d); } catch { p = null; }
+    ovPath.set(kind, p);
+    return p;
+  }
+  function ovLabel(o) {
+    try { if (typeof ovItemLabel === "function") { const s = ovItemLabel(o); if (s) return String(s); } } catch {}
+    const names = { text: () => t("Text"), rect: () => t("Rectangle"), ellipse: () => t("Ellipse"), line: () => t("Line"), arrow: () => t("Arrow"), pen: () => t("Drawing"),
+      blur: () => t("Blur box"), image: () => t("Picture"), gif: () => t("GIF"), video: () => t("Clip") };
+    return names[o.kind] ? names[o.kind]() : String(o.kind || "");
+  }
+  function drawOv(L, C) {
+    const ctx = L.ctx, h = L.h;
+    prep(ctx, h);
+    const { rows } = ovLayout(), items = ovItems();
+    const y = 3, bh = h - 6;
+    const dragId = st.drag?.ovId && st.drag.moved ? st.drag.ovId : null;
+    items.forEach((o, i) => {
+      if (rows[i] !== L.k) return;
+      const sp = span(o.from, o.to);
+      if (!sp) return;
+      const x0 = sp[0] + 0.5, x1 = sp[1] - 0.5, w = x1 - x0;
+      if (w < 1) return;
+      const sel = st.ovSel === o.id, tint = o.kind === "blur" ? C.muted : isMedia(o) ? C.file : C["accent-2"] || C.accent;
+      ctx.save();
+      rr(ctx, x0, y, w, bh, 6);
+      ctx.fillStyle = C.raised;
+      ctx.fill();
+      ctx.clip();
+      ctx.globalAlpha = dragId === o.id ? 0.5 : 0.34;
+      ctx.fillStyle = tint;
+      ctx.fillRect(x0, y, w, bh);
+      ctx.globalAlpha = 1;
+      // Keyframes: small diamonds along the bottom.
+      if (Array.isArray(o.keys)) {
+        ctx.fillStyle = C.text;
+        for (const k of o.keys) {
+          const kx = X(k?.t);
+          if (!(kx >= x0 - 4 && kx <= x1 + 4)) continue;
+          ctx.beginPath();
+          ctx.moveTo(kx, y + bh - 8); ctx.lineTo(kx + 3, y + bh - 5); ctx.lineTo(kx, y + bh - 2); ctx.lineTo(kx - 3, y + bh - 5);
+          ctx.fill();
+        }
+      }
+      // A looping media item: a faint line where its media starts over.
+      const ml = Number.isFinite(o.mlen) && o.mlen > 0.05 && o.loop ? o.mlen : 0;
+      if (ml && (o.to - o.from) / ml < 200) {
+        ctx.globalAlpha = 0.4;
+        ctx.fillStyle = C.text;
+        for (let s = o.from + ml - (Number.isFinite(o.off) ? o.off % ml : 0); s < o.to - 1e-6; s += ml) { const lx = X(s); if (lx > x0 && lx < x1) ctx.fillRect(Math.round(lx) - 0.5, y, 1, bh); }
+        ctx.globalAlpha = 1;
+      }
+      // Icon and label at the visible left end.
+      const lx = Math.max(x0, 0) + 6, room = Math.min(x1, st.laneW) - lx - 6;
+      const p = ovIcon(o.kind);
+      let tx = lx;
+      if (p && room >= 16) {
+        ctx.save();
+        ctx.translate(lx, y + (bh - 14) / 2);
+        ctx.scale(14 / 24, 14 / 24);
+        ctx.strokeStyle = C.text;
+        ctx.lineWidth = 2;
+        ctx.lineCap = ctx.lineJoin = "round";
+        ctx.stroke(p);
+        ctx.restore();
+        tx += 19;
+      }
+      if (room - (tx - lx) > 14) {
+        ctx.font = `600 11px ${C.sans}`;
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = C.text;
+        ctx.fillText(tlEllipsize(ctx, ovLabel(o), room - (tx - lx)), tx, y + bh / 2 + 0.5);
+      }
+      ctx.restore();
+      ctx.lineWidth = sel ? 2 : 1;
+      ctx.strokeStyle = sel ? C["accent-2"] || C.accent : C["line-2"];
+      rr(ctx, x0 + (sel ? 1 : 0.5), y + (sel ? 1 : 0.5), w - (sel ? 2 : 1), bh - (sel ? 2 : 1), 6);
+      ctx.stroke();
+      // Grips on both ends (they trim), when the block is wide enough.
+      if (w > 18) {
+        ctx.fillStyle = C.text;
+        ctx.globalAlpha = 0.6;
+        for (const ex of [x0 + 3, x1 - 5]) if (ex > -4 && ex < st.laneW + 4) { rr(ctx, ex, y + bh / 2 - 6, 2, 12, 1); ctx.fill(); }
+        ctx.globalAlpha = 1;
+      }
+    });
+  }
+  /** The overlay item under lane x `x` on overlay row `k`, the top one first: { o, hit: "left" | "right" | "move" } or null. */
+  function ovAtX(k, x) {
+    const { rows } = ovLayout(), items = ovItems(), v = vAtX(x);
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (rows[i] !== k) continue;
+      const hit = tlSpanHit(toV(items[i].from), toV(items[i].to), v, st.pps);
+      if (hit) return { o: items[i], hit };
+    }
+    return null;
   }
   function nearestThumb(i) {
     const list = st.thumbs;
@@ -1542,7 +1787,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     const P = emParts(m);
     const at = d.slot < P.length ? P[d.slot].at : dur();
     el.pdrop.hidden = false;
-    el.pdrop.style.top = `${tlRulerH}px`;
+    el.pdrop.style.top = `${tlRulerH + ovN() * tlOvH}px`;
     el.pdrop.style.transform = `translateX(${Math.round(X(at))}px)`;
     el.pdrop.classList.toggle("same", d.to === d.from);
   }
@@ -1614,7 +1859,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (st.dirtyAll || st.dirtyRuler) drawRuler(C);
     for (const L of st.lanes) {
       if (!st.dirtyAll && !st.dirty.has(L.id)) continue;
-      if (L.kind === "video") drawVideo(L, C); else if (L.kind === "parts") drawParts(L, C); else drawAudio(L, C);
+      if (L.kind === "video") drawVideo(L, C); else if (L.kind === "parts") drawParts(L, C); else if (L.kind === "ov") drawOv(L, C); else drawAudio(L, C);
     }
     if (st.dirtyAll) placeCuts();
     st.dirtyAll = false;
@@ -1650,6 +1895,8 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (st.needSize && st.laneW) applySize();
     // The editor changed what is cut out without calling refresh(): rebuild the view mapping.
     if (st.hideCuts && st.map && !st.mapHold && st.map.sig !== mapSig()) { markAll(); relayout(); }
+    // The overlay code added, removed or changed an item without calling refresh(): rows and blocks follow.
+    if (ovSig() !== st.ovSigShown) ovChanged();
     const real = +opts.getTime() || 0;
     let now = real;
     if (st.drag?.type === "seek" && st.drag.at !== undefined) now = st.drag.at;
@@ -1664,6 +1911,9 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (st.dirtyAll || st.dirtyRuler || st.dirty.size) draw();
     placePlayhead(st.shownT);
     updateBarCheap(st.shownT, false);
+    // The timecode at the left of the toolbar: the playhead in ruler time, as the ruler and the drag tips count it.
+    const tc = tlFmtPrecise(toV(st.shownT));
+    if (tc !== st.tcText) { st.tcText = tc; el.tc.textContent = tc; }
   }
 
   /* ----- mouse ----- */
@@ -1671,6 +1921,8 @@ function mountTimeline(host, opts) {  const m = opts.model;
     const c = [0, dur(), ...m.cuts.filter((_, i) => !(skip.cut === i)), ...shownMarks()];
     if (!skip.playhead) c.push(st.shownT);
     for (const r of m.audio) if (r.kind === "file" && r.id !== skip.row) c.push(r.offset, emRowEnd(m, r));
+    for (const o of ovItems()) if (o.id !== skip.ov) c.push(o.from, o.to); // the other blocks' ends
+    if (!skip.ov && !skip.row) c.push(endT());
     return c;
   }
   const snapTol = () => tlSnapPx / st.pps;
@@ -1745,6 +1997,15 @@ function mountTimeline(host, opts) {  const m = opts.model;
       const i = partAtX(x);
       if (i < 0) return;
       Object.assign(d, { type: "part", from: i, to: i, slot: i });
+    } else if (lane && lane.dataset.tlKind === "ov") {
+      // An overlay block: a click selects it, a drag moves or trims it (one undo step), up or down changes its order.
+      const k = +lane.dataset.tlLane.slice(2), hit = ovAtX(k, x);
+      if (!hit) Object.assign(d, { type: "click", sel: null, ovClear: true });
+      else {
+        const o = hit.o;
+        Object.assign(d, { type: "ov-" + hit.hit, ovId: o.id, ovRow: k, grab: at,
+          o0: { from: o.from, to: o.to, off: o.off, keys: Array.isArray(o.keys) ? o.keys.map((q) => q?.t) : null } });
+      }
     } else if (lane) {
       const id = lane.dataset.tlLane, row = id === "video" ? null : emRow(m, id);
       const hit = row?.kind === "file" ? fileHit(row, x) : null;
@@ -1773,7 +2034,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     d.lastE = e;
     if (!d.moved) {
       // A click may turn into a rubber band in any direction; the other drags are sideways.
-      const dist = d.type === "click" ? Math.max(Math.abs(e.clientX - d.x0), Math.abs(e.clientY - d.y0)) : Math.abs(e.clientX - d.x0);
+      const dist = d.type === "click" || d.type === "ov-move" ? Math.max(Math.abs(e.clientX - d.x0), Math.abs(e.clientY - d.y0)) : Math.abs(e.clientX - d.x0);
       if (dist < tlDragPx) return;
       d.moved = true;
       if (d.type === "click") startBand(d);
@@ -1786,7 +2047,8 @@ function mountTimeline(host, opts) {  const m = opts.model;
     const x = e.clientX - d.rect.left, raw = timeAtX(x), free = e.altKey; // Alt: no snapping
     const snap = (sec, skip) => (free ? sec : snapAt(sec, snapCands(skip)).at);
     if (d.type === "seek") {
-      const at = Math.min(dur(), Math.max(0, snap(raw, { playhead: true })));
+      // Anywhere on the lanes, also after the video and after the result's end (0.1.35).
+      const at = Math.min(maxT(), Math.max(0, snap(raw, { playhead: true })));
       d.at = at;
       st.shownT = at;
       showTip(at);
@@ -1819,12 +2081,44 @@ function mountTimeline(host, opts) {  const m = opts.model;
       changed("trim", false);
       return;
     }
+    if (d.type.startsWith("ov-")) {
+      const o = ovById(d.ovId);
+      if (!o) return;
+      if (!d.snapped) { emSnapshot(m); d.snapped = true; d.maxT = maxT(); }
+      // From the item as it was when the drag began, so snapping never piles up.
+      o.from = d.o0.from; o.to = d.o0.to;
+      if (d.o0.off !== undefined) o.off = d.o0.off;
+      if (d.o0.keys && Array.isArray(o.keys)) o.keys.forEach((q, i) => { if (q && Number.isFinite(d.o0.keys[i])) q.t = d.o0.keys[i]; });
+      const skip = { ov: o.id };
+      if (d.type === "ov-move") {
+        const len = o.to - o.from;
+        let from = Math.min(d.maxT - EM_OV_MIN, Math.max(0, d.o0.from + raw - d.grab));
+        if (!free) {
+          const c = snapCands(skip), s1 = snapAt(from, c), s2 = snapAt(from + len, c);
+          if (s1.hit || s2.hit) from = Math.max(0, s1.dist <= s2.dist ? s1.at : s2.at - len);
+        }
+        emMoveOverlay(o, from - o.from);
+        // Up or down onto another row: dropped there, it comes to the front or goes to the back (see onUp).
+        const lane = laneAt(e.clientY);
+        d.ovTo = lane?.kind === "ov" ? lane.k : lane ? -1 : d.ovRow;
+        showTip(o.from);
+      } else {
+        const side = d.type === "ov-left" ? "left" : "right";
+        emTrimOverlay(o, side, Math.min(d.maxT, snap(raw, skip)));
+        showTip(side === "left" ? o.from : o.to, `${tlFmtPrecise(toV(side === "left" ? o.from : o.to))} · ${tlFmtLen(o.to - o.from)} s`);
+      }
+      ovChanged();
+      opts.onChange?.("overlay");
+      return;
+    }
     const row = emRow(m, d.rowId);
     if (!row) return;
-    if (!d.snapped) { emSnapshot(m); d.snapped = true; }
+    if (!d.snapped) { emSnapshot(m); d.snapped = true; d.maxT = maxT(); }
     const r0 = d.row0;
     if (d.type === "move") {
-      const len = emRowEnd(m, row) - row.offset, hi = Math.max(0, row.through ? dur() - EM_MIN_SEG : dur() - len); // a file that plays through cuts may start anywhere: its end follows
+      // A file that plays through cuts may start anywhere, also after the video (0.1.35): its end follows. One cut
+      // with the video stays inside it.
+      const len = emRowEnd(m, row) - row.offset, hi = Math.max(0, row.through ? d.maxT - EM_MIN_SEG : dur() - len);
       let o = Math.min(hi, Math.max(0, r0.offset + raw - d.grab));
       if (!free) {
         const c = snapCands({ row: d.rowId });
@@ -1894,6 +2188,22 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (!d) return;
     if (d.type === "seek" && d.at !== undefined) st.hold = { at: d.at, until: performance.now() + 500 };
     if (d.type === "part") { if (d.moved) doMovePart(d.from, d.to); else partClick(d.from); }
+    if (d.type.startsWith("ov-")) {
+      if (!d.moved) pickOv(d.ovId);
+      else {
+        // Dropped on a higher overlay row: to the front; lower (or on the video and audio rows): to the back. Part of the drag's undo step.
+        const L = ovItems(), i = L.findIndex((o) => o.id === d.ovId);
+        if (d.type === "ov-move" && i >= 0 && d.ovTo !== undefined && d.ovTo !== d.ovRow) {
+          const [o] = L.splice(i, 1);
+          if (d.ovTo > d.ovRow) L.push(o); else L.unshift(o);
+          ovChanged();
+        }
+        if (d.snapped && m.undo[m.undo.length - 1] === emState(m)) m.undo.pop(); // moved out and back: no empty undo step
+        else changed("overlay");
+        if (st.ovSel !== d.ovId) pickOv(d.ovId);
+      }
+    }
+    if (d.ovClear && !d.moved && st.ovSel) pickOv(null);
     if (!d.moved && d.sel !== undefined) clickSel(d);
     // A drag that ends outside the timeline must not count as a click on the viewer's backdrop.
     if (d.moved || !host.contains(e.target)) swallowClick();
@@ -1966,19 +2276,52 @@ function mountTimeline(host, opts) {  const m = opts.model;
   function onHover(e) {
     if (st.drag) return;
     const lane = e.target.closest("[data-tl-lane]");
-    let cur = "";
+    let cur = "", tip = null;
     if (lane && lane.dataset.tlKind === "parts") cur = "grab";
     else if (lane && lane.dataset.tlKind === "file") {
       const row = emRow(m, lane.dataset.tlLane);
       const rect = el.lanes.getBoundingClientRect();
       const hit = row ? fileHit(row, e.clientX - rect.left) : null;
       cur = hit === "move" ? "grab" : hit ? "resize" : "";
+      // The block's tooltip says how to slip its sound (0.1.35).
+      tip = hit ? `${tlRowName(row, opts.game)}\n${t("Click it, then turn the mouse wheel over it to move the sound inside it (Shift: finer, Ctrl: 1 s)")}` : "";
+    } else if (lane && lane.dataset.tlKind === "ov") {
+      const rect = el.lanes.getBoundingClientRect();
+      const hit = ovAtX(+lane.dataset.tlLane.slice(2), e.clientX - rect.left);
+      cur = hit?.hit === "move" ? "grab" : hit ? "resize" : "";
+      tip = hit ? `${ovLabel(hit.o)}\n${t("Drag to move, drag an end to trim. Right-click for more.")}` : "";
     }
     if (el.lanes.dataset.tlCur !== cur) el.lanes.dataset.tlCur = cur;
+    if (tip !== null && lane.title !== tip) lane.title = tip;
   }
   function onWheel(e) {
     const rect = el.lanes.getBoundingClientRect();
     const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? st.laneW : 1;
+    // Over a selected file block (0.1.35): the wheel slips its sound (emSlipFile); the block stays where it is.
+    const lane = e.target.closest?.("[data-tl-lane]");
+    const row = lane && lane.dataset.tlKind === "file" && !st.drag ? emRow(m, lane.dataset.tlLane) : null;
+    if (row && st.sels.some((s) => s.row === row.id) && fileHit(row, e.clientX - rect.left)) {
+      e.preventDefault();
+      const dy = e.deltaY || e.deltaX; // Shift turns a wheel's deltaY into deltaX
+      const step = tlSlipStep(dy, e.shiftKey, e.ctrlKey || e.metaKey);
+      if (!step) return;
+      // One undo step per burst of turns.
+      if (st.slip?.id !== row.id) { if (st.slip) clearTimeout(st.slip.timer); emSnapshot(m); st.slip = { id: row.id, timer: 0, snap: m.undo.length }; }
+      clearTimeout(st.slip.timer);
+      st.slip.timer = setTimeout(() => {
+        const s = st.slip;
+        st.slip = null;
+        if (s && m.undo.length === s.snap && m.undo[m.undo.length - 1] === emState(m)) m.undo.pop(); // it moved nothing
+      }, 700);
+      if (emSlipFile(m, row.id, step)) {
+        changed("file");
+        const at = Math.round(row.trimStart * 100) / 100;
+        showTip(row.offset, t("Sound from {time} of the file", { time: tlFmtPrecise(at) }));
+        clearTimeout(st.slipTip);
+        st.slipTip = setTimeout(() => { if (!st.drag) el.tip.hidden = true; }, 900);
+      }
+      return;
+    }
     if (e.ctrlKey) {
       e.preventDefault();
       zoomAround(Math.exp(-e.deltaY * unit * 0.0015), e.clientX - rect.left);
@@ -2005,6 +2348,16 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (st.drag) return;
     const rect = el.lanes.getBoundingClientRect();
     const x = e.clientX - rect.left;
+    // An overlay block has its own menu (0.1.35).
+    const ovLane = e.target.closest("[data-tl-lane]");
+    if (ovLane?.dataset.tlKind === "ov") {
+      const hit = ovAtX(+ovLane.dataset.tlLane.slice(2), x);
+      if (hit) {
+        pickOv(hit.o.id);
+        openMenu(ovMenuHtml(hit.o), e.clientX, e.clientY, (act) => ovAct(act, hit.o.id));
+      }
+      return;
+    }
     // A clip block has its own menu.
     if (e.target.closest("[data-tl-lane]")?.dataset.tlLane === "parts") {
       const i = partAtX(x);
@@ -2026,6 +2379,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (lane) {
       const p = pieceAtX(lane.dataset.tlLane, x);
       if (p && !tlSelHas(st.sels, p)) setSel(p); // the piece under the pointer becomes the selection
+      c.video = lane.dataset.tlLane === "video" && !!p;
     }
     openMenu(menuHtml(c), e.clientX, e.clientY, (act, arg) => menuAct(act, arg, c));
   }
@@ -2071,6 +2425,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       const segs = blankSegs(), hidden = segs.length > 0 && !!m.blank[segs[0]];
       top.push(item("blank", hidden ? tlPaths.eye : tlPaths.eyeOff, hidden ? t("Show the video here") : t("Hide the video here")));
     }
+    if (c.video && typeof cvApi()?.crop === "function") top.push(item("cv-crop", tlPaths.crop, t("Crop to a part of the picture")));
     out.push(...top);
     if (top.length) out.push("<hr>");
     out.push(item("hide-cuts", tlPaths.hideCuts, t("Hide cut parts"), { on: st.hideCuts }));
@@ -2078,6 +2433,35 @@ function mountTimeline(host, opts) {  const m = opts.model;
     out.push(item("select-all", tlPaths.selAll, t("Select all pieces")), item("fit", tlPaths.fit, t("Fit the whole clip")));
     if (typeof opts.onCommand === "function") out.push("<hr>", item("shortcuts", tlPaths.keys, t("Shortcuts…")), item("fullscreen", tlPaths.full, t("Fullscreen")));
     return out.join("");
+  }
+  /** The menu of an overlay block: Crop (media), Duplicate, Bring to front, Send to back, Delete. An entry whose
+   *  function the overlay code does not have is left out (Delete and the order work without it). */
+  function ovMenuHtml(o) {
+    const item = (act, path, label) => `<button type="button" role="menuitem" data-tl-m="${act}" data-tl-arg="">${tlSvg(path)}<span>${esc(label)}</span></button>`;
+    const api = ovApi(), L = ovItems(), i = L.indexOf(o), out = [`<div class="menu-head">${esc(ovLabel(o))}</div>`];
+    if (isMedia(o) && typeof api?.crop === "function") out.push(item("ov-crop", tlPaths.crop, t("Crop")));
+    if (typeof api?.duplicate === "function") out.push(item("ov-dup", tlPaths.dup, t("Duplicate")));
+    if (i < L.length - 1) out.push(item("ov-front", tlPaths.front, t("Bring to front")));
+    if (i > 0) out.push(item("ov-back", tlPaths.back, t("Send to back")));
+    out.push("<hr>", item("ov-del", tlPaths.trash, t("Delete")));
+    return out.join("");
+  }
+  function ovAct(act, id) {
+    const api = ovApi();
+    switch (act) {
+      case "ov-crop": try { api?.crop?.(id); } catch (e) { console.error("Glint timeline: ov.crop failed", e); } return true;
+      case "ov-dup": {
+        let nid = null;
+        try { nid = api?.duplicate?.(id); } catch (e) { console.error("Glint timeline: ov.duplicate failed", e); }
+        ovChanged();
+        if (nid && ovById(nid)) pickOv(nid);
+        return !!nid;
+      }
+      case "ov-front": return doOvOrder(id, true);
+      case "ov-back": return doOvOrder(id, false);
+      case "ov-del": return doOvRemove(id);
+    }
+    return false;
   }
   /** The menu of clip block `i`: move it, cut it out or put it back (both when it is partly cut out). */
   function partMenuHtml(i) {
@@ -2118,6 +2502,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       case "level": return doLevel(+arg);
       case "solo": return doSolo();
       case "blank": return doBlank();
+      case "cv-crop": try { cvApi()?.crop?.(); } catch (e) { console.error("Glint timeline: cv.crop failed", e); } return true;
       case "hide-cuts": return setHideCuts(!st.hideCuts);
       case "names": return setNames(!st.names);
       case "select-all": return selectAll();
@@ -2334,6 +2719,21 @@ function mountTimeline(host, opts) {  const m = opts.model;
     selection: () => (st.sel ? { ...st.sel } : null),
     selections: () => st.sels.map((s) => ({ ...s })),
     select(sel) { if (!st.dead) setSel(sel); },
+    /** The overlay code selected item `id` (null: none): its block lights up (0.1.35). Does not call onOverlayPick back. */
+    overlaySel(id) {
+      if (st.dead) return;
+      const next = id && ovById(id) ? id : null;
+      if (next && st.sels.length) setSels([], null);
+      if (next !== st.ovSel) { st.ovSel = next; markAll(); }
+    },
+    overlaySelected: () => st.ovSel,
+    /** The timeline second under client x `clientX` if it is over the lanes (for a dropped file), else null. */
+    timeAtClient(clientX, clientY) {
+      if (st.dead || !st.laneW) return null;
+      const r = el.lanes.getBoundingClientRect();
+      if (!(clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom)) return null;
+      return Math.min(maxT(), Math.max(0, timeAtX(clientX - r.left)));
+    },
     zoom(factor) { if (!st.dead) zoom(factor); },
     fit() { if (!st.dead) fit(); },
     hideCuts: () => st.hideCuts,
@@ -2344,7 +2744,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       if (st.drag && cmd !== "clearSel") return false; // not in the middle of a drag: indexes would move under it
       switch (cmd) {
         case "split": return doSplit(+opts.getTime() || 0);
-        case "remove": return doRemove();
+        case "remove": return st.ovSel && ovById(st.ovSel) ? doOvRemove(st.ovSel) : doRemove(); // a selected overlay block first
         case "mute": return doMuteSeg();
         case "louder": return doNudge(0.1);
         case "quieter": return doNudge(-0.1);
@@ -2370,6 +2770,8 @@ function mountTimeline(host, opts) {  const m = opts.model;
       if (st.dead) return;
       st.dead = true;
       cancelAnimationFrame(st.raf);
+      if (st.slip) clearTimeout(st.slip.timer);
+      clearTimeout(st.slipTip);
       closeMenu();
       endDrag();
       endGrip();
@@ -2399,5 +2801,5 @@ function mountTimeline(host, opts) {  const m = opts.model;
 
 // Lets the pure helpers be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { tlRowScale, tlRowKParse, tlPickStep, tlFmtTick, tlFmtPrecise, tlSnap, tlSnapV, tlFileHit, tlSpanHit, tlTrimLeft, tlPeakMax, tlHue, tlViewMap, tlSrcToView, tlViewToSrc, tlJoints, tlSelKey, tlSelHas, tlSelMerge, tlSelToggle, tlSelRect, tlBandHits, tlSelShift, tlFmtLen, tlPartSlot };
+  module.exports = { tlRowScale, tlRowKParse, tlPickStep, tlFmtTick, tlFmtPrecise, tlSnap, tlSnapV, tlFileHit, tlSpanHit, tlTrimLeft, tlPeakMax, tlHue, tlViewMap, tlSrcToView, tlViewToSrc, tlJoints, tlSelKey, tlSelHas, tlSelMerge, tlSelToggle, tlSelRect, tlBandHits, tlSelShift, tlFmtLen, tlPartSlot, tlOvRows, tlViewSpan, tlSlipStep };
 }

@@ -526,6 +526,10 @@ struct Pipe {
     /// Game mode, the game has exited: no ffmpeg runs, but the buffer is kept (it ages out by
     /// its length) so a clip key still saves the end of the game. `Recorder::start` resumes it.
     parked: AtomicBool,
+    /// The sound switches it was asked for now (desktop sound, microphone). The picture does
+    /// not depend on them, so flipping one keeps the capture and its buffer (0.1.35; it
+    /// restarted with an empty buffer before, so a clip right after the switch was short).
+    sound: Mutex<(bool, bool)>,
 }
 
 impl Pipe {
@@ -543,8 +547,18 @@ impl Pipe {
             status: Mutex::new(status),
             window: AtomicU64::new(cfg.window),
             parked: AtomicBool::new(false),
+            sound: Mutex::new((cfg.desktop_audio, cfg.mic)),
             cfg,
         })
+    }
+
+    /// `cfg` differs from this capture's only in the sound switches.
+    fn same_picture(&self, cfg: &CaptureCfg) -> bool {
+        let mut c = cfg.clone();
+        let now = self.cfg_now();
+        c.desktop_audio = now.desktop_audio;
+        c.mic = now.mic;
+        c == now
     }
 
     fn alive(&self) -> bool {
@@ -555,14 +569,17 @@ impl Pipe {
     fn cfg_now(&self) -> CaptureCfg {
         let mut c = self.cfg.clone();
         c.window = self.window.load(Ordering::SeqCst);
+        (c.desktop_audio, c.mic) = *self.sound.lock().unwrap();
         c
     }
 
     /// `cfg` asks for another window with everything else the same: a window capture can move there.
     fn can_move_to(&self, cfg: &CaptureCfg) -> bool {
         let mut c = cfg.clone();
-        c.window = self.cfg.window;
-        self.cfg.window != 0 && cfg.window != 0 && c == self.cfg
+        let now = self.cfg_now();
+        c.window = now.window;
+        (c.desktop_audio, c.mic) = (now.desktop_audio, now.mic);
+        self.cfg.window != 0 && cfg.window != 0 && c == now
     }
 
     /// Capture `window` from now on: its ffmpeg is ended, `supervise` starts the next one on the
@@ -647,6 +664,10 @@ struct Inner {
     mic: Arc<Mutex<AudioRing>>,
     running: AtomicBool,
     audio: Mutex<Option<(AudioKey, Arc<AtomicBool>)>>,
+    /// Tests: the shared audio capture is never started (no device is opened); see `test_no_devices`.
+    no_devices: AtomicBool,
+    /// How often the shared audio capture was (re)started (tests).
+    audio_starts: std::sync::atomic::AtomicU32,
 }
 
 #[derive(Clone)]
@@ -745,6 +766,36 @@ fn border_clean_set(monitor: u32, clean: bool) -> bool {
     v.retain(|(m, _)| *m != monitor);
     v.push((monitor, clean));
     before
+}
+
+/// `args` of a monitor capture (`capture_args`) with the monitor named so that ffmpeg cannot take
+/// another one: Graphics Capture gets the monitor's handle instead of `monitor_idx`, Desktop
+/// Duplication the monitor's own place among the graphics card's outputs. Without a source (or a
+/// handle, or an output) the number stays, as before 0.1.35. See `win::MonitorSource` for why.
+pub fn retarget(mut args: Vec<String>, monitor: u32, src: Option<&crate::win::MonitorSource>) -> Vec<String> {
+    let Some(src) = src else { return args };
+    let wgc = format!("gfxcapture=monitor_idx={monitor}:");
+    let dda = format!("ddagrab=output_idx={monitor}:");
+    for a in args.iter_mut() {
+        if src.hmonitor != 0 && a.contains(&wgc) {
+            *a = a.replacen(&wgc, &format!("gfxcapture=hmonitor={}:", src.hmonitor), 1);
+        } else if let Some(o) = src.dxgi_output.filter(|_| a.contains(&dda)) {
+            *a = a.replacen(&dda, &format!("ddagrab=output_idx={o}:"), 1);
+        }
+    }
+    args
+}
+
+/// Remember how monitor `monitor` was last named to ffmpeg; true when that is new (worth a log line).
+fn note_source(monitor: u32, src: &crate::win::MonitorSource) -> bool {
+    static SEEN: Mutex<Vec<(u32, crate::win::MonitorSource)>> = Mutex::new(Vec::new());
+    let mut v = SEEN.lock().unwrap();
+    if v.iter().any(|(m, s)| *m == monitor && s == src) {
+        return false;
+    }
+    v.retain(|(m, _)| *m != monitor);
+    v.push((monitor, src.clone()));
+    true
 }
 
 /// The ffmpeg command line of the capture.
@@ -890,6 +941,8 @@ impl Recorder {
                 mic: Arc::new(Mutex::new(AudioRing::new())),
                 running: AtomicBool::new(false),
                 audio: Mutex::new(None),
+                no_devices: AtomicBool::new(false),
+                audio_starts: std::sync::atomic::AtomicU32::new(0),
             }),
         }
     }
@@ -923,6 +976,15 @@ impl Recorder {
         let mut pipes = self.inner.pipes.lock().unwrap();
         self.inner.running.store(true, Ordering::SeqCst);
         let old = std::mem::take(&mut *pipes);
+        // Only a sound switch changed (Desktop audio, the microphone, GAME mode's desktop sound):
+        // the picture goes on with its buffer; the shared audio capture below follows the switch.
+        for p in &old {
+            if p.alive() && !cfgs.contains(&p.cfg_now()) {
+                if let Some(c) = cfgs.iter().find(|c| p.same_picture(c)) {
+                    *p.sound.lock().unwrap() = (c.desktop_audio, c.mic);
+                }
+            }
+        }
         // Game mode: another game's window of the same size is taken over by the capture of the
         // last one, which keeps its buffer (a new epoch). Never for a monitor capture.
         for p in &old {
@@ -972,7 +1034,18 @@ impl Recorder {
             self.inner.desk.lock().unwrap().set_spill(window, key.dir.clone(), "d");
             self.inner.mic.lock().unwrap().set_spill(window, key.dir.clone(), "m");
             let stop = Arc::new(AtomicBool::new(false));
-            audio::spawn(self.inner.desk.clone(), self.inner.mic.clone(), key.desk, key.mic, max_secs + 5.0, stop.clone());
+            self.inner.audio_starts.fetch_add(1, Ordering::Relaxed);
+            if !self.inner.no_devices.load(Ordering::Relaxed) {
+                audio::spawn(self.inner.desk.clone(), self.inner.mic.clone(), key.desk, key.mic, max_secs + 5.0, stop.clone());
+            } else {
+                // As `audio::spawn` does for a source that is off, without opening any device.
+                if !key.desk {
+                    self.inner.desk.lock().unwrap().clear();
+                }
+                if !key.mic {
+                    self.inner.mic.lock().unwrap().clear();
+                }
+            }
             *audio = Some((key, stop));
         }
     }
@@ -1018,6 +1091,13 @@ impl Recorder {
         for (k, pkt) in mic.chunks(960).enumerate() {
             m.push(pkt, start + ((k + 1) * 480) as f64 / 48_000.0);
         }
+    }
+
+    /// Test hook: from now on this recorder never opens an audio device (the sound switches
+    /// still decide what is kept), and how often its shared audio capture was (re)started.
+    pub fn test_no_devices(&self) -> u32 {
+        self.inner.no_devices.store(true, Ordering::Relaxed);
+        self.inner.audio_starts.load(Ordering::Relaxed)
     }
 
     fn stop_keep_running(&self) {
@@ -1134,6 +1214,20 @@ fn supervise(pipe: Arc<Pipe>) {
         // Game mode: the window it captures now (`Pipe::move_to` can change it between runs).
         let window = pipe.window.load(Ordering::SeqCst);
         let args = if window == cfg.window { capture_args(&cfg, &enc, &method, sw, no_border) } else { capture_args(&CaptureCfg { window, ..cfg.clone() }, &enc, &method, sw, no_border) };
+        // A monitor is named to ffmpeg by its handle (or its place among the card's outputs),
+        // not by Glint's number: ffmpeg counts the monitors in another order on some PCs.
+        let args = if window == 0 {
+            let src = crate::win::monitor_source(cfg.monitor);
+            let named = retarget(args.clone(), cfg.monitor, src.as_ref());
+            if let Some(s) = src.as_ref().filter(|_| named != args) {
+                if note_source(cfg.monitor, s) {
+                    util::log(&format!("capture {}: {} named to ffmpeg by {}", cfg.monitor, s.name, if method == "wgc" { format!("its handle {:#x}", s.hmonitor) } else { format!("output {}", s.dxgi_output.unwrap_or(cfg.monitor)) }));
+                }
+            }
+            named
+        } else {
+            args
+        };
         let frames_before = pipe.ring.lock().unwrap().frames;
         let spawned = util::hidden_cmd_prio(&ffmpeg).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
         let started = Instant::now();
@@ -1493,6 +1587,29 @@ pub fn self_test(report_path: &str) {
             buffer_dir: root.join("rec"),
             window: 0,
         };
+        // The monitor is named to ffmpeg by handle / output, not by Glint's own number (0.1.35).
+        {
+            use crate::win::{source_among, MonitorSource};
+            // Glint's order is "main first"; Windows lists this PC's monitors the other way round.
+            let handles = vec![(0x20041u64, "DISPLAY2".to_string()), (0x10001u64, "DISPLAY1".to_string())];
+            let outputs = vec!["DISPLAY2".to_string(), "DISPLAY1".to_string()];
+            let main = source_among("DISPLAY1", &handles, &outputs);
+            check("monitor: found by its device name, whatever the order", main == MonitorSource { name: "DISPLAY1".into(), hmonitor: 0x10001, dxgi_output: Some(1) }, format!("{main:?}"));
+            let filter = |method: &str, src: Option<&MonitorSource>| retarget(capture_args(&cfg(0, 35.0), "nvenc", method, false, true), 0, src).into_iter().find(|a| a.contains("gfxcapture=") || a.contains("ddagrab=")).unwrap_or_default();
+            let (w, d) = (filter("wgc", Some(&main)), filter("dda", Some(&main)));
+            check("monitor: Graphics Capture gets the handle, not a number", w.starts_with(&format!("gfxcapture=hmonitor={}:max_framerate=", 0x10001)) && !w.contains("monitor_idx"), w.clone());
+            check("monitor: Desktop Duplication gets the monitor's own output", d.starts_with("ddagrab=output_idx=1:framerate="), d.clone());
+            let gone = source_among("DISPLAY7", &handles, &outputs);
+            check("monitor: an unknown monitor keeps its number", gone.hmonitor == 0 && gone.dxgi_output.is_none() && filter("wgc", Some(&gone)).starts_with("gfxcapture=monitor_idx=0:") && filter("dda", Some(&gone)).starts_with("ddagrab=output_idx=0:") && filter("wgc", None).starts_with("gfxcapture=monitor_idx=0:"), format!("{gone:?}"));
+            let rest = |v: Vec<String>| v.into_iter().filter(|a| !a.contains("gfxcapture=")).collect::<Vec<_>>();
+            check("monitor: nothing else of the command changes", rest(retarget(capture_args(&cfg(0, 35.0), "nvenc", "wgc", false, true), 0, Some(&main))) == rest(capture_args(&cfg(0, 35.0), "nvenc", "wgc", false, true)), String::new());
+            // This PC: every monitor Glint lists has a handle, and no two share one.
+            let real: Vec<_> = (0..crate::win::monitors().len() as u32).filter_map(crate::win::monitor_source).collect();
+            let mut hs: Vec<u64> = real.iter().map(|s| s.hmonitor).collect();
+            hs.sort_unstable();
+            hs.dedup();
+            check("monitor: every monitor of this PC has its own handle", !real.is_empty() && real.iter().all(|s| s.hmonitor != 0) && hs.len() == real.len(), format!("{real:?}"));
+        }
         let rec = Recorder::new();
         let ids = |rec: &Recorder| rec.stats().captures.iter().map(|c| (c.monitor, c.id, c.primary)).collect::<Vec<_>>();
         rec.start(vec![cfg(0, 35.0), cfg(1, 65.0)]);

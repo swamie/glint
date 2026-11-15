@@ -143,7 +143,7 @@ const kfOvMoveT = (T, ddx, ddy) => ({ ...T, dx: T.dx + ddx, dy: T.dy + ddy });
  */
 function kfOvResizeT(o, T, before, after, handle, W, H, measure) {
   const [mx, my] = kfOvMid(o, W, H, measure);
-  if (o.kind === "rect" || o.kind === "ellipse" || o.kind === "blur") {
+  if (o.kind === "rect" || o.kind === "ellipse" || o.kind === "blur" || o.kind === "image" || o.kind === "gif" || o.kind === "video") {
     const sx = o.w > 1e-6 ? kfClamp(after.w / o.w, 0.02, 50) : T.sx, sy = o.h > 1e-6 ? kfClamp(after.h / o.h, 0.02, 50) : T.sy;
     return { dx: after.x + (o.w * sx) / 2 - mx, dy: after.y + (o.h * sy) / 2 - my, sx, sy };
   }
@@ -165,18 +165,18 @@ function kfOvResizeT(o, T, before, after, handle, W, H, measure) {
 /**
  * Draws the items shown at `tm` on a W x H canvas the way the export lays them: an item with keys
  * is its own still picture moved and scaled about its middle (so a stretched rectangle's line
- * stretches too, as in the export). `skip`: an id not to draw.
+ * stretches too, as in the export). `skip`: an id not to draw. `videos`: the player's clip items (media.js).
  */
-function kfOvDraw(ctx, list, tm, W, H, skip, measure) {
+function kfOvDraw(ctx, list, tm, W, H, skip, measure, videos = null) {
   for (const o of list) {
     if (o.kind === "blur" || o.id === skip) continue;
-    if (!kfHas(o)) { ovDraw(ctx, [o], W, H, skip); continue; }
+    if (!kfHas(o)) { ovDraw(ctx, [o], W, H, skip, tm, videos); continue; }
     const T = kfOvT(o, tm), [mx, my] = kfOvMid(o, W, H, measure);
     ctx.save();
     ctx.translate((mx + T.dx) * W, (my + T.dy) * H);
     ctx.scale(T.sx, T.sy);
     ctx.translate(-mx * W, -my * H);
-    ovDraw(ctx, [o], W, H, skip);
+    ovDraw(ctx, [o], W, H, skip, tm, videos);
     ctx.restore();
   }
 }
@@ -236,7 +236,10 @@ function kfOutTrack(m, keys, smooth, valuesAt, from = 0, to = m.duration) {
   const sp = m.speed || 1, out = [], first = keys[0].t, last = keys[keys.length - 1].t;
   const isKey = (x) => keys.some((k) => Math.abs(k.t - x) < 1e-6);
   let at = 0;
-  for (const r of emKept(m)) {
+  // The kept parts, then the time after the video's end (0.1.35: emEnd), which comes after them in the result.
+  const ranges = emKept(m).map((r) => ({ start: r.start, end: r.end }));
+  if (typeof emEnd === "function" && emEnd(m) > m.duration + 1e-6) ranges.push({ start: m.duration, end: emEnd(m) });
+  for (const r of ranges) {
     const a = Math.max(r.start, from), b = Math.min(r.end, to);
     const outT = (tl) => kfR((at + tl - r.start) / sp, 10000);
     const push = (tl, e) => out.push({ t: outT(tl), ...valuesAt(tl), ...(e ? { e: true } : {}) });

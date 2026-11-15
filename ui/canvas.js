@@ -723,16 +723,7 @@ function cvMount(root, c, P) {
     if (!k || !m()) return;
     if (k === "shape") {
       if (el.value === "off") { st.custom = false; st.sel = null; change((mm) => { mm.canvas = null; }); setArrange(false); }
-      else if (el.value === "crop") {
-        // Crop: the canvas becomes one box of the picture (the middle 80 % to begin with), shown on the picture to adjust.
-        st.custom = false;
-        change((mm) => {
-          const id = cvNewId();
-          mm.canvas = cvCropFit({ width: 16, height: 16, background: "black", crop: true, pieces: [{ id, sx: 0.1, sy: 0.1, sw: 0.8, sh: 0.8, x: 0, y: 0, w: 1, h: 1 }] }, src());
-          st.sel = id;
-        });
-        setArrange(true, "source");
-      }
+      else if (el.value === "crop") startCrop();
       else if (el.value === "custom") { st.custom = true; const C = cv(); if (!C) setSize(1080, 1920); else if (C.crop) setSize(C.width, C.height); else { st.lastPanel = ""; renderPanel(); } }
       else { st.custom = false; const [w, h] = CV_SHAPES.find(([id]) => id === el.value)[1][1]; setSize(w, h); }
     } else if (k === "size") { const [w, h] = el.value.split("x").map(Number); setSize(w, h); }
@@ -743,6 +734,23 @@ function cvMount(root, c, P) {
     st.lastPanel = "";
     renderPanel();
   });
+  /** "Crop to a part of the picture": the canvas becomes one box of the picture (the middle 80 % to begin with), shown on the
+   *  picture to adjust. An existing crop is shown for adjusting again. Also the picture's right-click "Crop" (0.1.35, overlays.js). */
+  function startCrop() {
+    if (!m()) return false;
+    if (!cv()?.crop) {
+      st.custom = false;
+      change((mm) => {
+        const id = cvNewId();
+        mm.canvas = cvCropFit({ width: 16, height: 16, background: "black", crop: true, pieces: [{ id, sx: 0.1, sy: 0.1, sw: 0.8, sh: 0.8, x: 0, y: 0, w: 1, h: 1 }] }, src());
+        st.sel = id;
+      });
+    }
+    setArrange(true, "source");
+    st.lastPanel = "";
+    renderPanel();
+    return true;
+  }
   panel.addEventListener("keydown", (e) => { if ((e.target.dataset?.cv === "w" || e.target.dataset?.cv === "h") && (e.code === "Enter" || e.code === "NumpadEnter")) e.target.blur(); });
   // The tool bar: its own button toggles arranging; picking a drawing tool ends it.
   const onBar = (e) => {
@@ -803,6 +811,10 @@ function cvMount(root, c, P) {
     size() { const C = cv(); return C && st.editing ? { width: C.width, height: C.height } : null; },
     /** True while the player shows the clip's own picture to pick what a piece shows (overlays hide then). */
     sourceShown: () => srcView(),
+    /** Starts cropping the clip's own picture (the timeline's and the picture's right-click "Crop"). */
+    // With a layout of pieces already made, "Crop" must not replace it: the pieces are arranged
+    // instead (an edge of a piece crops it). Otherwise it starts "Crop to a part of the picture".
+    crop: () => (cv() && !cv().crop ? (setArrange(true, "result"), true) : startCrop()),
     destroy() {
       st.dead = true;
       clearTimeout(st.wheel?.timer);

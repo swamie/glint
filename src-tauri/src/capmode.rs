@@ -38,6 +38,13 @@ pub fn game_mode(s: &Settings) -> bool {
     s.capture_mode == "game"
 }
 
+/// A clip of game mode without desktop sound: `clip::write_game` (Mix of game + microphone,
+/// Game, Microphone). With desktop sound asked for (0.1.33) the clip takes `clip::write`: the
+/// usual tracks, and track 1 holds the game too when the desktop sound lacks it (0.1.35).
+pub fn game_only(s: &Settings) -> bool {
+    game_mode(s) && !s.game_desktop_audio
+}
+
 /// The window being recorded in game mode.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Target {
@@ -903,9 +910,81 @@ fn test_clips(r: &mut Report) {
         }
         Err(e) => r.check("desktop clip", false, &e),
     }
+    // GAME mode with desktop sound (0.1.33) and a desktop output that is silent (the game plays on
+    // other headphones): a user's clips had only the microphone on track 1 (0.1.35).
+    let both = Settings { game_desktop_audio: true, ..s.clone() };
+    r.check("clip path: game mode takes write_game, with desktop sound write", game_only(&s) && !game_only(&both) && !game_only(&Settings::default()), "");
+    let cap = clip::Capture {
+        snap: Snapshot { header: header.clone(), gops: Vec::new(), segments: segs.to_vec(), duration: 4.0 },
+        desk: Some(Pcm { rate: 48_000, data: vec![0; 4 * 48_000 * 2] }),
+        mic: Some(Pcm { rate: 48_000, data: tone(3000.0, 4.0) }),
+        game: ga.plan(&segs).map(Plan::read),
+        width: 320,
+        height: 180,
+        fps: 30,
+    };
+    match clip::write(&both, cap, "game with desktop sound") {
+        Ok(m) => {
+            let p = Path::new(&m.path);
+            let got = audio_titles(&ffmpeg, p);
+            let (m5, m3) = (band(&ffmpeg, p, 0, 500), band(&ffmpeg, p, 0, 3000));
+            r.check("game mode with desktop sound, silent desktop output: track 1 holds the game and the mic", got == ["Mix", "Desktop", "Microphone", "Game"] && m5 > -40.0 && m3 > -40.0, &format!("{got:?}, 500 {m5:.1}, 3000 {m3:.1} dB"));
+        }
+        Err(e) => r.check("game mode with desktop sound, silent desktop output", false, &e),
+    }
     ga.off();
+    test_switch(r, &header);
     test_waiting(r, &ffmpeg, &header, &s);
     let _ = std::fs::remove_dir_all(util::data_dir().join("capmode-test"));
+}
+
+/// The Desktop switch (or GAME mode's desktop sound) flipped while clipping runs: the picture's
+/// buffer is kept and only the shared audio capture follows. No device is opened here.
+fn test_switch(r: &mut Report, ts: &[u8]) {
+    use crate::recorder::Recorder;
+    let dir = util::data_dir().join("capmode-test").join("switch");
+    let _ = std::fs::create_dir_all(&dir);
+    let cfg = |desk: bool, mic: bool| CaptureCfg {
+        ffmpeg: None,
+        monitor: 0,
+        width: 320,
+        height: 180,
+        scaled: false,
+        fps: 30,
+        hz: 60,
+        quality: "high".into(),
+        bitrate: 0,
+        encoder: "x264".into(),
+        method: "wgc".into(),
+        cursor: true,
+        desktop_audio: desk,
+        mic,
+        max_secs: 35.0,
+        buffer: "ram".into(),
+        buffer_ram_secs: 30.0,
+        buffer_dir: dir.clone(),
+        window: 0x10,
+    };
+    let rec = Recorder::new();
+    let starts0 = rec.test_no_devices();
+    rec.start(vec![cfg(false, false)]);
+    let id0 = rec.stats().captures.first().map(|c| c.id);
+    rec.test_feed(ts, util::now_secs() - 0.5, &tone(3000.0, 4.0));
+    let s1 = rec.test_no_devices();
+    rec.start(vec![cfg(true, false)]); // desktop sound switched on
+    let s2 = rec.test_no_devices();
+    let kept = rec.snapshot(30.0, None).is_ok_and(|v| v.0.duration > 3.0);
+    r.check("switch: desktop sound on keeps the picture's capture and its buffer", rec.stats().captures.first().map(|c| c.id) == id0 && kept, &format!("{:?} -> {:?}", id0, rec.stats().captures.first().map(|c| c.id)));
+    r.check("switch: the shared audio capture is restarted for it", s1 == starts0 + 1 && s2 == s1 + 1 && rec.current_cfgs() == vec![cfg(true, false)], &format!("starts {starts0} {s1} {s2}"));
+    rec.start(vec![cfg(true, false)]);
+    r.check("switch: the same switches again restart nothing", rec.test_no_devices() == s2, "");
+    rec.start(vec![cfg(false, false)]); // and off again: the desktop ring is dropped
+    let desk = rec.snapshot(30.0, None).ok().and_then(|v| v.1);
+    r.check("switch: desktop sound off drops the desktop ring, the picture stays", rec.stats().captures.first().map(|c| c.id) == id0 && desk.is_none(), "");
+    let other = CaptureCfg { width: 640, height: 360, ..cfg(false, false) };
+    rec.start(vec![other]);
+    r.check("switch: a change of the picture still restarts the capture", rec.stats().captures.first().map(|c| c.id) != id0, "");
+    rec.stop();
 }
 
 /// The game exits: the buffer is kept, a clip while waiting saves what it holds (the lead's call).

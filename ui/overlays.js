@@ -15,7 +15,14 @@
 // lays them over the picture with ffmpeg (editor.rs, ExportOpts::overlays), so no font
 // is needed there and the export looks like the preview.
 
-const OV_KINDS = ["text", "rect", "ellipse", "line", "arrow", "pen", "blur"];
+// 0.1.35: "image", "gif" and "video" are pictures, GIFs and clips on the picture (ui/media.js).
+const OV_KINDS = ["text", "rect", "ellipse", "line", "arrow", "pen", "blur", "image", "gif", "video"];
+const OV_MEDIA_PATHS = {
+  image: "M4 5h16v14H4zM4 15l5-5 4 4 3-3 4 4M15 9.5a1.5 1.5 0 1 0 0-.01",
+  gif: "M4 5h16v14H4zM8 10H6.5v4H8v-1.5M11 10v4M14 14v-4h2.5M14 12h2",
+  video: "M4 6h11v12H4zM15 10l5-3v10l-5-3",
+};
+const OV_ADD_PATH = "M4 5h11M4 5v14h16v-6M4 15l5-5 4 4M18 3v6M15 6h6";
 const OV_TOOLS = [
   ["select", "Select", "M5 3l13 8-6 1.5L9 19z"],
   ["text", "Text", "M5 6V4h14v2M12 4v16M9 20h6"],
@@ -27,14 +34,23 @@ const OV_TOOLS = [
   ["blur", "Blur box", "M4 4h16v16H4zM8 8h2v2H8zM14 8h2v2h-2zM11 11h2v2h-2zM8 14h2v2H8zM14 14h2v2h-2z"],
 ];
 /** Each tool's and kind's name, translated (t() with plain strings, so the translation checker sees them). */
-const ovName = (k) => ({ select: t("Select"), text: t("Text"), rect: t("Rectangle"), ellipse: t("Ellipse"), line: t("Line"), arrow: t("Arrow"), pen: t("Pen"), blur: t("Blur box"), drawing: t("Drawing") })[k] || k;
+const ovName = (k) => ({ select: t("Select"), text: t("Text"), rect: t("Rectangle"), ellipse: t("Ellipse"), line: t("Line"), arrow: t("Arrow"), pen: t("Pen"), blur: t("Blur box"), drawing: t("Drawing"), image: t("Picture"), gif: t("GIF"), video: t("Clip") })[k] || k;
+/** The name an item goes by in lists and on the timeline (ui/timeline.js): a text's first line, a picture's file name, else its kind. */
+function ovItemLabel(o) {
+  if (!o) return "";
+  if (o.kind === "text" && String(o.text || "").trim()) return String(o.text).trim().split("\n")[0].slice(0, 40);
+  if (OV_MEDIA_PATHS[o.kind] && (o.title || o.path)) return String(o.title || String(o.path).split(/[\\/]/).pop()).slice(0, 60);
+  return ovName(o.kind === "pen" ? "drawing" : o.kind);
+}
+/** An SVG path (24 x 24) for an item kind's icon. */
+const ovKindPath = (kind) => OV_MEDIA_PATHS[kind] || OV_TOOLS.find((q) => q[0] === kind)?.[2] || "";
 const OV_COLORS = ["#ffffff", "#111111", "#ff3b30", "#ff9500", "#ffcc00", "#34c759", "#0a84ff", "#af52de"];
 const OV_FONT_FAMILY = '"Segoe UI", system-ui, sans-serif';
 const OV_LINE_H = 1.2;              // text line height, times the font size
 const OV_WIDTH_UNIT = 1 / 720;      // a thickness of 1 is one pixel of a 720p picture
 const OV_MIN_SPAN = 0.1;            // shortest time range, seconds
 const OV_STYLE_KEY = "glint.ov.style";
-const OV_DEFAULT_STYLE = { color: "#ffffff", width: 4, size: 7, fill: "none", outline: true, strength: 6 };
+const OV_DEFAULT_STYLE = { color: "#ffffff", width: 4, size: 7, fill: "none", outline: true, strength: 6, round: 0, soft: 0 };
 const ovClamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 const ovNum = (x, d) => (Number.isFinite(+x) ? +x : d);
 const ovColorOk = (c) => typeof c === "string" && /^#[0-9a-f]{6}$/i.test(c);
@@ -53,6 +69,9 @@ function ovStyleLoad() {
     fill: ["none", "solid", "half"].includes(s.fill) ? s.fill : "none",
     outline: s.outline !== false,
     strength: ovClamp(Math.round(ovNum(s.strength, OV_DEFAULT_STYLE.strength)), 1, 10),
+    // A blur box's round corners and soft edge, 0..100 % (0.1.35).
+    round: ovClamp(Math.round(ovNum(s.round, 0)), 0, 100),
+    soft: ovClamp(Math.round(ovNum(s.soft, 0)), 0, 100),
   };
 }
 function ovStyleSave(s) { try { localStorage.setItem(OV_STYLE_KEY, JSON.stringify(s)); } catch { /* not remembered */ } }
@@ -73,7 +92,7 @@ function ovMake(kind, st, a, b, dur) {
     case "rect": case "ellipse": return { ...base, ...box(), color: st.color, width: st.width * OV_WIDTH_UNIT, fill: st.fill };
     case "line": case "arrow": return { ...base, x1: a[0], y1: a[1], x2: b[0], y2: b[1], color: st.color, width: st.width * OV_WIDTH_UNIT };
     case "pen": return { ...base, pts: [[a[0], a[1]]], color: st.color, width: st.width * OV_WIDTH_UNIT };
-    case "blur": return { ...base, ...box(), strength: ovStrength(st.strength) };
+    case "blur": return { ...base, ...box(), strength: ovStrength(st.strength), ...(st.round > 0 ? { round: st.round / 100 } : {}), ...(st.soft > 0 ? { soft: st.soft / 100 } : {}) };
   }
   return null;
 }
@@ -83,13 +102,27 @@ function ovNorm(o) {
   if (!o || typeof o !== "object" || !OV_KINDS.includes(o.kind) || typeof o.id !== "string") return null;
   const f = (x, d = 0) => ovClamp(ovNum(x, d), -0.5, 1.5);
   const out = { id: o.id, kind: o.kind, from: Math.max(0, ovNum(o.from, 0)), to: Math.max(0, ovNum(o.to, 0)) };
+  if (OV_MEDIA_PATHS[o.kind]) {
+    // A picture, GIF or clip (media.js): its box, then its own fields.
+    Object.assign(out, { x: f(o.x), y: f(o.y), w: ovClamp(ovNum(o.w, 0.25), 0.001, 4), h: ovClamp(ovNum(o.h, 0.25), 0.001, 4) });
+    if (typeof medNorm === "function") medNorm(o, out);
+    const keys = Array.isArray(o.keys) && typeof kfNormOv === "function" ? kfNormOv(o) : [];
+    if (keys.length) Object.assign(out, { keys, smooth: !!o.smooth });
+    return out;
+  }
   if (o.kind !== "blur") { out.color = ovColorOk(o.color) ? o.color : "#ffffff"; }
   if (o.kind === "text") Object.assign(out, { x: f(o.x), y: f(o.y), text: String(o.text ?? ""), size: ovClamp(ovNum(o.size, 0.07), 0.01, 0.5), outline: o.outline !== false });
   else if (o.kind === "line" || o.kind === "arrow") Object.assign(out, { x1: f(o.x1), y1: f(o.y1), x2: f(o.x2), y2: f(o.y2), width: ovClamp(ovNum(o.width, 4 / 720), 0.0005, 0.1) });
   else if (o.kind === "pen") Object.assign(out, { pts: Array.isArray(o.pts) ? o.pts.filter((p) => Array.isArray(p) && p.length >= 2).map((p) => [f(p[0]), f(p[1])]) : [], width: ovClamp(ovNum(o.width, 4 / 720), 0.0005, 0.1) });
   else {
     Object.assign(out, { x: f(o.x), y: f(o.y), w: ovClamp(ovNum(o.w, 0.1), 0, 2), h: ovClamp(ovNum(o.h, 0.1), 0, 2) });
-    if (o.kind === "blur") out.strength = ovClamp(ovNum(o.strength, 0.03), 0.001, 0.2);
+    if (o.kind === "blur") {
+      out.strength = ovClamp(ovNum(o.strength, 0.03), 0.001, 0.2);
+      // Round corners and a soft edge (0.1.35), 0..1; an old box has neither.
+      const rd = ovClamp(ovNum(o.round, 0), 0, 1), sf = ovClamp(ovNum(o.soft, 0), 0, 1);
+      if (rd > 0) out.round = rd;
+      if (sf > 0) out.soft = sf;
+    }
     else Object.assign(out, { width: ovClamp(ovNum(o.width, 4 / 720), 0, 0.1), fill: ["none", "solid", "half"].includes(o.fill) ? o.fill : "none" });
   }
   // Keyframes (keyframes.js), when it has any.
@@ -192,6 +225,8 @@ function ovResized(o0, k, x, y, W, H, measure) {
     o.size = ovClamp(Math.max(byH, byW), 0.015, 0.5);
     return o;
   }
+  // A picture, GIF or clip keeps its proportions (media.js).
+  if (OV_MEDIA_PATHS[o.kind] && typeof medResized === "function") return medResized(o0, k, x, y, W, H);
   const L = o.x, T = o.y, R = o.x + o.w, B = o.y + o.h;
   const ax = k.includes("w") ? R : L, ay = k.includes("n") ? B : T; // the corner that stays
   o.x = Math.min(ax, x); o.y = Math.min(ay, y);
@@ -205,11 +240,13 @@ function ovGroups(m) {
   const out = [];
   for (const o of m.overlays || []) {
     if (o.kind === "blur" || (o.kind === "text" && !String(o.text || "").trim()) || (o.kind === "pen" && !o.pts.length)) continue;
+    // A picture, GIF or clip is an ffmpeg input of its own (media.js: medExportEntries), in its place in the order.
+    if (OV_MEDIA_PATHS[o.kind]) { out.push({ items: [o], media: true }); continue; }
     const r = emOutRange(m, o.from, o.to);
     if (!r) continue;
     if (Array.isArray(o.keys) && o.keys.length) { out.push({ items: [o], from: r.from, to: r.to, moving: true }); continue; }
     const last = out[out.length - 1];
-    if (last && !last.moving && last.from === r.from && last.to === r.to) last.items.push(o);
+    if (last && !last.moving && !last.media && last.from === r.from && last.to === r.to) last.items.push(o);
     else out.push({ items: [o], from: r.from, to: r.to });
   }
   return out;
@@ -219,7 +256,8 @@ function ovGroups(m) {
 function ovFadeAlpha(m, now) {
   const fi = +m.fadeIn || 0, fo = +m.fadeOut || 0;
   if (!(fi > 0 || fo > 0)) return 0;
-  const total = emOutDuration(m), half = total / 2;
+  // The whole result, with the time after the video (0.1.35): the fade out ends where the export ends.
+  const total = typeof emResultDuration === "function" ? emResultDuration(m) : emOutDuration(m), half = total / 2;
   const at = emSrcToOut(m, now) / (m.speed || 1);
   let a = 0;
   if (fi > 0) a = Math.max(a, 1 - at / Math.min(fi, half));
@@ -253,10 +291,12 @@ function ovSpan(from, to, dur, keep) {
 
 /* ---------- drawing (the preview and the export use the same code) ---------- */
 
-/** Draws the items (blur boxes are left out: the preview and ffmpeg do those) on a W x H canvas. `skip`: an item id not to draw (the one being typed). */
-function ovDraw(ctx, list, W, H, skip) {
+/** Draws the items (blur boxes are left out: the preview and ffmpeg do those) on a W x H canvas. `skip`: an item id not to draw (the one being typed).
+ *  Pictures, GIFs and clips (media.js) are drawn as they are at timeline second `tm`, clips from the player's `videos`. */
+function ovDraw(ctx, list, W, H, skip, tm = 0, videos = null) {
   for (const o of list) {
     if (o.kind === "blur" || o.id === skip) continue;
+    if (OV_MEDIA_PATHS[o.kind]) { if (typeof medDraw === "function") medDraw(ctx, o, W, H, tm, videos); continue; }
     ctx.save();
     const lw = Math.max(1, (o.width || 0) * H);
     ctx.strokeStyle = o.color;
@@ -369,9 +409,12 @@ function ovMount(root, c, P) {
     <div class="ov-bar" hidden role="toolbar" aria-label="${esc(t("Text and drawing"))}">
       ${OV_TOOLS.map(([k, , d]) => `<button type="button" class="ov-tool" data-ov-tool="${k}" title="${esc(ovName(k))}" aria-label="${esc(ovName(k))}" aria-pressed="false">${svg(d)}</button>`).join("")}
       <span class="ov-sep"></span>
+      <button type="button" class="ov-tool" data-ov-add title="${esc(t("Add a picture, GIF or clip"))}" aria-label="${esc(t("Add a picture, GIF or clip"))}">${svg(OV_ADD_PATH)}</button>
+      <span class="ov-sep"></span>
       <button type="button" class="ov-tool ov-del" data-ov-del title="${esc(t("Delete the selected item"))}" aria-label="${esc(t("Delete the selected item"))}" disabled>${svg("M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13")}</button>
-    </div>`);
-  const layer = box.querySelector(".ov-layer"), bar = box.querySelector(".ov-bar");
+    </div>
+    <div class="med-offer" hidden role="status"></div>`);
+  const layer = box.querySelector(".ov-layer"), bar = box.querySelector(".ov-bar"), offer = box.querySelector(".med-offer");
   const art = layer.querySelector(".ov-art"), ui = layer.querySelector(".ov-ui"), fadeEl = layer.querySelector(".ov-fade");
   const blursEl = layer.querySelector(".ov-blurs"), editor = layer.querySelector(".ov-edit");
   const exportSec = pane.querySelector(".e-export");
@@ -387,7 +430,12 @@ function ovMount(root, c, P) {
     W: 0, H: 0, left: 0, top: 0, dpr: 1, // the shown picture, in CSS pixels of the player
     shown: "", dirty: true, drag: null, typing: null, rdrag: null, slide: null,
     lastPanel: "", lastFade: "", editing: false, dead: false,
+    crop: null, // the id of the picture / GIF / clip being cropped (media.js)
   };
+  // Each clip item's own muted <video>, kept at its time (media.js); a frame that arrives is drawn.
+  const videos = typeof medVideoSet === "function" ? medVideoSet(() => { if (!st.dead && st.editing) { st.dirty = true; redraw(); } }) : null;
+  const playing = () => (typeof P.playing === "function" ? P.playing() : !v.paused);
+  const isMedia = (o) => !!o && !!OV_MEDIA_PATHS[o.kind];
   const m = () => P.model;
   const list = () => m()?.overlays || [];
   const item = (id) => list().find((o) => o.id === id) || null;
@@ -445,12 +493,16 @@ function ovMount(root, c, P) {
     const shown = mm ? list().filter((o) => ovVisibleAt(o, tm)) : [];
     st.shown = shown.map((o) => o.id).join(",");
     st.dirty = false;
-    st.moving = shown.some(kfHas);
+    // Pictures load once; GIFs and clips change with the playhead, like items with keyframes (media.js).
+    const media = shown.filter(isMedia);
+    for (const o of media) if (o.kind !== "video" && typeof medLoad === "function") medLoad(o, () => { if (!st.dead) { st.dirty = true; redraw(); } });
+    videos?.sync(media.filter((o) => o.kind === "video"), tm, playing());
+    st.moving = shown.some(kfHas) || media.some((o) => o.kind !== "image");
     st.lastT = tm;
     const ctx = art.getContext("2d");
     ctx.setTransform(st.dpr, 0, 0, st.dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    kfOvDraw(ctx, shown, tm, W, H, st.typing?.id, ovMeasure);
+    kfOvDraw(ctx, shown, tm, W, H, st.typing?.id, ovMeasure, videos);
     // Blur boxes: one div each, blurring what lies under it.
     const blurs = shown.filter((o) => o.kind === "blur").map((o) => atTime(o, tm));
     while (blursEl.children.length > blurs.length) blursEl.lastChild.remove();
@@ -461,6 +513,13 @@ function ovMount(root, c, P) {
       const f = `blur(${(o.strength * H).toFixed(2)}px)`;
       d.style.backdropFilter = f;
       d.style.webkitBackdropFilter = f;
+      // Round corners and a soft edge: the same mask the export lays on its blurred copy (media.js, edmedia.rs).
+      const mk = typeof medWantsMask === "function" && medWantsMask(o) ? `url("${medMaskUrl(o.w * W, o.h * H, +o.round || 0, +o.soft || 0)}")` : "";
+      if (d._mk !== mk) {
+        d._mk = mk;
+        for (const p of ["maskImage", "webkitMaskImage"]) d.style[p] = mk || "none";
+        for (const p of ["maskSize", "webkitMaskSize"]) d.style[p] = mk ? "100% 100%" : "";
+      }
     });
     drawUi();
     paintFade(tm);
@@ -476,6 +535,29 @@ function ovMount(root, c, P) {
     // A blur box being drawn shows its outline, since its inside only blurs.
     if (draft && draft.kind === "blur") { const b = ovBBox(draft, W, H, ovMeasure); ctx.setLineDash([5, 4]); ctx.strokeStyle = "#fff"; ctx.lineWidth = 1; ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w, b.h); ctx.setLineDash([]); }
     if (!o || !ovVisibleAt(o, now())) return;
+    if (st.crop === o.id && isMedia(o)) {
+      // Cropping: what is cut off shows faintly around the box; the box has a handle on each corner and edge.
+      medDrawCropped(ctx, o, W, H, now(), videos);
+      const F = medFullBox(o);
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(255,255,255,.55)";
+      ctx.strokeRect(F.x * W + 0.5, F.y * H + 0.5, F.w * W, F.h * H);
+      ctx.setLineDash([]);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = accent;
+      ctx.strokeRect(o.x * W, o.y * H, o.w * W, o.h * H);
+      for (const h of medCropHandles(o, W, H)) {
+        ctx.fillStyle = "#fff";
+        ctx.beginPath();
+        if (h.k.length === 2) ctx.rect(h.x - 6, h.y - 6, 12, 12);
+        else if (h.k === "n" || h.k === "s") ctx.rect(h.x - 9, h.y - 3, 18, 6);
+        else ctx.rect(h.x - 3, h.y - 9, 6, 18);
+        ctx.fill();
+        ctx.stroke();
+      }
+      return;
+    }
     const b = ovBBox(o, W, H, ovMeasure), pad = 4;
     ctx.setLineDash([5, 4]);
     ctx.lineWidth = 1.5;
@@ -517,7 +599,10 @@ function ovMount(root, c, P) {
   }
   function select(id) {
     if (st.sel === id) return;
+    if (st.crop && st.crop !== id) endCrop();
     st.sel = id;
+    // The timeline's block of the item lights up (ui/timeline.js).
+    try { P.tl?.overlaySel?.(id); } catch (e) { console.warn("Glint: overlaySel failed", e); }
     // A picked overlay and a picked timeline segment would both answer Delete: the timeline lets go.
     if (id && P.selection?.().sels.length && typeof P.tl?.run === "function") { try { P.tl.run("clearSel"); } catch (e) { console.warn("Glint: clearSel failed", e); } }
     bar.querySelector("[data-ov-del]").disabled = !id;
@@ -528,6 +613,18 @@ function ovMount(root, c, P) {
   layer.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || !m() || st.typing) return;
     const p = at(e), pt = frac(p), mm = m(), tm = now();
+    if (st.crop) {
+      // Cropping (media.js): an edge or corner of the box is dragged; a click outside it ends the crop.
+      const own = item(st.crop), shown = atTime(own, tm);
+      const h = own && ovVisibleAt(own, tm) ? medCropHandles(shown, st.W, st.H).find((q) => Math.abs(q.x - p.px) <= 9 && Math.abs(q.y - p.py) <= 9) : null;
+      if (h) {
+        st.drag = { kind: "crop", handle: h.k, id: own.id, tx: begin(), x: p.px, y: p.py, moved: false, base: JSON.parse(JSON.stringify(own)), tm };
+        layer.setPointerCapture(e.pointerId);
+        return;
+      }
+      if (shown && ovHit(shown, st.W, st.H, p.px, p.py, 0, ovMeasure)) return;
+      endCrop();
+    }
     if (st.tool === "select") {
       const o = atTime(item(st.sel), tm);
       const h = o && ovVisibleAt(o, tm) ? ovHandles(o, st.W, st.H, ovMeasure).find((q) => Math.abs(q.x - p.px) <= 7 && Math.abs(q.y - p.py) <= 7) : null;
@@ -564,6 +661,16 @@ function ovMount(root, c, P) {
     if (i < 0) return;
     const cur = mm.overlays[i];
     let next = cur;
+    if (d.kind === "crop") {
+      // The pointer in the item's own frame (its keyframe move at the playhead taken off), then the keys follow the new box.
+      const b0 = d.base, T = kfOvT(b0, d.tm), mx = b0.x + b0.w / 2, my = b0.y + b0.h / 2;
+      const q = kfHas(b0) ? medUnmove(pt, T, mx, my) : pt;
+      next = medCropDrag(b0, d.handle, q[0], q[1]);
+      if (kfHas(b0)) next.keys = medCropKeys(b0.keys, b0, next);
+      mm.overlays[i] = next;
+      redraw();
+      return;
+    }
     if (d.keyed && (d.kind === "move" || d.kind === "resize")) {
       // Auto-key: the drag sets the keyframe at the playhead (or adds one there).
       let T = d.kind === "move" ? kfOvMoveT(d.T0, pt[0] - d.start[0], pt[1] - d.start[1])
@@ -613,7 +720,137 @@ function ovMount(root, c, P) {
     if (hit?.kind === "text") { e.preventDefault(); editText(hit.id); }
     else if (!hit && st.tool === "select") P.fullscreen(); // as a double-click on the video does
   });
+  /* ----- pictures, GIFs and clips (media.js); crop; order; the right-click menu ----- */
+  /** Adds an editor_media_info result as a new item at the playhead (one undo step); a clip with sound offers its sound too. */
+  function addMedia(info) {
+    if (!m() || !info?.path) return null;
+    commitText();
+    const cs = P.cv?.size?.();
+    const pw = cs ? cs.width : v.videoWidth || c.width || 16, ph = cs ? cs.height : v.videoHeight || c.height || 9;
+    const o = medMake(info, now(), pw, ph);
+    change((mm) => { mm.overlays.push(o); });
+    setTool("select");
+    select(o.id);
+    redraw();
+    if (info.kind === "video" && info.audio) offerSound(info, o.id);
+    return o.id;
+  }
+  /** "Add its sound too": a short note on the player with a button; the clip's file becomes an audio row at the item's place. */
+  function offerSound(info, id) {
+    clearTimeout(st.offerTimer);
+    offer.innerHTML = `<span>${esc(t("This clip has sound. It is not heard on the picture."))}</span><button type="button" class="btn sm" data-med-sound>${esc(t("Add its sound too"))}</button><button type="button" class="med-x" data-med-x aria-label="${esc(t("Close"))}">×</button>`;
+    offer.hidden = false;
+    offer.onclick = async (e) => {
+      if (e.target.closest("[data-med-x]")) { offer.hidden = true; return; }
+      if (!e.target.closest("[data-med-sound]")) return;
+      offer.hidden = true;
+      const o = item(id);
+      if (!o || typeof P.addFileRow !== "function") return;
+      try {
+        const a = await invoke("editor_audio_info", { path: info.path });
+        if (st.dead || !item(id)) return;
+        const was = P.time();
+        // The row starts where the item does (emAddFile puts it at the playhead).
+        if (Math.abs(was - o.from) > 0.01) P.seek(o.from, false, true);
+        P.addFileRow(a);
+        flash(t("Added {name} as a new audio track", { name: a.title || o.title }));
+      } catch (err) { flash(String(err?.message ?? err), true); }
+    };
+    st.offerTimer = setTimeout(() => { offer.hidden = true; }, 12000);
+  }
+  /** Starts cropping media item `id` (its edges and corners are dragged inward, freely). */
+  function startCrop(id) {
+    const o = item(id);
+    if (!isMedia(o)) return false;
+    commitText();
+    if (st.tool !== "select") setTool("select");
+    if (!ovVisibleAt(o, now())) P.seek(o.from, false, true);
+    select(id);
+    st.crop = id;
+    box.classList.add("ov-cropping");
+    drawUi();
+    renderPanel();
+    return true;
+  }
+  function endCrop() {
+    if (!st.crop) return;
+    st.crop = null;
+    box.classList.remove("ov-cropping");
+    drawUi();
+    renderPanel();
+  }
+  function resetCrop(id) {
+    const o = item(id);
+    if (!isMedia(o)) return;
+    change((mm) => {
+      const i = mm.overlays.findIndex((x) => x.id === id), n = medCropReset(o);
+      if (kfHas(o)) n.keys = medCropKeys(o.keys, o, n);
+      mm.overlays[i] = n;
+    });
+    redraw();
+    renderPanel();
+  }
+  /** A copy of item `id` just above it, a little down and to the right; returns its id. */
+  function duplicate(id) {
+    const o = item(id);
+    if (!o || !m()) return null;
+    const copy = { ...ovMoved(o, 0.03, 0.03), id: ovNewId() };
+    change((mm) => { mm.overlays.splice(mm.overlays.findIndex((x) => x.id === id) + 1, 0, copy); });
+    select(copy.id);
+    redraw();
+    return copy.id;
+  }
+  function remove(id) {
+    if (!item(id)) return false;
+    if (st.sel === id) select(null);
+    if (st.crop === id) endCrop();
+    change((mm) => { mm.overlays = mm.overlays.filter((o) => o.id !== id); });
+    redraw();
+    return true;
+  }
+  /** Item `id` drawn last (on top) or first (under the others). */
+  function restack(id, top) {
+    const o = item(id);
+    if (!o) return;
+    change((mm) => { const rest = mm.overlays.filter((x) => x !== o); mm.overlays = top ? [...rest, o] : [o, ...rest]; });
+    redraw();
+  }
+  layer.addEventListener("contextmenu", (e) => {
+    if (!m() || st.typing || typeof medOpenMenu !== "function") return;
+    e.preventDefault();
+    e.stopPropagation(); // app.js would close the menu again
+    const p = at(e), tm = now();
+    const hit = ovHitTop(shownAt(tm), tm, st.W, st.H, p.px, p.py, tol(), ovMeasure);
+    if (hit) select(hit.id);
+    const it = (act, path, label, cls = "") => `<button data-med="${act}" class="${cls}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg><span>${esc(label)}</span></button>`;
+    const CROP = "M7 3v14h14M3 7h14v14";
+    let html = "";
+    if (hit) {
+      html += `<div class="menu-head">${esc(ovItemLabel(hit))}</div>`;
+      if (isMedia(hit)) html += it("crop", CROP, t("Crop"));
+      html += it("front", "M8 8h12v12H8zM4 4h12v2M4 4v12h2", t("Bring to front")) + it("back", "M4 4h12v12H4zM20 8v12H8", t("Send to back"))
+        + it("dup", "M8 8h12v12H8zM4 16V4h12", t("Duplicate")) + it("del", "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13", t("Delete"), "danger") + "<hr>";
+    } else if (typeof P.cv?.crop === "function") html += it("crop-clip", CROP, t("Crop")) + "<hr>";
+    html += it("add", OV_ADD_PATH, t("Add a picture, GIF or clip"));
+    medOpenMenu(html, e.clientX, e.clientY, (act) => {
+      if (act === "crop" && hit) startCrop(hit.id);
+      else if (act === "crop-clip") P.cv?.crop?.();
+      else if (act === "front" && hit) restack(hit.id, true);
+      else if (act === "back" && hit) restack(hit.id, false);
+      else if (act === "dup" && hit) duplicate(hit.id);
+      else if (act === "del" && hit) remove(hit.id);
+      else if (act === "add") medPick();
+    });
+  });
+
   function hover(e) {
+    if (st.crop && m()) {
+      const p = at(e), own = atTime(item(st.crop), now());
+      const h = own ? medCropHandles(own, st.W, st.H).find((q) => Math.abs(q.x - p.px) <= 9 && Math.abs(q.y - p.py) <= 9) : null;
+      const cur = !h ? "" : h.k === "n" || h.k === "s" ? "ns-resize" : h.k === "e" || h.k === "w" ? "ew-resize" : h.k === "nw" || h.k === "se" ? "nwse-resize" : "nesw-resize";
+      if (layer.style.cursor !== cur) layer.style.cursor = cur;
+      return;
+    }
     if (st.tool !== "select" || !m()) { layer.style.cursor = ""; return; }
     const p = at(e), tm = now(), o = atTime(item(st.sel), tm);
     const h = o && ovVisibleAt(o, tm) ? ovHandles(o, st.W, st.H, ovMeasure).find((q) => Math.abs(q.x - p.px) <= 7 && Math.abs(q.y - p.py) <= 7) : null;
@@ -701,14 +938,16 @@ function ovMount(root, c, P) {
   bar.addEventListener("mousedown", (e) => e.preventDefault()); // keep the focus (Space plays)
   bar.addEventListener("pointerdown", (e) => e.stopPropagation());
   bar.addEventListener("click", (e) => {
-    const b = e.target.closest("[data-ov-tool], [data-ov-del]");
+    const b = e.target.closest("[data-ov-tool], [data-ov-del], [data-ov-add]");
     if (!b) return;
     if (b.dataset.ovTool) setTool(b.dataset.ovTool);
+    else if (b.hasAttribute("data-ov-add")) medPick();
     else deleteSel();
   });
   function deleteSel() {
     const id = st.sel;
     if (!id || !m()) return false;
+    if (st.crop === id) endCrop();
     select(null);
     change((mm) => { mm.overlays = mm.overlays.filter((o) => o.id !== id); });
     redraw();
@@ -716,7 +955,7 @@ function ovMount(root, c, P) {
   }
 
   /* ----- the side panel: style, time range, list, fades ----- */
-  const itemLabel = (o) => (o.kind === "text" && o.text.trim() ? o.text.trim().split("\n")[0].slice(0, 40) : ovName(o.kind === "pen" ? "drawing" : o.kind));
+  const itemLabel = ovItemLabel;
   /** The kind the style controls are for: the selection's, else the tool's. */
   const styleKind = () => item(st.sel)?.kind || (st.tool === "select" ? null : st.tool);
   /** The style values shown: the selected item's, else the tool style. */
@@ -730,6 +969,8 @@ function ovMount(root, c, P) {
       fill: o.fill || s.fill,
       outline: o.outline !== undefined ? o.outline : s.outline,
       strength: o.strength !== undefined ? ovLevel(o.strength) : s.strength,
+      round: o.kind === "blur" ? Math.round((+o.round || 0) * 100) : s.round,
+      soft: o.kind === "blur" ? Math.round((+o.soft || 0) * 100) : s.soft,
     };
   }
   function renderPanel() {
@@ -739,13 +980,29 @@ function ovMount(root, c, P) {
     if (!mm) html += `<div class="small">${esc(t("Loading…"))}</div>`;
     else {
       if (!kind) html += `<div class="small">${esc(t("Pick a tool above the picture, then click or drag on the picture. Pick Select to move or change what you drew."))}</div>`;
+      else if (OV_MEDIA_PATHS[kind] && o) {
+        // A picture, GIF or clip (media.js): see-through, looping, crop.
+        const op = Math.round(ovClamp(ovNum(o.opacity, 1), 0, 1) * 100);
+        html += `<div class="e-sliders ov-style"><label class="e-slider"><span>${esc(t("Opacity"))}</span><input type="range" min="5" max="100" step="1" value="${op}" data-ov-input="opacity"><output>${op}%</output></label></div>`;
+        if (kind !== "image") html += `<label class="check ov-row"><input type="checkbox" data-ov-input="loop"${o.loop ? " checked" : ""}><span>${esc(t("Loop"))}</span></label>`;
+        const cropped = ["l", "t", "r", "b"].some((k) => (o.crop?.[k] || 0) > 1e-6);
+        html += `<div class="ov-btns">${st.crop === o.id
+          ? `<button type="button" class="btn sm on" data-ov-act="cropDone">${esc(t("Done"))}</button>`
+          : `<button type="button" class="btn sm" data-ov-act="crop">${esc(t("Crop"))}</button>`}
+          <button type="button" class="btn sm" data-ov-act="cropReset"${cropped ? "" : " disabled"}>${esc(t("Reset crop"))}</button></div>`;
+        if (st.crop === o.id) html += `<div class="small">${esc(t("Drag an edge or a corner of the box inward to cut that part off. Click outside it or press Done when it is right."))}</div>`;
+      }
       else {
         if (kind !== "blur") {
           html += `<div class="ov-row"><span>${esc(t("Color"))}</span><div class="ov-swatches">${OV_COLORS.map((col) => `<button type="button" class="ov-sw${col === s.color ? " on" : ""}" data-ov-color="${col}" style="--sw:${col}" aria-label="${esc(col)}" title="${esc(col)}"></button>`).join("")}<input type="color" class="ov-pick" data-ov-input="color" value="${esc(s.color)}" aria-label="${esc(t("Other color"))}" title="${esc(t("Other color"))}"></div></div>`;
         }
         const slider = (key, label, min, max, value, shown) => `<div class="e-sliders ov-style"><label class="e-slider"><span>${esc(label)}</span><input type="range" min="${min}" max="${max}" step="1" value="${value}" data-ov-input="${key}"><output>${shown}</output></label></div>`;
         if (kind === "text") html += slider("size", t("Size"), 2, 20, s.size, `${s.size}%`);
-        else if (kind === "blur") html += slider("strength", t("Strength"), 1, 10, s.strength, s.strength);
+        else if (kind === "blur") {
+          html += slider("strength", t("Strength"), 1, 10, s.strength, s.strength);
+          html += slider("round", t("Round corners"), 0, 100, s.round, `${s.round}%`);
+          html += slider("soft", t("Soft edge"), 0, 100, s.soft, `${s.soft}%`);
+        }
         else html += slider("width", t("Thickness"), 1, 24, s.width, s.width);
         if (kind === "rect" || kind === "ellipse") {
           html += `<label class="ov-row"><span>${esc(t("Fill"))}</span><select data-ov-input="fill">${[["none", t("None")], ["solid", t("Solid")], ["half", t("See-through")]].map(([k, lab]) => `<option value="${k}"${s.fill === k ? " selected" : ""}>${esc(lab)}</option>`).join("")}</select></label>`;
@@ -771,7 +1028,7 @@ function ovMount(root, c, P) {
         </div>`;
       }
       if (list().length) {
-        html += `<div class="ov-list" role="list">${list().slice().reverse().map((x) => `<button type="button" role="listitem" class="ov-item${x.id === st.sel ? " on" : ""}" data-ov-pick="${esc(x.id)}"><span class="ov-ik">${svg(OV_TOOLS.find((q) => q[0] === x.kind)?.[2] || "")}</span><span class="ov-in">${esc(itemLabel(x))}</span><span class="ov-it">${esc(ovFmtTime(x.from))}–${esc(ovFmtTime(x.to))}</span></button>`).join("")}</div>`;
+        html += `<div class="ov-list" role="list">${list().slice().reverse().map((x) => `<button type="button" role="listitem" class="ov-item${x.id === st.sel ? " on" : ""}" data-ov-pick="${esc(x.id)}"><span class="ov-ik">${svg(ovKindPath(x.kind))}</span><span class="ov-in">${esc(itemLabel(x))}</span><span class="ov-it">${esc(ovFmtTime(x.from))}–${esc(ovFmtTime(x.to))}</span></button>`).join("")}</div>`;
       }
     }
     // Never redrawn under a field being typed in or a slider being dragged.
@@ -809,10 +1066,12 @@ function ovMount(root, c, P) {
       else if (key === "strength" && x.kind === "blur") x.strength = ovStrength(value);
       else if (key === "fill" && x.fill !== undefined) x.fill = value;
       else if (key === "outline" && x.kind === "text") x.outline = !!value;
+      else if ((key === "round" || key === "soft") && x.kind === "blur") { if (value > 0) x[key] = value / 100; else delete x[key]; }
+      else if (key === "opacity" && isMedia(x)) x.opacity = ovClamp(value / 100, 0, 1);
+      else if (key === "loop" && isMedia(x) && x.kind !== "image") x.loop = !!value;
     };
-    // The tool style follows, so the next item looks like this one.
-    st.style[key] = value;
-    ovStyleSave(st.style);
+    // The tool style follows, so the next item looks like this one (a picture's own settings are its own).
+    if (key in OV_DEFAULT_STYLE) { st.style[key] = value; ovStyleSave(st.style); }
     if (live) {
       if (!st.slide) st.slide = begin();
       apply(o);
@@ -827,7 +1086,10 @@ function ovMount(root, c, P) {
   function setTimes(from, to, keep) {
     const o = item(st.sel);
     if (!o) return;
-    const r = ovSpan(from, to, dur(), keep);
+    // An item may run on after the end of the video (0.1.35); a clip or GIF that does not loop, not past its own end.
+    let D = Math.max(dur(), o.to, (+from || 0) + OV_MIN_SPAN, +to || 0);
+    if (isMedia(o) && o.kind !== "image" && !o.loop && +o.mlen > 0) D = Math.min(D, Math.max(o.from, +from || 0) + Math.max(OV_MIN_SPAN, o.mlen - (+o.off || 0)));
+    const r = ovSpan(from, to, D, keep);
     if (Math.abs(r.from - o.from) < 1e-6 && Math.abs(r.to - o.to) < 1e-6) { renderPanel(); return; }
     change(() => { o.from = r.from; o.to = r.to; });
     redraw();
@@ -881,6 +1143,9 @@ function ovMount(root, c, P) {
       if (st.tool !== "select") setTool("select");
       redraw();
     } else if (d.ovAct === "delete") deleteSel();
+    else if (o && d.ovAct === "crop") startCrop(o.id);
+    else if (d.ovAct === "cropDone") endCrop();
+    else if (o && d.ovAct === "cropReset") resetCrop(o.id);
     else if (o && d.ovAct === "fromNow") setTimes(now(), o.to, "from");
     else if (o && d.ovAct === "toNow") setTimes(o.from, now(), "to");
     else if (o && d.ovAct === "whole") setTimes(0, dur(), "from");
@@ -891,7 +1156,7 @@ function ovMount(root, c, P) {
     if (e.target.type === "range") {
       const x = +e.target.value;
       const out = e.target.parentElement.querySelector("output");
-      if (out) out.textContent = k === "size" ? `${x}%` : String(x);
+      if (out) out.textContent = ["size", "round", "soft", "opacity"].includes(k) ? `${x}%` : String(x);
       setStyle(k, x, true);
     } else if (k === "color") setStyle("color", e.target.value, true);
   });
@@ -1019,7 +1284,9 @@ function ovMount(root, c, P) {
       // A restored project's items are made safe to draw once (they came from disk).
       if (mm && what === "load") mm.overlays = (mm.overlays || []).map(ovNorm).filter(Boolean);
       if (st.sel && !item(st.sel)) select(null);
+      if (st.crop && !item(st.crop)) endCrop();
       if (st.typing && !item(st.typing.id)) { st.typing = null; closeEditor(); }
+      videos?.prune(new Set(list().map((o) => o.id)));
       st.dirty = true;
       redraw();
       renderPanel();
@@ -1027,7 +1294,7 @@ function ovMount(root, c, P) {
     setEdit(on) {
       st.editing = !!on;
       layer.hidden = bar.hidden = !on;
-      if (!on) { commitText(); select(null); setTool("select"); }
+      if (!on) { commitText(); endCrop(); select(null); setTool("select"); videos?.sync([], 0, false); offer.hidden = true; }
       else { place(); redraw(); renderPanel(); }
     },
     /** Delete and Esc first act on the overlays: true when they did. */
@@ -1035,6 +1302,7 @@ function ovMount(root, c, P) {
       if (cmd === "remove" && st.sel) return deleteSel();
       if (cmd === "escape") {
         if (st.typing) { cancelText(); return true; }
+        if (st.crop) { endCrop(); return true; }
         if (st.tool !== "select") { setTool("select"); return true; }
         if (st.sel) { select(null); return true; }
       }
@@ -1053,6 +1321,12 @@ function ovMount(root, c, P) {
       const W = cs ? cs.width : v.videoWidth || c.width || 1920, H = cs ? cs.height : v.videoHeight || c.height || 1080;
       const out = [];
       for (const g of ovGroups(mm)) {
+        if (g.media) {
+          // A picture, GIF or clip: the file itself goes to ffmpeg, one entry per kept range it covers (media.js).
+          const o = g.items[0];
+          out.push(...medExportEntries(mm, o, kfHas(o) ? kfOvTrack(mm, o) : null));
+          continue;
+        }
         if (g.moving) {
           // An item with keyframes: a picture of its own box only, which ffmpeg moves and scales along its track (keyframes.js).
           const o = g.items[0], f = kfOvFrame(o, W, H, ovMeasure);
@@ -1076,20 +1350,29 @@ function ovMount(root, c, P) {
       }
       return out;
     },
+    /** For the timeline (ui/timeline.js) and the menus: pick, remove, copy, crop and add items. */
+    select(id) { if (id === null || item(id)) { if (id && st.tool !== "select") setTool("select"); select(id); redraw(); } },
+    remove,
+    duplicate,
+    crop: startCrop,
+    addMedia,
     destroy() {
       st.dead = true;
       ro?.disconnect();
+      videos?.destroy();
+      clearTimeout(st.offerTimer);
+      offer.remove();
       layer.remove();
       bar.remove();
       panel.remove();
       fadeSec.remove();
     },
     // For tests and the preview: the state and a few actions.
-    _st: st, setTool, select, deleteSel,
+    _st: st, _videos: videos, setTool, deleteSel, endCrop, resetCrop, restack,
   };
 }
 
 // Lets the pure functions be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { OV_KINDS, OV_WIDTH_UNIT, OV_MIN_SPAN, ovMake, ovNorm, ovVisibleAt, ovBBox, ovHit, ovHitTop, ovHandles, ovMoved, ovResized, ovGroups, ovFadeAlpha, ovFmtTime, ovParseTime, ovSpan, ovStrength, ovLevel, ovSegDist, ovTextBox };
+  module.exports = { ovItemLabel, ovKindPath, OV_KINDS, OV_WIDTH_UNIT, OV_MIN_SPAN, ovMake, ovNorm, ovVisibleAt, ovBBox, ovHit, ovHitTop, ovHandles, ovMoved, ovResized, ovGroups, ovFadeAlpha, ovFmtTime, ovParseTime, ovSpan, ovStrength, ovLevel, ovSegDist, ovTextBox };
 }

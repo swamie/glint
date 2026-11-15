@@ -576,6 +576,17 @@ function edKillMedia(a) {
 /* "Replace the original" in the Export box (0.1.23): the export takes the clip's place instead of
    being saved beside it; the original goes to the Recycle Bin. Remembered on this PC. */
 const edReplaceOn = () => { try { return localStorage.getItem("glint.exportReplace") === "1"; } catch { return false; } };
+/**
+ * A clip's file as the viewer loads it (0.1.35). The page keeps the media it loaded by URL, and the
+ * asset protocol's URL is the file's path: an export that took the place of a file (Replace the
+ * original takes its name; a new export takes the name of one that was deleted) played the OLD
+ * file's sound and picture from memory, so an added song was missing. The clip's id and size give
+ * each file its own address; the asset protocol reads only the path.
+ */
+const edClipUrl = (c) => {
+  const url = fileSrc(c.path);
+  return `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(`${c.id}-${c.size || 0}`)}`;
+};
 const edSetReplace = (on) => { try { localStorage.setItem("glint.exportReplace", on ? "1" : "0"); } catch { /* not remembered */ } };
 
 /* ---------- viewer ---------- */
@@ -643,7 +654,7 @@ function openClip(id) {
       <div class="v-main">
         <div class="player">
           <svg class="e-defs" aria-hidden="true"><filter id="e-gamma" color-interpolation-filters="sRGB"><feComponentTransfer>${gammaFn("R")}${gammaFn("G")}${gammaFn("B")}</feComponentTransfer></filter></svg>
-          <video src="${fileSrc(c.path)}" autoplay playsinline></video>
+          <video src="${edClipUrl(c)}" autoplay playsinline></video>
           <div class="p-audio" aria-hidden="true"></div>
           <div class="e-blank-tag">${L("Video hidden in this segment")}</div>
           <div class="p-big" hidden>${PICON.play}</div>
@@ -693,7 +704,7 @@ function openClip(id) {
             <button type="button" class="e-ibtn e-fsbtn" data-v="editor-full" aria-pressed="false"></button>
             <button class="btn sm" data-v="edit-done">${draft ? L("Close") : L("Done")}</button></div>
           ${draft ? `<div class="small e-draft-note">${L("Export saves the result as a new clip. The clips themselves stay as they are.")}</div>` : ""}
-          <section class="e-sec">
+          <section class="e-sec e-speed-sec">
             <div class="e-title">${L("Speed")}</div>
             <div class="e-line"><button type="button" class="btn sm e-speed" aria-haspopup="menu" aria-expanded="false" aria-label="${L("Clip speed")}"></button><span class="small e-speed-note"></span></div>
           </section>
@@ -721,6 +732,8 @@ function openClip(id) {
   if (typeof cvMount === "function") { try { S.player.cv = cvMount(root, c, S.player); } catch (e) { console.error("Glint: the canvas tools did not load", e); } }
   // A project: the library's clips beside the editor, to add more (projects.js).
   if (draft && typeof projMountPanel === "function") projMountPanel(root, id);
+  // While editing, the viewer fills the window: top row, Library, player, inspector, timeline (workspace.js).
+  if (typeof wsMount === "function") { try { wsMount(root, { title: c.title }); } catch (e) { console.error("Glint: the editor layout did not load", e); } }
   if (draft) {
     // A draft has nothing to view: it opens in edit mode, and leaving edit mode closes it
     // (closeClip asks first when there is work to lose).
@@ -790,8 +803,37 @@ function mountPlayer(root, c) {
   let playSrc = null;
   const pm = () => { const m = ed(); return m && m.parts ? m : null; };
   const playPart = (m) => emParts(m).find((p) => p.src === playSrc) || null;
+  /* After the video (0.1.35): from m.duration on (up to emEnd, where the result ends, and the free space after it)
+   * the <video> cannot be the clock, it stops at its end. There the player keeps its own: `aft` is the playhead
+   * then ({ at, run, t0 }: timeline second `at` at performance time `t0`, moving at the preview's rate while `run`),
+   * null while the video is the clock. The picture is black (e-blank), the clip's own tracks are silent, overlay
+   * items and file rows go on (they follow tlNow()). */
+  let aft = null;
+  const aftRate = () => clamp(P.viewSpeed * (ed() ? P.model.speed || 1 : 1), 0.0625, 16);
+  const aftNow = () => (aft.run ? aft.at + ((performance.now() - aft.t0) / 1000) * aftRate() : aft.at);
+  /** Put the playhead after the video at timeline second `sec`, running or standing; the video pauses at its end. */
+  function setAft(sec, run) {
+    aft = { at: sec, run: !!run, t0: performance.now() };
+    if (!v.paused) v.pause();
+    aftTick();
+  }
+  // Nothing of the video's (timeupdate) drives the picture after it, and requestAnimationFrame stops in a hidden
+  // window: a slow timer keeps the clock checked (the end, the loop) while it runs.
+  let aftTimer = 0;
+  function aftTick() {
+    const want = !!aft && aft.run && !dead;
+    if (want && !aftTimer) aftTimer = setInterval(() => { if (aft && aft.run && !dead) paint(); else aftTick(); }, 100);
+    else if (!want && aftTimer) { clearInterval(aftTimer); aftTimer = 0; }
+  }
+  /** Leave the after-the-video clock standing where it is now. */
+  const aftStop = () => { if (aft && aft.run) aft = { at: aftNow(), run: false, t0: performance.now() }; };
+  /** True while playing: the video, or the clock after it. */
+  const playing = () => (aft ? aft.run : !v.paused);
+  P.afterVideo = () => !!aft;
+  P.playing = playing;
   /** The playhead in timeline seconds. */
   function tlNow() {
+    if (aft) return aftNow();
     const m = pm(), src = v.currentTime;
     if (!m) return src;
     const p = playPart(m);
@@ -802,6 +844,7 @@ function mountPlayer(root, c) {
   }
   /** Put the video at timeline second `sec`. */
   function setTl(sec) {
+    aft = null; // the video is the clock again
     const m = pm();
     if (!m) { v.currentTime = sec; return; }
     const p = emParts(m)[emPartAt(m, sec)];
@@ -966,13 +1009,14 @@ function mountPlayer(root, c) {
   }
   /** Keeps each element at its place for the video's time: tracks at the same (source) time, file rows inside their span (timeline time). */
   function syncAudio(hard) {
-    const m = ed(), src = v.currentTime, now = tlNow(), run = !v.paused && !v.ended && v.readyState >= 3;
+    // After the video (0.1.35) the player's own clock runs: the clip's tracks are silent there, file rows go on.
+    const m = ed(), src = v.currentTime, now = tlNow(), run = aft ? aft.run : !v.paused && !v.ended && v.readyState >= 3;
     for (const s of P.src.values()) {
       const a = s.a;
       if (s.state !== "on" || !a) continue;
       const row = m && heard(s) ? m.audio.find((r) => r.id === s.id) : null;
       let want = null;
-      if (row) want = s.kind === "file" ? (emRowCovers(row, now, m) ? emRowFileAt(m, row, now) : null) : src; // a file that plays through cuts keeps its place in the file across a jump
+      if (row) want = s.kind === "file" ? (emRowCovers(row, now, m) ? emRowFileAt(m, row, now) : null) : aft ? null : src; // a file that plays through cuts keeps its place in the file across a jump
       const end = Number.isFinite(a.duration) ? a.duration : Infinity;
       if (want === null || want >= end - 0.01) { if (!a.paused) a.pause(); continue; }
       if (a.playbackRate !== v.playbackRate) a.playbackRate = v.playbackRate;
@@ -983,7 +1027,7 @@ function mountPlayer(root, c) {
     levels(now);
   }
   function drift() {
-    const want = P.editing && P.src.size > 0 && !v.paused && !dead;
+    const want = P.editing && P.src.size > 0 && playing() && !dead;
     if (want && !driftTimer) driftTimer = setInterval(() => syncAudio(false), 300);
     else if (!want && driftTimer) { clearInterval(driftTimer); driftTimer = 0; }
   }
@@ -1015,8 +1059,9 @@ function mountPlayer(root, c) {
       shownExp = exp;
       for (const f of $$("#e-gamma feFuncR, #e-gamma feFuncG, #e-gamma feFuncB", root)) f.setAttribute("exponent", exp);
     }
-    const blank = !!m && emBlankAt(m, now); // black picture, the audio plays on
+    const blank = !!aft || (!!m && emBlankAt(m, now)); // black picture, the audio plays on (also after the video, 0.1.35)
     if (blank !== shownBlank) { shownBlank = blank; box.classList.toggle("e-blank", blank); }
+    if (box.classList.contains("e-after") !== !!aft) box.classList.toggle("e-after", !!aft);
     const seg = m ? emSegmentAt(m, now) : -1;
     if (seg !== shownSeg) { shownSeg = seg; P.ed?.playheadSeg?.(); } // the Color pane may show the playhead's segment
     P.cv?.paint(now); // the canvas preview (canvas.js)
@@ -1025,7 +1070,8 @@ function mountPlayer(root, c) {
   P.applyColor = applyColor;
 
   /* ----- the seek bar: the source clip, or the finished clip while editing ----- */
-  const barLen = () => { const m = ed(); return m ? emKeptDuration(m) || 1 : dur(); };
+  // The finished clip runs on after the video up to emEnd (0.1.35); without anything after the video that is emKeptDuration.
+  const barLen = () => { const m = ed(); return m ? emSrcToOut(m, emEnd(m)) || 1 : dur(); };
   const toBar = (sec) => { const m = ed(); return m ? emSrcToOut(m, sec) : sec; };
   const fromBar = (x) => { const m = ed(); return m ? emOutToSrc(m, x) : x; };
   const barSpeed = () => (ed() ? P.model.speed || 1 : 1);
@@ -1035,12 +1081,23 @@ function mountPlayer(root, c) {
    *  each part, stop (or loop) after the last kept part. `now` is timeline time. */
   function guard(now) {
     const m = ed();
-    if (!m || v.paused || drag || v.seeking) return;
+    if (!m || drag) return;
+    if (aft) {
+      // After the video (0.1.35): at the result's end, stop there or loop back to the start.
+      const E = emEnd(m);
+      if (!aft.run || now < E) return;
+      if (P.loop && E > m.duration + EM_EPS) { setTl(emPlayable(m, 0) ?? 0); v.play().catch((e) => console.warn("Glint: play() was refused", e)); }
+      else { aft = { at: Math.max(m.duration, E), run: false, t0: performance.now() }; state(); syncAudio(false); drift(); }
+      return;
+    }
+    if (v.paused || v.seeking) return;
     const past = pastPart(m);
     const p = past ? afterPart(m, past) : emPlayable(m, now);
     if (p === null) {
       const kept = emKept(m);
       if (!kept.length) return;
+      // Something goes on after the video: playing runs on into it on the player's own clock.
+      if (emTail(m) > EM_EPS) { setAft(m.duration, true); state(); syncAudio(true); drift(); return; }
       if (P.loop) setTl(kept[0].start);
       else { v.pause(); const last = kept[kept.length - 1]; setTl(Math.max(last.start, last.end - frame)); }
     } else if (past) jumpTo(p);
@@ -1055,7 +1112,7 @@ function mountPlayer(root, c) {
     el(".p-prog").style.width = pct(toBar(now));
     el(".p-knob").style.left = pct(toBar(now));
     el(".p-clock").textContent = m
-      ? `${fmtClock(emSrcToOut(m, now) / barSpeed())} / ${fmtClock(emOutDuration(m))}`
+      ? `${fmtClock(emSrcToOut(m, Math.min(now, emEnd(m))) / barSpeed())} / ${fmtClock(emSrcToOut(m, emEnd(m)) / barSpeed())}`
       : `${fmtClock(now)} / ${fmtClock(dur())}`;
     if (v.buffered.length) { const b = v.buffered.end(v.buffered.length - 1); el(".p-buf").style.width = pct(toBar(pm() ? emFromSrc(m, b) : b)); }
     if (P.editing) levels(now);
@@ -1064,12 +1121,12 @@ function mountPlayer(root, c) {
   const tick = () => {
     if (P.editing) syncAudio(false);
     paint();
-    raf = v.paused || dead ? 0 : requestAnimationFrame(tick);
+    raf = !playing() || dead ? 0 : requestAnimationFrame(tick);
   };
   const wake = () => {
     box.classList.remove("idle");
     clearTimeout(idle);
-    idle = setTimeout(() => { if (!v.paused && !drag && !edPopClose) box.classList.add("idle"); }, 2200);
+    idle = setTimeout(() => { if (playing() && !drag && !edPopClose) box.classList.add("idle"); }, 2200);
   };
   const volUI = () => {
     el('[data-p="mute"]').innerHTML = P.muted || P.vol === 0 ? PICON.mute : PICON.vol;
@@ -1079,12 +1136,12 @@ function mountPlayer(root, c) {
   };
   const state = () => {
     if (dead) return;
-    el('[data-p="play"]').innerHTML = v.paused ? PICON.play : PICON.pause;
-    el(".p-big").hidden = !v.paused || v.currentTime === 0;
+    el('[data-p="play"]').innerHTML = playing() ? PICON.pause : PICON.play;
+    el(".p-big").hidden = playing() || (!aft && v.currentTime === 0);
     el('[data-p="loop"]').classList.toggle("on", P.loop);
     el('[data-p="speed"]').textContent = `${P.viewSpeed}x`;
     volUI();
-    if (!v.paused && !raf) tick();
+    if (playing() && !raf) tick();
     wake();
   };
   const setVol = (x, unmute = true) => {
@@ -1099,25 +1156,49 @@ function mountPlayer(root, c) {
 
   P.toggle = () => {
     P.resumeAudio();
+    // After the video (0.1.35): the player's own clock pauses and plays.
+    const aftGo = () => { aft = { at: aft.at, run: true, t0: performance.now() }; aftTick(); state(); syncAudio(true); drift(); };
+    if (aft && aft.run) { aftStop(); state(); syncAudio(false); drift(); paint(); return; }
     if (!v.paused) { v.pause(); return; }
     const m = ed();
-    if (m) {
+    if (m && aft) {
+      const E = emEnd(m);
+      if (aft.at > E + 1e-3) return; // past the result's end there is nothing to play
+      if (aft.at < E - Math.max(frame * 2, 0.05)) return aftGo();
+      setTl(emPlayable(m, 0) ?? 0); // at the end: play starts over
+    } else if (m) {
       const now = tlNow(), past = pastPart(m);
       const p = past ? afterPart(m, past) : emPlayable(m, now);
       // At the end, play starts over. Playback stops one frame before the end (guard), so "at the end" is
-      // the last two frames of the last kept part, not only past it.
-      const kept = emKept(m), end = kept.length ? kept[kept.length - 1].end : 0;
-      if (p === null || (!past && now >= end - Math.max(frame * 2, 0.05))) setTl(emPlayable(m, 0) ?? 0);
+      // the last two frames of the last kept part, not only past it. With something after the video, play goes on into it.
+      const kept = emKept(m), end = kept.length ? kept[kept.length - 1].end : 0, tail = emTail(m) > EM_EPS;
+      if (p === null && tail) { setAft(m.duration, false); return aftGo(); }
+      if (p === null || (!past && !tail && now >= end - Math.max(frame * 2, 0.05))) setTl(emPlayable(m, 0) ?? 0);
       else if (past || p > now + 0.001) setTl(p);
     } else if (v.ended) v.currentTime = 0;
     v.play().catch((e) => console.warn("Glint: play() was refused", e));
   };
   /** Seek to `sec` (timeline time while editing; source time otherwise, the same without parts). While editing it never lands inside a cut-out part (see edLand), unless `raw`. */
   P.seek = (sec, back = false, raw = false) => {
+    const m = ed(), run = playing(), wasAft = !!aft;
+    // After the video (0.1.35): past m.duration, or forward past the last kept part when something goes on after
+    // the video, the playhead goes onto the player's own clock (it may stand past the result's end, up to the end
+    // of the timeline's free space; it plays on only before the end).
+    if (m && Number.isFinite(sec) && (sec > m.duration + EM_EPS || (!back && !raw && emTail(m) > EM_EPS && emPlayable(m, clamp(sec, 0, m.duration)) === null))) {
+      const E = emEnd(m), at = clamp(sec, m.duration, E + Math.max(10, E / 3));
+      setAft(at, run && at < E - 1e-3);
+      state();
+      syncAudio(true);
+      drift();
+      paint();
+      wake();
+      return;
+    }
     let at = clamp(sec, 0, dur());
-    const m = ed();
     if (m && !raw) at = edLand(m, at, back, frame);
     setTl(at);
+    if (wasAft && run) v.play().catch((e) => console.warn("Glint: play() was refused", e)); // it was playing after the video: it plays on here
+    else if (wasAft) state();
     paint();
     wake();
   };
@@ -1244,6 +1325,10 @@ function mountPlayer(root, c) {
           else console.warn("Glint: unknown timeline command", name);
         },
         keyText: edKeyText, // the current shortcut of an ED_KEYS cmd as text ("Ctrl+Z"), for tooltips; "" if none
+        // Overlay blocks (0.1.35): a click selects the item in the overlay code; its menu calls P.ov / P.cv where they have the function.
+        onOverlayPick: (id) => { try { P.ov?.select?.(id); } catch (e) { console.error("Glint: ov.select failed", e); } },
+        ovApi: () => P.ov || null,
+        cvApi: () => P.cv || null,
       });
     } catch (e) {
       console.error("Glint: mountTimeline failed", e);
@@ -1274,6 +1359,15 @@ function mountPlayer(root, c) {
         const id = "t" + w.index, wave = { peaks: Array.isArray(w.peaks) ? w.peaks : [], perSecond: +w.per_second || 0 };
         P.waves.set(id, wave);
         if (P.model?.audio.some((r) => r.id === id)) tl((h) => h.setWaveform(id, wave));
+      }
+      // A clip whose desktop sound is silent while its Game track is not: the game played on another
+      // output device than the recorded one, so it is only on the Game row. That row is then heard
+      // beside Desktop (emGameHidden), in the preview and in the export.
+      const mm = P.model, d = mm && emTrackRow(mm, "Desktop"), g = mm && emTrackRow(mm, "Game");
+      const loudest = (row) => { let top = 0; for (const p of P.waves.get(row.id)?.peaks || []) if (p > top) top = p; return top; };
+      if (d && g && !mm.gameApart && P.waves.has(d.id) && P.waves.has(g.id) && loudest(d) < 0.01 && loudest(g) > 0.03) {
+        mm.gameApart = true;
+        P.edSync("volume");
       }
     }).catch((e) => { if (!dead) console.warn("Glint: editor_waveforms failed; the audio rows show no waveform.", e); });
     invoke("editor_thumbs", { id: c.id, count: ED_THUMBS }).then((paths) => {
@@ -1327,11 +1421,11 @@ function mountPlayer(root, c) {
     P.edSync(what);
     return true;
   };
-  /** Add a file (an editor_audio_info result) as a new row at the playhead. */
-  P.addFileRow = (info) => {
+  /** Add a file (an editor_audio_info result) as a new row at the playhead, or at timeline second `at` (dropped on the timeline). */
+  P.addFileRow = (info, at) => {
     const m = P.model;
     emSnapshot(m);
-    const row = emAddFile(m, info, tlNow());
+    const row = emAddFile(m, info, Number.isFinite(at) ? at : tlNow());
     const wave = { peaks: Array.isArray(info.peaks) ? info.peaks : [], perSecond: +info.per_second || 0 };
     P.waves.set(row.id, wave); // before syncRows, which would otherwise read the file again for it
     syncRows(); // creates its audio element
@@ -1349,6 +1443,7 @@ function mountPlayer(root, c) {
       P.editing = on;
       root.classList.toggle("editing", on);
       v.loop = P.loop && !on; // while editing, looping is handled by guard() and "ended"
+      if (!on && aft) { aft = null; state(); } // the time after the video is only there while editing (0.1.35)
       if (on) v.pause();
       else { edPopClose?.(); dropTimeline(); }
       if (document.fullscreenElement) leaveFull(); // video-only or editor fullscreen does not fit the other mode
@@ -1391,7 +1486,7 @@ function mountPlayer(root, c) {
       case "framePrev": v.pause(); return P.seek(now - frame, true);
       case "frameNext": v.pause(); return P.seek(now + frame);
       case "home": return P.seek(0);
-      case "end": return P.seek(dur(), true);
+      case "end": return P.seek(P.model ? Math.max(P.model.duration, emEnd(P.model)) : dur(), true); // the result's end (after the video when something goes on there)
       case "loop": return P.setLoop(!P.loop);
       case "fullscreen": return P.editorFull();
       case "zoomIn": return tl((h) => h.zoom(ED_ZOOM_STEP));
@@ -1555,7 +1650,9 @@ function mountPlayer(root, c) {
     if (!P.editing || !P.model || dead) return;
     const past = P.model.parts ? playPart(P.model) : null, next = past ? afterPart(P.model, past) : null;
     if (next !== null) setTl(next);
-    else if (!P.loop) return;
+    // Something goes on after the video (0.1.35): playing runs on into it on the player's own clock.
+    else if (!aft && emTail(P.model) > EM_EPS) { setAft(P.model.duration, true); state(); syncAudio(true); drift(); return; }
+    else if (aft || !P.loop) return;
     else setTl(emPlayable(P.model, 0) ?? 0);
     v.play().catch((e) => console.warn("Glint: play() was refused", e));
   });
@@ -1669,7 +1766,7 @@ function mountEditor(root, c, P) {
     const m = model();
     speedBtn.disabled = !m;
     speedBtn.innerHTML = `<span>${m ? m.speed : 1}x</span>${ED_CHEV}`;
-    $(".e-speed-note", pane).textContent = m ? t("Length {len}", { len: fmtDurMs(emOutDuration(m)) }) : t("Loading…");
+    $(".e-speed-note", pane).textContent = m ? t("Length {len}", { len: fmtDurMs(emResultDuration(m)) }) : t("Loading…");
   }
 
   function renderColor() {
@@ -1755,7 +1852,7 @@ function mountEditor(root, c, P) {
     else if (!emChanged(m) && c.draft) lines.push(t("Saves the clips joined, as they are."));
     else if (!changed) lines.push(t("No changes yet."));
     else {
-      lines.push(edReplaceOn() && !c.draft ? t("The clip will be {len} long.", { len: fmtDurMs(emOutDuration(m)) }) : t("New clip, {len} long.", { len: fmtDurMs(emOutDuration(m)) }));
+      lines.push(edReplaceOn() && !c.draft ? t("The clip will be {len} long.", { len: fmtDurMs(emResultDuration(m)) }) : t("New clip, {len} long.", { len: fmtDurMs(emResultDuration(m)) }));
       lines.push(emIsPlainCut(m) ? t("Quick cut, no quality loss.") : t("Re-encodes the video."));
       if (emToOpts(m).audio.length && m.audio.length > 1) lines.push(t("The audio is mixed into one track."));
       if (m.canvas) lines.push(t("The picture is {w} × {h}.", { w: m.canvas.width, h: m.canvas.height }));
@@ -1837,7 +1934,7 @@ function mountEditor(root, c, P) {
 
   /** The header's icon buttons: their tooltips name the current shortcut, the fullscreen one shows its state. */
   function renderHead() {
-    const full = P.isEditorFull(), fsBtn = $(".e-fsbtn", pane);
+    const full = P.isEditorFull(), fsBtn = $(".e-fsbtn", root); // root: workspace.js moves it into the top row
     const label = full ? t("Leave fullscreen") : t("Fullscreen editor");
     fsBtn.innerHTML = full ? ED_ICON_UNFULL : PICON.full;
     fsBtn.setAttribute("aria-label", label);
@@ -1888,14 +1985,19 @@ function edDropInit() {
     listen("tauri://drag-leave", () => mark(false)),
     listen("tauri://drag-drop", ({ payload }) => {
       mark(false);
-      const paths = Array.isArray(payload?.paths) ? payload.paths.filter((p) => typeof p === "string" && p) : [];
-      if (open() && paths.length) edAddAudio(paths);
+      let paths = Array.isArray(payload?.paths) ? payload.paths.filter((p) => typeof p === "string" && p) : [];
+      // Pictures and GIFs (and a video dropped on the player) go on the picture (media.js); the rest are audio rows.
+      if (open() && paths.length && typeof medTakeDrop === "function") paths = medTakeDrop(paths, payload?.position);
+      // Dropped on the timeline (0.1.35): the new row starts where it was dropped. The position is in physical pixels.
+      let at;
+      try { const k = window.devicePixelRatio || 1, pos = payload?.position; if (pos && S.player?.tl?.timeAtClient) at = S.player.tl.timeAtClient(pos.x / k, pos.y / k) ?? undefined; } catch { at = undefined; }
+      if (open() && paths.length) edAddAudio(paths, at);
     }),
   ]).catch((e) => { edDropSub = null; console.error("Glint: could not subscribe to file drops", e); });
 }
 
 /** Adds each file as a new audio row of the open clip, entering edit mode first if needed. */
-async function edAddAudio(paths) {
+async function edAddAudio(paths, at) {
   const P = S.player;
   if (!P || !S.open) return;
   try {
@@ -1913,7 +2015,7 @@ async function edAddAudio(paths) {
       }
       if (S.player !== P || !P.alive() || P.model !== m) return; // the clip was closed or changed meanwhile
       if (!info || !(+info.duration > 0)) { errors.push(t("{name} has no audio.", { name })); continue; }
-      added.push(P.addFileRow(info).title);
+      added.push(P.addFileRow(info, at).title);
     }
     if (errors.length) flash(errors.length > 1 ? `${errors[0]} ${t("{n} more files could not be added.", { n: errors.length - 1 })}` : errors[0], true);
     else if (added.length === 1) flash(t("Added {name} as a new audio track", { name: added[0] }));

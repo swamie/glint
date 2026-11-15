@@ -25,6 +25,11 @@ use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
+// Pictures, GIFs and clips on the picture; round / soft blur boxes (0.1.35).
+#[path = "edmedia.rs"]
+mod edmedia;
+pub use edmedia::{media_info, MediaInfo, MediaSrc, MEDIA_EXT};
+
 /// One audio track of a clip, extracted to its own file so the editor can play
 /// and mix tracks separately (WebView2 cannot switch tracks inside one file).
 #[derive(Serialize, Clone, Debug)]
@@ -170,11 +175,16 @@ pub struct ExportOpts {
     /// order. An empty track (or none at all) = the piece stands still, as
     /// before; otherwise the track replaces the piece's own two boxes.
     pub canvas_tracks: Vec<Vec<PiecePoint>>,
+    /// 0.1.35: OUTPUT seconds of black after everything kept ("after the video": the timeline
+    /// ends where its last overlay item or audio file ends). The picture is black there, at the
+    /// clip's frame rate, so overlays and keyframes go on; every audio result is padded with
+    /// silence to the same length; files that play through cuts may sound there. 0 = none.
+    pub tail: f64,
 }
 
 impl Default for ExportOpts {
     fn default() -> Self {
-        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new(), ordered: false, overlays: Vec::new(), blurs: Vec::new(), fade_in: 0.0, fade_out: 0.0, canvas: None, canvas_tracks: Vec::new() }
+        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new(), ordered: false, overlays: Vec::new(), blurs: Vec::new(), fade_in: 0.0, fade_out: 0.0, canvas: None, canvas_tracks: Vec::new(), tail: 0.0 }
     }
 }
 
@@ -277,6 +287,9 @@ pub struct Overlay {
     pub w: f64,
     pub h: f64,
     pub track: Vec<MovePoint>,
+    /// A picture, GIF or clip (0.1.35, edmedia.rs) instead of `png`: shown
+    /// in the box `x`, `y`, `w`, `h` (also without a track).
+    pub media: Option<MediaSrc>,
 }
 
 /// A box of the picture that is blurred from `from` to `to` seconds of the
@@ -296,6 +309,10 @@ pub struct BlurBox {
     /// Keyframes (0.1.27): the box moves and scales about its middle along
     /// this track. Empty = it stands still.
     pub track: Vec<MovePoint>,
+    /// 0.1.35: corners rounded 0..1 (1 = an ellipse) and the blur fading out
+    /// toward the edge 0..1 (edmedia::mask_alpha). 0 and 0 = a plain box.
+    pub round: f64,
+    pub soft: f64,
 }
 
 /// Where overlay PNGs are written; an export removes the ones it used from here.
@@ -1096,10 +1113,11 @@ pub(crate) fn frames_on_screen(ffmpeg: &Path, file: &Path, times: &[f64]) -> Vec
 
 /// The picture layers of an export, checked and clamped to the result's length.
 struct Layers {
-    /// (png path, from, to) in output seconds, and how it moves (keyframes).
-    overlays: Vec<(String, f64, f64, Option<Moving>)>,
-    /// (x, y, w, h fractions, from, to, strength), and how it moves.
-    blurs: Vec<(f64, f64, f64, f64, f64, f64, f64, Option<Moving>)>,
+    /// (png path, from, to) in output seconds, how it moves (keyframes), and
+    /// the picture / GIF / clip it shows instead of the PNG (edmedia.rs).
+    overlays: Vec<(String, f64, f64, Option<Moving>, Option<edmedia::MediaPlan>)>,
+    /// (x, y, w, h fractions, from, to, strength), how it moves, (round, soft).
+    blurs: Vec<(f64, f64, f64, f64, f64, f64, f64, Option<Moving>, (f64, f64))>,
     fade_in: f64,
     fade_out: f64,
 }
@@ -1207,6 +1225,14 @@ fn layer_plan(opts: &ExportOpts, total: f64) -> Result<Option<Layers>, String> {
     let mut overlays = Vec::new();
     for o in &opts.overlays {
         let Some((a, b)) = span(o.from, o.to) else { continue };
+        if let Some(ms) = &o.media {
+            // A picture, GIF or clip in its box (edmedia.rs); it may hang over the picture's edges.
+            if let Some(mp) = edmedia::media_plan(o, ms)? {
+                let moving = clean_moves(&o.track, total).map(|pts| Moving { bx: mp.bx, pts });
+                overlays.push((String::new(), a, b, moving, Some(mp)));
+            }
+            continue;
+        }
         if !Path::new(&o.png).is_file() {
             return Err("An overlay picture of the edit is missing. Try the export again.".into());
         }
@@ -1215,18 +1241,19 @@ fn layer_plan(opts: &ExportOpts, total: f64) -> Result<Option<Layers>, String> {
             let (w, h) = (fin(o.w).min(4.0), fin(o.h).min(4.0));
             (w > 0.0005 && h > 0.0005).then(|| Moving { bx: (fin(o.x).clamp(-4.0, 4.0), fin(o.y).clamp(-4.0, 4.0), w, h), pts })
         });
-        overlays.push((o.png.clone(), a, b, moving));
+        overlays.push((o.png.clone(), a, b, moving, None));
     }
     let mut blurs = Vec::new();
     for g in &opts.blurs {
         let Some((a, b)) = span(g.from, g.to) else { continue };
         let st = fin(g.strength).clamp(0.0, 0.2);
+        let shape = (fin(g.round).clamp(0.0, 1.0), fin(g.soft).clamp(0.0, 1.0));
         if let Some(pts) = clean_moves(&g.track, total) {
             // A moving box: kept whole (its track may take it partly off the picture).
             let (x, y) = (fin(g.x).clamp(-1.0, 2.0), fin(g.y).clamp(-1.0, 2.0));
             let (w, h) = (fin(g.w).min(1.0), fin(g.h).min(1.0));
             if w > 0.002 && h > 0.002 && st > 0.0 {
-                blurs.push((x, y, w, h, a, b, st, Some(Moving { bx: (x, y, w, h), pts })));
+                blurs.push((x, y, w, h, a, b, st, Some(Moving { bx: (x, y, w, h), pts }), shape));
             }
             continue;
         }
@@ -1235,7 +1262,7 @@ fn layer_plan(opts: &ExportOpts, total: f64) -> Result<Option<Layers>, String> {
         let w = fin(g.w).min(1.0 - x);
         let h = fin(g.h).min(1.0 - y);
         if w > 0.002 && h > 0.002 && st > 0.0 {
-            blurs.push((x, y, w, h, a, b, st, None));
+            blurs.push((x, y, w, h, a, b, st, None, shape));
         }
     }
     // Fades longer than half the result would overlap: each is kept to half.
@@ -1254,13 +1281,18 @@ fn layer_plan(opts: &ExportOpts, total: f64) -> Result<Option<Layers>, String> {
 /// overlay picture (input `first_png` + i, scaled to the picture `size`),
 /// each only `between` its times, then the fades. Pixel boxes are even, as
 /// 4:2:0 needs, so the blurred crop lands exactly where it was taken.
-fn layer_chain(l: &Layers, first_png: usize, (pw, ph): (u32, u32), total: f64) -> Vec<String> {
+/// A media item (edmedia.rs) takes its overlay's place in the order. `masks`
+/// (one per blur box, edmedia::write_blur_masks) are the inputs after the
+/// overlays'; a box with one has its blurred copy faded by it (`alphamerge`).
+fn layer_chain(l: &Layers, first_png: usize, (pw, ph): (u32, u32), total: f64, masks: &[Option<PathBuf>]) -> Vec<String> {
     let mut g = Vec::new();
     let mut cur = "vb".to_string();
     let even = |v: f64| ((v / 2.0).round() as i64 * 2).max(0) as u32;
-    for (i, &(x, y, w, h, a, b, st, ref moving)) in l.blurs.iter().enumerate() {
+    let first_mask = first_png + l.overlays.len();
+    for (i, &(x, y, w, h, a, b, st, ref moving, _)) in l.blurs.iter().enumerate() {
+        let mask = edmedia::mask_input(masks, i, first_mask);
         if let Some(mv) = moving {
-            g.extend(moving_blur_chain(mv, &cur, i, (pw, ph), (a, b, st)));
+            g.extend(moving_blur_chain(mv, &cur, i, (pw, ph), (a, b, st), mask));
             cur = format!("vl{i}");
             continue;
         }
@@ -1270,13 +1302,27 @@ fn layer_chain(l: &Layers, first_png: usize, (pw, ph): (u32, u32), total: f64) -
         let bh = even(h * ph as f64).clamp(2, ph - by);
         let sigma = (st * ph as f64).clamp(0.5, 500.0);
         let on = format!("enable='between(t,{a:.4},{b:.4})'");
+        if let Some(mk) = mask {
+            g.push(format!(
+                "[{cur}]split=2[{cur}m][{cur}s];[{cur}s]crop={bw}:{bh}:{bx}:{by},gblur=sigma={sigma:.3}:steps=2:{on},format=yuva420p[bq{i}];[{mk}:v]format=gray,scale={bw}:{bh}[mk{i}];[bq{i}][mk{i}]alphamerge[bb{i}];[{cur}m][bb{i}]overlay={bx}:{by}:{on}[vl{i}]"
+            ));
+            cur = format!("vl{i}");
+            continue;
+        }
         g.push(format!(
             "[{cur}]split=2[{cur}m][{cur}s];[{cur}s]crop={bw}:{bh}:{bx}:{by},gblur=sigma={sigma:.3}:steps=2:{on}[bb{i}];[{cur}m][bb{i}]overlay={bx}:{by}:{on}[vl{i}]"
         ));
         cur = format!("vl{i}");
     }
-    for (j, (_, a, b, moving)) in l.overlays.iter().enumerate() {
+    // A moving GIF or clip gets this many frames a second (each a new size along its track).
+    let rate = 30;
+    for (j, (_, a, b, moving, media)) in l.overlays.iter().enumerate() {
         let input = first_png + j;
+        if let Some(mp) = media {
+            g.push(edmedia::media_chain(mp, moving.as_ref(), input, &cur, j, (pw, ph), (*a, *b), rate));
+            cur = format!("vo{j}");
+            continue;
+        }
         if let Some(mv) = moving {
             // The item's box, scaled about its middle and moved per frame (its input is the PNG looped, so a frame comes for every size).
             let (bx, by, bw, bh) = mv.bx;
@@ -1311,7 +1357,7 @@ fn layer_chain(l: &Layers, first_png: usize, (pw, ph): (u32, u32), total: f64) -
 /// frame of that size at minus the box's position (`overlay` follows each
 /// frame's size, `crop` would not), scaled to the box's size of the moment
 /// and laid at its place.
-fn moving_blur_chain(mv: &Moving, cur: &str, i: usize, (pw, ph): (u32, u32), (a, b, st): (f64, f64, f64)) -> Vec<String> {
+fn moving_blur_chain(mv: &Moving, cur: &str, i: usize, (pw, ph): (u32, u32), (a, b, st): (f64, f64, f64), mask: Option<usize>) -> Vec<String> {
     let (bx, by, bw, bh) = mv.bx;
     let even = |v: f64| (((v / 2.0).round() as i64) * 2).max(2) as u32;
     let min_of = |k: usize| mv.pts.iter().map(|p| p.1[k]).fold(f64::INFINITY, f64::min);
@@ -1324,11 +1370,16 @@ fn moving_blur_chain(mv: &Moving, cur: &str, i: usize, (pw, ph): (u32, u32), (a,
     let ty = format!("{}+({dy})-{hf}/2", ex_num(by + bh / 2.0));
     let sigma = (st * ph as f64).clamp(0.5, 500.0);
     let on = format!("enable='between(t,{a:.4},{b:.4})'");
+    // A round / soft box: its fixed-size cut faded by the mask (edmedia.rs) before it is scaled to the moment's size.
+    let faded = match mask {
+        Some(mk) => format!("[kb{i}e]format=yuva420p[kb{i}q];[{mk}:v]format=gray,scale={fw}:{fh}[mk{i}];[kb{i}q][mk{i}]alphamerge[kb{i}f];[kb{i}f]"),
+        None => format!("[kb{i}e]"),
+    };
     vec![format!(
         "[{cur}]split=2[{cur}m][{cur}s];[{cur}s]gblur=sigma={sigma:.3}:steps=2:{on},split=2[kb{i}a][kb{i}b];[kb{i}a]crop={fw}:{fh}:0:0[kb{i}c];\
          [kb{i}b]scale=w='max({fw},{fw}/({wf}))':h='max({fh},{fh}/({hf}))':eval=frame[kb{i}d];\
          [kb{i}c][kb{i}d]overlay=x='-clip(({lx})*overlay_w,0,overlay_w-{fw})':y='-clip(({ty})*overlay_h,0,overlay_h-{fh})'[kb{i}e];\
-         [kb{i}e]scale=w='max(2,{pw}*{wf})':h='max(2,{ph}*{hf})':eval=frame[bb{i}];\
+         {faded}scale=w='max(2,{pw}*{wf})':h='max(2,{ph}*{hf})':eval=frame[bb{i}];\
          [{cur}m][bb{i}]overlay=x='{pw}*({lx})':y='{ph}*({ty})':{on}[vl{i}]"
     )]
 }
@@ -1600,10 +1651,15 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     // that is exactly what it is. The one range's own look decides (it
     // replaces `opts.color`), so a colored or blank range is never copied.
     let plain = pieces.iter().all(|k| !k.blank && is_neutral(&k.color));
+    // Black after the video (0.1.35), in output seconds; at most an hour.
+    let tail = if opts.tail.is_finite() { opts.tail.clamp(0.0, 3600.0) } else { 0.0 };
+    let tail = if tail < 0.001 { 0.0 } else { tail };
+    // The video's own part of the result, then the whole result with the black after it.
+    let out_video = kept / speed;
     // Overlays, blur boxes and fades (on the result's own timeline, `out_total` long).
-    let out_total = kept / speed;
+    let out_total = out_video + tail;
     let layers = layer_plan(opts, out_total)?;
-    if k_count == 1 && same(speed, 1.0) && plain && opts.tracks.is_empty() && opts.audio.is_empty() && layers.is_none() && opts.canvas.is_none() {
+    if k_count == 1 && same(speed, 1.0) && plain && opts.tracks.is_empty() && opts.audio.is_empty() && layers.is_none() && opts.canvas.is_none() && tail == 0.0 {
         let meta = crate::clip::trim(s, src, base, if to_end { duration } else { last_end }, true)?;
         progress(100.0);
         return Ok(meta);
@@ -1612,7 +1668,11 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     let titles = audio_titles(&ffmpeg, &src_path)?;
     let mut tempo = atempo_chain(speed);
     // Every file the mix needs is checked here, before the long encode starts.
-    let mut plan = audio_plan(&ffmpeg, &src_path, opts, &titles, duration, base, total, k_count, speed, kept)?;
+    // Files that play through cuts may go on into the black after the video (kept seconds, before the speed).
+    let mut plan = audio_plan(&ffmpeg, &src_path, opts, &titles, duration, base, total, k_count, speed, kept + tail * speed)?;
+    if tail > 0.0 && matches!(plan, AudioPlan::Copy) {
+        plan = AudioPlan::Tracks; // a copied track cannot be padded with silence
+    }
     if let Some(l) = &layers {
         // The sound fades with the picture (after the speed change, so on the result's time).
         if l.fade_in > 0.0 {
@@ -1624,6 +1684,10 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         if (l.fade_in > 0.0 || l.fade_out > 0.0) && matches!(plan, AudioPlan::Copy) {
             plan = AudioPlan::Tracks; // a copied track cannot fade
         }
+    }
+    if tail > 0.0 {
+        // Every audio result is as long as the picture with its black: silence after the clip's sound.
+        tempo += &format!(",apad=whole_dur={out_total:.6}");
     }
 
     // Video: one input per kept range, each seeked (cheap: a keyframe every
@@ -1706,11 +1770,20 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     // The picture's size: the source's, or the canvas's when there is one.
     let src_size = if src.width > 0 && src.height > 0 {
         Some((src.width, src.height))
-    } else if layers.is_some() || opts.canvas.is_some() {
+    } else if layers.is_some() || opts.canvas.is_some() || tail > 0.0 {
         Some(library::probe(&ffmpeg, &src_path, false).map(|p| (p.width, p.height)).filter(|(w, h)| *w > 0 && *h > 0).ok_or("Could not read the clip's picture size")?)
     } else {
         None
     };
+    if let (true, Some((w, h))) = (tail > 0.0, src_size) {
+        // After the video (0.1.35): black frames at the clip's rate from the end of the video on,
+        // laid after it by timestamp (as the kept ranges are joined), before the canvas and the
+        // overlays, so those go on over the black.
+        video += &format!(",format=yuv420p,{tags}[vk]");
+        graph.push(std::mem::take(&mut video));
+        graph.push(format!("color=c=black:s={w}x{h}:r={cap}:d={tail:.6},format=yuv420p,lutyuv=y={black}:u=128:v=128,setsar=1,{tags},setpts=PTS+{out_video:.6}/TB[vt]"));
+        video = "[vk][vt]interleave=nb_inputs=2".to_string();
+    }
     let canvas = match (&opts.canvas, src_size) {
         (Some(c), Some(size)) => Some(canvas_plan(c, &opts.canvas_tracks, size)),
         _ => None,
@@ -1804,7 +1877,9 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             } else {
                 // The cut mix first, then the files that play through the cuts on top of it, on the
                 // result's own timeline. `duration=first`: the result stays as long as the video.
-                graph.push(cut_chain("[mix]", &local, "m", "anull", "[mc]"));
+                // With black after the video the cut mix is padded first, so the files go on into it.
+                let pad = if tail > 0.0 { format!("apad=whole_dur={:.6}", kept + tail * speed) } else { "anull".to_string() };
+                graph.push(cut_chain("[mix]", &local, "m", &pad, "[mc]"));
                 graph.push(format!("[mc]{thru}amix=inputs={}:duration=first:normalize=0,{tempo}[a]", n_thru + 1));
             }
             maps.extend(["-map", "[a]"].map(String::from));
@@ -1815,14 +1890,18 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
 
     // The overlay pictures are the last inputs.
     let first_png = first_file + file_inputs.len();
+    let loop_rate = cap.min(60);
+    // Their inputs (PNGs, pictures / GIFs / clips, then the round blur boxes' masks: edmedia.rs).
+    let mut _masks = OverlayFiles(Vec::new());
+    let mut layer_args: Vec<String> = Vec::new();
     if let Some(l) = &layers {
         // On a canvas, overlay PNGs arrive at the canvas's size and blur boxes are fractions of it.
         let size = canvas.as_ref().map(|c| (c.width, c.height)).or(src_size).ok_or("Could not read the clip's picture size")?;
-        graph.extend(layer_chain(l, first_png, size, out_total));
+        let (files, masks) = edmedia::write_blur_masks(l, size)?;
+        _masks = files;
+        graph.extend(layer_chain(l, first_png, size, out_total, &masks));
+        layer_args = edmedia::layer_input_args(l, &masks, loop_rate, out_total);
     }
-    // (path, moves): a moving overlay's picture is looped, so its per-frame scale gets a frame for every size.
-    let png_inputs: Vec<(String, bool)> = layers.as_ref().map(|l| l.overlays.iter().map(|o| (o.0.clone(), o.3.is_some())).collect()).unwrap_or_default();
-    let loop_rate = cap.min(60);
     // Keyframe tracks can make the graph long; Windows cuts a command line at 32767 characters, so a
     // long graph goes to a file (`-/filter_complex`, ffmpeg 7+). Short ones stay on the line as before.
     let graph_text = graph.join(";");
@@ -1868,15 +1947,8 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         for (path, seek, len) in &file_inputs {
             a.extend(["-ss".to_string(), format!("{seek:.6}"), "-t".into(), format!("{len:.6}"), "-i".into(), path.clone()]);
         }
-        for (png, moves) in &png_inputs {
-            if *moves {
-                // A frame `loop_rate` times a second for the whole result (the overlay ends with the picture: `shortest`).
-                a.extend(["-loop".to_string(), "1".into(), "-framerate".into(), loop_rate.to_string(), "-t".into(), format!("{:.3}", out_total + 1.0)]);
-            }
-            // One still picture each; `pattern_type none` so no character of the path is read as a frame number pattern.
-            a.extend(["-f", "image2", "-pattern_type", "none", "-i"].map(String::from));
-            a.push(png.clone());
-        }
+        // The overlay pictures, media items and masks (edmedia::layer_input_args).
+        a.extend(layer_args.iter().cloned());
         a.extend(graph_arg.iter().cloned());
         a.extend(maps.iter().cloned());
         a.extend(video_codec_args(enc));
@@ -1890,7 +1962,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         a
     };
 
-    let expected = kept / speed;
+    let expected = out_total;
     let enc = pick_encoder(&ffmpeg, &s.encoder);
     let mut result = run_with_progress(&ffmpeg, &build(&enc), expected, progress);
     if let Err(e) = &result {
@@ -2235,6 +2307,7 @@ fn run_self_test(r: &mut Report) {
     layer_checks(r, &ffmpeg, &s, &src, &src_file, (f_desk, 1));
     canvas_checks(r, &ffmpeg, &s, &src, &src_file, (f_desk, 1));
     keyframe_checks(r, &ffmpeg, &s, &src, &src_file);
+    edmedia::media_checks(r, &ffmpeg, &s, &src, &src_file);
     if let Some(clip) = std::env::var_os("GLINT_EDITOR_BENCH") {
         bench(r, &ffmpeg, &s, Path::new(&clip));
     }
@@ -2718,7 +2791,7 @@ fn keyframe_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, 
         p.to_string_lossy().into_owned()
     };
     let base = (0.05, 0.1, 0.1, 0.1);
-    let moving = |png: String, from: f64, to: f64, track: Vec<MovePoint>| Overlay { png, from, to, x: base.0, y: base.1, w: base.2, h: base.3, track };
+    let moving = |png: String, from: f64, to: f64, track: Vec<MovePoint>| Overlay { png, from, to, x: base.0, y: base.1, w: base.2, h: base.3, track, media: None };
 
     // --- 1. A moving overlay on a black picture: still before its first keyframe, half way at the middle, at the end after the last.
     let lin = vec![mv(0.5, 0.0, 0.0, 1.0, 1.0, false), mv(2.5, 0.5, 0.4, 2.0, 1.5, false)];
@@ -2811,7 +2884,7 @@ fn keyframe_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, 
     }
 
     // --- 6. A moving blur box: blurred where it is at each time, not where it was.
-    let blur = BlurBox { x: 0.05, y: 0.05, w: 0.25, h: 0.25, from: 0.0, to: 2.8, strength: 0.03, track: vec![mv(0.0, 0.0, 0.0, 1.0, 1.0, false), mv(2.0, 0.5, 0.45, 1.2, 1.2, false)] };
+    let blur = BlurBox { x: 0.05, y: 0.05, w: 0.25, h: 0.25, from: 0.0, to: 2.8, strength: 0.03, track: vec![mv(0.0, 0.0, 0.0, 1.0, 1.0, false), mv(2.0, 0.5, 0.45, 1.2, 1.2, false)], ..Default::default() };
     match ex(&ExportOpts { segments: vec![Range { start: 0.0, end: 2.8, ..Default::default() }], blurs: vec![blur], ..Default::default() }) {
         Ok(m) => {
             let out = Path::new(&m.path);
@@ -2859,6 +2932,196 @@ fn band_db_at(ffmpeg: &Path, file: &Path, stream: u32, freq: u32, from: f64, to:
         .ok()?;
     let text = String::from_utf8_lossy(&out.stderr);
     text.lines().find_map(|l| l.split("mean_volume:").nth(1).and_then(|v| v.trim().trim_end_matches("dB").trim().parse::<f64>().ok()))
+}
+
+/// `band_db_at` as a player hears it from the start: decoded from the file's first packet, no
+/// seek (an input `-ss` may hide what the first packets hold), `from..to` cut by `atrim`.
+fn band_db_head(ffmpeg: &Path, file: &Path, stream: u32, freq: u32, from: f64, to: f64) -> Option<f64> {
+    let band = format!("bandpass=f={freq}:width_type=q:w=8");
+    let out = util::hidden_cmd(ffmpeg)
+        .args(["-hide_banner", "-nostats", "-nostdin", "-i"])
+        .arg(file)
+        .args(["-map", &format!("0:a:{stream}"), "-af", &format!("atrim=start={from:.3}:end={to:.3},{band},{band},volumedetect"), "-f", "null", "-"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stderr);
+    text.lines().find_map(|l| l.split("mean_volume:").nth(1).and_then(|v| v.trim().trim_end_matches("dB").trim().parse::<f64>().ok()))
+}
+
+/// The first `n` packets of audio stream `stream`: (pts, duration) in seconds, and the stream's start time.
+fn audio_head(ffmpeg: &Path, file: &Path, stream: u32, n: usize) -> (Vec<(f64, f64)>, f64) {
+    let Some(ffprobe) = library::ffprobe_for(ffmpeg) else { return (Vec::new(), f64::NAN) };
+    let run = |args: &[&str]| -> String {
+        util::hidden_cmd(&ffprobe).args(args).arg(file).stdin(Stdio::null()).stderr(Stdio::null()).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
+    };
+    let sel = format!("a:{stream}");
+    let pk = run(&["-v", "error", "-select_streams", &sel, "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", "-read_intervals", "%+#40"]);
+    let packets = pk.lines().take(n).filter_map(|l| { let mut it = l.split(','); Some((it.next()?.trim().parse().ok()?, it.next()?.trim().parse().unwrap_or(0.0))) }).collect();
+    let st = run(&["-v", "error", "-select_streams", &sel, "-show_entries", "stream=start_time", "-of", "default=nw=1:nk=1"]).trim().parse().unwrap_or(f64::NAN);
+    (packets, st)
+}
+
+/// 0.1.35, a user's report: "after exporting a clip with an imported audio file, the imported audio
+/// does not play until I skip back". Every way a song can sit in an export: through cuts or cut
+/// with the video, at the start or later, the clip's own sound kept, muted or deleted, with cuts.
+/// For each: the audio stream starts at 0 with its first packets in order and without a gap, and
+/// the song is heard where it belongs when the file is decoded from its start (as a player does).
+#[allow(clippy::too_many_arguments)]
+fn song_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, dir: &Path, f_mic: u32, keep: &Path) {
+    let f_song = 700u32;
+    let song = dir.join("Imported Song.mp3");
+    let made = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", &format!("sine=frequency={f_song}:sample_rate=44100:duration=12"), "-ac", "2", "-c:a", "libmp3lame", "-b:a", "192k", &song.to_string_lossy()]);
+    r.check("song: an MP3 to import is made", made.is_ok(), made.as_ref().err().map(String::as_str).unwrap_or(""));
+    if made.is_err() {
+        return;
+    }
+    let ref_song = band_db_head(ffmpeg, &song, 0, f_song, 1.0, 5.0);
+    let ref_mic = band_db_at(ffmpeg, Path::new(&src.path), 2, f_mic, 0.2, 7.8);
+    let song_s = song.to_string_lossy().into_owned();
+    let track = |index: u32, volume: f32| AudioEdit { source: "track".into(), index, volume, ..Default::default() };
+    let file = |through: bool, offset: f64| AudioEdit { source: "file".into(), path: song_s.clone(), offset, volume: 1.0, through, ..Default::default() };
+    let seg = |v: &[(f64, f64)]| v.iter().map(|&(start, end)| Range { start, end, ..Default::default() }).collect::<Vec<_>>();
+    let _ = fs::create_dir_all(keep);
+    // (label, rows, kept ranges, where the song starts in the result, the result's length, the mic heard)
+    let cases: Vec<(&str, Vec<AudioEdit>, Vec<Range>, f64, f64, bool)> = vec![
+        ("through row at the start, clip sound kept", vec![track(1, 1.0), track(2, 1.0), file(true, 0.0)], Vec::new(), 0.0, 8.0, true),
+        ("old row at the start, clip sound kept", vec![track(1, 1.0), track(2, 1.0), file(false, 0.0)], Vec::new(), 0.0, 8.0, true),
+        ("through row at 2 s, clip sound kept", vec![track(1, 1.0), track(2, 1.0), file(true, 2.0)], Vec::new(), 2.0, 8.0, true),
+        ("old row at 2 s, clip sound kept", vec![track(1, 1.0), track(2, 1.0), file(false, 2.0)], Vec::new(), 2.0, 8.0, true),
+        ("through row at the start, clip sound muted", vec![track(1, 0.0), track(2, 0.0), file(true, 0.0)], Vec::new(), 0.0, 8.0, false),
+        ("through row at the start, clip sound deleted", vec![file(true, 0.0)], Vec::new(), 0.0, 8.0, false),
+        ("old row at the start, clip sound deleted", vec![file(false, 0.0)], Vec::new(), 0.0, 8.0, false),
+        ("through row at the start, cut 2..3", vec![track(2, 1.0), file(true, 0.0)], seg(&[(0.0, 2.0), (3.0, 8.0)]), 0.0, 7.0, true),
+        ("through row at the start, the clip's start cut", vec![track(2, 1.0), file(true, 0.0)], seg(&[(1.5, 8.0)]), 0.0, 6.5, true),
+        ("old row at the start, the clip's start cut", vec![track(2, 1.0), file(false, 0.0)], seg(&[(1.5, 8.0)]), 0.0, 6.5, true),
+    ];
+    for (k, (label, audio, segments, at, len, mic)) in cases.into_iter().enumerate() {
+        let opts = ExportOpts { audio, segments, ..Default::default() };
+        match export(s, src, &opts, &mut |_| {}) {
+            Ok(m) => {
+                let f = Path::new(&m.path);
+                let _ = fs::copy(f, keep.join(format!("song{k}.mp4")));
+                let (packets, start) = audio_head(ffmpeg, f, 0, 12);
+                // In order, from 0, each packet where the last one ended.
+                let ordered = packets.len() >= 10 && packets[0].0.abs() < 0.03 && packets.windows(2).all(|w| (w[1].0 - (w[0].0 + w[0].1)).abs() < 0.002);
+                let p = library::probe(ffmpeg, f, true);
+                let dur = p.as_ref().map(|p| p.duration).unwrap_or(0.0);
+                let first = band_db_head(ffmpeg, f, 0, f_song, at + 0.05, at + 0.95);
+                let before = if at > 0.5 { band_db_head(ffmpeg, f, 0, f_song, 0.1, at - 0.2) } else { None };
+                let later = band_db_head(ffmpeg, f, 0, f_song, at + 2.0, at + 3.0);
+                let mic_lv = band_db_head(ffmpeg, f, 0, f_mic, 0.1, 0.9);
+                let heard = |x: Option<f64>| matches!((ref_song, x), (Some(r0), Some(v)) if near(v, r0, 1.5));
+                let ok = start.abs() < 0.03
+                    && ordered
+                    && near(dur, len, 0.1)
+                    && heard(first)
+                    && heard(later)
+                    && before.map_or(true, |b| ref_song.is_some_and(|r0| b < r0 - 25.0))
+                    && (if mic { matches!((ref_mic, mic_lv), (Some(r0), Some(v)) if near(v, r0, 1.5)) } else { mic_lv.map_or(true, |v| ref_mic.is_some_and(|r0| v < r0 - 40.0)) });
+                let pk: Vec<String> = packets.iter().take(4).map(|(a, b)| format!("{a:.4}+{b:.4}")).collect();
+                r.check(
+                    &format!("song {label}: heard from its first second on, as a player plays it from the start"),
+                    ok,
+                    &format!("start {start:.4}, packets {pk:?}, {dur:.2} s; song first second {first:?}, later {later:?}, before {before:?} (file {ref_song:?}); mic {mic_lv:?} ({ref_mic:?})"),
+                );
+            }
+            Err(e) => r.check(&format!("song {label}"), false, &e),
+        }
+    }
+}
+
+/// 0.1.35: `ExportOpts::tail`, black after the video. The test clip is 8 s (desktop `f_desk`,
+/// microphone `f_mic` tones on tracks 1 and 2).
+fn tail_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, dir: &Path, (f_desk, f_mic): (u32, u32)) {
+    const W: usize = 64;
+    const TL: (usize, usize, usize, usize) = (2, 2, 30, 16); // the overlay's white quarter
+    const BR: (usize, usize, usize, usize) = (34, 20, 62, 34); // away from it
+    let src_file = Path::new(&src.path);
+    let seg = |v: &[(f64, f64)]| v.iter().map(|&(start, end)| Range { start, end, ..Default::default() }).collect::<Vec<_>>();
+    let track = |index: u32| AudioEdit { source: "track".into(), index, volume: 1.0, ..Default::default() };
+    let ref_desk = band_db_at(ffmpeg, src_file, 1, f_desk, 0.2, 3.8);
+    let ref_mic = band_db_at(ffmpeg, src_file, 2, f_mic, 0.2, 3.8);
+    let dark = |f: &Option<Vec<u8>>, b| f.as_ref().map(|f| box_mean(f, W, b)).unwrap_or(255.0);
+    let streams = |p: &Path| -> Vec<f64> {
+        let Some(ffprobe) = library::ffprobe_for(ffmpeg) else { return Vec::new() };
+        let out = util::hidden_cmd(&ffprobe).args(["-v", "error", "-show_entries", "stream=duration", "-of", "csv=p=0"]).arg(p).stdin(Stdio::null()).stderr(Stdio::null()).output();
+        out.map(|o| String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.trim().parse().ok()).collect()).unwrap_or_default()
+    };
+    let old: Result<ExportOpts, _> = serde_json::from_str(r#"{"segments":[{"start":0,"end":4}]}"#);
+    let new: Result<ExportOpts, _> = serde_json::from_str(r#"{"segments":[{"start":0,"end":4}],"tail":2.5}"#);
+    r.check("tail: options without it parse as none, with it as given", old.is_ok_and(|o| o.tail == 0.0) && new.is_ok_and(|o| o.tail == 2.5), "");
+
+    // 1. Only the clip's own tracks, cut to 0..4, 2 s of black after: every stream is 6 s, black and silent at the end.
+    match export(s, src, &ExportOpts { segments: seg(&[(0.0, 4.0)]), tail: 2.0, ..Default::default() }, &mut |_| {}) {
+        Ok(m) => {
+            let f = Path::new(&m.path);
+            let p = library::probe(ffmpeg, f, true);
+            let durs = streams(f);
+            let long = p.as_ref().is_some_and(|p| near(p.duration, 6.0, 0.1) && p.audio_streams == 3) && durs.len() == 4 && durs.iter().all(|d| near(*d, 6.0, 0.12));
+            r.check("tail 2 s: the result is 2 s longer, every stream with it (no stream copy)", long && m.kind == "edit", &format!("{:?} streams {durs:?}", p.as_ref().map(|p| (p.duration, p.audio_streams))));
+            let (inside, end, last) = (grey_at(ffmpeg, f, 2.0, W, 36), grey_at(ffmpeg, f, 4.5, W, 36), grey_at(ffmpeg, f, 5.9, W, 36));
+            // The video before it is not black (the test picture moves, so a frame's exact match is not asked).
+            let (lit, want) = (dark(&inside, BR), dark(&grey_at(ffmpeg, src_file, 2.0, W, 36), BR));
+            r.check("tail: the last frames are black, the video before it is the clip's", dark(&end, BR) < 30.0 && dark(&last, TL) < 30.0 && dark(&last, BR) < 30.0 && want > 40.0 && near(lit, want, 15.0), &format!("black {:.1} / {:.1}, the video {lit:.1} (source {want:.1})", dark(&end, BR), dark(&last, BR)));
+            // Frames at the clip's rate there (the overlays and keyframes move on).
+            let frames = library::ffprobe_for(ffmpeg)
+                .and_then(|fp| util::hidden_cmd(&fp).args(["-v", "error", "-select_streams", "v:0", "-read_intervals", "4.05%+1.9", "-show_entries", "packet=pts_time", "-of", "csv=p=0"]).arg(f).stdin(Stdio::null()).stderr(Stdio::null()).output().ok())
+                .map(|o| String::from_utf8_lossy(&o.stdout).lines().filter(|l| l.trim().parse::<f64>().is_ok_and(|t| t >= 4.04)).count())
+                .unwrap_or(0) as f64;
+            let want = 1.9 * src.fps.max(1) as f64;
+            r.check("tail: black frames at the clip's frame rate", frames >= want * 0.9 && frames <= want * 1.1 + 2.0, &format!("{frames} frames in 1.9 s at {} fps", src.fps));
+            let (heard, quiet) = (band_db_head(ffmpeg, f, 1, f_desk, 0.5, 3.5), band_db_head(ffmpeg, f, 1, f_desk, 4.3, 5.8));
+            r.check("tail: the clip's sound is silent there", matches!((ref_desk, heard, quiet), (Some(r0), Some(h), Some(q)) if near(h, r0, 1.5) && q < r0 - 40.0), &format!("before {heard:?}, after the video {quiet:?} ({ref_desk:?})"));
+        }
+        Err(e) => r.check("tail 2 s: the result is 2 s longer", false, &e),
+    }
+
+    // 2. A song that plays through, from 3 s for 2.5 s, and a picture on the black from 4.5 to 5.8 s.
+    let song = dir.join("Tail Song.wav");
+    let made = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=700:sample_rate=48000:duration=6", "-ac", "2", "-c:a", "pcm_s16le", &song.to_string_lossy()]);
+    let odir = overlay_dir();
+    let _ = fs::create_dir_all(&odir);
+    let png = odir.join("tail-ov.png");
+    let drawn = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=black@0.0:s=640x360,format=rgba,drawbox=x=0:y=0:w=320:h=180:color=white@1.0:t=fill:replace=1", "-frames:v", "1", &png.to_string_lossy()]);
+    if made.is_err() || drawn.is_err() {
+        r.check("tail: test song and picture made", false, &format!("{made:?} {drawn:?}"));
+        return;
+    }
+    let song_row = AudioEdit { source: "file".into(), path: song.to_string_lossy().into_owned(), offset: 3.0, length: 2.5, volume: 1.0, through: true, ..Default::default() };
+    let ov = Overlay { png: png.to_string_lossy().into_owned(), from: 4.5, to: 5.8, ..Default::default() };
+    let ref_song = band_db_at(ffmpeg, &song, 0, 700, 0.5, 5.5);
+    match export(s, src, &ExportOpts { segments: seg(&[(0.0, 4.0)]), tail: 2.0, audio: vec![track(2), song_row], overlays: vec![ov], ..Default::default() }, &mut |_| {}) {
+        Ok(m) => {
+            let f = Path::new(&m.path);
+            let p = library::probe(ffmpeg, f, true);
+            let durs = streams(f);
+            r.check("tail with a song and a picture: 6 s, one track", p.as_ref().is_some_and(|p| near(p.duration, 6.0, 0.1) && p.audio_streams == 1) && durs.iter().all(|d| near(*d, 6.0, 0.12)), &format!("{durs:?}"));
+            let pic = grey_at(ffmpeg, f, 5.0, W, 36);
+            r.check("tail: a picture that lies after the video is on the black there", dark(&pic, TL) > 200.0 && dark(&pic, BR) < 30.0, &format!("picture {:.1}, black around it {:.1}", dark(&pic, TL), dark(&pic, BR)));
+            let before_ov = grey_at(ffmpeg, f, 4.2, W, 36);
+            r.check("tail: the picture is not there before its time", dark(&before_ov, TL) < 30.0, &format!("{:.1}", dark(&before_ov, TL)));
+            let (in_tail, in_video) = (band_db_head(ffmpeg, f, 0, 700, 4.2, 5.4), band_db_head(ffmpeg, f, 0, 700, 3.2, 3.9));
+            let after = band_db_head(ffmpeg, f, 0, 700, 5.6, 5.95);
+            r.check("tail: a song that plays through is heard after the video, until its end", matches!((ref_song, in_tail, in_video, after), (Some(r0), Some(a), Some(b), Some(c)) if near(a, r0, 1.5) && near(b, r0, 1.5) && c < r0 - 30.0), &format!("in the video {in_video:?}, after it {in_tail:?}, past its end {after:?} ({ref_song:?})"));
+            let (mic_v, mic_t) = (band_db_head(ffmpeg, f, 0, f_mic, 0.5, 3.5), band_db_head(ffmpeg, f, 0, f_mic, 4.3, 5.8));
+            r.check("tail: the clip's microphone stops with the video", matches!((ref_mic, mic_v, mic_t), (Some(r0), Some(a), Some(b)) if near(a, r0, 1.5) && b < r0 - 40.0), &format!("{mic_v:?} then {mic_t:?} ({ref_mic:?})"));
+        }
+        Err(e) => r.check("tail with a song and a picture", false, &e),
+    }
+
+    // 3. At twice the speed the tail is still OUTPUT seconds: 4 s of clip -> 2 s, plus 1 s of black.
+    match export(s, src, &ExportOpts { segments: seg(&[(0.0, 4.0)]), speed: 2.0, tail: 1.0, audio: vec![track(1)], ..Default::default() }, &mut |_| {}) {
+        Ok(m) => {
+            let f = Path::new(&m.path);
+            let durs = streams(f);
+            let last = grey_at(ffmpeg, f, 2.6, W, 36);
+            r.check("tail at 2x speed: output seconds (2 s of clip + 1 s of black)", durs.len() == 2 && durs.iter().all(|d| near(*d, 3.0, 0.12)) && dark(&last, BR) < 30.0, &format!("{durs:?}, black {:.1}", dark(&last, BR)));
+        }
+        Err(e) => r.check("tail at 2x speed", false, &e),
+    }
 }
 
 /// The first frame at or after `t` as 64x36 grey pixels.
@@ -3103,6 +3366,8 @@ fn timeline_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, 
         }
         Err(e) => r.check("microphone + file mixed and cut", false, &e),
     }
+    song_checks(r, ffmpeg, s, src, dir, f_mic, &util::data_dir().join("song-exports"));
+    tail_checks(r, ffmpeg, s, src, dir, (f_desk, f_mic));
     let count_before = fs::read_dir(dir).map(|d| d.count()).unwrap_or(0);
     let started = Instant::now();
     let missing = AudioEdit { path: dir.join("nope-missing.mp3").to_string_lossy().into_owned(), ..file_row.clone() };

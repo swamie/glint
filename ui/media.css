@@ -1,0 +1,11 @@
+/* Pictures, GIFs and clips on the editor's picture (media.js, overlays.js). */
+
+/* "Add its sound too": a note at the top of the player, under the tool bar. */
+.med-offer { position: absolute; z-index: 5; top: 50px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px); padding: 6px 6px 6px 12px; border-radius: 9px; background: rgba(7, 10, 16, .88); border: 1px solid rgba(255, 255, 255, .14); color: #fff; font-size: 12px; box-shadow: 0 6px 24px rgba(0, 0, 0, .35); }
+.med-offer[hidden] { display: none; }
+.med-offer > span { min-width: 0; }
+.med-x { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: rgba(255, 255, 255, .7); font-size: 16px; line-height: 1; cursor: pointer; }
+.med-x:hover { background: rgba(255, 255, 255, .1); color: #fff; }
+
+/* While a picture is cropped, the rest of the layer does not take clicks for other items. */
+.player.ov-cropping .ov-layer { cursor: default; }

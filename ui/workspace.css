@@ -1,0 +1,85 @@
+/* The editor as a workspace (workspace.js, 0.1.35). While editing, the viewer fills the window:
+     top row    (the editor's buttons | the name | panel toggles and the window buttons)
+     pool       main (the player)      side (the inspector: the edit column)
+     tl         the timeline across the whole width
+   .v-main becomes display: contents, so .player and .e-tl (its children, as editor.js builds them)
+   are placed in the grid themselves. Every rule is under .viewer.ws.editing: the plain viewer
+   (watching a clip) is the dialog it was. Sizes: --ws-pool, --ws-insp, --ws-tl (set by the grips),
+   clamped here to the window; workspace.js wsBounds() uses the same numbers. */
+
+.ws-top, .ws-grip { display: none; }
+
+#modal:has(> .viewer.ws.editing) { padding: 0; place-items: stretch; background: var(--bg); backdrop-filter: none; }
+
+.viewer.ws.editing {
+  --ws-top: 46px;
+  --ws-pool-w: 0px;
+  --ws-insp-w: clamp(250px, var(--ws-insp, 300px), min(560px, 30vw));
+  --ws-tl-h: clamp(140px, var(--ws-tl, clamp(180px, 30vh, 260px)), calc(100vh - var(--ws-top) - 200px));
+  width: 100%; height: 100%; max-height: none; border: 0; border-radius: 0;
+  grid-template-columns: var(--ws-pool-w) minmax(0, 1fr) var(--ws-insp-w);
+  grid-template-rows: var(--ws-top) minmax(0, 1fr) auto;
+  grid-template-areas: "top top top" "pool main side" "tl tl tl";
+}
+.viewer.ws.editing.ws-has-pool { --ws-pool-w: clamp(180px, var(--ws-pool, 260px), min(480px, 24vw)); }
+.viewer.ws.editing.ws-no-pool { --ws-pool-w: 0px; }
+.viewer.ws.editing.ws-no-insp { --ws-insp-w: 0px; }
+.viewer.ws.editing:fullscreen { width: 100vw; height: 100vh; }
+
+/* ---------- the top row ---------- */
+.viewer.ws.editing > .ws-top { grid-area: top; display: flex; align-items: center; gap: 12px; min-width: 0; padding-left: 10px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.ws-left, .ws-right { flex: 1 1 0; display: flex; align-items: center; gap: 6px; min-width: 0; height: 100%; }
+.ws-right { justify-content: flex-end; }
+.ws-left > .btn { flex: none; }
+.ws-name { flex: 0 1 auto; min-width: 0; font: 400 20px/1.2 var(--serif); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
+.ws-top .winctl { margin-left: 4px; }
+.ws-tog.on { color: var(--text); }
+.ws-tog:not(.on) { color: var(--dim); border-style: dashed; }
+
+/* ---------- the panes ---------- */
+.viewer.ws.editing > .pj-lib { grid-area: pool; max-height: none; min-height: 0; overflow: hidden; }
+.viewer.ws.editing.ws-no-pool > .pj-lib, .viewer.ws.editing.ws-no-pool > .ws-grip-pool { display: none; }
+.viewer.ws.editing > .v-main { display: contents; }
+.viewer.ws.editing > .v-main > :not(.e-tl) { grid-area: main; min-width: 0; min-height: 0; }
+.viewer.ws.editing > .v-main > .e-tl { grid-area: tl; min-width: 0; }
+/* A narrow middle (small window, wide side panes): the clock stays on one line, the volume gives way. */
+.viewer.ws.editing .p-clock { white-space: nowrap; }
+.viewer.ws.editing .p-vol { min-width: 36px; flex-shrink: 1; }
+.viewer.ws.editing > .v-side { grid-area: side; max-height: none; min-height: 0; padding: 12px 14px 0; }
+.viewer.ws.editing.ws-no-insp > .v-side, .viewer.ws.editing.ws-no-insp > .ws-grip-insp { display: none; }
+
+/* The timeline: the height the grip above it sets (--ws-tl), taller only when its own row grip asks for
+   more (--tl-want, timeline.js), and never so tall that the player gets less than 200 px. */
+.viewer.ws.editing .e-tl { --e-tl-min: var(--ws-tl-h); --e-tl-cap: calc(100vh - var(--ws-top) - 200px); }
+
+/* ---------- the borders: drag them ---------- */
+.viewer.ws.editing > .ws-grip { display: block; position: relative; z-index: 6; touch-action: none; }
+.viewer.ws.editing > .ws-grip-pool { grid-area: pool; justify-self: end; width: 8px; margin-right: -4px; cursor: ew-resize; }
+.viewer.ws.editing > .ws-grip-insp { grid-area: side; justify-self: start; width: 8px; margin-left: -4px; cursor: ew-resize; }
+.viewer.ws.editing > .ws-grip-tl { grid-area: tl; align-self: start; height: 8px; margin-top: -4px; cursor: ns-resize; }
+.ws-grip::after { content: ""; position: absolute; inset: 0 3px; border-radius: 1px; background: transparent; transition: background .12s; }
+.ws-grip-tl::after { inset: 3px 0; }
+.ws-grip:hover::after, .viewer.ws-dragging .ws-grip::after { background: color-mix(in srgb, var(--accent) 70%, transparent); }
+.viewer.ws-dragging .ws-grip:not(:hover)::after { background: transparent; }
+.viewer.ws-dragging[data-ws-drag="pool"] .ws-grip-pool::after, .viewer.ws-dragging[data-ws-drag="insp"] .ws-grip-insp::after, .viewer.ws-dragging[data-ws-drag="tl"] .ws-grip-tl::after { background: var(--accent); }
+.viewer.ws-dragging, .viewer.ws-dragging * { user-select: none; }
+.viewer.ws-dragging[data-ws-drag="tl"], .viewer.ws-dragging[data-ws-drag="tl"] * { cursor: ns-resize !important; }
+.viewer.ws-dragging:not([data-ws-drag="tl"]), .viewer.ws-dragging:not([data-ws-drag="tl"]) * { cursor: ew-resize !important; }
+
+/* ---------- the inspector: sections fold by their title, Export stays at the bottom ---------- */
+.viewer.ws.editing .v-edit > .e-head { display: none; } /* its buttons are in the top row, the name too */
+.viewer.ws.editing .v-edit { gap: 0; padding-bottom: 0; }
+.viewer.ws.editing .v-edit > .e-sec { padding: 6px 0 10px; }
+.viewer.ws.editing .v-edit > .e-draft-note { margin-bottom: 8px; }
+.viewer.ws.editing .v-edit > .e-sec > .e-title:first-child { position: relative; margin: 0 -6px; padding: 5px 6px 5px 22px; border-radius: 6px; cursor: pointer; }
+.viewer.ws.editing .v-edit > .e-sec > .e-title:first-child:hover { background: var(--raised); }
+.viewer.ws.editing .v-edit > .e-sec > .e-title:first-child::before { content: ""; position: absolute; left: 8px; top: 50%; width: 5px; height: 5px; margin-top: -4px; border-right: 1.6px solid var(--muted); border-bottom: 1.6px solid var(--muted); transform: rotate(45deg); transition: transform .12s; }
+.viewer.ws.editing .v-edit > .e-sec.ws-fold > .e-title:first-child::before { margin-top: -3px; transform: rotate(-45deg); }
+.viewer.ws.editing .v-edit > .e-sec.ws-fold { padding-bottom: 6px; }
+.viewer.ws.editing .v-edit > .e-sec.ws-fold > :not(.e-title:first-child) { display: none !important; }
+.viewer.ws.editing .v-edit > .e-export { order: 99; margin: auto -14px 0; padding: 6px 14px 12px; position: sticky; bottom: 0; z-index: 3; background: var(--panel); box-shadow: 0 -12px 16px -14px rgba(0, 0, 0, .8); }
+.viewer.ws.editing .v-edit > .e-export.ws-fold { padding-bottom: 8px; }
+
+/* An empty project: the hint fills the middle. */
+.viewer.ws.editing.pj-blank > .v-main > .pj-empty { background: var(--bg); }
+.viewer.ws.editing.pj-blank > .ws-grip-tl { display: none; } /* no timeline yet */

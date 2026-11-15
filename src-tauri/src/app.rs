@@ -543,6 +543,18 @@ fn pick_audio_file() -> Option<String> {
     rfd::FileDialog::new().add_filter("Audio", &["mp3", "wav", "m4a", "aac", "ogg", "opus", "flac", "wma", "mp4", "mkv", "mov", "webm"]).pick_file().map(|p| p.to_string_lossy().into_owned())
 }
 
+/// The editor's "Add a picture, GIF or clip": a file dialog; the path, or None when cancelled.
+#[tauri::command(async)]
+fn pick_media_file() -> Option<String> {
+    rfd::FileDialog::new().add_filter("Pictures, GIFs and videos", &crate::editor::MEDIA_EXT).pick_file().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Describe a picture, GIF or video for the editor's picture (kind, pixel size, length, sound).
+#[tauri::command(async)]
+fn editor_media_info(core: St, path: String) -> Result<crate::editor::MediaInfo, String> {
+    crate::editor::media_info(&core.settings(), &path)
+}
+
 /// What is known about updates (from the last check; no network).
 #[tauri::command(async)]
 fn update_state() -> crate::update::UpdateInfo {
@@ -664,6 +676,18 @@ fn bug_report_info(core: St) -> crate::bugreport::BugInfo {
 #[tauri::command(async)]
 fn send_bug_report(core: St, text: String, contact: String, include_log: bool) -> Result<(), String> {
     crate::bugreport::send(&core, &text, &contact, include_log)
+}
+
+/// What the feedback dialog shows: whether feedback can be sent, the version and the language.
+#[tauri::command(async)]
+fn feedback_info(core: St) -> crate::bugreport::FeedbackInfo {
+    crate::bugreport::feedback_info(&core)
+}
+
+/// Post feedback (0 to 5 stars, a text, a contact) to the developers' Discord, pinging no one.
+#[tauri::command(async)]
+fn send_feedback(core: St, stars: u8, text: String, contact: String) -> Result<(), String> {
+    crate::bugreport::send_feedback(&core, stars, &text, &contact)
 }
 
 #[tauri::command(async)]
@@ -917,11 +941,15 @@ pub fn run(minimized: bool) {
             editor_audio_info,
             editor_overlay_png,
             pick_audio_file,
+            pick_media_file,
+            editor_media_info,
             update_state,
             update_check,
             update_install,
             bug_report_info,
             send_bug_report,
+            feedback_info,
+            send_feedback,
             list_jobs,
             cancel_job,
             clear_jobs,

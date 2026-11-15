@@ -616,7 +616,7 @@ function emCanvasOpts(c) {
   return { width: Math.round(c.width), height: Math.round(c.height), background: c.background, pieces: c.pieces.map((p) => ({ sx: r5(p.sx), sy: r5(p.sy), sw: r5(p.sw), sh: r5(p.sh), x: r5(p.x), y: r5(p.y), w: r5(p.w), h: r5(p.h) })) };
 }
 /** An overlay as saved: an object with a known kind and a finite time range (its own fields are checked by overlays.js). */
-const EM_OVERLAY_KINDS = ["text", "rect", "ellipse", "line", "arrow", "pen", "blur"];
+const EM_OVERLAY_KINDS = ["text", "rect", "ellipse", "line", "arrow", "pen", "blur", "image", "gif", "video"]; // the last three: ui/media.js (0.1.35)
 const emOverlayOk = (o) => !!o && typeof o === "object" && EM_OVERLAY_KINDS.includes(o.kind) && typeof o.id === "string" && Number.isFinite(o.from) && Number.isFinite(o.to);
 
 /**
@@ -699,10 +699,12 @@ function emSrcToOut(m, t) {
     if (t <= r.start) break;
     out += Math.min(t, r.end) - r.start;
   }
+  // After the video (0.1.35): always kept, after everything kept.
+  if (t > m.duration) out += t - m.duration;
   return out;
 }
 
-/** Position in the finished clip (speed not applied) -> source time. */
+/** Position in the finished clip (speed not applied) -> source time. Past everything kept: the time after the video. */
 function emOutToSrc(m, out) {
   const kept = emKept(m);
   for (const r of kept) {
@@ -710,6 +712,7 @@ function emOutToSrc(m, out) {
     if (out <= len + EM_EPS) return r.start + Math.max(0, out);
     out -= len;
   }
+  if (out > EM_EPS) return m.duration + out;
   return kept.length ? kept[kept.length - 1].end : 0;
 }
 
@@ -832,6 +835,21 @@ const emRowEnd = (m, row) => (row.kind !== "file" ? m.duration : row.through ? e
 const emRowFileAt = (m, row, t) => row.trimStart + (row.through ? emSrcToOut(m, t) - emSrcToOut(m, row.offset) : t - row.offset);
 /** True if file row `row` has sound at source time `t`. Track rows always do. (`m` is needed for a row that plays through cuts.) */
 const emRowCovers = (row, t, m) => row.kind !== "file" || (t >= row.offset - EM_EPS && (row.through && m ? emRowFileAt(m, row, t) - row.trimStart < row.length - EM_EPS : t < row.offset + row.length));
+/* ---------- the end of the timeline (0.1.35) ----------
+ * The result ends where its last thing ends: the video (m.duration), an overlay item's `to`, or a file row's end.
+ * Time between m.duration and emEnd(m) is "after the video": black, no sound from the clip's own tracks; overlay
+ * items and (through) file rows go on there. In the result it comes after everything kept, divided by the speed. */
+/** Timeline seconds where the result ends (never before the video's end). */
+function emEnd(m) {
+  let end = m.duration || 0;
+  for (const o of m.overlays || []) if (Number.isFinite(o?.to) && o.to > end) end = o.to;
+  for (const r of m.audio || []) if (r.kind === "file") { const e = emRowEnd(m, r); if (e > end) end = e; }
+  return end;
+}
+/** Timeline seconds after the video's end that the result runs on (0 = it ends with the video). */
+const emTail = (m) => Math.max(0, emEnd(m) - (m.duration || 0));
+/** Length of the finished clip with the time after the video (output seconds); emOutDuration without anything after it. */
+const emResultDuration = (m) => emSrcToOut(m, emEnd(m)) / (m.speed || 1);
 /** Switch a file row between playing through cuts and being cut with the video; its block keeps its place on the timeline. */
 function emSetThrough(m, id, on) {
   const row = emRow(m, id);
@@ -855,6 +873,9 @@ const emTrackRow = (m, title) => m.audio.find((r) => r.kind === "track" && r.tit
 /** True if `row` is the Game track and is left out in segment `i` because Desktop is heard there. */
 function emGameHidden(m, row, i) {
   if (!row || row.kind !== "track" || row.title !== "Game") return false;
+  // `gameApart` (set by editor.js from the waveforms): this clip's desktop sound is silent, so the game
+  // played on another output device and is only on the Game row. It is then heard beside Desktop.
+  if (m.gameApart) return false;
   const d = emTrackRow(m, "Desktop");
   return !!d && !d.muted && d.volume > 0.005 && (d.gains[i] ?? 1) > 0.005;
 }
@@ -863,6 +884,8 @@ function emGameHidden(m, row, i) {
 function emRowHint(m, row) {
   if (row && row.kind === "file") return row.through ? "Plays on through every cut in the video" : "Cut together with the video";
   if (!row || row.kind !== "track") return "";
+  if (m.gameApart && row.title === "Game") return "Only the game's sound. The desktop sound of this clip does not hold it";
+  if (m.gameApart && row.title === "Desktop") return "What the recorded output device played. The game played on another device and is on its own row";
   if (row.title === "Game" && emTrackRow(m, "Desktop")) return "Only the game's sound. Desktop already includes it, so Game is heard only where Desktop is muted";
   if (row.title === "Desktop" && emTrackRow(m, "Game")) return "Everything the PC played, the game included. Mute it and keep Game on to drop voice chat and music";
   return "";
@@ -911,7 +934,9 @@ function emSolo(m, id, i) {
  */
 function emAddFile(m, info, at = 0) {
   const n = m.audio.filter((r) => r.kind === "file").length + 1;
-  const offset = Math.min(Math.max(0, at), Math.max(0, m.duration - EM_MIN_SEG));
+  // At the playhead, also after the video (0.1.35): there it is as long as the file (the result gets longer).
+  const offset = Math.max(0, +at || 0);
+  const room = emKeptDuration(m) - emSrcToOut(m, offset);
   const row = {
     id: `f${Date.now().toString(36)}${n}`,
     kind: "file",
@@ -924,7 +949,7 @@ function emAddFile(m, info, at = 0) {
     trimStart: 0,
     // It plays through cuts (see emRowEnd): as long as the result has room for from where it starts.
     through: true,
-    length: Math.max(EM_MIN_SEG, Math.min(info.duration, emKeptDuration(m) - emSrcToOut(m, offset))),
+    length: Math.max(EM_MIN_SEG, room >= EM_MIN_SEG ? Math.min(info.duration, room) : info.duration),
     fileDuration: info.duration,
   };
   m.audio.push(row);
@@ -952,11 +977,59 @@ function emPlaceFile(m, id, change) {
   let { offset, trimStart, length } = { ...row, ...change };
   trimStart = Math.min(Math.max(0, trimStart), Math.max(0, row.fileDuration - EM_MIN_SEG));
   length = Math.min(Math.max(EM_MIN_SEG, length), row.fileDuration - trimStart);
-  offset = Math.min(Math.max(0, offset), Math.max(0, m.duration - EM_MIN_SEG));
-  // Inside the clip: a row that plays through cuts counts the result's seconds, another the timeline's.
-  length = Math.max(EM_MIN_SEG, Math.min(length, row.through ? emKeptDuration(m) - emSrcToOut(m, offset) : m.duration - offset));
+  // A row that plays through cuts may start and run on after the video (0.1.35: the result gets longer, emEnd);
+  // a row cut with the video stays inside it (there is no video after the end to cut it with).
+  offset = row.through ? Math.max(0, offset) : Math.min(Math.max(0, offset), Math.max(0, m.duration - EM_MIN_SEG));
+  if (!row.through) length = Math.max(EM_MIN_SEG, Math.min(length, m.duration - offset));
   Object.assign(row, { offset, trimStart, length });
   return true;
+}
+
+/**
+ * Slip a file row (0.1.35): the sound under the block moves by `delta` seconds of the file (trimStart), the block
+ * stays where it is and keeps its length; kept inside the file. True if it moved.
+ */
+function emSlipFile(m, id, delta) {
+  const row = emRow(m, id);
+  if (!row || row.kind !== "file" || !Number.isFinite(delta)) return false;
+  const hi = Math.max(0, row.fileDuration - row.length);
+  const next = Math.round(Math.min(hi, Math.max(0, row.trimStart + delta)) * 1000) / 1000;
+  if (Math.abs(next - row.trimStart) < 1e-9) return false;
+  row.trimStart = next;
+  return true;
+}
+
+/* ---------- overlay items on the timeline (0.1.35) ----------
+ * The items are ui/overlays.js's (and media.js's); the timeline moves and trims them with these. Times are
+ * timeline seconds; an item may lie partly or wholly after the video. `off` (media: the seconds into the media
+ * shown at `from`) and `mlen` (the media's length; with `loop` it repeats) are only there for media items. */
+const EM_OV_MIN = 0.1;
+/** Move item `o` by `dt` seconds (not before 0): from, to and every keyframe. Returns the seconds it moved. */
+function emMoveOverlay(o, dt) {
+  if (!o || !Number.isFinite(dt)) return 0;
+  const d = Math.max(dt, -o.from);
+  if (Math.abs(d) < 1e-9) return 0;
+  o.from += d;
+  o.to += d;
+  if (Array.isArray(o.keys)) for (const k of o.keys) if (k && Number.isFinite(k.t)) k.t += d;
+  return d;
+}
+/** The longest item `o` may be from its start: its media's rest unless it loops; Infinity for other items. */
+const emOvMaxLen = (o) => (Number.isFinite(o?.mlen) && !o.loop ? Math.max(EM_OV_MIN, o.mlen - (Number.isFinite(o.off) ? o.off : 0)) : Infinity);
+/** Trim the start ("left") or the end ("right") of item `o` to timeline second `at` (at least EM_OV_MIN long).
+ *  A media item's start trim moves `off` with it (never under 0), its end stops at the media's end. True if it changed. */
+function emTrimOverlay(o, side, at) {
+  if (!o || !Number.isFinite(at)) return false;
+  const f0 = o.from, t0 = o.to, off = Number.isFinite(o.off) ? o.off : null;
+  if (side === "left") {
+    let from = Math.max(0, Math.min(at, o.to - EM_OV_MIN));
+    if (off !== null && off + (from - f0) < 0) from = f0 - off; // the media has nothing before its start
+    o.from = from;
+    if (off !== null) o.off = Math.max(0, Math.round((off + (from - f0)) * 1000) / 1000);
+  } else if (side === "right") {
+    o.to = Math.min(Math.max(at, o.from + EM_OV_MIN), o.from + emOvMaxLen(o));
+  } else return false;
+  return Math.abs(o.from - f0) > 1e-9 || Math.abs(o.to - t0) > 1e-9;
 }
 
 /* ---------- export ---------- */
@@ -1014,7 +1087,8 @@ function emToOpts(m) {
       // Plays on through every cut: placed on the result's own timeline (kept seconds, before the speed), and its
       // levels likewise. The backend mixes it in after the cuts (`through`).
       const k0 = emSrcToOut(m, r.offset);
-      return [{ ...e, through: true, offset: emRound(k0), length: emRound(Math.max(0, Math.min(r.length, emKeptDuration(m) - k0))),
+      // It may run on after the video (into `tail`, 0.1.35).
+      return [{ ...e, through: true, offset: emRound(k0), length: emRound(Math.max(0, r.length)),
         regions: segs.filter((s) => !s.removed && Math.abs(gainOf(r, s.i) - 1) >= 0.005).map((s) => ({ start: emRound(emSrcToOut(m, s.start)), end: emRound(emSrcToOut(m, s.end)), gain: emRound(gainOf(r, s.i)) })) }];
     }
     if (r.kind !== "file" || !m.parts) return [e];
@@ -1035,7 +1109,10 @@ function emToOpts(m) {
     : m.audio.filter((r) => !r.muted && r.volume > 0.005 && segs.some((s) => !s.removed && gainOf(r, s.i) > 0.005)).flatMap(entries);
   const segments = pieces.flatMap((p) => srcOf(p.start, p.end).map((x) => ({ start: emRound(x.start), end: emRound(x.end), ...(uniform ? {} : { color: { ...p.color } }), ...(p.blank ? { blank: true } : {}) })));
   const ordered = segments.some((s, i) => i > 0 && s.start < segments[i - 1].end - 0.0005);
+  // After the video (0.1.35): OUTPUT seconds of black after everything kept, where overlays and through rows go on.
+  const tail = emRound(emTail(m) / (m.speed || 1));
   return {
+    ...(tail > 0 ? { tail } : {}),
     start: 0,
     end: 0,
     speed: m.speed,
@@ -1060,9 +1137,9 @@ function emToOpts(m) {
  * of it is kept.
  */
 function emOutRange(m, from, to) {
-  const sp = m.speed || 1;
-  const a = emSrcToOut(m, Math.max(0, Math.min(m.duration, +from || 0))) / sp;
-  const b = emSrcToOut(m, Math.max(0, Math.min(m.duration, +to || 0))) / sp;
+  const sp = m.speed || 1, E = emEnd(m); // after the video too (0.1.35)
+  const a = emSrcToOut(m, Math.max(0, Math.min(E, +from || 0))) / sp;
+  const b = emSrcToOut(m, Math.max(0, Math.min(E, +to || 0))) / sp;
   return b - a > 0.001 ? { from: emRound(a), to: emRound(b) } : null;
 }
 /** The export's blur boxes and fades (the overlay PNGs are added by ui/overlays.js). Keys only when there are any. */
@@ -1072,7 +1149,8 @@ function emLayerOpts(m) {
     const r = emOutRange(m, o.from, o.to);
     // A box with keyframes moves along its track (output seconds; keyframes.js).
     const track = r && Array.isArray(o.keys) && o.keys.length && typeof kfOvTrack === "function" ? kfOvTrack(m, o) : null;
-    return r && { x: r4(o.x), y: r4(o.y), w: r4(o.w), h: r4(o.h), from: r.from, to: r.to, strength: r4(o.strength), ...(track && track.length ? { track } : {}) };
+    return r && { x: r4(o.x), y: r4(o.y), w: r4(o.w), h: r4(o.h), from: r.from, to: r.to, strength: r4(o.strength), ...(track && track.length ? { track } : {}),
+      ...(o.round > 0 ? { round: r4(o.round) } : {}), ...(o.soft > 0 ? { soft: r4(o.soft) } : {}) }; // round / soft (0.1.35, ui/media.js)
   }).filter(Boolean);
   if (blurs.length) out.blurs = blurs;
   if (m.fadeIn > 0) out.fade_in = emRound(Math.min(m.fadeIn, total / 2));
@@ -1085,5 +1163,5 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = { EM_MIN_SEG, EM_MAX_GAIN, EM_EPS, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emTrimBounds, emSameSeg, emSetTrimStart, emSetTrimEnd, emSegCopy, emSegPaste, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emTrackRow, emGameHidden, emRowHint, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts,
     emSetParts, emParts, emPartAt, emToSrc, emFromSrc, emSrcSpans, emMovePart, emCutLocked, emLockedTimes, emPartSegs, emPartRemoved, emSetPartRemoved, emReordered, emState, emRestore,
     emAddParts, emNewParts, emStateSave, emStateOk, emStateLoad, EM_STATE_V,
-    emRowEnd, emRowFileAt, emSetThrough, emTracksGone, emRemoveRow, emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS, emCanvasOk, emCanvasOpts };
+    emRowEnd, emRowFileAt, emEnd, emTail, emResultDuration, emSlipFile, emMoveOverlay, emTrimOverlay, emOvMaxLen, EM_OV_MIN, emSetThrough, emTracksGone, emRemoveRow, emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS, emCanvasOk, emCanvasOpts };
 }

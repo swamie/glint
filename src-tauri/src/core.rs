@@ -601,8 +601,9 @@ impl Core {
         let game_pcm = if s.game_audio || game_mode { crate::procaudio::global().plan(&snap.segments).map(crate::audio::Plan::read) } else { None };
         // Game mode: nothing of the desktop's sound, only the game's and the microphone, unless the
         // user asked for the desktop's sound there too. Then the clip has the usual tracks
-        // (Mix, Desktop, Microphone, Game) around the game's picture.
-        let game_only = game_mode && !s.game_desktop_audio;
+        // (Mix, Desktop, Microphone, Game) around the game's picture; track 1 holds the game too
+        // when the desktop's sound lacks it (clip::game_missing_from_desktop, 0.1.35).
+        let game_only = crate::capmode::game_only(&s);
         let desk = if game_only { None } else { desk };
         let cap = clip::Capture { snap, desk, mic, game: game_pcm, width: cfg.width, height: cfg.height, fps: cfg.fps };
         let started = std::time::Instant::now();

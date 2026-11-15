@@ -1,0 +1,23 @@
+/* The heart button and the feedback dialog (feedback.js). The button and the
+   dialog's box reuse bugreport.css (.bug-btn, .bug-dlg, .bug-box ...); only
+   what is new is here. */
+
+.fb-btn:hover svg, .fb-btn[aria-expanded="true"] svg { color: var(--danger); }
+.fb-head svg, .fb-done svg { color: var(--danger); }
+.fb-done svg { fill: currentColor; }
+
+/* Five stars: outlined, filled up to the chosen (or pointed-at) one. */
+.fb-rate { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
+.fb-stars { display: flex; gap: 2px; }
+.fb-star { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 8px; background: none; color: var(--dim); cursor: pointer; }
+.fb-star svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linejoin: round; transition: transform .12s ease; }
+.fb-star:hover svg { transform: scale(1.1); }
+.fb-star.on { color: var(--warn); }
+.fb-star.on svg { fill: currentColor; }
+.fb-star.on.hover { color: color-mix(in srgb, var(--warn) 75%, var(--text)); }
+.fb-star:disabled { cursor: default; opacity: .7; }
+.fb-star:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fb-score { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+
+.fb-text { min-height: 90px; }
+.fb-sent .fb-preview { margin-top: 9px; }

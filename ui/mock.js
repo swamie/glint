@@ -304,6 +304,9 @@ if (!window.__TAURI__) {
           case "reload_app_icon": return { window: true, tray: true };
           case "bug_report_info": return { configured: true, version: "0.1.6", system: "Glint 0.1.6\nWindows 11 (build 26300)\nNVIDIA GeForce RTX 5060 Ti\nCapture 2560x1440 @ 120 fps, nvenc, wgc, buffer mixed", log: "2026-11-13 09:13:54 hotkey kb-30s -> clip 30s\n2026-11-13 09:13:56 clip 30s: saved 30.4s, 184.2 MB in 1743 ms -> ~\\Videos\\Glint\\Risk of Rain 2\\Risk of Rain 2 2026-11-13 09-13-54.mp4" };
           case "send_bug_report": await new Promise((r) => setTimeout(r, 600)); if (/fail/i.test(args.text)) throw "Discord did not accept the report (HTTP 400)"; return null;
+          case "feedback_info": return { configured: true, version: "0.1.35", language: state.settings.language || "en" };
+          // feedback.js: a text with "offline" / "busy" / "fail" shows those errors.
+          case "send_feedback": await new Promise((r) => setTimeout(r, 600)); if (/offline/i.test(args.text)) throw "Could not reach Discord. Check the internet connection and try again. (no answer)"; if (/busy/i.test(args.text)) throw "Discord is busy right now (HTTP 429). Try again in a minute."; if (/fail/i.test(args.text)) throw "Discord did not accept the feedback (HTTP 400)."; return null;
           case "editor_audio_tracks": return [{ index: 0, title: "Mix", path: "/__test.mp4" }, { index: 1, title: "Desktop", path: "/__test.mp4" }, { index: 2, title: "Microphone", path: "/__test.mp4" }];
           case "editor_waveforms": return [0, 1, 2].map((index) => ({ index, per_second: 50, peaks: Array.from({ length: 1000 }, (_, i) => Math.abs(Math.sin(i / (7 + index * 3))) * (0.25 + 0.75 * Math.abs(Math.sin(i / 90 + index)))) }));
           case "editor_thumbs": return Array.from({ length: args.count }, (_, i) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="128" height="72"><rect width="128" height="72" fill="hsl(${(i * 37) % 360} 45% 30%)"/><text x="64" y="44" font-size="24" fill="white" text-anchor="middle">${i + 1}</text></svg>`)}`);
@@ -311,6 +314,12 @@ if (!window.__TAURI__) {
             if (/noaudio/.test(args.path)) throw "That file has no audio in it";
             return { path: "/__test.mp4", title: args.path.split(/[\\/]/).pop().replace(/\.[^.]+$/, ""), duration: 8, per_second: 50, peaks: Array.from({ length: 400 }, (_, i) => Math.abs(Math.sin(i / 5)) * 0.8) };
           case "pick_audio_file": return "C:\\Music\\victory.mp3";
+          // media.js: "Add a picture, GIF or clip" (edmedia.rs media_info). The test video stands in for a clip file.
+          case "pick_media_file": return "/__test.mp4";
+          case "editor_media_info": {
+            const p = String(args.path || ""), kind = /^data:image\/gif|\.gif$/i.test(p) ? "gif" : /\.(mp4|mkv|mov|webm)$/i.test(p) ? "video" : "image";
+            return { path: p, kind, title: p.startsWith("data:") ? "picture" : p.split(/[\\/]/).pop().replace(/\.[^.]+$/, ""), width: kind === "video" ? 1280 : 320, height: kind === "video" ? 720 : 180, duration: kind === "image" ? 0 : kind === "gif" ? 2 : 20, audio: kind === "video" };
+          }
           // overlays.js: the export's text / shape picture as a temp PNG (editor.rs save_overlay_png).
           case "editor_overlay_png":
             if (!/^data:image\/png;base64,/.test(args.data || "")) throw "The overlay picture is not a PNG";

@@ -594,12 +594,24 @@ fn test_clips(r: &mut Report) {
     ga.feed(&tone(500.0, 2.0, 0.3), 101.0);
     let segs = [(100.0, 104.0)];
     let empty = GameAudio::new();
+    // The desktop's sound holds the game's where the game plays (the game on the output Glint
+    // records, the usual case); 0.1.35's checks for a desktop that lacks it are in `test_track_one`.
+    let desk_with = |game: &Option<crate::audio::Pcm>| -> Vec<i16> {
+        let mut d = tone(1000.0, 4.0, 0.3);
+        if let Some(g) = game {
+            for (x, y) in d.iter_mut().zip(g.data.iter()) {
+                *x = x.saturating_add(*y);
+            }
+        }
+        d
+    };
     let write = |desk: bool, mic: bool, game: Option<&GameAudio>, name: &str| {
+        let game_pcm = game.and_then(|g| g.plan(&segs)).map(Plan::read);
         let cap = clip::Capture {
             snap: Snapshot { header: header.clone(), gops: Vec::new(), segments: segs.to_vec(), duration: 4.0 },
-            desk: if desk { pcm(tone(1000.0, 4.0, 0.3)) } else { None },
+            desk: if desk { pcm(desk_with(&game_pcm)) } else { None },
             mic: if mic { pcm(tone(3000.0, 4.0, 0.3)) } else { None },
-            game: game.and_then(|g| g.plan(&segs)).map(Plan::read),
+            game: game_pcm,
             width: 320,
             height: 180,
             fps: 30,
@@ -632,7 +644,8 @@ fn test_clips(r: &mut Report) {
     let (g500, g1000) = (band(&ffmpeg, fp, 3, 500), band(&ffmpeg, fp, 3, 1000));
     r.check("4-track: the Game track holds the game", g500 - g1000 > 20.0, &format!("500 Hz {g500:.1} dB, 1000 Hz {g1000:.1} dB"));
     let (m500, m1000, m3000) = (band(&ffmpeg, fp, 0, 500), band(&ffmpeg, fp, 0, 1000), band(&ffmpeg, fp, 0, 3000));
-    r.check("4-track: the Mix is desktop + mic, without the Game track", m1000 - m500 > 20.0 && m3000 - m500 > 20.0, &format!("500 {m500:.1}, 1000 {m1000:.1}, 3000 {m3000:.1} dB"));
+    let d500 = band(&ffmpeg, fp, 1, 500);
+    r.check("4-track: the Mix is desktop + mic, without the Game track (the game once, as on Desktop)", m1000 > -40.0 && m3000 > -40.0 && (m500 - d500).abs() < 2.0, &format!("500 {m500:.1} (Desktop {d500:.1}), 1000 {m1000:.1}, 3000 {m3000:.1} dB"));
     // Without desktop sound, track 1 (what players, Discord and joins take) is mic + game.
     let mic_game = clips.iter().find(|c| c.0 == "mic + game").map(|c| c.1.clone());
     if let Some(mg) = &mic_game {
@@ -732,8 +745,11 @@ fn test_clips(r: &mut Report) {
         match crate::compress::compress(&ffmpeg, Path::new(&c.path), 10, &tag, "ultrafast", &AtomicBool::new(false), &mut |_| {}) {
             Ok(d) => {
                 let (a, b, m) = (band(&ffmpeg, &d.file, 0, 500), band(&ffmpeg, &d.file, 0, 1000), band(&ffmpeg, &d.file, 0, 3000));
-                let mic_ok = if has_mic { m - a > 20.0 } else { b - m > 20.0 };
-                r.check(&format!("compress {label}: one track, the mix without the Game track"), titles(&ffmpeg, &d.file).len() == 1 && b - a > 20.0 && mic_ok, &format!("500 {a:.1}, 1000 {b:.1}, 3000 {m:.1} dB"));
+                let mic_ok = if has_mic { m > -40.0 } else { b - m > 20.0 };
+                // The game is heard once, as the desktop holds it (the Desktop track's 500 Hz); none in the old 1-track clip.
+                let d500 = band(&ffmpeg, Path::new(&c.path), if titles(&ffmpeg, Path::new(&c.path)).first().is_some_and(|x| x == "Mix") { 1 } else { 0 }, 500);
+                let game_ok = if label == "old 1-track" { b - a > 20.0 } else { (a - d500).abs() < 3.0 };
+                r.check(&format!("compress {label}: one track, the mix without the Game track"), titles(&ffmpeg, &d.file).len() == 1 && b > -40.0 && game_ok && mic_ok, &format!("500 {a:.1} (Desktop {d500:.1}), 1000 {b:.1}, 3000 {m:.1} dB"));
                 let _ = std::fs::remove_file(&d.file);
             }
             Err(e) => r.check(&format!("compress {label}"), false, &e),
@@ -750,6 +766,7 @@ fn test_clips(r: &mut Report) {
         let ok = if want > 0 { after == titles(&ffmpeg, Path::new(&c.path)) && after.len() == want } else { after == before };
         r.check(&format!("titles put back after Blur: {label}{}", if want > 0 { "" } else { " left as it was" }), copied && ok, &format!("{before:?} -> {after:?}"));
     }
+    test_track_one(r, &ffmpeg, &s, &header);
     // Kept for a manual Blur run (`--blur-test`) on the new layouts.
     let keep = util::data_dir().join("gameaudio-test");
     let _ = std::fs::copy(&four.path, keep.join("4-track.mp4"));
@@ -757,6 +774,134 @@ fn test_clips(r: &mut Report) {
         let _ = std::fs::copy(&two.path, keep.join("2-track.mp4"));
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 0.1.35, a user's report: "in Glint I hear my mic, game and desktop, but the clip only has my
+/// mic" (GAME mode with desktop sound, 0.1.33). Track 1 was Desktop + Microphone, the game left
+/// out because "the desktop holds the game"; with the game on another output the desktop track
+/// is silent and track 1 was the microphone alone. Track 1 must hold everything recorded.
+fn test_track_one(r: &mut Report, ffmpeg: &std::path::Path, s: &crate::settings::Settings, header: &[u8]) {
+    use crate::audio::Pcm;
+    use crate::clip;
+    use crate::recorder::Snapshot;
+    use std::path::Path;
+    let pcm = |v: Vec<i16>| Some(Pcm { rate: RATE, data: v });
+    let mixed = |a: Vec<i16>, b: Vec<i16>| -> Vec<i16> { a.iter().zip(b.iter()).map(|(x, y)| x.saturating_add(*y)).collect() };
+    let silent = || vec![0i16; 4 * RATE as usize * 2];
+    // Pure decisions first: which desktop sound holds the game.
+    let game = pcm(tone(500.0, 4.0, 0.3));
+    let with = pcm(mixed(tone(1000.0, 4.0, 0.3), tone(500.0, 4.0, 0.3)));
+    let quiet = pcm(mixed(tone(1000.0, 4.0, 0.003), tone(500.0, 4.0, 0.003)));
+    let check = |d: &Option<Pcm>| clip::game_missing_from_desktop(d.as_ref(), game.as_ref());
+    let started = std::time::Instant::now();
+    r.check("track 1: a desktop that holds the game is not given it twice", !check(&with), "");
+    let ms = started.elapsed().as_millis();
+    r.check("track 1: a silent desktop does not hold the game", check(&pcm(silent())), "");
+    r.check("track 1: a desktop with other sound as loud as the game (music, chat) does not hold it", check(&pcm(tone(1000.0, 4.0, 0.3))), "");
+    r.check("track 1: a desktop that holds the game 40 dB down (its fader) still holds it", !check(&quiet), "");
+    r.check("track 1: no game sound, or no game, adds nothing", !clip::game_missing_from_desktop(Some(&Pcm { rate: RATE, data: silent() }), Some(&Pcm { rate: RATE, data: silent() })) && !clip::game_missing_from_desktop(pcm(silent()).as_ref(), None), "");
+    let late = pcm([vec![0i16; 2 * RATE as usize * 2], tone(500.0, 2.0, 0.3)].concat());
+    let desk_late = pcm(mixed(tone(1000.0, 4.0, 0.3), late.as_ref().map(|p| p.data.clone()).unwrap_or_default()));
+    r.check("track 1: a game that starts late in the clip is found in the desktop all the same", !clip::game_missing_from_desktop(desk_late.as_ref(), late.as_ref()), "");
+    // The desktop capture 30 ms behind the game's.
+    let behind = pcm([vec![0i16; (RATE as usize * 3 / 100) * 2], mixed(tone(1000.0, 4.0, 0.3), tone(500.0, 4.0, 0.3))].concat()[..4 * RATE as usize * 2].to_vec());
+    r.check("track 1: a desktop 30 ms behind the game still holds it", !check(&behind), "");
+    // A 10-minute clip must not hold the save up.
+    let long_g = Pcm { rate: RATE, data: tone(500.0, 600.0, 0.3) };
+    let long_d = Pcm { rate: RATE, data: mixed(tone(1000.0, 600.0, 0.3), long_g.data.clone()) };
+    let t0 = std::time::Instant::now();
+    let long_ok = !clip::game_missing_from_desktop(Some(&long_d), Some(&long_g));
+    let long_ms = t0.elapsed().as_millis();
+    r.check("track 1: the check of a 10-minute clip takes under a second", long_ok && long_ms < 1000, &format!("{long_ms} ms (4 s clip: {ms} ms)"));
+    let desk44 = Some(Pcm { rate: 44_100, data: {
+        let n = 4 * 44_100;
+        (0..n).flat_map(|i| { let v = (((i as f64 / 44_100.0) * 500.0 * std::f64::consts::TAU).sin() * 0.3 * 32767.0) as i16; [v, v] }).collect()
+    } });
+    r.check("track 1: a desktop at 44.1 kHz that holds the game is matched by time", !clip::game_missing_from_desktop(desk44.as_ref(), game.as_ref()), "");
+
+    // Clips as the clip path writes them (GAME mode with desktop sound and desktop mode take `clip::write`).
+    let segs = [(100.0, 104.0)];
+    let write = |desk: Option<Pcm>, mic: Option<Pcm>, game: Option<Pcm>, name: &str| {
+        let cap = clip::Capture { snap: Snapshot { header: header.to_vec(), gops: Vec::new(), segments: segs.to_vec(), duration: 4.0 }, desk, mic, game, width: 320, height: 180, fps: 30 };
+        clip::write(s, cap, name)
+    };
+    let mic = || pcm(tone(3000.0, 4.0, 0.3));
+    let lv = |p: &Path, st: u32| (band(ffmpeg, p, st, 500), band(ffmpeg, p, st, 1000), band(ffmpeg, p, st, 3000));
+    // The report: the desktop output is silent (the game plays elsewhere); mic and game are heard.
+    match write(pcm(silent()), mic(), pcm(tone(500.0, 4.0, 0.3)), "silent desktop") {
+        Ok(m) => {
+            let p = Path::new(&m.path);
+            let (g, _, k) = lv(p, 0);
+            r.check("track 1, silent desktop + mic + game: Mix holds the game and the mic", titles(ffmpeg, p) == ["Mix", "Desktop", "Microphone", "Game"] && g > -40.0 && k > -40.0 && (g - k).abs() < 6.0, &format!("{:?}, 500 {g:.1}, 3000 {k:.1} dB", titles(ffmpeg, p)));
+        }
+        Err(e) => r.check("track 1, silent desktop + mic + game", false, &e),
+    }
+    // The desktop has other sound (1000 Hz) but not the game.
+    match write(pcm(tone(1000.0, 4.0, 0.3)), mic(), pcm(tone(500.0, 4.0, 0.3)), "desktop without the game") {
+        Ok(m) => {
+            let p = Path::new(&m.path);
+            let (g, d, k) = lv(p, 0);
+            r.check("track 1, desktop without the game: Mix is desktop + mic + game", g > -40.0 && d > -40.0 && k > -40.0, &format!("500 {g:.1}, 1000 {d:.1}, 3000 {k:.1} dB"));
+            let (g3, d3, _) = lv(p, 3);
+            r.check("track 1, desktop without the game: the Game track is still the game alone", g3 - d3 > 20.0, &format!("500 {g3:.1}, 1000 {d3:.1} dB"));
+        }
+        Err(e) => r.check("track 1, desktop without the game", false, &e),
+    }
+    // No microphone: Desktop and Game get a Mix as track 1.
+    match write(pcm(silent()), None, pcm(tone(500.0, 4.0, 0.3)), "silent desktop no mic") {
+        Ok(m) => {
+            let p = Path::new(&m.path);
+            let got = titles(ffmpeg, p);
+            let (g, _, _) = lv(p, 0);
+            r.check("track 1, silent desktop + game: tracks Mix, Desktop, Game and Mix holds the game", got == ["Mix", "Desktop", "Game"] && m.audio_tracks == 3 && g > -40.0, &format!("{got:?}, 500 {g:.1} dB"));
+            match crate::editor::audio_tracks(s, &m) {
+                Ok(t) => {
+                    let rows: Vec<&str> = t.iter().map(|x| x.title.as_str()).collect();
+                    r.check("track 1, silent desktop + game: the editor's titles are the ones it knows", rows == ["Mix", "Desktop", "Game"], &format!("{rows:?}"));
+                }
+                Err(e) => r.check("track 1, silent desktop + game: editor titles", false, &e),
+            }
+        }
+        Err(e) => r.check("track 1, silent desktop + game", false, &e),
+    }
+    // The usual case is unchanged: the desktop holds the game, the Mix stays desktop + mic (no game twice).
+    match write(pcm(mixed(tone(1000.0, 4.0, 0.3), tone(500.0, 4.0, 0.3))), mic(), pcm(tone(500.0, 4.0, 0.3)), "desktop with the game") {
+        Ok(m) => {
+            let p = Path::new(&m.path);
+            let (g0, _, _) = lv(p, 0);
+            let (g1, _, _) = lv(p, 1);
+            r.check("track 1, desktop holding the game: Mix, Desktop, Microphone, Game, the game not doubled", titles(ffmpeg, p) == ["Mix", "Desktop", "Microphone", "Game"] && (g0 - g1).abs() < 2.0, &format!("Mix 500 {g0:.1}, Desktop 500 {g1:.1} dB"));
+        }
+        Err(e) => r.check("track 1, desktop holding the game", false, &e),
+    }
+    // Every combination: track 1 holds every source that has sound.
+    let srcs: [(&str, u32, f64); 3] = [("Desktop", 1000, 1000.0), ("Microphone", 3000, 3000.0), ("Game", 500, 500.0)];
+    let mut bad: Vec<String> = Vec::new();
+    for bits in 1u32..8 {
+        for silent_desk in [false, true] {
+            let on = |k: usize| bits & (1 << k) != 0;
+            if silent_desk && !on(0) {
+                continue;
+            }
+            let desk = on(0).then(|| if silent_desk { Pcm { rate: RATE, data: silent() } } else { Pcm { rate: RATE, data: tone(srcs[0].2, 4.0, 0.3) } });
+            let mic = on(1).then(|| Pcm { rate: RATE, data: tone(srcs[1].2, 4.0, 0.3) });
+            let game = on(2).then(|| Pcm { rate: RATE, data: tone(srcs[2].2, 4.0, 0.3) });
+            let label = format!("combo {bits}{}", if silent_desk { "s" } else { "" });
+            match write(desk, mic, game, &label) {
+                Ok(m) => {
+                    let p = Path::new(&m.path);
+                    for (k, (name, f, _)) in srcs.iter().enumerate() {
+                        let has_sound = on(k) && !(k == 0 && silent_desk);
+                        if has_sound && band(ffmpeg, p, 0, *f) < -40.0 {
+                            bad.push(format!("{label}: {name} missing from track 1 {:?}", titles(ffmpeg, p)));
+                        }
+                    }
+                }
+                Err(e) => bad.push(format!("{label}: {e}")),
+            }
+        }
+    }
+    r.check("track 1 holds every source that was heard, in every combination of desktop, mic, game and a silent desktop", bad.is_empty(), &bad.join("; "));
 }
 
 /// File name of a process's executable.
@@ -808,6 +953,11 @@ fn playing_sessions() -> Result<Vec<(u32, f32)>, String> {
 fn test_live(r: &mut Report) {
     let build = windows_build();
     r.line(&format!("INFO Windows build {build}"));
+    // It records a real process's sound (whatever plays now, a game the owner is in): only when asked.
+    if std::env::var("GLINT_LIVE_AUDIO_TEST").ok().as_deref() != Some("1") {
+        r.line("INFO live test skipped: it captures a running program's sound; set GLINT_LIVE_AUDIO_TEST=1 to run it");
+        return;
+    }
     if !supported() {
         r.line("INFO process loopback needs build 19041 or newer: live test skipped");
         let ga = GameAudio::new();
