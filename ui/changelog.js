@@ -14,6 +14,17 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.36", date: "2026-11-16",
+    new: [
+      t("The editor's main video row is free-form. Drag a clip to any time: dropped on empty space it sits exactly there and leaves a gap behind, dropped onto another clip it goes before or after it. A single clip can be moved later the same way."),
+      t("Gaps: empty stretches on the video row are black and silent in the preview and in the export, while text, pictures and added songs go on over them. Click a gap and press Delete to close it, drag its edge to make it longer or shorter, or pick “Close all gaps”. “Cut out and leave a gap” (Shift+Delete) removes a piece without moving what comes after it."),
+      t("A blade tool on the timeline (C): click the video or an overlay block to split it right there."),
+    ],
+    fixed: [
+      t("In a project, the selection box in the Library list was cut off at the list's edge. It now follows the pointer, as on the Library page."),
+    ],
+  },
+  {
     version: "0.1.35", date: "2026-11-16",
     new: [
       t("The editor fills the whole window while you edit, arranged like an editing program: the picture in the middle, the settings on the right, the library on the left in a project, the timeline along the bottom. Drag the borders, fold panels and sections, and use minimize, maximize and close without leaving the editor."),

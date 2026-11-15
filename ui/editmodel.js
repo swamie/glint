@@ -32,6 +32,10 @@
 //              Then every time above is a TIMELINE second: the parts laid end to end in
 //              display order; emToSrc / emFromSrc convert. Without parts timeline = source.
 //              A part border is always a cut, and a locked one (emCutLocked).
+//              A part may be a GAP (0.1.36): { src: -1, len, title: "", gap: true }: an empty stretch of the
+//              main video row, black and silent from the clip's own tracks in the result (overlays and
+//              rows that play through cuts go on over it). A single clip gets parts once it has a gap.
+//              m.duration is then the whole row with its gaps; m.source the length of the source.
 //   overlays   things on the picture (ui/overlays.js), bottom to top: { id, kind, from, to, ... }
 //              kind: text, rect, ellipse, line, arrow, pen, blur. from / to: timeline seconds it
 //              is on screen; positions are fractions (0..1) of the picture.
@@ -105,13 +109,15 @@ function emRestore(m, json) {
   m.fadeIn = +s.fi || 0;
   m.fadeOut = +s.fo || 0;
   m.canvas = emCanvasOk(s.cv) ? s.cv : null;
-  if (m.parts && Array.isArray(s.parts)) {
+  if (Array.isArray(s.parts) || m.parts) {
     // The bookmarks are not in the snapshot but move with their part: keep each at its place in its part.
     const P0 = emParts(m);
-    const pos = (m.marks || []).map((x) => { const p = P0[emPartAt(m, x)]; return p ? { src: p.src, off: x - p.at } : { src: null, off: x }; });
-    m.parts = s.parts;
+    const pos = (m.marks || []).map((x) => { const p = P0[emPartAt(m, x)]; return p && !p.gap ? { src: p.src, off: x - p.at } : { src: null, off: x }; });
+    // A single clip has parts only while it has gaps (0.1.36): a snapshot without them is the clip as it is.
+    m.parts = Array.isArray(s.parts) ? s.parts : null;
+    m.duration = m.parts ? m.parts.reduce((n, p) => n + p.len, 0) : Number.isFinite(m.source) ? m.source : m.duration;
     const P1 = emParts(m);
-    if (m.marks) m.marks = pos.map((q) => { const p = P1.find((r) => r.src === q.src); return p ? Math.min(m.duration, p.at + q.off) : q.off; }).sort((a, b) => a - b);
+    if (m.marks) m.marks = pos.map((q) => { const p = q.src === null ? null : P1.find((r) => !r.gap && r.src === q.src); return p ? Math.min(m.duration, p.at + q.off) : Math.min(m.duration, q.off); }).sort((a, b) => a - b);
   }
   m.cuts = s.cuts;
   m.removed = s.removed;
@@ -152,6 +158,7 @@ function emSplit(m, t) {
   const i = emSegmentAt(m, t);
   const seg = emSegments(m)[i];
   if (t - seg.start < EM_MIN_SEG || seg.end - t < EM_MIN_SEG) return -1;
+  if (m.parts && emGapAt(m, t) >= 0) return -1; // a gap has nothing to split (0.1.36)
   return emSplitIn(m, i, t);
 }
 /** emSplit without the length check: split segment `i` at `t` (the caller has made sure both halves are long enough). */
@@ -362,7 +369,7 @@ function emSetParts(m, starts, titles) {
 function emParts(m) {
   if (!m.parts) return [];
   let at = 0;
-  return m.parts.map((p, i) => { const o = { i, at, end: at + p.len, src: p.src, len: p.len, title: p.title }; at += p.len; return o; });
+  return m.parts.map((p, i) => { const o = { i, at, end: at + p.len, src: p.src, len: p.len, title: p.title, ...(p.gap ? { gap: true } : {}) }; at += p.len; return o; });
 }
 
 /** Timeline seconds of the part borders (where each part after the first starts). */
@@ -390,22 +397,30 @@ function emPartAt(m, sec) {
 function emToSrc(m, sec) {
   if (!m.parts) return sec;
   const x = Math.min(m.duration, Math.max(0, +sec || 0));
-  const p = emParts(m)[emPartAt(m, x)];
+  const P = emParts(m);
+  const p = P[emPartAt(m, x)];
+  if (p.gap) {
+    // A gap has no source: the start of the clip after it (or the end of the one before).
+    const next = P.find((q) => !q.gap && q.at >= p.end - EM_EPS), prev = [...P].reverse().find((q) => !q.gap && q.end <= p.at + EM_EPS);
+    return next ? next.src : prev ? prev.src + prev.len : 0;
+  }
   return p.src + Math.min(p.len, Math.max(0, x - p.at));
 }
 
 /** Source second -> timeline second. A source border belongs to the part that starts there. */
 function emFromSrc(m, src) {
   if (!m.parts) return src;
-  const P = emParts(m);
-  const x = Math.min(m.duration, Math.max(0, +src || 0));
+  const P = emParts(m).filter((p) => !p.gap);
+  if (!P.length) return 0;
+  const x = Math.max(0, +src || 0);
   let best = null; // the part with the largest source start at or before x
   for (const p of P) if (p.src <= x + EM_EPS && (!best || p.src > best.src)) best = p;
   best ||= P[0];
   return best.at + Math.min(best.len, Math.max(0, x - best.src));
 }
 
-/** The source ranges under timeline range [a, b): [{ tl, src, len }] in timeline order; neighbours that also touch in source are merged. */
+/** The source ranges under timeline range [a, b): [{ tl, src, len }] in timeline order; neighbours that also touch in source are merged.
+ *  A gap (0.1.36) is { tl, src: null, len, gap: true }. */
 function emSrcSpans(m, a, b) {
   if (!(b > a)) return [];
   if (!m.parts) return [{ tl: a, src: a, len: b - a }];
@@ -413,9 +428,14 @@ function emSrcSpans(m, a, b) {
   for (const p of emParts(m)) {
     const lo = Math.max(a, p.at), hi = Math.min(b, p.end);
     if (hi - lo <= EM_EPS) continue;
-    const s = { tl: lo, src: p.src + (lo - p.at), len: hi - lo };
     const last = out[out.length - 1];
-    if (last && Math.abs(last.src + last.len - s.src) < EM_EPS) last.len += s.len;
+    if (p.gap) {
+      if (last && last.gap) last.len += hi - lo;
+      else out.push({ tl: lo, src: null, len: hi - lo, gap: true });
+      continue;
+    }
+    const s = { tl: lo, src: p.src + (lo - p.at), len: hi - lo };
+    if (last && !last.gap && Math.abs(last.src + last.len - s.src) < EM_EPS) last.len += s.len;
     else out.push(s);
   }
   return out;
@@ -446,35 +466,65 @@ function emSetPartRemoved(m, i, removed) {
 function emMovePart(m, from, to) {
   const P = emParts(m), n = P.length;
   if (!n || !Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < 0 || from >= n || to >= n || from === to) return false;
-  const segs = emSegments(m);
-  const groups = P.map((p) => ({ p, cuts: [], segs: [], marks: [] }));
+  const groups = emGroups(m);
+  const order = groups.slice();
+  order.splice(to, 0, order.splice(from, 1)[0]);
+  emLayGroups(m, groups, emNormGroups(m, order));
+  return true;
+}
+
+/* The main video row as groups (0.1.36): one per part, each with its segments (relative cuts, cut out, color,
+ * hidden video, every row's level) and bookmarks. emLayGroups lays a new order of them (old groups, and new gap
+ * groups) back onto the model. */
+function emGroups(m) {
+  const P = emParts(m), segs = emSegments(m);
+  const groups = P.map((p) => ({ p, part: m.parts[p.i], cuts: [], segs: [], marks: [] }));
   for (const s of segs) {
     const g = groups[emPartAt(m, (s.start + s.end) / 2)];
     if (g.segs.length) g.cuts.push(s.start - g.p.at);
     g.segs.push({ removed: m.removed[s.i], color: m.colors[s.i], blank: m.blank[s.i], gains: m.audio.map((r) => r.gains[s.i]) });
   }
   for (const x of m.marks || []) { const g = groups[emPartAt(m, x)]; if (g) g.marks.push(x - g.p.at); }
-  const order = groups.slice();
-  order.splice(to, 0, order.splice(from, 1)[0]);
-  // An overlay wholly inside one part moves with that part (one across a border stays where it is).
+  return groups;
+}
+/** A new gap group `len` seconds long: one kept segment, neutral, full level. */
+const emGapGroup = (m, len) => ({ p: null, part: { src: -1, len, title: "", gap: true }, cuts: [], segs: [{ removed: false, color: emNoColor(), blank: false, gains: m.audio.map(() => 1) }], marks: [] });
+/** Tidy an order of groups: gaps next to each other become one, a gap at the very end goes (the time after the
+ *  video does that job), slivers of gap go, and a gap is always one kept segment. */
+function emNormGroups(m, order) {
+  const out = [];
+  for (const g of order) {
+    if (!g.part.gap) { out.push(g); continue; }
+    const last = out[out.length - 1];
+    if (last && last.part.gap) out[out.length - 1] = emGapGroup(m, last.part.len + g.part.len);
+    else out.push(g.segs.length === 1 && g.cuts.length === 0 && !g.segs[0].removed ? g : emGapGroup(m, g.part.len));
+  }
+  while (out.length && out[out.length - 1].part.gap) out.pop();
+  return out.filter((g) => !g.part.gap || g.part.len >= 0.01);
+}
+/** Lay `order` (groups of emGroups(m), in any order, and new gap groups) onto the model. An overlay wholly inside
+ *  one clip moves with that clip (one across a border or in a gap stays where it is); a canvas piece's keyframes
+ *  each go with the part they are in. A single clip without gaps has no parts again. */
+function emLayGroups(m, groups, order) {
+  const P = groups.map((g) => g.p);
   const newAt = new Map();
-  { let a = 0; for (const g of order) { newAt.set(g.p.i, a); a += g.p.len; } }
+  { let a = 0; for (const g of order) { if (g.p) newAt.set(g.p.i, a); a += g.part.len; } }
   for (const o of m.overlays || []) {
-    const p = P.find((q) => o.from >= q.at - EM_EPS && o.to <= q.end + EM_EPS);
-    if (!p) continue;
+    const p = P.find((q) => !q.gap && o.from >= q.at - EM_EPS && o.to <= q.end + EM_EPS);
+    if (!p || !newAt.has(p.i)) continue;
     const d = newAt.get(p.i) - p.at;
     o.from += d;
     o.to += d;
     if (Array.isArray(o.keys)) for (const k of o.keys) k.t += d; // its keyframes (keyframes.js) go with it
   }
-  // A canvas piece's keyframes each go with the part they are in.
   for (const pc of m.canvas?.pieces || []) {
     if (!Array.isArray(pc.keys) || !pc.keys.length) continue;
-    for (const k of pc.keys) { const p = P[emPartAt(m, k.t)]; if (p) k.t += newAt.get(p.i) - p.at; }
+    for (const k of pc.keys) { const p = P[emPartAt(m, k.t)]; if (p && newAt.has(p.i)) k.t += newAt.get(p.i) - p.at; }
     pc.keys.sort((a, b) => a.t - b.t);
   }
   const cuts = [], removed = [], colors = [], blank = [], gains = m.audio.map(() => []), marks = [];
   let at = 0;
+  const total = order.reduce((n, g) => n + g.part.len, 0);
   order.forEach((g, k) => {
     if (k > 0) cuts.push(at);
     for (const c of g.cuts) cuts.push(at + c);
@@ -485,19 +535,190 @@ function emMovePart(m, from, to) {
       s.gains.forEach((x, r) => gains[r].push(x));
     }
     // A bookmark on the very end of a part that is not last any more would sit on the next part's start: keep it inside its part.
-    for (const x of g.marks) marks.push(Math.min(m.duration, at + Math.min(x, g.p.len - (k < order.length - 1 ? EM_MARK_GAP : 0))));
-    at += g.p.len;
+    for (const x of g.marks) marks.push(Math.min(total, at + Math.min(x, g.part.len - (k < order.length - 1 ? EM_MARK_GAP : 0))));
+    at += g.part.len;
   });
-  m.parts = order.map((g) => m.parts[g.p.i]);
+  // One clip left, from the start of the source, and no gap: back to a plain clip (timeline = source).
+  const whole = order.length === 1 && !order[0].part.gap && Math.abs(order[0].part.src) < EM_EPS && Math.abs(order[0].part.len - (Number.isFinite(m.source) ? m.source : order[0].part.len)) < 1e-6;
+  m.parts = whole ? null : order.map((g) => g.part);
+  m.duration = total;
   Object.assign(m, { cuts, removed, colors, blank });
   m.audio.forEach((r, k) => { r.gains = gains[k]; });
   // Sorted; one at the very end of the clip can land on a border where another starts: keep one of them.
   if (m.marks) m.marks = marks.sort((a, b) => a - b).filter((x, i, l) => i === 0 || x - l[i - 1] >= EM_MARK_GAP - EM_EPS);
-  return true;
 }
 
 /** True if the parts are not in source order. */
 const emReordered = (m) => !!m.parts && m.parts.some((p, i) => i > 0 && p.src < m.parts[i - 1].src);
+
+/* ---------- gaps and free placement on the main video row (0.1.36) ----------
+ * See `parts` at the top. Every function here changes the model only through emGroups / emLayGroups, so the
+ * segments, levels, colors, bookmarks, overlays inside a clip and canvas keyframes always go along. None snapshots. */
+
+/** True if the model has a gap. */
+const emHasGaps = (m) => !!m.parts && m.parts.some((p) => p.gap);
+/** Display index of the gap at timeline second `sec` (its start belongs to it, its end does not), or -1. */
+function emGapAt(m, sec) {
+  if (!m.parts) return -1;
+  for (const p of emParts(m)) if (p.gap && sec >= p.at - EM_EPS && sec < p.end - EM_EPS) return p.i;
+  return -1;
+}
+/** True if segment `i` lies in a gap. */
+function emSegIsGap(m, i) {
+  if (!m.parts) return false;
+  const s = emSegments(m)[i];
+  return !!s && emGapAt(m, (s.start + s.end) / 2) >= 0;
+}
+/** The source's length, remembered before the first change that could hide it (a lifted piece). */
+function emKeepSource(m) {
+  if (Number.isFinite(m.source)) return m.source;
+  m.source = m.parts ? Math.max(0, ...m.parts.filter((p) => !p.gap).map((p) => p.src + p.len)) : m.duration;
+  return m.source;
+}
+/** A single clip becomes one part (named `title`), so it can have gaps. */
+function emEnsureParts(m, title) {
+  emKeepSource(m);
+  if (!m.parts) m.parts = [{ src: 0, len: m.duration, title: typeof title === "string" && title ? title : "Clip 1" }];
+}
+/** Split the clip part under timeline second `sec` in two there (both keep its title; the cut there becomes a part
+ *  border). False on a gap, at a border or outside. */
+function emSplitPartAt(m, sec) {
+  const k = emPartAt(m, sec), p = emParts(m)[k];
+  if (!p || p.gap || sec - p.at < EM_EPS * 10 || p.end - sec < EM_EPS * 10) return false;
+  const i = emSegmentAt(m, sec), edges = [0, ...m.cuts, m.duration];
+  if (Math.abs(edges[i] - sec) > 1e-6) emSplitIn(m, i, sec);
+  const a = m.parts[k], len1 = sec - p.at;
+  m.parts.splice(k, 1, { ...a, len: len1 }, { ...a, src: a.src + len1, len: a.len - len1 });
+  return true;
+}
+/**
+ * Free placement: put clip part `i` (display index) so it starts at timeline second `at`. Where it was stays empty
+ * (a gap). Dropped on a gap or after the end it sits exactly there; when it is longer than the gap, what follows
+ * moves later (nothing is overwritten). Dropped on a clip it goes beside it (the nearer side). `title` names the clip of a
+ * single clip that gets parts. True if the layout changed.
+ */
+function emPlacePart(m, i, at, title) {
+  at = Math.max(0, +at || 0);
+  if (!m.parts) { if (i !== 0) return false; emEnsureParts(m, title); }
+  emKeepSource(m);
+  const before = JSON.stringify([m.parts, m.cuts]);
+  const groups = emGroups(m), g = groups[i];
+  if (!g || g.part.gap) return false;
+  let order = groups.slice();
+  order[i] = emGapGroup(m, g.part.len);
+  // Empty stretches next to each other are one (the place it leaves joins the gaps beside it).
+  order = order.reduce((out, x) => { const last = out[out.length - 1]; if (last && last.part.gap && x.part.gap) out[out.length - 1] = emGapGroup(m, last.part.len + x.part.len); else out.push(x); return out; }, []);
+  let acc = 0, k = 0;
+  for (; k < order.length; k++) { if (at < acc + order[k].part.len - EM_EPS) break; acc += order[k].part.len; }
+  if (k >= order.length) {
+    if (at - acc > EM_EPS) order.push(emGapGroup(m, at - acc));
+    order.push(g);
+  } else if (order[k].part.gap) {
+    const G = order[k], lead = at - acc, rest = Math.max(0, acc + G.part.len - (at + g.part.len));
+    order.splice(k, 1, ...(lead > EM_EPS ? [emGapGroup(m, lead)] : []), g, ...(rest > EM_EPS ? [emGapGroup(m, rest)] : []));
+  } else order.splice(at >= acc + order[k].part.len / 2 ? k + 1 : k, 0, g); // on a clip: beside it, the nearer side
+  emLayGroups(m, groups, emNormGroups(m, order));
+  return JSON.stringify([m.parts, m.cuts]) !== before;
+}
+/** Reorder: clip part `i` goes right before (or `after`) clip part `k`; the place it came from closes. True if it moved. */
+function emPutBeside(m, i, k, after) {
+  const P = emParts(m);
+  if (!P[i] || !P[k] || P[i].gap || P[k].gap || i === k) return false;
+  const groups = emGroups(m), order = groups.slice(), g = order.splice(i, 1)[0];
+  const j = order.indexOf(groups[k]) + (after ? 1 : 0);
+  order.splice(j, 0, g);
+  if (order.every((x, n) => x === groups[n])) return false;
+  emKeepSource(m);
+  emLayGroups(m, groups, emNormGroups(m, order));
+  return true;
+}
+/** Close gap `i` (display index): everything after it moves earlier. */
+function emCloseGap(m, i) {
+  const P = emParts(m);
+  if (!P[i] || !P[i].gap) return false;
+  const groups = emGroups(m);
+  emLayGroups(m, groups, emNormGroups(m, groups.filter((_, n) => n !== i)));
+  return true;
+}
+/** Close every gap. */
+function emCloseGaps(m) {
+  if (!emHasGaps(m)) return false;
+  const groups = emGroups(m);
+  emLayGroups(m, groups, emNormGroups(m, groups.filter((g) => !g.part.gap)));
+  return true;
+}
+/** Make gap `i` `len` seconds long (what follows moves along); under 0.01 s it closes. */
+function emSetGapLen(m, i, len) {
+  const P = emParts(m);
+  if (!P[i] || !P[i].gap || !Number.isFinite(len)) return false;
+  if (len < 0.01) return emCloseGap(m, i);
+  const groups = emGroups(m), order = groups.slice();
+  order[i] = emGapGroup(m, len);
+  emLayGroups(m, groups, emNormGroups(m, order));
+  return true;
+}
+/** Add a gap `len` seconds long at timeline second `at` (a clip there is split; at a border it goes between). */
+function emInsertGap(m, at, len, title) {
+  if (!(len >= 0.01) || !(at >= 0) || at >= m.duration - EM_EPS) return false;
+  emEnsureParts(m, title);
+  emSplitPartAt(m, at);
+  const groups = emGroups(m), order = groups.slice();
+  let k = 0, acc = 0;
+  while (k < order.length && acc + order[k].part.len <= at + EM_EPS) acc += order[k++].part.len;
+  order.splice(k, 0, emGapGroup(m, len));
+  emLayGroups(m, groups, emNormGroups(m, order));
+  return true;
+}
+/** "Cut out and leave a gap": segment `i` leaves the row and an empty stretch as long as it stays. Refused on a gap
+ *  and when no other kept picture would be left. */
+function emLiftSeg(m, i, title) {
+  const s = emSegments(m)[i];
+  if (!s || emSegIsGap(m, i)) return false;
+  if (!m.removed.some((r, k) => k !== i && !r && !emSegIsGap(m, k))) return false;
+  emEnsureParts(m, title);
+  emSplitPartAt(m, s.start);
+  emSplitPartAt(m, s.end);
+  const k = emPartAt(m, (s.start + s.end) / 2);
+  const groups = emGroups(m), order = groups.slice();
+  order[k] = emGapGroup(m, groups[k].part.len);
+  emLayGroups(m, groups, emNormGroups(m, order));
+  return true;
+}
+
+/**
+ * Split overlay item `o` at timeline second `at` (the blade): `o` ends there and a copy with id `newId` starts there.
+ * A media item's second half starts `off` later; keyframes go to the half they lie in, and each half gets one at
+ * the cut with the values there, so nothing jumps. Returns the new item (not yet in m.overlays), or null.
+ */
+function emSplitOverlay(o, at, newId) {
+  if (!o || !(at - o.from >= EM_OV_MIN - EM_EPS) || !(o.to - at >= EM_OV_MIN - EM_EPS)) return null;
+  const b = JSON.parse(JSON.stringify(o));
+  b.id = newId;
+  b.from = at;
+  if (Number.isFinite(o.off)) b.off = Math.round((o.off + (at - o.from)) * 1000) / 1000;
+  if (Array.isArray(o.keys) && o.keys.length) {
+    const cut = emKeyAt(o.keys, at, !!o.smooth);
+    o.keys = [...o.keys.filter((k) => k.t < at - 1e-6), cut];
+    b.keys = [{ ...cut }, ...b.keys.filter((k) => k.t > at + 1e-6)];
+  }
+  o.to = at;
+  return b;
+}
+/** A keyframe at `at` with every number of the keys between which it lies (held before the first, after the last). */
+function emKeyAt(keys, at, smooth) {
+  const L = keys.slice().sort((a, b) => a.t - b.t), n = L.length;
+  const pick = (k) => ({ ...k, t: at });
+  if (at <= L[0].t) return pick(L[0]);
+  if (at >= L[n - 1].t) return pick(L[n - 1]);
+  let i = 0;
+  while (i < n - 2 && at >= L[i + 1].t) i++;
+  const a = L[i], b = L[i + 1], span = b.t - a.t;
+  let u = span > 1e-9 ? Math.min(1, Math.max(0, (at - a.t) / span)) : 1;
+  if (smooth) u = u * u * (3 - 2 * u);
+  const out = { ...a, t: at };
+  for (const f of Object.keys(a)) if (f !== "t" && typeof a[f] === "number" && typeof b[f] === "number") out[f] = a[f] + (b[f] - a[f]) * u;
+  return out;
+}
 
 /* ---------- editor projects: more clips, saved state ---------- */
 // A project's draft grows when clips are added: the backend joins [old draft, new clips], so every
@@ -521,7 +742,8 @@ function emNewParts(D, starts, titles, end) {
 /** Append `parts` after timeline second D on a model-like object (the model or an undo snapshot). */
 function emAppendTo(o, D, parts, firstTitle) {
   if (!Array.isArray(o.parts) || !o.parts.length) o.parts = [{ src: 0, len: D, title: firstTitle }];
-  let at = D;
+  // With gaps (0.1.36) the row is longer than the source: the new clips go after its end.
+  let at = o.parts.reduce((n, p) => n + p.len, 0);
   for (const p of parts) {
     o.cuts.push(at);
     o.removed.push(false);
@@ -544,7 +766,7 @@ function emAppendTo(o, D, parts, firstTitle) {
  * parts were added. Does not snapshot.
  */
 function emAddParts(m, starts, titles, end, firstTitle) {
-  const D = m.duration;
+  const D = Number.isFinite(m.source) ? m.source : m.duration; // the old draft's length (the row may be longer with gaps)
   end = +end;
   if (!Number.isFinite(end) || end - D < EM_MIN_SEG) return false;
   const parts = emNewParts(D, starts, titles, end);
@@ -556,6 +778,7 @@ function emAddParts(m, starts, titles, end, firstTitle) {
   m.undo = m.undo.map(fix).filter(Boolean);
   m.redo = m.redo.map(fix).filter(Boolean);
   m.duration = emAppendTo(m, D, parts, first);
+  if (Number.isFinite(m.source)) m.source = end;
   return true;
 }
 
@@ -568,7 +791,8 @@ const EM_STATE_V = 1;
  */
 function emStateSave(m, joins, undo) {
   const s = {
-    v: EM_STATE_V, duration: m.duration, joins: Array.isArray(joins) ? joins.slice() : [],
+    // `duration` is the SOURCE's length (the project's draft); with gaps (0.1.36) the row is the parts' sum.
+    v: EM_STATE_V, duration: Number.isFinite(m.source) ? m.source : m.duration, joins: Array.isArray(joins) ? joins.slice() : [],
     cuts: m.cuts, removed: m.removed, colors: m.colors, blank: m.blank, speed: m.speed,
     audio: m.audio.map((r) => (r.kind === "track" ? { id: r.id, kind: "track", index: r.index, title: r.title, volume: r.volume, muted: r.muted, gains: r.gains } : r)),
     parts: m.parts, marks: m.marks || [],
@@ -585,7 +809,9 @@ function emStateOk(s) {
   const num = (x) => typeof x === "number" && Number.isFinite(x);
   if (!s || typeof s !== "object" || s.v !== EM_STATE_V || !num(s.duration) || s.duration <= 0) return false;
   const D = s.duration, n = Array.isArray(s.cuts) ? s.cuts.length + 1 : 0;
-  if (!n || !s.cuts.every((c, i) => num(c) && c > 0 && c < D && (i === 0 || c > s.cuts[i - 1]))) return false;
+  // The row's length: the source's, or with parts their sum (gaps included, 0.1.36).
+  const T = Array.isArray(s.parts) && s.parts.length && s.parts.every((p) => p && num(p.len)) ? s.parts.reduce((a, p) => a + p.len, 0) : D;
+  if (!n || !s.cuts.every((c, i) => num(c) && c > 0 && c < T && (i === 0 || c > s.cuts[i - 1]))) return false;
   if (!Array.isArray(s.removed) || s.removed.length !== n || !s.removed.some((r) => !r)) return false;
   if (!Array.isArray(s.blank) || s.blank.length !== n) return false;
   if (!Array.isArray(s.colors) || s.colors.length !== n || !s.colors.every((c) => c && typeof c === "object" && EM_COLOR_KEYS.every((k) => num(c[k])))) return false;
@@ -595,7 +821,10 @@ function emStateOk(s) {
     && (r.kind === "track" || (typeof r.path === "string" && r.path && num(r.offset) && num(r.trimStart) && num(r.length) && num(r.fileDuration) && typeof r.id === "string")))) return false;
   if (s.parts != null) {
     if (!Array.isArray(s.parts) || s.parts.length < 1 || !s.parts.every((p) => p && num(p.src) && num(p.len) && p.len > 0 && typeof p.title === "string")) return false;
-    if (Math.abs(s.parts.reduce((a, p) => a + p.len, 0) - D) > 1e-3) return false;
+    // Without gaps or lifted pieces the parts tile the source exactly (as before 0.1.36); else each clip lies in it.
+    const clips = s.parts.filter((p) => !p.gap);
+    if (!clips.length || !clips.every((p) => p.src >= -1e-3 && p.src + p.len <= D + 1e-3)) return false;
+    if (!s.parts.some((p) => p.gap) && Math.abs(T - D) > 1e-3 && !(T < D)) return false;
   }
   // Overlays and fades (0.1.25) are optional: a state saved before them has none.
   if (s.overlays != null && !(Array.isArray(s.overlays) && s.overlays.every(emOverlayOk))) return false;
@@ -647,14 +876,18 @@ function emStateLoad(m, s) {
   for (let i = tracks.length - 1; i >= 0; i--) if (gone.includes(tracks[i].title)) tracks.splice(i, 1);
   const sameTracks = used.size === saved.length && tracks.length === saved.length;
   const files = s.audio.filter((r) => r.kind === "file").map((r) => ({ ...r, gains: r.gains.slice() }));
-  m.duration = s.duration;
+  // With gaps or a lifted piece (0.1.36) the parts say how long the row is; `duration` stays the source's.
+  const whole = Array.isArray(s.parts) && s.parts.length === 1 && !s.parts[0].gap && Math.abs(s.parts[0].src) < 1e-6 && Math.abs(s.parts[0].len - s.duration) < 1e-3;
+  m.parts = Array.isArray(s.parts) && s.parts.length >= 1 && !whole ? s.parts.map((p) => (p.gap ? { src: -1, len: p.len, title: "", gap: true } : { src: p.src, len: p.len, title: p.title })) : null;
+  m.duration = m.parts ? m.parts.reduce((a, p) => a + p.len, 0) : s.duration;
+  if (m.parts && (m.parts.some((p) => p.gap) || Math.abs(m.duration - s.duration) > 1e-6)) m.source = s.duration;
+  else delete m.source;
   m.cuts = s.cuts.slice();
   m.removed = s.removed.map((r) => !!r);
   m.colors = s.colors.map((c) => ({ ...emNoColor(), ...c }));
   m.blank = s.blank.map((b) => !!b);
   m.speed = s.speed;
   m.audio = [...tracks, ...files];
-  m.parts = Array.isArray(s.parts) && s.parts.length > 1 ? s.parts.map((p) => ({ src: p.src, len: p.len, title: p.title })) : null;
   m.overlays = Array.isArray(s.overlays) ? JSON.parse(JSON.stringify(s.overlays)) : [];
   m.fadeIn = +s.fadeIn || 0;
   m.fadeOut = +s.fadeOut || 0;
@@ -1065,9 +1298,13 @@ const emRound = (x) => Math.round(x * 1000) / 1000;
 function emToOpts(m) {
   const segs = emSegments(m);
   const pieces = emPieces(m);
-  const uniform = pieces.every((p) => emSameColor(p.color, pieces[0].color));
+  // A piece that is all gap (0.1.36) has no picture: its color does not count (the result's color applies over it).
+  const pics = m.parts ? pieces.filter((p) => emSrcSpans(m, p.start, p.end).some((x) => !x.gap)) : pieces;
+  const uniform = pics.every((p) => emSameColor(p.color, pics[0].color));
   // Source ranges [{ start, end }] under timeline range [a, b); without parts exactly [a, b].
-  const srcOf = (a, b) => (m.parts ? emSrcSpans(m, a, b).map((x) => ({ start: x.src, end: x.src + x.len })) : [{ start: a, end: b }]);
+  // A gap (0.1.36) is { gap: length }; srcOf leaves it out, srcGapOf keeps it.
+  const srcGapOf = (a, b) => (m.parts ? emSrcSpans(m, a, b).map((x) => (x.gap ? { gap: x.len } : { start: x.src, end: x.src + x.len })) : [{ start: a, end: b }]);
+  const srcOf = (a, b) => srcGapOf(a, b).filter((x) => !x.gap);
   // A Game row counts as silent where Desktop is heard (see emGameHidden); left out if that is everywhere.
   const gainOf = (r, i) => (emGameHidden(m, r, i) ? 0 : r.gains[i]);
   const regionsOf = (r) => segs.filter((s) => !s.removed && Math.abs(gainOf(r, s.i) - 1) >= 0.005)
@@ -1092,7 +1329,8 @@ function emToOpts(m) {
         regions: segs.filter((s) => !s.removed && Math.abs(gainOf(r, s.i) - 1) >= 0.005).map((s) => ({ start: emRound(emSrcToOut(m, s.start)), end: emRound(emSrcToOut(m, s.end)), gain: emRound(gainOf(r, s.i)) })) }];
     }
     if (r.kind !== "file" || !m.parts) return [e];
-    const spans = emSrcSpans(m, r.offset, r.offset + r.length);
+    // A row cut with the video is silent over a gap, as the clip's own tracks are.
+    const spans = emSrcSpans(m, r.offset, r.offset + r.length).filter((sp) => !sp.gap);
     if (spans.length <= 1) return [{ ...e, offset: emRound(spans[0] ? spans[0].src : emToSrc(m, r.offset)) }];
     // One entry per source range it covers, each with the regions inside that range.
     return spans.map((sp) => ({
@@ -1107,8 +1345,17 @@ function emToOpts(m) {
   const audio = emAudioUntouched(m)
     ? []
     : m.audio.filter((r) => !r.muted && r.volume > 0.005 && segs.some((s) => !s.removed && gainOf(r, s.i) > 0.005)).flatMap(entries);
-  const segments = pieces.flatMap((p) => srcOf(p.start, p.end).map((x) => ({ start: emRound(x.start), end: emRound(x.end), ...(uniform ? {} : { color: { ...p.color } }), ...(p.blank ? { blank: true } : {}) })));
-  const ordered = segments.some((s, i) => i > 0 && s.start < segments[i - 1].end - 0.0005);
+  const segments = [];
+  for (const p of pieces) for (const x of srcGapOf(p.start, p.end)) {
+    if (x.gap) {
+      // Black and silent here (0.1.36); gaps in a row become one.
+      const last = segments[segments.length - 1];
+      if (last && last.gap !== undefined) last.gap = emRound(last.gap + x.gap);
+      else segments.push({ gap: emRound(x.gap) });
+    } else segments.push({ start: emRound(x.start), end: emRound(x.end), ...(uniform ? {} : { color: { ...p.color } }), ...(p.blank ? { blank: true } : {}) });
+  }
+  const ranges = segments.filter((s) => s.gap === undefined);
+  const ordered = segments.length !== ranges.length || ranges.some((s, i) => i > 0 && s.start < ranges[i - 1].end - 0.0005);
   // After the video (0.1.35): OUTPUT seconds of black after everything kept, where overlays and through rows go on.
   const tail = emRound(emTail(m) / (m.speed || 1));
   return {
@@ -1116,7 +1363,7 @@ function emToOpts(m) {
     start: 0,
     end: 0,
     speed: m.speed,
-    color: uniform && pieces.length ? { ...pieces[0].color } : emNoColor(),
+    color: uniform && pics.length ? { ...pics[0].color } : emNoColor(),
     // Nothing is heard (every row muted or deleted): the older per-track list with one silent track says "no sound"
     // (an empty `audio` alone would mean "keep the clip's tracks as recorded").
     tracks: !audio.length && !emAudioUntouched(m) ? [{ index: 0, volume: 0 }] : [],
@@ -1163,5 +1410,6 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = { EM_MIN_SEG, EM_MAX_GAIN, EM_EPS, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emTrimBounds, emSameSeg, emSetTrimStart, emSetTrimEnd, emSegCopy, emSegPaste, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emTrackRow, emGameHidden, emRowHint, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts,
     emSetParts, emParts, emPartAt, emToSrc, emFromSrc, emSrcSpans, emMovePart, emCutLocked, emLockedTimes, emPartSegs, emPartRemoved, emSetPartRemoved, emReordered, emState, emRestore,
     emAddParts, emNewParts, emStateSave, emStateOk, emStateLoad, EM_STATE_V,
+    emHasGaps, emGapAt, emSegIsGap, emKeepSource, emEnsureParts, emSplitPartAt, emPlacePart, emPutBeside, emCloseGap, emCloseGaps, emSetGapLen, emInsertGap, emLiftSeg, emSplitOverlay, emKeyAt, emGroups, emNormGroups, emLayGroups,
     emRowEnd, emRowFileAt, emEnd, emTail, emResultDuration, emSlipFile, emMoveOverlay, emTrimOverlay, emOvMaxLen, EM_OV_MIN, emSetThrough, emTracksGone, emRemoveRow, emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS, emCanvasOk, emCanvasOpts };
 }

@@ -21,6 +21,8 @@
 .pj-list { position: relative; flex: 1 1 auto; min-height: 80px; overflow-y: auto; padding: 6px; outline: 0; user-select: none; }
 .pj-list:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
 .pj-none { padding: 14px 8px; text-align: center; }
+/* The list's selection box lies on the window (over the editor), so it follows the pointer out of the list. */
+.marquee.pj-marquee { position: fixed; z-index: 1200; }
 .pj-item { position: relative; display: flex; gap: 9px; align-items: center; padding: 5px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; }
 .pj-item:hover { background: var(--raised); }
 .pj-item.sel { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: var(--accent); }

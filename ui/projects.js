@@ -808,8 +808,8 @@ function projDragMove(e) {
       d.oy = d.y + top;
       d.rects = [...d.list.querySelectorAll(".pj-item")].map((el) => { const b = el.getBoundingClientRect(); return { id: el.dataset.pjc, l: b.left - r.left, r: b.right - r.left, t: b.top + top, b: b.bottom + top }; });
       d.box = document.createElement("div");
-      d.box.className = "marquee";
-      d.list.append(d.box);
+      d.box.className = "marquee pj-marquee";
+      document.body.append(d.box);
       document.body.classList.add("selecting");
       d.timer = setInterval(() => {
         const b = d.list.getBoundingClientRect();
@@ -832,8 +832,14 @@ function projBoxUpdate(d) {
   const x = Math.max(0, Math.min(d.list.clientWidth, d.cx - r.left));
   const y = Math.max(0, Math.min(d.list.scrollHeight, d.cy - r.top + d.list.scrollTop));
   const box = { l: Math.min(x, d.ox), r: Math.max(x, d.ox), t: Math.min(y, d.oy), b: Math.max(y, d.oy) };
-  if (!d.box.isConnected) d.list.append(d.box); // the list was redrawn under the drag
-  Object.assign(d.box.style, { left: `${box.l}px`, top: `${box.t}px`, width: `${box.r - box.l}px`, height: `${box.b - box.t}px` });
+  // The box is drawn on the window, where the pointer is, also outside the narrow list (as on the Library
+  // page: inside the list it was cut off at the list's right edge). Only the list's top and bottom end it,
+  // because the list scrolls under it. What it picks is still worked out in the list's own coordinates above.
+  const lim = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const ax = d.ox + r.left, ay = lim(d.oy - d.list.scrollTop + r.top, r.top, r.bottom); // where the drag began, on screen
+  const sx = lim(d.cx, 0, window.innerWidth), sy = lim(d.cy, r.top, r.bottom);
+  if (!d.box.isConnected) document.body.append(d.box); // the page was redrawn under the drag
+  Object.assign(d.box.style, { left: `${Math.min(ax, sx)}px`, top: `${Math.min(ay, sy)}px`, width: `${Math.abs(sx - ax)}px`, height: `${Math.abs(sy - ay)}px` });
   projLib.sel = projBoxHits(d.base, d.rects, box);
   projPaintSel();
 }

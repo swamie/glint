@@ -154,6 +154,12 @@
 .tl-head-add .tl-btn { width: 24px; height: 24px; border: 1px dashed var(--line-2); }
 .tl-head-add .tl-btn:hover { color: var(--accent); border-color: var(--accent); }
 .tl-head-add .tl-btn svg { width: 14px; height: 14px; }
+/* 0.1.36: the blade tool's pointer over the rows (a razor; crosshair where SVG cursors are not drawn), and a gap's edge drag. */
+.tl-lanes[data-tl-tool="blade"] .tl-lane[data-tl-lane="video"], .tl-lanes[data-tl-tool="blade"] .tl-lane[data-tl-kind="ov"] {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M4 20 13 11M13 11l6-6a2.1 2.1 0 0 0-3-3l-6 6zM8 8l8 8' fill='none' stroke='%23000' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M4 20 13 11M13 11l6-6a2.1 2.1 0 0 0-3-3l-6 6zM8 8l8 8' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") 4 20, crosshair;
+}
+.tl.tl-dragging[data-tl-drag="gap-edge"], .tl.tl-dragging[data-tl-drag="gap-edge"] * { cursor: col-resize !important; }
+
 /* After the video the player is black (editor.js adds e-blank and e-after): not "Video hidden in this segment". */
 .player.e-after .e-blank-tag { display: none; }
 .tl-lane[data-tl-kind="ov"] { background: color-mix(in srgb, var(--bg) 35%, transparent); }

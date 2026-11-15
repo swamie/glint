@@ -41,7 +41,7 @@ const ED_LOAD_TIMEOUT = 15000;  // ms an audio element may take to load
 const ED_CHEV = '<svg class="e-chev" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>';
 const ED_ICON_UNFULL = '<svg viewBox="0 0 24 24"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>';
 // Shortcuts that act on the timeline's selection: sent to the timeline's run() when it has one.
-const ED_TL_CMDS = new Set(["split", "remove", "mute", "louder", "quieter", "solo", "blank", "selectAll", "clearSel", "hideCuts", "mark", "markNext", "markPrev", "trimStart", "trimEnd"]);
+const ED_TL_CMDS = new Set(["split", "remove", "mute", "louder", "quieter", "solo", "blank", "selectAll", "clearSel", "hideCuts", "mark", "markNext", "markPrev", "trimStart", "trimEnd", "lift", "blade"]);
 /** True if trimming (cmd "trimStart" / "trimEnd") to source time `sec` would leave less than EM_MIN_SEG of the kept span. */
 function edTrimRefused(m, cmd, sec) {
   const b = emTrimBounds(m);
@@ -169,6 +169,8 @@ const ED_KEYS = [
   { group: "Playback", what: "Fullscreen editor on or off", cmd: "fullscreen", once: true, keys: [edCombo("KeyF")] },
   { group: "Editing", what: "Split at the playhead", cmd: "split", once: true, keys: [edCombo("KeyS")] },
   { group: "Editing", what: "Cut out the selected segment, or restore it", cmd: "remove", once: true, keys: [edCombo("Delete"), edCombo("Backspace")] },
+  { group: "Editing", what: "Cut out the selected segment and leave a gap", cmd: "lift", once: true, keys: [edCombo("Delete", { shift: true })] },
+  { group: "Editing", what: "Blade: click the video or an overlay to split it there", cmd: "blade", once: true, keys: [edCombo("KeyC")] },
   { group: "Editing", what: "Mute or unmute the selected audio segment", cmd: "mute", once: true, keys: [edCombo("KeyM")] },
   { group: "Editing", what: "Raise the selected audio segment by 10%", cmd: "louder", keys: [edCombo("ArrowUp")] },
   { group: "Editing", what: "Lower the selected audio segment by 10%", cmd: "quieter", keys: [edCombo("ArrowDown")] },
@@ -844,12 +846,27 @@ function mountPlayer(root, c) {
   }
   /** Put the video at timeline second `sec`. */
   function setTl(sec) {
-    aft = null; // the video is the clock again
     const m = pm();
+    // A gap on the main video row (0.1.36) has no video either: the player's own clock, as after the video.
+    if (m && emGapAt(m, sec) >= 0) { setAft(sec, playing()); return; }
+    aft = null; // the video is the clock again
     if (!m) { v.currentTime = sec; return; }
     const p = emParts(m)[emPartAt(m, sec)];
     playSrc = p ? p.src : null;
     v.currentTime = emToSrc(m, sec);
+  }
+  /** Put the playhead at timeline second `sec` and play from there (`run`) or stand: the video, or the player's
+   *  own clock in a gap or after the video (0.1.36). */
+  function go(sec, run) {
+    setTl(sec);
+    if (aft) {
+      aft = { at: aft.at, run: !!run, t0: performance.now() };
+      aftTick();
+      state();
+      syncAudio(true);
+      drift();
+    } else if (run && v.paused) v.play().catch((e) => console.warn("Glint: play() was refused", e));
+    else if (!run && !v.paused) v.pause();
   }
   /** The part being played, if the video has reached its end (null without parts). */
   function pastPart(m) {
@@ -861,7 +878,7 @@ function mountPlayer(root, c) {
   /** Go on at timeline second `at`; no seek when it simply follows in the source (the next part starts where the video is). */
   function jumpTo(at) {
     const m = pm();
-    if (m && Math.abs(emToSrc(m, at) - v.currentTime) < 0.05) { playSrc = emParts(m)[emPartAt(m, at)]?.src ?? null; return; }
+    if (m && emGapAt(m, at) < 0 && Math.abs(emToSrc(m, at) - v.currentTime) < 0.05) { playSrc = emParts(m)[emPartAt(m, at)]?.src ?? null; return; }
     setTl(at);
   }
 
@@ -1016,7 +1033,8 @@ function mountPlayer(root, c) {
       if (s.state !== "on" || !a) continue;
       const row = m && heard(s) ? m.audio.find((r) => r.id === s.id) : null;
       let want = null;
-      if (row) want = s.kind === "file" ? (emRowCovers(row, now, m) ? emRowFileAt(m, row, now) : null) : aft ? null : src; // a file that plays through cuts keeps its place in the file across a jump
+      // A row cut with the video is silent in a gap (0.1.36), as the clip's own tracks are.
+      if (row) want = s.kind === "file" ? (emRowCovers(row, now, m) && !(aft && !row.through && emGapAt(m, now) >= 0) ? emRowFileAt(m, row, now) : null) : aft ? null : src; // a file that plays through cuts keeps its place in the file across a jump
       const end = Number.isFinite(a.duration) ? a.duration : Infinity;
       if (want === null || want >= end - 0.01) { if (!a.paused) a.pause(); continue; }
       if (a.playbackRate !== v.playbackRate) a.playbackRate = v.playbackRate;
@@ -1083,11 +1101,16 @@ function mountPlayer(root, c) {
     const m = ed();
     if (!m || drag) return;
     if (aft) {
-      // After the video (0.1.35): at the result's end, stop there or loop back to the start.
-      const E = emEnd(m);
-      if (!aft.run || now < E) return;
-      if (P.loop && E > m.duration + EM_EPS) { setTl(emPlayable(m, 0) ?? 0); v.play().catch((e) => console.warn("Glint: play() was refused", e)); }
-      else { aft = { at: Math.max(m.duration, E), run: false, t0: performance.now() }; state(); syncAudio(false); drift(); }
+      if (!aft.run) return;
+      // In a gap on the main video row (0.1.36): when it ends, on with what follows (a clip from its start).
+      if (now < m.duration - EM_EPS) {
+        const p = emPlayable(m, now);
+        if (p !== null && emGapAt(m, now) >= 0 && Math.abs(p - now) < 1e-3) return; // still in the gap
+        if (p !== null) { go(p, true); return; }
+      } else if (now < emEnd(m)) return; // after the video (0.1.35), before the result's end
+      // The result's end: stop there or loop back to the start.
+      if (P.loop) go(emPlayable(m, 0) ?? 0, true);
+      else { aft = { at: Math.min(now, Math.max(m.duration, emEnd(m))), run: false, t0: performance.now() }; state(); syncAudio(false); drift(); }
       return;
     }
     if (v.paused || v.seeking) return;
@@ -1165,7 +1188,7 @@ function mountPlayer(root, c) {
       const E = emEnd(m);
       if (aft.at > E + 1e-3) return; // past the result's end there is nothing to play
       if (aft.at < E - Math.max(frame * 2, 0.05)) return aftGo();
-      setTl(emPlayable(m, 0) ?? 0); // at the end: play starts over
+      return go(emPlayable(m, 0) ?? 0, true); // at the end: play starts over (a gap at the start too)
     } else if (m) {
       const now = tlNow(), past = pastPart(m);
       const p = past ? afterPart(m, past) : emPlayable(m, now);
@@ -1173,8 +1196,8 @@ function mountPlayer(root, c) {
       // the last two frames of the last kept part, not only past it. With something after the video, play goes on into it.
       const kept = emKept(m), end = kept.length ? kept[kept.length - 1].end : 0, tail = emTail(m) > EM_EPS;
       if (p === null && tail) { setAft(m.duration, false); return aftGo(); }
-      if (p === null || (!past && !tail && now >= end - Math.max(frame * 2, 0.05))) setTl(emPlayable(m, 0) ?? 0);
-      else if (past || p > now + 0.001) setTl(p);
+      if (p === null || (!past && !tail && now >= end - Math.max(frame * 2, 0.05))) return go(emPlayable(m, 0) ?? 0, true);
+      if (past || p > now + 0.001) return go(p, true);
     } else if (v.ended) v.currentTime = 0;
     v.play().catch((e) => console.warn("Glint: play() was refused", e));
   };
@@ -1194,11 +1217,11 @@ function mountPlayer(root, c) {
       wake();
       return;
     }
-    let at = clamp(sec, 0, dur());
+    let at = clamp(sec, 0, m ? m.duration : dur()); // the row with its gaps (0.1.36)
     if (m && !raw) at = edLand(m, at, back, frame);
-    setTl(at);
-    if (wasAft && run) v.play().catch((e) => console.warn("Glint: play() was refused", e)); // it was playing after the video: it plays on here
-    else if (wasAft) state();
+    if (m) go(at, run); // it plays on (or stands) wherever it lands: a clip, or a gap on the player's own clock
+    else setTl(at);
+    if (wasAft && !aft) state();
     paint();
     wake();
   };
@@ -1393,6 +1416,13 @@ function mountPlayer(root, c) {
   /** Re-sync the preview and the side column after the model changed (from the timeline, a key or the side column). */
   P.edSync = (what) => {
     if (dead) return;
+    // The main video row was laid out anew (0.1.36): the playhead may now be in a gap, or its gap gone.
+    const em0 = ed();
+    if (em0) {
+      const now = tlNow();
+      if (!aft && emGapAt(em0, now) >= 0) setAft(now, playing());
+      else if (aft && now < em0.duration - EM_EPS && emGapAt(em0, now) < 0) go(now, playing());
+    }
     syncRows();
     applyRate();
     applyColor();
@@ -1495,6 +1525,7 @@ function mountPlayer(root, c) {
       case "export": return edExport(false);
       case "escape": // in turn: the pop-up, the selection, the editor
         if (edPopClose) return edPopClose();
+        if (P.tl?.tool?.() === "blade") return tl((h) => h.setTool("select")); // the blade ends first (0.1.36)
         if (P.selection().sels.length && typeof P.tl?.run === "function") {
           try { if (P.tl.run("clearSel")) return; } catch (e) { console.error("Glint: timeline run(clearSel) failed", e); }
         }
@@ -1649,12 +1680,11 @@ function mountPlayer(root, c) {
   v.addEventListener("ended", () => {
     if (!P.editing || !P.model || dead) return;
     const past = P.model.parts ? playPart(P.model) : null, next = past ? afterPart(P.model, past) : null;
-    if (next !== null) setTl(next);
+    if (aft) return;
+    if (next !== null) return go(next, true); // the next part, or a gap (0.1.36) on the player's own clock
     // Something goes on after the video (0.1.35): playing runs on into it on the player's own clock.
-    else if (!aft && emTail(P.model) > EM_EPS) { setAft(P.model.duration, true); state(); syncAudio(true); drift(); return; }
-    else if (aft || !P.loop) return;
-    else setTl(emPlayable(P.model, 0) ?? 0);
-    v.play().catch((e) => console.warn("Glint: play() was refused", e));
+    if (emTail(P.model) > EM_EPS) { setAft(P.model.duration, true); state(); syncAudio(true); drift(); return; }
+    if (P.loop) go(emPlayable(P.model, 0) ?? 0, true);
   });
   v.addEventListener("click", P.toggle);
   v.addEventListener("dblclick", P.fullscreen);

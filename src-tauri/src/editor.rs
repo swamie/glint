@@ -75,6 +75,10 @@ pub struct Range {
     pub color: Option<Color>,
     /// The picture is black here (same size and frame timing); the audio plays on.
     pub blank: bool,
+    /// 0.1.36: > 0 = this entry is not a range but a GAP on the main video row: that many
+    /// timeline seconds of black picture and silence from the clip's tracks, in its place in
+    /// `segments` (`start`, `end`, `color`, `blank` are ignored then).
+    pub gap: f64,
 }
 
 /// A source range where an audio row is louder or quieter than its own volume.
@@ -717,6 +721,35 @@ fn run_with_progress(ffmpeg: &Path, args: &[String], expected: f64, progress: &m
     }
 }
 
+thread_local! {
+    /// Test hook: Some = `export` stops before ffmpeg and leaves its command line here.
+    static DRY_RUN: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The ffmpeg command `export` would run for `opts` (libx264; paths as `<src>`, `<out>`, `<tmp>`, `<data>`).
+fn export_args(s: &Settings, src: &ClipMeta, opts: &ExportOpts) -> Result<Vec<String>, String> {
+    DRY_RUN.with(|d| *d.borrow_mut() = Some(Vec::new()));
+    let res = export(s, src, opts, &mut |_| {});
+    let args = DRY_RUN.with(|d| d.borrow_mut().take()).unwrap_or_default();
+    match res {
+        Err(e) if e == "dry run" => Ok(args),
+        Err(e) => Err(e),
+        Ok(m) => Err(format!("no command: {} (a lossless cut?)", m.kind)),
+    }
+}
+
+/// FNV-1a over the arguments (each ended by a NUL), as 16 hex digits.
+fn args_hash(args: &[String]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for a in args {
+        for b in a.bytes().chain(std::iter::once(0u8)) {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    format!("{h:016x}")
+}
+
 /// Sample rate of the timeline mix (`ExportOpts::audio`).
 const MIX_RATE: u32 = 48_000;
 
@@ -729,12 +762,19 @@ struct Kept {
     /// (neutral on a blank range, where nothing of the picture is left to correct).
     color: Color,
     blank: bool,
+    /// Timeline seconds of gap (black, silent) just before this range in the result (0.1.36).
+    gap: f64,
 }
 
 impl Kept {
     fn looks_like(&self, o: &Kept) -> bool {
         self.blank == o.blank && same_color(&self.color, &o.color)
     }
+}
+
+/// A `segments` entry that is a gap (0.1.36).
+fn is_gap(g: &Range) -> bool {
+    g.gap.is_finite() && g.gap > 0.0005
 }
 
 /// The source ranges to keep: `segments` clamped into the clip and sorted,
@@ -747,7 +787,48 @@ fn kept_ranges(opts: &ExportOpts, duration: f64) -> Vec<Kept> {
     if opts.segments.is_empty() {
         let start = if opts.start.is_finite() { opts.start.clamp(0.0, duration) } else { 0.0 };
         let to_end = !(opts.end.is_finite() && opts.end > start) || opts.end >= duration;
-        return vec![Kept { a: start, b: if to_end { duration } else { opts.end }, color: opts.color.clone(), blank: false }];
+        return vec![Kept { a: start, b: if to_end { duration } else { opts.end }, color: opts.color.clone(), blank: false, gap: 0.0 }];
+    }
+    if opts.segments.iter().any(is_gap) {
+        // Gaps (0.1.36): in the order given; each gap goes to the range after it, and two
+        // ranges with a gap between them never join. A gap after the last range is dropped
+        // (the model never sends one: `tail` is the time after the video).
+        let mut out: Vec<Kept> = Vec::new();
+        let mut pending = 0.0;
+        for g in &opts.segments {
+            if is_gap(g) {
+                pending += g.gap.min(3600.0);
+                continue;
+            }
+            if !(g.start.is_finite() && g.end.is_finite()) {
+                continue;
+            }
+            let mut k = Kept {
+                a: g.start.clamp(0.0, duration),
+                b: g.end.clamp(0.0, duration),
+                color: if g.blank { Color::default() } else { g.color.clone().unwrap_or_else(|| opts.color.clone()) },
+                blank: g.blank,
+                gap: 0.0,
+            };
+            if k.b - k.a <= 0.001 {
+                continue;
+            }
+            if pending == 0.0 {
+                if let Some(last) = out.last_mut() {
+                    if (k.a - last.b).abs() <= 1e-3 {
+                        if k.looks_like(last) {
+                            last.b = k.b;
+                            continue;
+                        }
+                        k.a = last.b;
+                    }
+                }
+            }
+            k.gap = pending;
+            pending = 0.0;
+            out.push(k);
+        }
+        return out;
     }
     let mut r: Vec<Kept> = opts
         .segments
@@ -758,6 +839,7 @@ fn kept_ranges(opts: &ExportOpts, duration: f64) -> Vec<Kept> {
             b: g.end.clamp(0.0, duration),
             color: if g.blank { Color::default() } else { g.color.clone().unwrap_or_else(|| opts.color.clone()) },
             blank: g.blank,
+            gap: 0.0,
         })
         .filter(|k| k.b - k.a > 0.001)
         .collect();
@@ -1018,6 +1100,37 @@ fn cut_chain(input: &str, ranges: &[(f64, Option<f64>)], tag: &str, tempo: &str,
         c += &format!("[{tag}s{i}]");
     }
     c + &format!("concat=n={k}:v=0:a=1,{tempo}{out}")
+}
+
+/// `cut_chain` with gaps (0.1.36): `gaps[i]` seconds of silence (`silence`: an `anullsrc` of the
+/// input's rate and layout) go just before range `i`, each exactly that many samples long.
+/// Without any gap this is `cut_chain` itself, character for character.
+fn cut_chain_gaps(input: &str, ranges: &[(f64, Option<f64>)], gaps: &[f64], tag: &str, tempo: &str, out: &str, silence: (u32, &str)) -> String {
+    if gaps.iter().all(|g| *g <= 0.0) {
+        return cut_chain(input, ranges, tag, tempo, out);
+    }
+    let k = ranges.len();
+    let (rate, layout) = silence;
+    let mut c = format!("{input}asplit={k}");
+    for i in 0..k {
+        c += &format!("[{tag}c{i}]");
+    }
+    let mut parts = String::new();
+    let mut n = 0;
+    for (i, (a, b)) in ranges.iter().enumerate() {
+        let g = gaps.get(i).copied().unwrap_or(0.0);
+        if g > 0.0 {
+            let samples = (g * rate as f64).round() as u64;
+            c += &format!(";anullsrc=r={rate}:cl={layout},atrim=end_sample={samples}[{tag}g{i}]");
+            parts += &format!("[{tag}g{i}]");
+            n += 1;
+        }
+        let end = b.map(|b| format!(":end={b:.6}")).unwrap_or_default();
+        c += &format!(";[{tag}c{i}]atrim=start={a:.6}{end},asetpts=PTS-STARTPTS[{tag}s{i}]");
+        parts += &format!("[{tag}s{i}]");
+        n += 1;
+    }
+    c + &format!(";{parts}concat=n={n}:v=0:a=1,{tempo}{out}")
 }
 
 /// A row's level: its volume, times each region's gain inside that region.
@@ -1634,6 +1747,11 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     if kept < 0.1 {
         return Err("The selection is too short".into());
     }
+    // Gaps on the main video row (0.1.36): timeline seconds of black and silence before each range.
+    let gaps: Vec<f64> = pieces.iter().map(|k| k.gap).collect();
+    let gap_total: f64 = gaps.iter().sum();
+    // The video's part of the result on the timeline: the kept ranges and the gaps between them.
+    let span = kept + gap_total;
     // The source span the ranges come from, `base`..`top`: the clip's audio
     // and the mix are laid out on it. In source order (not `ordered`) that is
     // the first range's start to the last one's end.
@@ -1655,11 +1773,11 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     let tail = if opts.tail.is_finite() { opts.tail.clamp(0.0, 3600.0) } else { 0.0 };
     let tail = if tail < 0.001 { 0.0 } else { tail };
     // The video's own part of the result, then the whole result with the black after it.
-    let out_video = kept / speed;
+    let out_video = span / speed;
     // Overlays, blur boxes and fades (on the result's own timeline, `out_total` long).
     let out_total = out_video + tail;
     let layers = layer_plan(opts, out_total)?;
-    if k_count == 1 && same(speed, 1.0) && plain && opts.tracks.is_empty() && opts.audio.is_empty() && layers.is_none() && opts.canvas.is_none() && tail == 0.0 {
+    if k_count == 1 && same(speed, 1.0) && plain && opts.tracks.is_empty() && opts.audio.is_empty() && layers.is_none() && opts.canvas.is_none() && tail == 0.0 && gap_total == 0.0 {
         let meta = crate::clip::trim(s, src, base, if to_end { duration } else { last_end }, true)?;
         progress(100.0);
         return Ok(meta);
@@ -1669,9 +1787,9 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     let mut tempo = atempo_chain(speed);
     // Every file the mix needs is checked here, before the long encode starts.
     // Files that play through cuts may go on into the black after the video (kept seconds, before the speed).
-    let mut plan = audio_plan(&ffmpeg, &src_path, opts, &titles, duration, base, total, k_count, speed, kept + tail * speed)?;
-    if tail > 0.0 && matches!(plan, AudioPlan::Copy) {
-        plan = AudioPlan::Tracks; // a copied track cannot be padded with silence
+    let mut plan = audio_plan(&ffmpeg, &src_path, opts, &titles, duration, base, total, k_count, speed, span + tail * speed)?;
+    if (tail > 0.0 || gap_total > 0.0) && matches!(plan, AudioPlan::Copy) {
+        plan = AudioPlan::Tracks; // a copied track cannot be padded with silence, nor hold a gap
     }
     if let Some(l) = &layers {
         // The sound fades with the picture (after the speed change, so on the result's time).
@@ -1714,7 +1832,13 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     let mut video_inputs: Vec<(f64, Option<f64>)> = Vec::new();
     let mut graph: Vec<String> = Vec::new();
     let mut placed = 0.0;
+    // Where each gap lies on the result's timeline before the speed (start, length): black frames below.
+    let mut gap_at: Vec<(f64, f64)> = Vec::new();
     for (k, &(a, b)) in ranges.iter().enumerate() {
+        if pieces[k].gap > 0.0 {
+            gap_at.push((placed, pieces[k].gap));
+            placed += pieces[k].gap;
+        }
         // Half a millisecond early so rounding never drops the frame itself;
         // frames are at least 4 ms apart even at 240 fps.
         let seek = on_screen[k].map(|f| (f - 0.0005).max(0.0)).filter(|f| *f <= a).unwrap_or(a);
@@ -1770,12 +1894,12 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     // The picture's size: the source's, or the canvas's when there is one.
     let src_size = if src.width > 0 && src.height > 0 {
         Some((src.width, src.height))
-    } else if layers.is_some() || opts.canvas.is_some() || tail > 0.0 {
+    } else if layers.is_some() || opts.canvas.is_some() || tail > 0.0 || gap_total > 0.0 {
         Some(library::probe(&ffmpeg, &src_path, false).map(|p| (p.width, p.height)).filter(|(w, h)| *w > 0 && *h > 0).ok_or("Could not read the clip's picture size")?)
     } else {
         None
     };
-    if let (true, Some((w, h))) = (tail > 0.0, src_size) {
+    if let (true, Some((w, h))) = (tail > 0.0 && gap_total == 0.0, src_size) {
         // After the video (0.1.35): black frames at the clip's rate from the end of the video on,
         // laid after it by timestamp (as the kept ranges are joined), before the canvas and the
         // overlays, so those go on over the black.
@@ -1783,6 +1907,21 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         graph.push(std::mem::take(&mut video));
         graph.push(format!("color=c=black:s={w}x{h}:r={cap}:d={tail:.6},format=yuv420p,lutyuv=y={black}:u=128:v=128,setsar=1,{tags},setpts=PTS+{out_video:.6}/TB[vt]"));
         video = "[vk][vt]interleave=nb_inputs=2".to_string();
+    } else if let (true, Some((w, h))) = (gap_total > 0.0, src_size) {
+        // Gaps (0.1.36): black frames of each gap's length at the clip's rate, placed where the gap
+        // is (output seconds), and the tail's after the video, all laid in by timestamp like the tail.
+        let mut blacks: Vec<(f64, f64)> = gap_at.iter().map(|&(at, len)| (at / speed, len / speed)).collect();
+        if tail > 0.0 {
+            blacks.push((out_video, tail));
+        }
+        video += &format!(",format=yuv420p,{tags}[vk]");
+        graph.push(std::mem::take(&mut video));
+        let mut labels = "[vk]".to_string();
+        for (i, (at, len)) in blacks.iter().enumerate() {
+            graph.push(format!("color=c=black:s={w}x{h}:r={cap}:d={len:.6},format=yuv420p,lutyuv=y={black}:u=128:v=128,setsar=1,{tags},setpts=PTS+{at:.6}/TB[vg{i}]"));
+            labels += &format!("[vg{i}]");
+        }
+        video = format!("{labels}interleave=nb_inputs={}", blacks.len() + 1);
     }
     let canvas = match (&opts.canvas, src_size) {
         (Some(c), Some(size)) => Some(canvas_plan(c, &opts.canvas_tracks, size)),
@@ -1829,8 +1968,11 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             audio_args.extend(["-c:a", "copy"].map(String::from));
         }
         AudioPlan::Tracks => {
+            let track_ch = if gap_total > 0.0 { probe_audio(&ffmpeg, &src_path).map(|p| p.channels).unwrap_or_default() } else { Vec::new() };
             for (i, t) in titles.iter().enumerate() {
-                graph.push(cut_chain(&format!("[{clip_audio}:a:{i}]"), &local, &format!("t{i}"), &tempo, &format!("[a{i}]")));
+                // A gap is silence in the track's own layout (mono stays mono).
+                let layout = if track_ch.get(i).copied().unwrap_or(2) == 1 { "mono" } else { "stereo" };
+                graph.push(cut_chain_gaps(&format!("[{clip_audio}:a:{i}]"), &local, &gaps, &format!("t{i}"), &tempo, &format!("[a{i}]"), (MIX_RATE, layout)));
                 maps.extend(["-map".to_string(), format!("[a{i}]")]);
                 let title = t.clone().unwrap_or_else(|| format!("Track {}", i + 1));
                 audio_args.extend([format!("-metadata:s:a:{i}"), format!("title={title}")]);
@@ -1873,13 +2015,13 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             // in the preview, instead of amix dividing by the input count.
             graph.push(format!("{labels}[bed]amix=inputs={}:duration=longest:normalize=0,atrim=end={total:.6}[mix]", rows.len() - n_thru + 1));
             if n_thru == 0 {
-                graph.push(cut_chain("[mix]", &local, "m", &tempo, "[a]"));
+                graph.push(cut_chain_gaps("[mix]", &local, &gaps, "m", &tempo, "[a]", (MIX_RATE, "stereo")));
             } else {
                 // The cut mix first, then the files that play through the cuts on top of it, on the
                 // result's own timeline. `duration=first`: the result stays as long as the video.
                 // With black after the video the cut mix is padded first, so the files go on into it.
-                let pad = if tail > 0.0 { format!("apad=whole_dur={:.6}", kept + tail * speed) } else { "anull".to_string() };
-                graph.push(cut_chain("[mix]", &local, "m", &pad, "[mc]"));
+                let pad = if tail > 0.0 { format!("apad=whole_dur={:.6}", span + tail * speed) } else { "anull".to_string() };
+                graph.push(cut_chain_gaps("[mix]", &local, &gaps, "m", &pad, "[mc]", (MIX_RATE, "stereo")));
                 graph.push(format!("[mc]{thru}amix=inputs={}:duration=first:normalize=0,{tempo}[a]", n_thru + 1));
             }
             maps.extend(["-map", "[a]"].map(String::from));
@@ -1963,6 +2105,16 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     };
 
     let expected = out_total;
+    if DRY_RUN.with(|d| d.borrow().is_some()) {
+        // `--editor-test`: the command (libx264, paths as placeholders) instead of an encode.
+        let data = util::data_dir().to_string_lossy().into_owned();
+        let tmp = util::tmp_dir().to_string_lossy().into_owned();
+        let out_s = out.to_string_lossy().into_owned();
+        let _ = fs::remove_file(&out);
+        let args: Vec<String> = build("x264").into_iter().map(|a| a.replace(&out_s, "<out>").replace(&src_s, "<src>").replace(&tmp, "<tmp>").replace(&data, "<data>")).collect();
+        DRY_RUN.with(|d| *d.borrow_mut() = Some(args));
+        return Err("dry run".into());
+    }
     let enc = pick_encoder(&ffmpeg, &s.encoder);
     let mut result = run_with_progress(&ffmpeg, &build(&enc), expected, progress);
     if let Err(e) = &result {
@@ -3033,6 +3185,187 @@ fn song_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, dir:
     }
 }
 
+/// The commands of 0.1.35 for options without gaps (hashes of `export_args`, recorded with the 0.1.35 code):
+/// gaps (0.1.36) must leave every one of them exactly as it was.
+const COMMANDS_0135: [(&str, &str); 5] = [
+    ("two ranges, the clip's tracks", "bed2f7f97a421c37"),
+    ("moved parts at 2x, a track and a through file", "e0e47e7a90350ab9"),
+    ("one range, a file cut with the video, fades, tail 1.5 s", "23fbe719e7671892"),
+    ("whole clip, an overlay picture, tail 2 s", "f7935f7be69e6715"),
+    ("three ranges, a blank one and a colored one, levels", "ed97997f06b14239"),
+];
+
+/// The option sets of `COMMANDS_0135`, in that order.
+fn commands_0135(tone: &str, png: &str) -> Vec<ExportOpts> {
+    let seg = |a: f64, b: f64| Range { start: a, end: b, ..Default::default() };
+    let track = |index: u32, volume: f32| AudioEdit { source: "track".into(), index, volume, ..Default::default() };
+    let file = |through: bool, offset: f64| AudioEdit { source: "file".into(), path: tone.into(), offset, trim_start: 1.0, length: 3.0, volume: 1.0, through, ..Default::default() };
+    vec![
+        ExportOpts { segments: vec![seg(0.5, 2.5), seg(5.5, 7.5)], ..Default::default() },
+        ExportOpts { segments: vec![seg(5.5, 7.5), seg(0.5, 2.5)], ordered: true, speed: 2.0, audio: vec![track(2, 1.0), file(true, 1.0)], ..Default::default() },
+        ExportOpts { segments: vec![seg(1.0, 6.0)], audio: vec![track(1, 0.5), file(false, 2.0)], fade_in: 0.5, fade_out: 1.0, tail: 1.5, ..Default::default() },
+        ExportOpts { overlays: vec![Overlay { png: png.into(), from: 1.0, to: 9.0, ..Default::default() }], tail: 2.0, ..Default::default() },
+        ExportOpts {
+            segments: vec![seg(0.0, 2.0), Range { start: 2.0, end: 3.0, blank: true, ..Default::default() }, Range { start: 4.0, end: 6.0, color: Some(Color { brightness: 1.3, ..Default::default() }), ..Default::default() }],
+            audio: vec![AudioEdit { regions: vec![GainRegion { start: 1.0, end: 2.5, gain: 0.0 }], ..track(1, 1.0) }, track(2, 1.5)],
+            ..Default::default()
+        },
+    ]
+}
+
+/// Options without a gap give the command 0.1.35 gave, argument for argument.
+fn command_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, tone: &str) {
+    let odir = overlay_dir();
+    let _ = fs::create_dir_all(&odir);
+    let png = odir.join("cmd-ov.png");
+    for (k, opts) in commands_0135(tone, &png.to_string_lossy()).into_iter().enumerate() {
+        // The export removes its overlay PNGs: one made for each.
+        let _ = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=white@0.5:s=64x36,format=rgba", "-frames:v", "1", &png.to_string_lossy()]);
+        let (label, want) = COMMANDS_0135[k];
+        match export_args(s, src, &opts) {
+            Ok(args) => {
+                let got = args_hash(&args);
+                r.line(&format!("INFO command {label}: {got}"));
+                if want.is_empty() {
+                    r.line(&format!("INFO   {}", args.join(" ")));
+                } else {
+                    r.check(&format!("no gap, the command of 0.1.35: {label}"), got == want, &format!("{got} (0.1.35: {want})"));
+                }
+            }
+            Err(e) => r.check(&format!("no gap, the command of 0.1.35: {label}"), false, &e),
+        }
+    }
+    let _ = fs::remove_file(&png);
+}
+
+/// 0.1.36: gaps on the main video row (`Range::gap`). The test clip is 8 s, still from 3 to 5 s;
+/// the desktop tone is on track 1, the microphone's on track 2; `tone` is a file (600 Hz from 1 s).
+fn gap_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, (f_desk, f_mic): (u32, u32), tone: &str) {
+    const W: usize = 64;
+    const MID: (usize, usize, usize, usize) = (8, 6, 56, 30);
+    let src_file = Path::new(&src.path);
+    let rg = |a: f64, b: f64| Range { start: a, end: b, ..Default::default() };
+    let gap = |g: f64| Range { gap: g, ..Default::default() };
+    let track = |index: u32| AudioEdit { source: "track".into(), index, volume: 1.0, ..Default::default() };
+    let ref_desk = band_db_at(ffmpeg, src_file, 1, f_desk, 0.2, 2.8);
+    let ref_mic = band_db_at(ffmpeg, src_file, 2, f_mic, 0.2, 2.8);
+    let lum = |f: &Path, t: f64| grey_at(ffmpeg, f, t, W, 36).map(|v| box_mean(&v, W, MID)).unwrap_or(255.0);
+    let durs = |p: &Path| -> Vec<f64> {
+        let Some(ffprobe) = library::ffprobe_for(ffmpeg) else { return Vec::new() };
+        let out = util::hidden_cmd(&ffprobe).args(["-v", "error", "-show_entries", "stream=duration", "-of", "csv=p=0"]).arg(p).stdin(Stdio::null()).stderr(Stdio::null()).output();
+        out.map(|o| String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.trim().parse().ok()).collect()).unwrap_or_default()
+    };
+    let exact = |p: &Path, want: f64| { let d = durs(p); !d.is_empty() && d.iter().all(|x| near(*x, want, 0.04)) };
+    // Heard: within 1.5 dB of the source; silent: 40 dB under it.
+    let heard = |x: Option<f64>, r0: Option<f64>| matches!((x, r0), (Some(v), Some(r0)) if near(v, r0, 1.5));
+    let silent = |x: Option<f64>, r0: Option<f64>| matches!((x, r0), (Some(v), Some(r0)) if v < r0 - 40.0);
+    let lit = |v: f64| v > 30.0 && v < 250.0;
+
+    // The model's side of the interface.
+    let parsed: Result<ExportOpts, _> = serde_json::from_str(r#"{"segments":[{"start":0,"end":2},{"gap":1.5},{"start":5.5,"end":7.5}],"ordered":true}"#);
+    r.check("gap: a { gap } entry parses, ranges without it have none", parsed.as_ref().is_ok_and(|o| o.segments.len() == 3 && o.segments[1].gap == 1.5 && o.segments[0].gap == 0.0), &format!("{:?}", parsed.as_ref().err()));
+    let ks = |segments: Vec<Range>| kept_ranges(&ExportOpts { segments, ordered: true, ..Default::default() }, 8.0).iter().map(|k| (k.a, k.b, k.gap)).collect::<Vec<_>>();
+    r.check("gap: two touching ranges with a gap between them stay apart", ks(vec![rg(0.0, 2.0), gap(1.0), rg(2.0, 4.0)]) == vec![(0.0, 2.0, 0.0), (2.0, 4.0, 1.0)], &format!("{:?}", ks(vec![rg(0.0, 2.0), gap(1.0), rg(2.0, 4.0)])));
+    r.check("gap: a first gap goes before the first range, one after the last is dropped, two in a row add up", ks(vec![gap(0.5), gap(0.25), rg(1.0, 2.0), gap(3.0)]) == vec![(1.0, 2.0, 0.75)], &format!("{:?}", ks(vec![gap(0.5), gap(0.25), rg(1.0, 2.0), gap(3.0)])));
+    let unordered = kept_ranges(&ExportOpts { segments: vec![rg(5.0, 6.0), gap(1.0), rg(0.0, 1.0)], ..Default::default() }, 8.0);
+    r.check("gap: a list with a gap keeps its order even without `ordered`", unordered.len() == 2 && unordered[0].a == 5.0 && unordered[1].gap == 1.0, "");
+
+    // 1. Between two ranges, the clip's own tracks (the track plan): 2 + 1.5 + 2 = 5.5 s.
+    if let Ok(args) = export_args(s, src, &ExportOpts { segments: vec![rg(0.0, 2.0), gap(1.5), rg(5.5, 7.5)], ordered: true, ..Default::default() }) {
+        r.line(&format!("INFO gap command: {}", args.join(" ")));
+    }
+    match export(s, src, &ExportOpts { segments: vec![rg(0.0, 2.0), gap(1.5), rg(5.5, 7.5)], ordered: true, ..Default::default() }, &mut |_| {}) {
+        Ok(m) => {
+            let f = Path::new(&m.path);
+            r.check("gap between two ranges: 5.5 s, every stream exactly", exact(f, 5.5) && titles_of_file(ffmpeg, f).len() == 3, &format!("{:?}", durs(f)));
+            let (a, g, b) = (lum(f, 1.0), lum(f, 2.75), lum(f, 4.5));
+            let want_b = grey_at(ffmpeg, src_file, 7.0, W, 36).map(|v| box_mean(&v, W, MID)).unwrap_or(0.0);
+            r.check("gap: black in the gap, the clip before and after it", lit(a) && g < 25.0 && lit(b) && near(b, want_b, 15.0), &format!("{a:.1} / gap {g:.1} / {b:.1} (source {want_b:.1})"));
+            let lv = |a0: f64, b0: f64| band_db_head(ffmpeg, f, 1, f_desk, a0, b0);
+            let (before, inside, edge, after) = (lv(0.3, 1.9), lv(2.1, 3.4), lv(3.55, 3.9), lv(4.0, 5.3));
+            r.check("gap, track plan: the tone is silent in the gap and back right after it (three times)", heard(before, ref_desk) && silent(inside, ref_desk) && heard(edge, ref_desk) && heard(after, ref_desk), &format!("{before:?} {inside:?} {edge:?} {after:?} ({ref_desk:?})"));
+            let late = band_db_head(ffmpeg, f, 1, f_desk, 3.35, 3.48);
+            r.check("gap, track plan: nothing after the gap starts early", silent(late, ref_desk), &format!("{late:?}"));
+        }
+        Err(e) => r.check("gap between two ranges", false, &e),
+    }
+    // 2. A gap first, the mix plan: 1 + 2 = 3 s, the first frame black at 0.
+    match export(s, src, &ExportOpts { segments: vec![gap(1.0), rg(0.0, 2.0)], ordered: true, audio: vec![track(1)], ..Default::default() }, &mut |_| {}) {
+        Ok(m) => {
+            let f = Path::new(&m.path);
+            let first = frames_on_screen(ffmpeg, f, &[0.0])[0];
+            r.check("gap first: 3 s, the first frame is black at 0", exact(f, 3.0) && first.is_some_and(|t| t.abs() < 0.01) && lum(f, 0.0) < 25.0 && lit(lum(f, 1.5)), &format!("{:?} first frame {first:?}, {:.1} then {:.1}", durs(f), lum(f, 0.0), lum(f, 1.5)));
+            let lv = |a0: f64, b0: f64| band_db_head(ffmpeg, f, 0, f_desk, a0, b0);
+            let (inside, edge, after) = (lv(0.05, 0.9), lv(1.05, 1.4), lv(1.5, 2.9));
+            r.check("gap first, mix plan: silent in the gap, the tone from its end (three times)", silent(inside, ref_desk) && heard(edge, ref_desk) && heard(after, ref_desk), &format!("{inside:?} {edge:?} {after:?}"));
+        }
+        Err(e) => r.check("gap first", false, &e),
+    }
+    // 3. Two gaps, between touching ranges too, the microphone alone: 1 + .5 + 1 + 1 + 1 = 4.5 s.
+    match export(s, src, &ExportOpts { segments: vec![rg(0.0, 1.0), gap(0.5), rg(1.0, 2.0), gap(1.0), rg(5.5, 6.5)], ordered: true, audio: vec![track(2)], ..Default::default() }, &mut |_| {}) {
+        Ok(m) => {
+            let f = Path::new(&m.path);
+            let lv = |a0: f64, b0: f64| band_db_head(ffmpeg, f, 0, f_mic, a0, b0);
+            let ok = exact(f, 4.5) && lum(f, 1.25) < 25.0 && lum(f, 3.0) < 25.0 && lit(lum(f, 2.0)) && lit(lum(f, 4.0))
+                && silent(lv(1.05, 1.45), ref_mic) && heard(lv(1.6, 2.4), ref_mic) && silent(lv(2.55, 3.45), ref_mic) && heard(lv(3.6, 4.4), ref_mic);
+            r.check("two gaps: 4.5 s, black and silent in both, the clip between and after", ok, &format!("{:?}; mic {:?} {:?} {:?} {:?}", durs(f), lv(1.05, 1.45), lv(1.6, 2.4), lv(2.55, 3.45), lv(3.6, 4.4)));
+        }
+        Err(e) => r.check("two gaps", false, &e),
+    }
+    // 4. At 2x a gap is halved with the rest: (2 + 2 + 2) / 2 = 3 s.
+    match export(s, src, &ExportOpts { segments: vec![rg(0.0, 2.0), gap(2.0), rg(5.5, 7.5)], ordered: true, speed: 2.0, ..Default::default() }, &mut |_| {}) {
+        Ok(m) => {
+            let f = Path::new(&m.path);
+            let lv = |a0: f64, b0: f64| band_db_head(ffmpeg, f, 1, f_desk, a0, b0);
+            r.check("gap at 2x: 3 s, the gap 1 s long in the result", exact(f, 3.0) && lum(f, 1.5) < 25.0 && lit(lum(f, 0.5)) && lit(lum(f, 2.5)) && silent(lv(1.05, 1.95), ref_desk) && heard(lv(2.1, 2.9), ref_desk.map(|x| x)), &format!("{:?} quiet {:?} after {:?}", durs(f), lv(1.05, 1.95), lv(2.1, 2.9)));
+        }
+        Err(e) => r.check("gap at 2x", false, &e),
+    }
+    // 5. With a tail: 2 + 1 + 1 + 1 (tail) = 5 s.
+    match export(s, src, &ExportOpts { segments: vec![rg(0.0, 2.0), gap(1.0), rg(5.5, 6.5)], ordered: true, tail: 1.0, ..Default::default() }, &mut |_| {}) {
+        Ok(m) => {
+            let f = Path::new(&m.path);
+            r.check("gap and tail: 5 s, black in the gap and after the video", exact(f, 5.0) && lum(f, 2.5) < 25.0 && lit(lum(f, 3.5)) && lum(f, 4.6) < 25.0, &format!("{:?} {:.1} {:.1} {:.1}", durs(f), lum(f, 2.5), lum(f, 3.5), lum(f, 4.6)));
+        }
+        Err(e) => r.check("gap and tail", false, &e),
+    }
+    // 6. A canvas and an overlay picture lying over the gap.
+    let odir = overlay_dir();
+    let _ = fs::create_dir_all(&odir);
+    let png = odir.join("gap-ov.png");
+    let drawn = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=black@0.0:s=360x640,format=rgba,drawbox=x=0:y=320:w=180:h=320:color=white@1.0:t=fill:replace=1", "-frames:v", "1", &png.to_string_lossy()]);
+    let canvas = Canvas { width: 360.0, height: 640.0, background: "black".into(), pieces: vec![CanvasPiece { sx: 0.0, sy: 0.0, sw: 1.0, sh: 1.0, x: 0.0, y: 0.0, w: 1.0, h: 0.28125 }] };
+    let ov = Overlay { png: png.to_string_lossy().into_owned(), from: 2.2, to: 2.9, ..Default::default() };
+    match drawn.and_then(|_| export(s, src, &ExportOpts { segments: vec![rg(0.0, 2.0), gap(1.0), rg(5.5, 7.5)], ordered: true, canvas: Some(canvas), overlays: vec![ov], ..Default::default() }, &mut |_| {})) {
+        Ok(m) => {
+            let f = Path::new(&m.path);
+            let g = |t: f64| grey_at(ffmpeg, f, t, 36, 64);
+            let piece = |v: &Option<Vec<u8>>| v.as_ref().map(|v| box_mean(v, 36, (4, 2, 32, 16))).unwrap_or(255.0); // the clip's piece at the top
+            let white = |v: &Option<Vec<u8>>| v.as_ref().map(|v| box_mean(v, 36, (2, 34, 16, 62))).unwrap_or(0.0); // the picture's quarter
+            let (inside, before) = (g(2.5), g(1.0));
+            let size = library::probe(ffmpeg, f, false).map(|p| (p.width, p.height));
+            r.check("gap with a canvas and a picture over it: the canvas's size, the piece black in the gap, the picture on it", size == Some((360, 640)) && exact(f, 5.0) && piece(&inside) < 25.0 && lit(piece(&before)) && white(&inside) > 200.0 && white(&before) < 25.0, &format!("{size:?} {:?}; piece {:.1} (before {:.1}), picture {:.1} (before {:.1})", durs(f), piece(&inside), piece(&before), white(&inside), white(&before)));
+        }
+        Err(e) => r.check("gap with a canvas and a picture over it", false, &e),
+    }
+    // 7. A file that plays through cuts is heard over the gap; the microphone is not.
+    let thru = AudioEdit { source: "file".into(), path: tone.into(), offset: 1.0, trim_start: 1.0, length: 3.0, volume: 1.0, through: true, ..Default::default() };
+    let ref_file = band_db_at(ffmpeg, Path::new(tone), 0, 600, 1.3, 5.7);
+    match export(s, src, &ExportOpts { segments: vec![rg(0.0, 2.0), gap(2.0), rg(5.5, 7.5)], ordered: true, audio: vec![track(2), thru], ..Default::default() }, &mut |_| {}) {
+        Ok(m) => {
+            let f = Path::new(&m.path);
+            let (file_gap, mic_gap, mic_after) = (band_db_head(ffmpeg, f, 0, 600, 2.2, 3.8), band_db_head(ffmpeg, f, 0, f_mic, 2.1, 3.9), band_db_head(ffmpeg, f, 0, f_mic, 4.2, 5.8));
+            r.check("gap: a file that plays through is heard over it, the clip's microphone is not", exact(f, 6.0) && heard(file_gap, ref_file) && silent(mic_gap, ref_mic) && heard(mic_after, ref_mic), &format!("{:?} file {file_gap:?} ({ref_file:?}), mic {mic_gap:?} then {mic_after:?}", durs(f)));
+        }
+        Err(e) => r.check("gap: a file that plays through", false, &e),
+    }
+}
+
+/// Audio stream titles of `f` ("" for none).
+fn titles_of_file(ffmpeg: &Path, f: &Path) -> Vec<String> {
+    audio_titles(ffmpeg, f).unwrap_or_default().into_iter().map(Option::unwrap_or_default).collect()
+}
+
 /// 0.1.35: `ExportOpts::tail`, black after the video. The test clip is 8 s (desktop `f_desk`,
 /// microphone `f_mic` tones on tracks 1 and 2).
 fn tail_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, dir: &Path, (f_desk, f_mic): (u32, u32)) {
@@ -3368,6 +3701,8 @@ fn timeline_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, 
     }
     song_checks(r, ffmpeg, s, src, dir, f_mic, &util::data_dir().join("song-exports"));
     tail_checks(r, ffmpeg, s, src, dir, (f_desk, f_mic));
+    command_checks(r, ffmpeg, s, src, &tone_s);
+    gap_checks(r, ffmpeg, s, src, (f_desk, f_mic), &tone_s);
     let count_before = fs::read_dir(dir).map(|d| d.count()).unwrap_or(0);
     let started = Instant::now();
     let missing = AudioEdit { path: dir.join("nope-missing.mp3").to_string_lossy().into_owned(), ..file_row.clone() };
@@ -3520,7 +3855,7 @@ fn look_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, f_de
         Ok((m, p))
     };
     let grey = Color { saturation: 0.0, ..Default::default() };
-    let piece = |start: f64, end: f64, color: Option<Color>, blank: bool| Range { start, end, color, blank };
+    let piece = |start: f64, end: f64, color: Option<Color>, blank: bool| Range { start, end, color, blank, gap: 0.0 };
     let st = |m: &ClipMeta, a: f64, b: f64| signal_stats_at(ffmpeg, Path::new(&m.path), a, b);
     let desc = |m: &ClipMeta, p: &library::Probe| format!("kind={} dur={:.3} frames={}", m.kind, p.duration, p.frames);
     // (luma, saturation) of a window: colorful like the source, grey, or black.
@@ -3704,7 +4039,7 @@ fn ordered_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path) {
         let p = library::probe(ffmpeg, Path::new(&m.path), true).ok_or("probe failed")?;
         Ok((m, p))
     };
-    let piece = |start: f64, end: f64, color: Option<Color>, blank: bool| Range { start, end, color, blank };
+    let piece = |start: f64, end: f64, color: Option<Color>, blank: bool| Range { start, end, color, blank, gap: 0.0 };
     let refs: Vec<Option<f64>> = (0..4).map(|i| band_db_at(ffmpeg, &src_file, 0, steps[i], i as f64 * 2.0 + 0.2, i as f64 * 2.0 + 1.8)).collect();
     r.line(&format!("INFO stepped clip tone levels {refs:?}"));
     // Out of source order; the first one runs to the clip's end.
