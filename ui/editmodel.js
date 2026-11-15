@@ -898,6 +898,37 @@ function emInsertGap(m, at, len, title) {
   emLayGroups(m, groups, emNormGroups(m, order));
   return true;
 }
+/** The gaps on the main video row (0.1.40, the warning before an export): { count, total, first } with `first` the
+ *  first gap's { at, len, seg } (seg = its segment index), or null. Time after the video is no gap. */
+function emGapStats(m) {
+  const G = m.parts ? emParts(m).filter((p) => p.gap) : [];
+  if (!G.length) return { count: 0, total: 0, first: null };
+  const f = G[0];
+  return { count: G.length, total: G.reduce((n, p) => n + p.len, 0), first: { at: f.at, len: f.len, seg: emSegmentAt(m, f.at + f.len / 2) } };
+}
+/**
+ * Clips dropped into the editor (0.1.40, projects.js projDropClips after emAddParts / P.addSources appended them):
+ * the pieces from display index `first` on go to timeline second `at`, one after the other in their order, with
+ * 0.1.36's free placement (onto a piece: before or after it, the nearer side; on empty space: exactly there). `at`
+ * not a number, or at / past the end of what was there before: they stay at the end. True if anything moved.
+ * Does not snapshot.
+ */
+function emPlaceNew(m, first, at) {
+  if (!Number.isFinite(at) || !m.parts) return false;
+  const P = emParts(m);
+  if (!(first >= 0 && first < P.length)) return false;
+  if (at >= P[first].at - EM_EPS) return false; // past the end of the old row: the end, where they are
+  const news = P.slice(first).filter((p) => !p.gap).map((p) => m.parts[p.i]);
+  let cursor = Math.max(0, at), any = false;
+  for (const o of news) {
+    const i = m.parts.indexOf(o);
+    if (i < 0) continue;
+    any = emPlacePart(m, i, cursor) || any;
+    const q = emParts(m).find((x) => m.parts[x.i] === o);
+    if (q) cursor = q.end;
+  }
+  return any;
+}
 /** "Cut out and leave a gap": segment `i` leaves the row and an empty stretch as long as it stays. Refused on a gap
  *  and when no other kept picture would be left. */
 function emLiftSeg(m, i, title) {
@@ -1875,6 +1906,7 @@ if (typeof module !== "undefined" && module.exports) {
     emSourceAt, emProjToFile, emFileToProj, emPieceSource, emShownTracks, emTrackTitles, emJoinPeaks,
     emPieceList, emPieceAt, emSplitAt, emRemovePiece, emTrimPiece, emPieceToItem, emPiecify, emNeedsPieces, emClipBounds, emLimits,
     emHasGaps, emGapAt, emSegIsGap, emKeepSource, emEnsureParts, emSplitPartAt, emPlacePart, emPutBeside, emCloseGap, emCloseGaps, emSetGapLen, emInsertGap, emLiftSeg, emSplitOverlay, emKeyAt, emGroups, emNormGroups, emLayGroups,
+    emGapStats, emPlaceNew,
     emUngroup, emGroup, emGroupOf, emClipList, emMoveClip, emTrimClip, emSplitClip, emRemoveClip, emLanes, emLaneOf, emNewLane, emNormLanes, emDropEmptyLanes, emSegNoSound, emTidyGroups,
     emRowEnd, emRowFileAt, emEnd, emTail, emResultDuration, emRowsThrough, emSlipFile, emMoveOverlay, emTrimOverlay, emOvMaxLen, EM_OV_MIN, emSetThrough, emTracksGone, emRemoveRow, emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS, emCanvasOk, emCanvasOpts };
 }

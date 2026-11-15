@@ -316,6 +316,8 @@ window.addEventListener("keydown", (e) => {
   // The same goes for the bug-report dialog (.bug-dlg), which can be opened over the editor.
   if (document.querySelector(".tl-menu, .bug-dlg, .wn-dlg")) return;
   if (edPopClose && e.code === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); edPopClose(); return; }
+  // P-HOOK 0.1.40: Escape hides the Library list's clip preview first (projects.js), before it can close the editor.
+  if (e.code === "Escape" && typeof projPvEscape === "function" && projPvEscape()) { e.preventDefault(); e.stopImmediatePropagation(); return; }
   if (typeof S === "undefined" || !S.open || !S.player) return;
   // Escape while fullscreen only leaves fullscreen. The webview may leave it by
   // itself before the key arrives, so an Escape just after leaving is dropped too
@@ -744,8 +746,9 @@ function openClip(id) {
   if (typeof ovMount === "function") { try { S.player.ov = ovMount(root, c, S.player); } catch (e) { console.error("Glint: the overlay tools did not load", e); } }
   // The canvas: another shape for the result (vertical for TikTok / Shorts), with pieces of the picture placed on it (canvas.js).
   if (typeof cvMount === "function") { try { S.player.cv = cvMount(root, c, S.player); } catch (e) { console.error("Glint: the canvas tools did not load", e); } }
-  // A project: the library's clips beside the editor, to add more (projects.js).
-  if (draft && typeof projMountPanel === "function") projMountPanel(root, id);
+  // A project: the library's clips beside the editor, to add more (projects.js). P-HOOK 0.1.40: a single library
+  // clip gets it too (shown only while editing; adding from it makes a project of the clip, projFromClip).
+  if (typeof projMountPanel === "function") projMountPanel(root, id);
   // While editing, the viewer fills the window: top row, Library, player, inspector, timeline (workspace.js).
   if (typeof wsMount === "function") { try { wsMount(root, { title: c.title }); } catch (e) { console.error("Glint: the editor layout did not load", e); } }
   if (draft) {
@@ -1492,7 +1495,8 @@ function mountPlayer(root, c) {
     await sourceTracks(VS);
     if (dead) return null;
     const m = emNew(dur(), []);
-    m.clipTitle = c.title || "";
+    // A project of one clip: its piece is named after that clip, not after the project (0.1.40).
+    m.clipTitle = (VS.length === 1 && VS[0]?.title) || c.title || "";
     m.virtual = true; // its ranges never run across two clips' files (emSrcSpans)
     m.sources = VS;   // an ungrouped piece's sound comes from its own clip's file and stream (0.1.39)
     titleRows(m, emTrackTitles(VS.map((s) => s.tracks)));
@@ -2270,30 +2274,98 @@ function mountEditor(root, c, P) {
 
 /* ---------- adding audio files ---------- */
 let edDropSub = null; // Promise of the drag-and-drop subscriptions, made once
+/*
+ * Files dropped on the open editor (0.1.40, CONTRACT_0140 point 1). edHandleDrop(paths, position) is what the Tauri
+ * listener calls (the mock / a test may call it too; `position` in physical pixels as Tauri gives it):
+ *   - pictures and GIFs anywhere, and a video dropped ON THE PLAYER: on the picture (media.js medTakeDrop);
+ *   - a video anywhere else (the timeline, V1, the rows, the Library list, the empty editor): P's
+ *     projDropClips(paths, at) in ui/projects.js imports it and adds it to the project (a single clip becomes one);
+ *     `at` = the V1 time under the drop, or undefined (then at the end). To place the new pieces P calls the model's
+ *     emPlaceNew(m, first, at) (ui/editmodel.js) after emAddParts / P.addSources appended them: `first` = the display
+ *     index of the first new piece; free placement as in 0.1.36; one undo step is P's (emSnapshot before).
+ *   - an audio file: an audio clip, on the audio row it was dropped on, else on a new row;
+ *   - anything else: a short flash naming it.
+ * While dragging, the drop hint says what happens where the pointer is (edDropHint).
+ */
+const ED_AUDIO_EXT = ["mp3", "wav", "ogg", "oga", "opus", "flac", "m4a", "aac", "wma", "aif", "aiff"];
+const edExtOf = (p) => { const x = /\.([a-z0-9]+)$/i.exec(String(p || "").split(/[?#]/)[0]); return x ? x[1].toLowerCase() : ""; };
+/** "video", "image", "gif", "audio" or null, from a file's name. */
+const edDropKind = (p) => (typeof medKindOfPath === "function" && medKindOfPath(p)) || (ED_AUDIO_EXT.includes(edExtOf(p)) ? "audio" : null);
+/** Where a drop at client (x, y) lands: { onPlayer, lane: the timeline row's id or null, at: V1 time or undefined }. */
+function edDropPlace(x, y) {
+  const box = document.querySelector("#modal .player"), r = box?.getBoundingClientRect();
+  const onPlayer = !!r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  const laneEl = document.elementFromPoint?.(x, y)?.closest?.("#modal [data-tl-lane]") || null;
+  const lane = laneEl ? laneEl.dataset.tlLane : null;
+  let at;
+  if (lane === "video") { try { at = S.player?.tl?.timeAtClient?.(x, y) ?? undefined; } catch { at = undefined; } }
+  return { onPlayer, lane, laneKind: laneEl?.dataset.tlKind || null, at };
+}
+/** The drop hint's text for `paths` at client (x, y) (the paths come with drag-enter). */
+function edDropHint(paths, x, y) {
+  const kinds = (paths || []).map(edDropKind), pl = edDropPlace(x, y);
+  if (kinds.includes("video") && !pl.onPlayer) return t("Add to the timeline");
+  if (kinds.some((k) => k === "image" || k === "gif" || (k === "video" && pl.onPlayer))) return t("Put on the picture");
+  if (kinds.includes("audio")) return t("Add as audio");
+  return t("Drop audio files to add them as new tracks");
+}
+async function edHandleDrop(paths, position) {
+  if (!S.open) return;
+  paths = (Array.isArray(paths) ? paths : []).filter((p) => typeof p === "string" && p);
+  if (!paths.length) return;
+  // A project with no clips yet (projOpenEmpty: no player): videos become its first clips; nothing else fits there yet.
+  if (!S.player) {
+    if (!document.querySelector("#modal .pj-empty")) return;
+    const videos = paths.filter((p) => edDropKind(p) === "video"), rest = paths.filter((p) => edDropKind(p) !== "video");
+    if (rest.length) flash(t("{name} cannot be added.", { name: edBaseName(rest[0]) }), true);
+    if (videos.length && typeof projDropClips === "function") { try { await projDropClips(videos, undefined); } catch (e) { console.error("Glint: adding the dropped clips failed", e); fail(e); } }
+    return;
+  }
+  const k = window.devicePixelRatio || 1, x = position ? position.x / k : NaN, y = position ? position.y / k : NaN;
+  const pl = Number.isFinite(x) ? edDropPlace(x, y) : { onPlayer: false, lane: null, at: undefined };
+  const odd = paths.filter((p) => !edDropKind(p));
+  if (odd.length) flash(odd.length > 1 ? t("{name} and {n} more files cannot be added.", { name: edBaseName(odd[0]), n: odd.length - 1 }) : t("{name} cannot be added.", { name: edBaseName(odd[0]) }), true);
+  paths = paths.filter((p) => edDropKind(p));
+  // Pictures and GIFs (and a video dropped on the player) go on the picture (media.js).
+  if (paths.length && typeof medTakeDrop === "function") paths = medTakeDrop(paths, position);
+  const videos = paths.filter((p) => edDropKind(p) === "video"), audio = paths.filter((p) => edDropKind(p) === "audio");
+  if (videos.length) {
+    if (typeof projDropClips === "function") { try { await projDropClips(videos, pl.at); } catch (e) { console.error("Glint: adding the dropped clips failed", e); fail(e); } }
+    else flash(t("{name} cannot be added.", { name: edBaseName(videos[0]) }), true);
+  }
+  // Audio: on the audio row it was dropped on (0.1.39), else a new row; the clip starts where it was dropped.
+  if (audio.length) {
+    let at;
+    try { if (Number.isFinite(x) && S.player?.tl?.timeAtClient) at = S.player.tl.timeAtClient(x, y) ?? undefined; } catch { at = undefined; }
+    edAddAudio(audio, at, pl.laneKind === "track" || pl.laneKind === "lane" ? pl.lane : null);
+  }
+}
 function edDropInit() {
   if (edDropSub || !window.__TAURI__?.event?.listen) return;
   const listen = window.__TAURI__.event.listen;
   const open = () => !!(S.open && S.player);
-  const mark = (on) => { const o = $("#modal .e-drop"); if (o && o.hidden === on) o.hidden = !on; };
+  let dragPaths = [];
+  const mark = (on, position) => {
+    const o = $("#modal .e-drop");
+    if (!o) return;
+    if (o.hidden === on) o.hidden = !on;
+    const b = o.querySelector(".e-drop-box"), k = window.devicePixelRatio || 1;
+    if (on && b && position) { const txt = edDropHint(dragPaths, position.x / k, position.y / k); if (b.textContent !== txt) b.textContent = txt; }
+  };
   edDropSub = Promise.all([
-    listen("tauri://drag-enter", () => mark(open())),
-    listen("tauri://drag-over", () => mark(open())),
+    listen("tauri://drag-enter", ({ payload }) => { dragPaths = Array.isArray(payload?.paths) ? payload.paths : []; mark(open(), payload?.position); }),
+    listen("tauri://drag-over", ({ payload }) => mark(open(), payload?.position)),
     listen("tauri://drag-leave", () => mark(false)),
     listen("tauri://drag-drop", ({ payload }) => {
       mark(false);
-      let paths = Array.isArray(payload?.paths) ? payload.paths.filter((p) => typeof p === "string" && p) : [];
-      // Pictures and GIFs (and a video dropped on the player) go on the picture (media.js); the rest are audio rows.
-      if (open() && paths.length && typeof medTakeDrop === "function") paths = medTakeDrop(paths, payload?.position);
-      // Dropped on the timeline (0.1.35): the new row starts where it was dropped. The position is in physical pixels.
-      let at;
-      try { const k = window.devicePixelRatio || 1, pos = payload?.position; if (pos && S.player?.tl?.timeAtClient) at = S.player.tl.timeAtClient(pos.x / k, pos.y / k) ?? undefined; } catch { at = undefined; }
-      if (open() && paths.length) edAddAudio(paths, at);
+      // Also a project with no clips yet (no player): edHandleDrop gives it the dropped videos.
+      if (open() || (S.open && document.querySelector("#modal .pj-empty"))) edHandleDrop(payload?.paths, payload?.position);
     }),
   ]).catch((e) => { edDropSub = null; console.error("Glint: could not subscribe to file drops", e); });
 }
 
-/** Adds each file as a new audio row of the open clip, entering edit mode first if needed. */
-async function edAddAudio(paths, at) {
+/** Adds each file as a new audio row of the open clip, entering edit mode first if needed (`lane`: onto that audio row). */
+async function edAddAudio(paths, at, lane) {
   const P = S.player;
   if (!P || !S.open) return;
   try {
@@ -2311,7 +2383,10 @@ async function edAddAudio(paths, at) {
       }
       if (S.player !== P || !P.alive() || P.model !== m) return; // the clip was closed or changed meanwhile
       if (!info || !(+info.duration > 0)) { errors.push(t("{name} has no audio.", { name })); continue; }
-      added.push(P.addFileRow(info, at).title);
+      const row = P.addFileRow(info, at);
+      // Dropped on an audio row (0.1.40): it lies there, not on a row of its own.
+      if (lane && emMoveClip(P.model, row.id, { lane })) { P.refreshTimeline(); P.edSync("file"); }
+      added.push(row.title);
     }
     if (errors.length) flash(errors.length > 1 ? `${errors[0]} ${t("{n} more files could not be added.", { n: errors.length - 1 })}` : errors[0], true);
     else if (added.length === 1) flash(t("Added {name} as a new audio track", { name: added[0] }));
@@ -2346,6 +2421,19 @@ function edListen() {
 }
 
 /** Exports the open clip's edit as a new clip, then opens it (and starts a Blur render if asked). */
+/** The question before an export of a timeline with gaps (0.1.40): resolves to "back", "export" or null (closed).
+ *  Built like app.js's ask() (#confirm, Enter / Esc) with its own two buttons. */
+function edAskGap(gaps) {
+  return new Promise((resolve) => {
+    const el = $("#confirm");
+    const what = gaps.count === 1 ? t("The timeline has a gap ({sec} s).", { sec: (Math.round(gaps.total * 10) / 10).toFixed(1) }) : t("The timeline has {n} gaps, {sec} s in all.", { n: gaps.count, sec: (Math.round(gaps.total * 10) / 10).toFixed(1) });
+    el.innerHTML = `<div class="confirm-box"><p>${esc(what + " " + t("It will be black and silent in the export."))}</p><div class="confirm-row"><button class="btn" data-c="back">${esc(t("Go back"))}</button><button class="btn primary" data-c="export">${esc(t("Export with black"))}</button></div></div>`;
+    el.hidden = false;
+    const done = (v) => { el.hidden = true; el.innerHTML = ""; el.onclick = null; askKey = null; resolve(v); };
+    askKey = (e) => { if (e.code === "Enter" || e.code === "NumpadEnter") done("export"); else if (e.code === "Escape") done("back"); };
+    el.onclick = (e) => { const b = e.target.closest("[data-c]"); if (b) done(b.dataset.c); else if (e.target === el) done(null); };
+  });
+}
 async function edExport(withBlur) {
   const id = S.open, P = S.player;
   if (!id || !P) return;
@@ -2357,6 +2445,17 @@ async function edExport(withBlur) {
     if (!withBlur) return flash(t("Nothing to export yet"));
     P.setEdit(false); // show the Blur panel
     return viewerAction("blur");
+  }
+  // A gap on the main video row (0.1.40): ask first. Go back = nothing is exported, the playhead goes to the first gap
+  // and it is selected; Export with black = as before.
+  const gaps = emGapStats(m);
+  if (gaps.count) {
+    const go = await edAskGap(gaps);
+    if (S.open !== id || S.player !== P) return;
+    if (go !== "export") {
+      if (go === "back" && gaps.first) { P.seek(gaps.first.at, false, true); P.tl?.select?.({ row: "video", seg: gaps.first.seg }); }
+      return;
+    }
   }
   const opts = emToOpts(m);
   // "Replace the original": one clip replaces itself; a project asks which of its clips go (projects.js).

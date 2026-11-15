@@ -956,6 +956,131 @@ fn run_placed(core: &Arc<Core>, items: Vec<Found>, copy: bool, place: Place) -> 
 }
 
 // ---------------------------------------------------------------------------
+// Files dropped into the editor (0.1.40)
+
+/// What `import_files` did with one dropped file: its library clip (`known`:
+/// it was in the library already, nothing imported), or why not (`error`).
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct Dropped {
+    pub path: String,
+    pub clip: Option<library::ClipMeta>,
+    pub known: bool,
+    pub error: String,
+}
+
+/// The library clip of file `path`: the clip with that path, or the one imported from it as a copy.
+fn known_clip(core: &Core, path: &str) -> Option<library::ClipMeta> {
+    let lib = core.lib.lock().unwrap();
+    if let Some(c) = lib.clips.iter().find(|c| !c.draft && c.path.eq_ignore_ascii_case(path)) {
+        return Some(c.clone());
+    }
+    let _g = RECORDS.lock().unwrap();
+    let rec = load_records().into_iter().rev().find(|r| r.source.eq_ignore_ascii_case(path))?;
+    lib.get(&rec.id).filter(|c| !c.draft && Path::new(&c.path).is_file())
+}
+
+/// Video files dropped into the editor: each is imported as the Import page
+/// imports (`import_one`; `copy` into the clips folder or referenced where it
+/// is, filed under library folder `folder`, "" = the main folder), in the
+/// order given. A file already in the library (same path, or imported from it
+/// as a copy) is not imported again: its clip comes back with `known`. A file
+/// that is no video or cannot be read comes back with an `error`.
+pub fn import_files(core: &Arc<Core>, paths: Vec<String>, copy: bool, folder: &str) -> Result<Vec<Dropped>, String> {
+    let s = core.settings();
+    let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg").ok_or("ffmpeg was not found. Set its path in Settings.")?;
+    let root = PathBuf::from(&s.clips_dir);
+    let folder = folder.trim();
+    let place = if folder.trim_matches('.').trim().is_empty() { Place::Main } else { Place::One(util::sanitize_filename(folder)) };
+    if copy || place != Place::Main {
+        fs::create_dir_all(&root).map_err(|e| format!("Could not create the clips folder: {e}"))?;
+    }
+    let folders = Mutex::new(core.folders());
+    let naming = Mutex::new(());
+    let job = Job { core, ffmpeg: &ffmpeg, root: &root, place, copy, naming: &naming, folders: &folders };
+    let mut out: Vec<Dropped> = Vec::with_capacity(paths.len());
+    let mut recs: Vec<Record> = Vec::new();
+    for p in paths {
+        let path = p.trim().to_string();
+        let mut d = Dropped { path: path.clone(), ..Default::default() };
+        let pb = PathBuf::from(&path);
+        let ext = pb.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if let Some(c) = known_clip(core, &path) {
+            d.clip = Some(c);
+            d.known = true;
+        } else if !VIDEO_EXTS.contains(&ext.as_str()) {
+            d.error = "not a video".into();
+        } else {
+            match fs::metadata(&pb) {
+                Ok(md) if md.is_file() && md.len() > 0 => {
+                    let title = pb.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+                    let dirs: Vec<String> = pb.parent().and_then(|x| x.file_name()).map(|x| x.to_string_lossy().into_owned()).into_iter().collect();
+                    let game = game_for(&dirs, &title, &Ctx::default());
+                    let it = Found { path: path.clone(), title, game, size: md.len(), modified: mtime_ms(&md), known: false };
+                    match import_one(&job, &it) {
+                        Ok(meta) => {
+                            recs.push(Record { source: path.clone(), id: meta.id.clone() });
+                            d.clip = Some(meta);
+                        }
+                        Err(e) => d.error = e,
+                    }
+                }
+                _ => d.error = "the file was not found".into(),
+            }
+        }
+        if !d.error.is_empty() {
+            util::log(&format!("import: dropped file {path} not added: {}", d.error));
+        }
+        out.push(d);
+    }
+    if !recs.is_empty() {
+        let n = recs.len();
+        {
+            let _g = RECORDS.lock().unwrap();
+            let mut all = load_records();
+            all.extend(recs);
+            if let Ok(text) = serde_json::to_string(&all) {
+                let _ = fs::write(records_file(), text);
+            }
+        }
+        core.emit("clips-changed", ());
+        core.emit("games-changed", ());
+        util::log(&format!("import: {n} dropped file(s) added ({})", if copy { "copied" } else { "in place" }));
+    }
+    Ok(out)
+}
+
+/// 0.1.40: files dropped into the editor (`import_files`).
+fn drop_tests(r: &mut Report, core: &Arc<Core>, base: &Path, clips: &Path, put: &dyn Fn(&str, u64) -> PathBuf) {
+    let a = put(r"drops\Valorant\Valorant 2024.07.01 - 10.00.00.00.mp4", 1_720_000_000);
+    let b = put(r"drops\Loose\some clip.mkv", 1_720_000_100);
+    let txt = base.join(r"drops\notes.txt");
+    let _ = fs::write(&txt, b"x");
+    let bad = base.join(r"drops\broken.mp4");
+    let _ = fs::write(&bad, vec![0x5a_u8; 4096]);
+    let s = |p: &Path| p.to_string_lossy().into_owned();
+    let n0 = core.lib.lock().unwrap().clips.len();
+    let res = import_files(core, vec![s(&a), s(&b), s(&txt), s(&bad), s(&base.join(r"drops\gone.mp4")), s(&a)], false, "");
+    let out = res.clone().unwrap_or_default();
+    r.check("drop: one answer per file, in the order given", out.len() == 6 && out.iter().zip([&a, &b, &txt, &bad]).all(|(d, p)| d.path == s(p)), format!("{res:?}"));
+    let ca = out.first().and_then(|d| d.clip.clone()).unwrap_or_default();
+    let cb = out.get(1).and_then(|d| d.clip.clone()).unwrap_or_default();
+    r.check("drop: videos imported in place, kind import, game from the folder, title from the name", !out[0].known && Path::new(&ca.path) == a.as_path() && ca.kind == "import" && ca.game == "Valorant" && ca.title == "Valorant 2024.07.01 - 10.00.00.00" && ca.duration > 0.0 && Path::new(&cb.path) == b.as_path() && cb.folder.is_empty(), format!("{ca:?}"));
+    r.check("drop: no video, unreadable, missing: an error each, nothing added for them", out.len() == 6 && out[2].error == "not a video" && out[2].clip.is_none() && out[3].clip.is_none() && !out[3].error.is_empty() && out[4].error == "the file was not found", format!("{:?}", out.iter().map(|d| d.error.clone()).collect::<Vec<_>>()));
+    r.check("drop: the same file twice is one clip (the second answer is known)", out.len() == 6 && out[5].known && out[5].clip.as_ref().is_some_and(|c| c.id == ca.id) && core.lib.lock().unwrap().clips.len() == n0 + 2, format!("library {n0} -> {}", core.lib.lock().unwrap().clips.len()));
+    let again = import_files(core, vec![s(&a)], true, "Whatever").unwrap_or_default();
+    r.check("drop: a file already in the library is never imported again (no copy either)", again.len() == 1 && again[0].known && again[0].clip.as_ref().is_some_and(|c| c.id == ca.id) && core.lib.lock().unwrap().clips.len() == n0 + 2 && !clips.join("Whatever").join("Valorant 2024.07.01 - 10.00.00.00.mp4").exists(), "");
+    let c = put(r"drops\Copy me\Apex Legends 2024.07.02 - 10.00.00.00.mp4", 1_720_000_200);
+    let cp = import_files(core, vec![s(&c)], true, "Drop folder").unwrap_or_default();
+    let cc = cp.first().and_then(|d| d.clip.clone()).unwrap_or_default();
+    let dest = clips.join("Drop folder").join("Apex Legends 2024.07.02 - 10.00.00.00.mp4");
+    r.check("drop: copy into the library folder of the open clip; the original stays", Path::new(&cc.path) == dest.as_path() && dest.is_file() && cc.folder == "Drop folder" && c.is_file(), format!("{cc:?}"));
+    let cp2 = import_files(core, vec![s(&c)], true, "Drop folder").unwrap_or_default();
+    r.check("drop: the original of a copy dropped again gives that copy's clip", cp2.len() == 1 && cp2[0].known && cp2[0].clip.as_ref().is_some_and(|x| x.id == cc.id), "");
+    let lib = core.lib.lock().unwrap().clips.clone();
+    r.check("drop: a dropped draft path is no clip to use", known_clip(core, "").is_none() && lib.iter().all(|x| !x.draft), "");
+}
+
+// ---------------------------------------------------------------------------
 // Self-test
 
 struct Report {
@@ -1340,6 +1465,7 @@ fn run_self_test(r: &mut Report) {
     r.check("all originals still in place", [&nv_a, &nv_b, &nv_c, &nv_mkv, &md_e, &md_f, &md_g, &op_i, &ss_k, &ss_l, &broken].iter().all(|p| p.is_file()), "");
 
     placement_tests(r, &core, &base, &clips, &put);
+    drop_tests(r, &core, &base, &clips, &put);
 
     let fails = r.lines.iter().filter(|l| l.starts_with("FAIL")).count();
     // Optional, read-only: how the real folders on this PC would be sorted (counts only, nothing imported).

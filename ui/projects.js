@@ -20,7 +20,10 @@
 // with P.addSources (editor.js, no reload); "Edit together" makes one at once (join.js). A clip gone from the
 // library is a `missing` source: the card and the clip list say so. Projects made before keep their draft and
 // the job path below. projJoinsOf gives both kinds the draft's joins (starts after the first) for the saved edit.
-// A normal library clip never comes here: editor.js calls these only for a draft (P.draft).
+// 0.1.40 (CONTRACT_0140): video files dropped into the editor come to projDropClips(paths, at) (B's edDropInit);
+// one click in the Library list previews the clip at the top of it (projPvShow, its own player); a single library
+// clip open in the editor gets the list too, and adding to it makes a project of it (projFromClip, edit carried).
+// Otherwise a normal library clip never comes here: editor.js calls the rest only for a draft (P.draft).
 // Loaded after join.js, before app.js: at load time it only defines things and listens.
 // Names start with `proj` / `PROJ_`, plus renderEditorPage (called by app.js render()).
 
@@ -448,20 +451,28 @@ function projOpenEmpty(p) {
     </div>`;
   projMountPanel($(".viewer", m), p.id);
   if (typeof wsMount === "function") wsMount($(".viewer", m), { title: p.name }); // the editor's full-window layout (workspace.js)
+  if (typeof edDropInit === "function") edDropInit(); // files dropped here become the project's first clips (0.1.40)
 }
 
-/** Put the clip list beside the editor of project `id` (editor.js calls it for a draft; projOpenEmpty too). */
+/**
+ * Put the clip list beside the editor of project `id` (editor.js openClip calls it for every clip it opens;
+ * projOpenEmpty too). 0.1.40: also for a single library clip (`.pj-single`, shown only while editing): adding
+ * from it makes a project of [that clip, the added clips] (projFromClip). Nothing for anything else.
+ */
 function projMountPanel(root, id) {
-  if (!root || !projById(id)) return;
-  if (projLib.id !== id) { projLib.id = id; projLib.sel = []; projLib.anchor = null; }
-  root.classList.add("pj-on");
+  const single = !projById(id) && typeof S !== "undefined" && (S.clips || []).some((c) => c && c.id === id && !c.draft);
+  if (!root || (!projById(id) && !single) || root.querySelector(":scope > .pj-lib")) return;
+  if (projLib.id !== id) { projLib.id = id; projLib.sel = []; projLib.anchor = null; projPvClose(); }
+  if (!single) root.classList.add("pj-on");
   const aside = document.createElement("aside");
-  aside.className = "pj-lib";
+  aside.className = "pj-lib" + (single ? " pj-single" : "");
   aside.dataset.pjFor = id;
+  if (single) aside.dataset.pjSingle = "1";
   aside.innerHTML = `
     <div class="pj-head"><div class="pj-h">${esc(t("Library"))}</div>
-      <div class="small pj-hint">${esc(t("Double-click, press Enter or drag clips onto the timeline to add them to the project."))} ${esc(t("Rest the pointer on a clip to preview it."))}</div>
+      <div class="small pj-hint">${esc(single ? t("Click a clip to preview it. Double-click, press Enter or drag it onto the timeline to add it: this clip then becomes a project.") : t("Click a clip to preview it. Double-click, press Enter or drag clips onto the timeline to add them to the project."))}</div>
       <div class="small pj-missing" hidden></div></div>
+    <div class="pj-pv" hidden></div>
     <div class="pj-tools">
       <input class="field pj-q" type="search" spellcheck="false" autocomplete="off" placeholder="${esc(t("Search clips"))}" aria-label="${esc(t("Search clips"))}" value="${esc(projLib.q)}">
       <select class="field pj-game" aria-label="${esc(t("Game"))}"></select>
@@ -520,7 +531,7 @@ function projMountPanel(root, id) {
   };
   aside.addEventListener("mousemove", (e) => {
     const id2 = e.target.closest(".pj-item")?.dataset.pjc || null;
-    if (e.buttons || !id2) return pvHide();
+    if (e.buttons || !id2 || id2 === projPv.id) return pvHide(); // the clicked clip is in the preview above (0.1.40)
     if (id2 === pvFor || id2 === pvWait) return;
     pvHide();
     pvWait = id2;
@@ -529,7 +540,161 @@ function projMountPanel(root, id) {
   aside.addEventListener("mouseleave", pvHide);
   aside.addEventListener("mousedown", pvHide, true);
   aside.querySelector(".pj-list").addEventListener("scroll", pvHide, { passive: true });
+  projPvWire(aside.querySelector(".pj-pv"));
   projRenderPanel();
+  if (projPv.id && projPv.for === id) projPvShow(projPv.id); // the editor was opened again (a project made of the clip)
+}
+
+/* ---------- the clicked clip's preview at the top of the Library list (0.1.40) ---------- */
+// One click on a clip shows it here: its own small player (never the editor's), play / pause, a seek bar that
+// scrubs, the time and the length; Space over it plays / pauses, Esc or × hides it; double-click on the picture
+// or "Add to the timeline" adds it. Its sound is its own, at the editor's volume; in the browser preview
+// (no Tauri) it is always muted.
+const projPv = { id: null, for: null, over: false, scrub: null, raf: 0 };
+const projPvEl = () => projPanel()?.querySelector(".pj-pv") || null;
+const projPvVideo = () => projPvEl()?.querySelector("video") || null;
+/** "m:ss" of `s` seconds (the preview's clock). */
+function projClock(s) {
+  s = Math.max(0, Math.floor(+s || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+/** The seek bar's fraction for a pointer at client x `x` over a bar from `left`, `width` px wide (0..1). */
+const projPvFrac = (x, left, width) => (width > 0 ? Math.max(0, Math.min(1, (x - left) / width)) : 0);
+
+function projPvShow(id) {
+  const el = projPvEl(), c = (S.clips || []).find((x) => x.id === id);
+  if (!el || !c) return projPvClose();
+  const aside = projPanel();
+  projPv.id = id;
+  projPv.for = aside?.dataset.pjFor || null;
+  const url = typeof edClipUrl === "function" ? edClipUrl(c) : fileSrc(c.path);
+  const v0 = el.querySelector("video");
+  if (v0 && el.dataset.pvClip === id) { el.hidden = false; return projPvPaint(); }
+  el.dataset.pvClip = id;
+  el.innerHTML = `
+    <div class="pj-pv-head"><b class="pj-pv-title" title="${esc(c.title)}">${esc(c.title)}</b>
+      <button type="button" class="e-ibtn pj-pv-x" data-pjv="close" aria-label="${esc(t("Close the preview"))}" title="${esc(t("Close the preview (Esc)"))}">${ICON.x}</button></div>
+    <div class="pj-pv-pic" title="${esc(t("Double-click to add it to the timeline"))}"><video muted playsinline disablepictureinpicture preload="auto"${c.thumb ? ` poster="${esc(fileSrc(c.thumb))}"` : ""} src="${esc(url)}"></video></div>
+    <div class="pj-pv-bar" role="slider" aria-label="${esc(t("Position in the clip"))}" aria-valuemin="0" aria-valuemax="${Math.round(+c.duration || 0)}"><div class="pj-pv-buf"></div><div class="pj-pv-fill"></div><div class="pj-pv-knob"></div></div>
+    <div class="pj-pv-row"><button type="button" class="e-ibtn pj-pv-play" data-pjv="play" aria-label="${esc(t("Play or pause"))}"></button><span class="pj-pv-time"></span></div>
+    <button type="button" class="btn sm wide pj-pv-add" data-pjv="add">${ICON.plus}<span>${esc(t("Add to the timeline"))}</span></button>`;
+  el.hidden = false;
+  const v = el.querySelector("video");
+  // Its own sound at the editor's volume; always muted in the browser preview (mock.js, no real Tauri).
+  const P = S.player;
+  v.muted = typeof window === "undefined" || !window.__TAURI__ || typeof window.__mockEmit === "function" || !!P?.muted;
+  v.volume = Math.max(0, Math.min(1, Number.isFinite(P?.vol) ? P.vol : 0.6));
+  for (const ev of ["timeupdate", "seeked", "play", "pause", "loadedmetadata", "progress", "ended"]) v.addEventListener(ev, projPvPaint);
+  v.addEventListener("play", projPvTick);
+  v.play?.()?.catch?.(() => {});
+  projPvPaint();
+}
+function projPvClose() {
+  cancelAnimationFrame?.(projPv.raf);
+  projPv.raf = 0;
+  projPv.id = null;
+  projPv.scrub = null;
+  const el = projPvEl();
+  if (!el) return;
+  el.querySelector("video")?.pause?.();
+  el.hidden = true;
+  el.innerHTML = "";
+  delete el.dataset.pvClip;
+}
+/** editor.js's key handler (it runs before this file's): Escape hides a shown preview. True if it did. */
+function projPvEscape() {
+  const el = projPvEl();
+  if (!projPv.id || !el || el.hidden || document.activeElement?.matches?.("input, textarea, select")) return false;
+  projPvClose();
+  return true;
+}
+function projPvToggle() {
+  const v = projPvVideo();
+  if (!v) return;
+  if (v.paused || v.ended) v.play?.()?.catch?.(() => {}); else v.pause();
+}
+function projPvTick() {
+  cancelAnimationFrame(projPv.raf);
+  const step = () => {
+    const v = projPvVideo();
+    if (!v || v.paused) { projPv.raf = 0; return; }
+    projPvPaint();
+    projPv.raf = requestAnimationFrame(step);
+  };
+  projPv.raf = requestAnimationFrame(step);
+}
+function projPvPaint() {
+  const el = projPvEl(), v = projPvVideo();
+  if (!el || !v) return;
+  const c = (S.clips || []).find((x) => x.id === projPv.id);
+  const D = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : +c?.duration || 0;
+  const at = projPv.scrub ? projPv.scrub.at : v.currentTime || 0;
+  const f = D > 0 ? Math.min(1, at / D) : 0;
+  el.querySelector(".pj-pv-fill").style.width = `${f * 100}%`;
+  el.querySelector(".pj-pv-knob").style.left = `${f * 100}%`;
+  let buf = 0;
+  try { if (v.buffered.length && D > 0) buf = v.buffered.end(v.buffered.length - 1) / D; } catch {}
+  el.querySelector(".pj-pv-buf").style.width = `${Math.min(1, buf) * 100}%`;
+  el.querySelector(".pj-pv-bar").setAttribute("aria-valuenow", String(Math.round(at)));
+  const txt = `${projClock(at)} / ${projClock(D)}`;
+  const time = el.querySelector(".pj-pv-time");
+  if (time.textContent !== txt) time.textContent = txt;
+  const play = el.querySelector(".pj-pv-play"), icon = v.paused ? PICON.play : PICON.pause;
+  if (play.dataset.icon !== (v.paused ? "play" : "pause")) { play.innerHTML = icon; play.dataset.icon = v.paused ? "play" : "pause"; }
+}
+/** The preview's own events: buttons, scrubbing, double-click to add, the pointer over it (for Space). */
+function projPvWire(el) {
+  if (!el) return;
+  el.addEventListener("mouseenter", () => { projPv.over = true; });
+  el.addEventListener("mouseleave", () => { projPv.over = false; });
+  el.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-pjv]");
+    if (b) {
+      e.stopPropagation();
+      if (b.dataset.pjv === "close") return projPvClose();
+      if (b.dataset.pjv === "play") return projPvToggle();
+      if (b.dataset.pjv === "add") return projPvAdd();
+    }
+    if (e.target.closest(".pj-pv-pic")) projPvToggle();
+  });
+  el.addEventListener("dblclick", (e) => { if (e.target.closest(".pj-pv-pic")) { e.preventDefault(); projPvAdd(); } });
+  el.addEventListener("pointerdown", (e) => {
+    const bar = e.target.closest(".pj-pv-bar"), v = projPvVideo();
+    if (!bar || !v || e.button !== 0) return;
+    e.preventDefault();
+    try { bar.setPointerCapture(e.pointerId); } catch {}
+    projPv.scrub = { bar, play: !v.paused, at: v.currentTime || 0 };
+    v.pause();
+    projPvScrub(e.clientX);
+  });
+  el.addEventListener("pointermove", (e) => { if (projPv.scrub) projPvScrub(e.clientX); });
+  const end = () => {
+    const s = projPv.scrub, v = projPvVideo();
+    if (!s) return;
+    projPv.scrub = null;
+    if (v && s.play) v.play?.()?.catch?.(() => {});
+    projPvPaint();
+  };
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
+  el.addEventListener("lostpointercapture", end);
+}
+/** Scrub to the bar's place under client x `x`: the picture follows the pointer. */
+function projPvScrub(x) {
+  const s = projPv.scrub, v = projPvVideo();
+  if (!s || !v) return;
+  const r = s.bar.getBoundingClientRect();
+  const D = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
+  if (!D) return;
+  s.at = projPvFrac(x, r.left, r.width) * D;
+  if (typeof v.fastSeek === "function") v.fastSeek(s.at); else v.currentTime = s.at;
+  projPvPaint();
+}
+/** "Add to the timeline" (or a double-click on the preview's picture): the previewed clip, as a double-click in the list. */
+function projPvAdd() {
+  const id = projPv.id, aside = projPanel();
+  if (!id || !aside) return;
+  projAddTo(aside.dataset.pjFor, [id]);
 }
 
 /** The panel of the open project, or null. */
@@ -571,7 +736,8 @@ function projRenderList() {
   const aside = projPanel();
   if (!aside) return;
   const list = $(".pj-list", aside), shown = projShown();
-  const have = new Set((projById(aside.dataset.pjFor)?.clips || []).map((c) => c.id).filter(Boolean));
+  // A single clip open in the editor (0.1.40) counts as in it.
+  const have = new Set((projById(aside.dataset.pjFor)?.clips || [{ id: aside.dataset.pjSingle ? aside.dataset.pjFor : null }]).map((c) => c.id).filter(Boolean));
   // The selection keeps only clips that still exist (a search does not drop it).
   const all = new Set((S.clips || []).map((c) => c.id));
   projLib.sel = projLib.sel.filter((id) => all.has(id));
@@ -596,9 +762,9 @@ function projPaintSel() {
 function projRenderAddBtn() {
   const btn = $(".pj-add", projPanel() || document.createElement("div"));
   if (!btn) return;
-  const n = projLib.sel.length;
+  const n = projLib.sel.length, single = !!projPanel()?.dataset.pjSingle; // a single clip (0.1.40): it becomes a project
   btn.disabled = !n;
-  btn.innerHTML = `${ICON.plus}<span>${esc(n ? t("Add {clips} to the project", { clips: plural(n) }) : t("Add to the project"))}</span>`;
+  btn.innerHTML = `${ICON.plus}<span>${esc(single ? (n ? t("Add {clips} to the timeline", { clips: plural(n) }) : t("Add to the timeline")) : n ? t("Add {clips} to the project", { clips: plural(n) }) : t("Add to the project"))}</span>`;
 }
 function projRenderBusy() {
   const aside = projPanel();
@@ -641,12 +807,152 @@ function projShowInLibrary(ids) {
 
 /* ---------- adding clips ---------- */
 
-/** Add the selected clips (in the order picked) to the open project. */
+/** Add the selected clips (in the order picked) to the open project (or make one of the open clip). */
 function projAddSel() {
   const id = projPanel()?.dataset.pjFor;
-  if (id) projAdd(id, projLib.sel.slice());
+  if (id) projAddTo(id, projLib.sel.slice());
 }
-async function projAdd(pid, ids) {
+/**
+ * Add library clips `ids` to what is open as `id`: a project (projAdd), or a single library clip, which then
+ * becomes a project (projFromClip). `at`: the V1 time to place them at (a drop), undefined = at the end.
+ */
+function projAddTo(id, ids, at) {
+  if (projById(id)) return projAdd(id, ids, at);
+  return projFromClip(id, ids, at);
+}
+
+/* ---------- files dropped into the editor (0.1.40) ----------
+ * B's edDropInit (editor.js) hands every VIDEO file dropped anywhere in the open editor except the player to
+ * projDropClips(paths, at): `at` = the V1 time it was dropped at (timeline seconds), undefined = anywhere else
+ * (the end). Also with no player (an empty project's frame: S.open is the project id). Each file is imported
+ * as the Import page imports it (import_files: copy or reference as the Import dialog's choice IMP.copy is,
+ * into the library folder of the open clip or project); one already in the library is used as it is. Then the
+ * clips go on V1: into a project (project_add_clips + P.addSources), or the open single clip becomes a project
+ * (projFromClip). The placing at `at` is one undo step (P.edit "order", projPlaceNew: 0.1.36's free placement
+ * with emPlacePart, one piece after the other). */
+const PROJ_VIDEO_EXT = /\.(mp4|mkv|mov|webm|avi|m4v|flv|ts|wmv)$/i; // as import.rs VIDEO_EXTS
+/** The file name of a path, for flashes. */
+const projBaseOf = (p) => String(p || "").split(/[\\/]/).pop() || String(p || "");
+/** The library folder dropped files go in: the open clip's, or the project's first clip's ("" = none). */
+function projDropFolder(id) {
+  const lib = (cid) => (S.clips || []).find((c) => c.id === cid) || null;
+  const p = projById(id);
+  if (!p) return lib(id)?.folder || "";
+  for (const c of p.clips || []) { const k = lib(c.id); if (k) return k.folder || ""; }
+  return "";
+}
+/** A library clip that came back from the backend: into S.clips (the list beside the editor shows it). */
+function projKeepClip(clip) {
+  if (!clip || !clip.id || clip.draft || typeof S === "undefined" || !Array.isArray(S.clips)) return;
+  const i = S.clips.findIndex((c) => c.id === clip.id);
+  if (i >= 0) S.clips[i] = clip; else S.clips.push(clip);
+}
+async function projDropClips(paths, at) {
+  if (typeof S === "undefined" || !S.open) return;
+  const target = S.open;
+  const list = (Array.isArray(paths) ? paths : []).filter((p) => typeof p === "string" && p);
+  const vids = list.filter((p) => PROJ_VIDEO_EXT.test(p));
+  for (const p of list) if (!PROJ_VIDEO_EXT.test(p)) flash(t("{name} is not a video, a picture or audio, so it was not added.", { name: projBaseOf(p) }), true);
+  if (!vids.length) return;
+  let res;
+  try {
+    res = await invoke("import_files", { paths: vids, copy: typeof IMP !== "undefined" && !!IMP.copy, folder: projDropFolder(target) });
+  } catch (e) { return fail(e); }
+  const ids = [];
+  for (const d of Array.isArray(res) ? res : []) {
+    if (d && d.clip && d.clip.id) { projKeepClip(d.clip); ids.push(d.clip.id); }
+    else if (d) flash(t("Could not add {name}: {error}", { name: projBaseOf(d.path), error: t(String(d.error || "")) }), true);
+  }
+  projRenderPanel();
+  if (!ids.length || S.open !== target) return;
+  return projAddTo(target, ids, Number.isFinite(at) ? at : undefined);
+}
+
+/**
+ * Pure (editmodel.js): put the new clips' pieces, appended at the end of V1, at timeline second `at`, one after
+ * the other in the order of `srcs` (their project-time starts = the `starts` project_add_clips answers). 0.1.36's
+ * free placement (emPlacePart): onto a piece beside it (the nearer side), on empty space exactly there; at or past
+ * the end they stay where they are. True if the layout changed (the caller makes it one undo step).
+ */
+function projPlaceNew(m, srcs, at) {
+  if (!m || !Array.isArray(m.parts) || !Array.isArray(srcs) || !srcs.length || !Number.isFinite(at)) return false;
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
+  const find = (s) => emParts(m).findIndex((p) => !p.gap && near(p.src, s));
+  const first = emParts(m)[find(+srcs[0])];
+  if (!first || at >= first.at - 1e-6) return false; // dropped at or past the end: they are there already
+  let pos = Math.max(0, at), moved = false;
+  for (const s of srcs) {
+    const i = find(+s);
+    if (i < 0) continue;
+    if (emPlacePart(m, i, pos)) moved = true;
+    const q = emParts(m)[find(+s)];
+    if (q) pos = q.end;
+  }
+  return moved;
+}
+/** Place the new pieces of the open editor's project (`srcs`) at `at` as one undo step. */
+function projPlaceOpen(P, srcs, at) {
+  if (!P || !Number.isFinite(at) || !Array.isArray(srcs) || !srcs.length || typeof P.edit !== "function") return false;
+  try { return P.edit("order", (m) => projPlaceNew(m, srcs, at)); } catch (e) { console.warn("Glint: the dropped clips stay at the end", e); return false; }
+}
+
+/** "<first title> + <n> more", as join.rs joined_title names an "Edit together" project. */
+function projJoinedTitle(first, more) {
+  const head = [...String(first || "").trim()].slice(0, 48).join("").trimEnd();
+  return `${head} + ${more} more`;
+}
+/**
+ * The single library clip `cid` open in the editor gets clips `ids`: it becomes a project at once, a virtual one of
+ * [this clip, the added clips], named as "Edit together" names one. The edit made so far is carried over unchanged
+ * (the clip is source 1 at project time 0, so none of its times move; projRestore appends the new clips), it opens
+ * in the same editor at the same playhead, the new clips go to `at` if given, and a flash names the project. The
+ * clip in the library stays as it is.
+ */
+async function projFromClip(cid, ids, at) {
+  const byId = new Map((S.clips || []).map((c) => [c.id, c]));
+  const c = byId.get(cid);
+  if (!c || c.draft) return;
+  const add = [...new Set(ids)].map((x) => byId.get(x)).filter((x) => x && !x.draft);
+  const why = projAddRefusal({ clips: [c] }, add);
+  if (why) return flash(why, true);
+  const P = S.player;
+  let state = null, now = null;
+  if (P && P.clipMeta && P.clipMeta.id === cid && P.model) {
+    try { state = emStateSave(P.model, [], true); now = typeof P.time === "function" ? P.time() : null; }
+    catch (e) { console.warn("Glint: could not hand the clip's edit to the new project", e); state = null; }
+  }
+  let p = null, res;
+  try {
+    p = await invoke("create_project", { name: projJoinedTitle(c.title, add.length) });
+    if (!p || !p.id) throw new Error("create_project returned nothing");
+    await invoke("project_add_clips", { id: p.id, ids: [c.id] });
+    res = await invoke("project_add_clips", { id: p.id, ids: add.map((x) => x.id) });
+    if (!res || !res.project) throw new Error("project_add_clips did not answer as for a project of references");
+  } catch (e) {
+    if (p && p.id) invoke("delete_project", { id: p.id }).catch(() => {});
+    return flash(joinError(e), true);
+  }
+  const proj = res.project;
+  projUpsert(proj);
+  if (S.open !== cid) return projRefreshUI(); // closed meanwhile: the project is made, nothing opens
+  if (state) projCarry = { id: proj.id, state };
+  projLib.id = proj.id;
+  projLib.sel = [];
+  projLib.anchor = null;
+  if (projPv.id) projPv.for = proj.id; // the preview stays in the new editor's list
+  sfx("success");
+  await projOpenVirtual(proj.id);
+  flash(t("Made a project: {name}", { name: proj.name }));
+  projRefreshUI();
+  const N = S.player;
+  if (!N || S.open !== proj.id) return;
+  const m = await N.whenModel?.();
+  if (!m || S.player !== N || !N.alive?.()) return;
+  if (Number.isFinite(at)) projPlaceOpen(N, res.starts, at);
+  if (Number.isFinite(now)) N.seek(now, false, true);
+}
+
+async function projAdd(pid, ids, at) {
   const p = projById(pid);
   if (!p) return;
   const byId = new Map((S.clips || []).map((c) => [c.id, c]));
@@ -659,7 +965,7 @@ async function projAdd(pid, ids) {
     if (job && job.project && !job.kind) {
       projLib.sel = [];
       projLib.anchor = null;
-      await projAdded(pid, job);
+      await projAdded(pid, job, at);
       return projRefreshUI();
     }
     if (job && job.id) {
@@ -700,7 +1006,7 @@ function projChanged(pl) {
  * the new sources without reloading (P.addSources, editor.js); the empty frame, or an editor that could not
  * take them, opens the project again with its edit handed over (projReload).
  */
-async function projAdded(pid, res) {
+async function projAdded(pid, res, at) {
   const p = res.project;
   projUpsert(p);
   const n = Array.isArray(res.added) ? res.added.length : 0;
@@ -711,6 +1017,7 @@ async function projAdded(pid, res) {
     if (P && P.clipMeta && P.clipMeta.id === pid && P.clipMeta.virtual && typeof P.addSources === "function" && p.clip) {
       try { took = !!(await P.addSources(p.clip)); } catch (e) { console.warn("Glint: the editor could not take the new clips; the project opens again", e); took = false; }
     }
+    if (took && Number.isFinite(at) && S.player === P) projPlaceOpen(P, res.starts, at); // a drop on V1 (0.1.40)
     if (!took && S.open === pid) projReload(projById(pid) || p);
     if (n) flash(t("Added {clips} to the project", { clips: plural(n) }));
   } else if (n) flash(t('Added {clips} to "{name}"', { clips: plural(n), name: p.name }));
@@ -940,6 +1247,7 @@ function projDragEnd(drop) {
       const r = projSelClick(projLib.sel, projLib.anchor, projShown().map((c) => c.id), d.item, { ctrl: d.ctrl, shift: d.shift });
       projLib.sel = r.sel;
       projLib.anchor = r.anchor;
+      if (projLib.sel.includes(d.item)) projPvShow(d.item); // one click previews it at the top of the list (0.1.40)
     } else if (!d.ctrl && !d.shift) { projLib.sel = []; projLib.anchor = null; }
     return projPaintSel();
   }
@@ -950,6 +1258,11 @@ function projDragEnd(drop) {
 function projKey(e) {
   const aside = projPanel();
   const at = document.activeElement;
+  // The clicked clip's preview (0.1.40): Space with the pointer over it plays / pauses it; Esc hides it.
+  if (aside && projPv.id && projPvEl() && !projPvEl().hidden && !e.ctrlKey && !e.altKey && !e.metaKey && !at?.matches?.("input, textarea, select")) {
+    if (e.code === "Space" && projPv.over) { if (!e.repeat) projPvToggle(); return true; }
+    if (e.code === "Escape") { projPvClose(); return true; }
+  }
   if (!aside || !at || !aside.contains(at)) return false;
   if (at.classList.contains("pj-q")) {
     if (e.code === "Escape") { if (at.value) { at.value = ""; projLib.q = ""; projRenderList(); } else at.blur(); return true; }
@@ -968,6 +1281,7 @@ function projKey(e) {
     projLib.sel = r.sel;
     projLib.anchor = e.shiftKey ? projLib.anchor ?? next : next;
     projPaintSel();
+    if (projPv.id && !e.shiftKey) projPvShow(next); // an open preview follows the arrows
     aside.querySelector(`.pj-item[data-pjc="${CSS.escape(next)}"]`)?.scrollIntoView?.({ block: "nearest" });
     return true;
   }

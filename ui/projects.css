@@ -80,3 +80,25 @@ body.pj-dragging #modal .e-tl, body.pj-dragging #modal .player, body.pj-dragging
 .pj-pv-cap { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 32px; padding: 0 10px; background: var(--raised); font-size: 12px; }
 .pj-pv-cap > b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .pj-pv-cap > span { flex: none; color: var(--muted); font: 600 11.5px var(--mono); }
+
+/* 0.1.40: a single clip's Library list shows only while editing (the plain viewer has no room for it). */
+.viewer:not(.editing) > .pj-lib.pj-single, .viewer:not(.ws) > .pj-lib.pj-single { display: none; }
+
+/* 0.1.40: the clicked clip's preview at the top of the list: its own small player with a seek bar. */
+.pj-pv { flex: none; margin: 0 10px 8px; padding: 8px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--raised); }
+.pj-pv[hidden] { display: none; }
+.pj-pv-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.pj-pv-title { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pj-pv-x { flex: none; width: 24px; height: 24px; }
+.pj-pv-pic { position: relative; border-radius: 6px; overflow: hidden; background: #000; cursor: pointer; }
+.pj-pv-pic video { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; }
+.pj-pv-bar { position: relative; height: 16px; margin: 6px 2px 0; cursor: pointer; touch-action: none; }
+.pj-pv-bar::before, .pj-pv-buf, .pj-pv-fill { content: ""; position: absolute; left: 0; top: 6px; height: 4px; border-radius: 2px; }
+.pj-pv-bar::before { right: 0; background: var(--line-2); }
+.pj-pv-buf { background: color-mix(in srgb, var(--text) 22%, transparent); }
+.pj-pv-fill { background: var(--accent); }
+.pj-pv-knob { position: absolute; top: 3px; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--raised); }
+.pj-pv-row { display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; }
+.pj-pv-play { flex: none; width: 26px; height: 26px; }
+.pj-pv-time { color: var(--muted); font: 600 11.5px var(--mono); }
+.pj-pv-add { width: 100%; }

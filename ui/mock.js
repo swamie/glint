@@ -518,6 +518,28 @@ if (!window.__TAURI__) {
             window.__mockEmit("clips-changed", "");
             return n - 1;
           }
+          // 0.1.40: video files dropped into the editor (import.rs import_files). A path already in the library gives
+          // its clip (known); a new video becomes a library clip that plays the real test video
+          // ("/__test.mp4?src=<id>", 12 s); a name with "broken" is unreadable; anything else is "not a video".
+          case "import_files": {
+            await new Promise((r) => setTimeout(r, 120));
+            const out = [];
+            let made = 0;
+            for (const path of args.paths || []) {
+              const known = clips.find((c) => c.srcPath === path || c.path === path);
+              if (known) { out.push({ path, clip: { ...known }, known: true, error: "" }); continue; }
+              if (!/\.(mp4|mkv|mov|webm|avi|m4v|flv|ts|wmv)$/i.test(path)) { out.push({ path, clip: null, known: false, error: "not a video" }); continue; }
+              if (/broken/i.test(path)) { out.push({ path, clip: null, known: false, error: "not a readable video" }); continue; }
+              const id = "d" + (++mockProj.seq) + "-" + clips.length;
+              const title = path.split(/[\\/]/).pop().replace(/\.[^.]+$/, "");
+              const c = clip(0, title, "Imported", 1, 12, { id, kind: "import", path: `/__test.mp4?src=${id}`, srcPath: path, folder: String(args.folder || ""), width: 1920, height: 1080 });
+              clips.push(c);
+              made++;
+              out.push({ path, clip: { ...c }, known: false, error: "" });
+            }
+            if (made) window.__mockEmit("clips-changed", "");
+            return out;
+          }
           // Updates: the first manual check finds nothing new, the second finds 0.2.0 (window.__mockUpdate = true skips ahead).
           case "update_state": return { current: "0.1.8", latest: "0.1.8", available: false, error: "", checked: 0 };
           case "update_check": {
@@ -814,4 +836,12 @@ if (!window.__TAURI__) {
   };
   // Fire a backend event by hand: window.__mockEmit("blur-progress", { id, pct, state, message }).
   window.__mockEmit = (name, payload) => (listeners[name] || []).forEach((fn) => fn({ payload }));
+  // 0.1.40: a file drop, as Tauri sends it: window.__mockDrop(["C:\\clips\\a.mp4"], x, y) with x / y in CSS px of the
+  // window (Tauri's position is in physical px: multiplied by devicePixelRatio here). Calls the editor's listeners.
+  window.__mockDrop = (paths, x = 0, y = 0) => {
+    const k = window.devicePixelRatio || 1, position = { x: x * k, y: y * k };
+    window.__mockEmit("tauri://drag-enter", { paths, position });
+    window.__mockEmit("tauri://drag-over", { position });
+    window.__mockEmit("tauri://drag-drop", { paths, position });
+  };
 }

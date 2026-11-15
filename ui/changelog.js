@@ -14,6 +14,17 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.40", date: "2026-11-16",
+    new: [
+      t("Drop video files into the editor to add them. They are imported into your Library and placed on the timeline where you drop them. Dropped on a single clip, they make it a project and your edit stays as it is."),
+      t("Click a clip in the editor's Library list to preview it, with play and scrubbing. Double-click it to add it to the timeline."),
+      t("Exporting a timeline with a gap asks first: go back to it, or export with black there."),
+    ],
+    fixed: [
+      t("The selection box on the timeline slid away toward the corner when you let go. It now fades where it is and looks like the Library's."),
+    ],
+  },
+  {
     version: "0.1.39", date: "2026-11-16",
     new: [
       t("Ungroup with U. Select a clip on the timeline and press U: its picture and each of its sounds (Desktop, Mic, Game) become separate clips. Move, trim, split or delete each one alone; what you hear does not change until you do."),

@@ -737,6 +737,14 @@ fn import_run(core: St, items: Vec<crate::import::Found>, copy: bool, place: Opt
     crate::import::run(core.inner(), items, copy, place.as_deref(), folder.as_deref())
 }
 
+/// Video files dropped into the editor (0.1.40, import.rs `import_files`): each imported as the Import page
+/// does (or its library clip when it is in already), in the order given, into library folder `folder` ("" = none).
+#[tauri::command(async)]
+fn import_files(core: St, paths: Vec<String>, copy: bool, folder: Option<String>) -> Result<Vec<crate::import::Dropped>, String> {
+    let _working = crate::update::working(); // no automatic update restart meanwhile
+    crate::import::import_files(core.inner(), paths, copy, folder.as_deref().unwrap_or(""))
+}
+
 #[tauri::command(async)]
 fn pick_import_folder() -> Option<String> {
     rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().into_owned())
@@ -978,6 +986,7 @@ pub fn run(minimized: bool) {
             import_sources,
             import_scan,
             import_run,
+            import_files,
             pick_import_folder,
             export_clip,
             export_project,

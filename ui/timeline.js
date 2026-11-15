@@ -2638,11 +2638,16 @@ function mountTimeline(host, opts) {  const m = opts.model;
     const bx1 = e.clientX - lr.left + st.scrollX, by1 = e.clientY - lr.top;
     const rowsTop = el.rows.offsetTop, rowsBot = rowsTop + el.rows.offsetHeight;
     const left = Math.max(0, Math.min(d.bx0, bx1) - st.scrollX), right = Math.min(st.laneW, Math.max(d.bx0, bx1) - st.scrollX);
-    const top = Math.max(rowsTop, Math.min(d.by0, by1)), bot = Math.min(rowsBot, Math.max(d.by0, by1));
+    // Drawn only where the rows are in view (0.1.40): not over the ruler, which stays on top while the rows scroll.
+    const vTop = el.body.scrollTop + tlRulerH, vBot = el.body.scrollTop + el.body.clientHeight;
+    const top = Math.max(rowsTop, vTop, Math.min(d.by0, by1)), bot = Math.max(top, Math.min(rowsBot, vBot, Math.max(d.by0, by1)));
     clearTimeout(st.bandTimer);
     el.band.classList.remove("out");
     el.band.hidden = false;
-    el.band.style.transform = `translate(${left}px, ${top}px)`;
+    // Placed with left / top (0.1.40): with a translate, the fade's scale shrank it toward the lanes' top left, so on
+    // release it slid away instead of shrinking in place like the Library's marquee.
+    el.band.style.left = `${left}px`;
+    el.band.style.top = `${top}px`;
     el.band.style.width = `${Math.max(0, right - left)}px`;
     el.band.style.height = `${Math.max(0, bot - top)}px`;
     const rows = st.lanes.map((L) => ({ id: L.id, y0: L.el.offsetTop, y1: L.el.offsetTop + L.h, pieces: lanePieces(L.id) }));
@@ -2657,10 +2662,19 @@ function mountTimeline(host, opts) {  const m = opts.model;
     let v = 0;
     if (x < zone) v = -Math.ceil((zone - x) / 2);
     else if (x > st.laneW - zone) v = Math.ceil((x - (st.laneW - zone)) / 2);
-    if (!v) return;
-    const before = st.scrollX;
-    setScroll(st.scrollX + Math.max(-40, Math.min(40, v)));
-    if (st.scrollX !== before) apply(d, e);
+    // 0.1.40: rows taller than the timeline: a rubber band (or a clip) dragged near the top or the bottom of the rows
+    // scrolls them up or down, so rows out of view can be reached (before, the band stopped at the visible rows).
+    let vy = 0;
+    if (d.type === "band" || d.type === "move") {
+      const br = el.body.getBoundingClientRect(), top = br.top + tlRulerH, y = e.clientY;
+      if (y < top + 18 && el.body.scrollTop > 0) vy = -Math.ceil((top + 18 - y) / 2);
+      else if (y > br.bottom - 18 && el.body.scrollTop + el.body.clientHeight < el.body.scrollHeight) vy = Math.ceil((y - (br.bottom - 18)) / 2);
+    }
+    if (!v && !vy) return;
+    const before = st.scrollX, beforeY = el.body.scrollTop;
+    if (v) setScroll(st.scrollX + Math.max(-40, Math.min(40, v)));
+    if (vy) el.body.scrollTop += Math.max(-30, Math.min(30, vy));
+    if (st.scrollX !== before || el.body.scrollTop !== beforeY) apply(d, e);
   }
   function onUp(e) {
     const d = st.drag;
