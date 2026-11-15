@@ -14,6 +14,17 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.39", date: "2026-11-16",
+    new: [
+      t("Ungroup with U. Select a clip on the timeline and press U: its picture and each of its sounds (Desktop, Mic, Game) become separate clips. Move, trim, split or delete each one alone; what you hear does not change until you do."),
+      t("Group with G. Select two or more clips (picture, sound, or both) and press G: they are selected, moved, split, trimmed and deleted together. U breaks the group apart again."),
+      t("Audio clips go on any audio track. Drag a song or an ungrouped sound up or down onto any audio row, or below the last row for a new one. A row can hold several clips, and its mute and level act on all of them. Audio never drops onto a video row."),
+    ],
+    improved: [
+      t("The ends of an audio clip are handles, like a video piece: drag inward to trim, back out to restore as far as the file has sound."),
+    ],
+  },
+  {
     version: "0.1.38", date: "2026-11-16",
     new: [
       t("Projects use your original clips directly. A project is now only the list of its clips and your edit: adding clips is instant, no joined copy is made, and a project takes almost no disk space."),

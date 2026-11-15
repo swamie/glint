@@ -17,16 +17,19 @@ if (!dir) { console.error("usage: node tools/e2e-scenarios.js <folder> [editmode
 fs.mkdirSync(dir, { recursive: true });
 for (const f of fs.readdirSync(dir)) if (/^(s\d+.*|clip)\.json$/.test(f)) fs.unlinkSync(path.join(dir, f));
 // E2E_MODEL=<file> plays the scenarios on another copy of the model (an older release); default: the app's own.
-const em = require(process.env.E2E_MODEL ? path.resolve(process.env.E2E_MODEL) : path.join(__dirname, "..", "ui", "editmodel.js"));
+const modelFile = process.env.E2E_MODEL ? path.resolve(process.env.E2E_MODEL) : path.join(__dirname, "..", "ui", "editmodel.js");
+const em = require(modelFile);
+// Which model played the scenarios, said as it is (no release number written in here).
+const modelName = () => `${process.env.E2E_MODEL ? path.basename(modelFile) : "ui/editmodel.js"}${hasNew ? "" : ", 0.1.36 functions"}`;
 const oldPath = process.argv[3];
 const old = oldPath && fs.existsSync(oldPath) ? require(path.resolve(oldPath)) : null;
 
 // ---- The synthetic clip, written down once: the Rust half reads clip.json and makes exactly this.
 // A white bar 8 px wide moves across a black 640x360 picture: at source second s its left edge is at
 // x = trunc(s * (width - 8) / duration). The tracks are titled as a Glint clip's; Mix and Desktop are a `tone` Hz sine,
-// the microphone is silent (so Mix = Desktop + Microphone holds the tone once, as a real clip's mix does). A project is the same
+// the microphone has its own tone (req, 0.1.39: so each row's sound can be told apart). A project is the same
 // file seen as two library clips joined: A = 0..10, B = 10..20.
-const CLIP = { duration: 20, width: 640, height: 360, fps: 30, bar: 8, tone: 1000, tracks: [{ title: "Mix", tone: true }, { title: "Desktop", tone: true }, { title: "Microphone", tone: false }], parts: [{ src: 0, len: 10, title: "A" }, { src: 10, len: 10, title: "B" }], song: { file: "song.wav", freq: 400, duration: 6 },
+const CLIP = { duration: 20, width: 640, height: 360, fps: 30, bar: 8, tone: 1000, tracks: [{ title: "Mix", tone: true }, { title: "Desktop", tone: true }, { title: "Microphone", tone: true, freq: 2500 }], parts: [{ src: 0, len: 10, title: "A" }, { src: 10, len: 10, title: "B" }], song: { file: "song.wav", freq: 400, duration: 6 },
   // 0.1.38: separate clip files for projects. Each draws its bar only in its own third of the picture
   // (`band`), has its own tone; S3 is smaller and has one track only.
   sources: [
@@ -86,7 +89,8 @@ const ops = {
 };
 
 // ---- Expectations from a layout written by hand: [{ src, len } | { gap }], the speed, the tail (OUTPUT s).
-function expect(layout, { speed = 1, tail = 0, song = null, kind = "" } = {}) {
+function expect(layout, { speed = 1, tail = 0, song = null, kind = "", tones: given = null, error = "" } = {}) {
+  if (error) return { duration: 0, kind: "", frames: [], tones: [], error };
   const frames = [], tones = [];
   let tl = 0;
   const out = (x) => +(x / speed).toFixed(4);
@@ -105,7 +109,7 @@ function expect(layout, { speed = 1, tail = 0, song = null, kind = "" } = {}) {
     if (tail > 0.5) tones.push({ freq: CLIP.tone, from: +(video + 0.15).toFixed(4), to: +(video + tail - 0.15).toFixed(4), heard: false });
   }
   if (song) tones.push({ freq: CLIP.song.freq, from: song.from, to: song.to, heard: true });
-  return { duration: +(video + tail).toFixed(4), kind, frames, tones };
+  return { duration: +(video + tail).toFixed(4), kind, frames, tones: given || tones };
 }
 
 const files = [];
@@ -127,7 +131,7 @@ function scenario(name, build, layoutOf, opts = {}) {
     const hand = layoutOf.map((it) => (it.gap !== undefined ? { gap: +it.gap.toFixed(3) } : { src: +it.src.toFixed(3), len: +it.len.toFixed(3) }));
     check("emPieceList is the layout of the scenario", JSON.stringify(row) === JSON.stringify(hand), `${JSON.stringify(row)} vs ${JSON.stringify(hand)}`);
   }
-  files.push({ name, checks, opts: em.emToOpts(m), expect: want, model: hasNew ? "0.1.37" : "0.1.36 functions" });
+  files.push({ name, checks, opts: em.emToOpts(m), expect: want, model: modelName() });
 }
 
 const S = CLIP.duration;
@@ -335,7 +339,7 @@ function projectScenario(name, names, build, layout, opts = {}, missingNames = [
     const hand = layout.map((it) => (it.gap !== undefined ? { gap: +it.gap.toFixed(3) } : { src: +(pm.starts[it.k] + it.s).toFixed(3), len: +it.len.toFixed(3) }));
     check("emPieceList is the layout of the scenario (project time)", JSON.stringify(row) === JSON.stringify(hand), `${JSON.stringify(row)} vs ${JSON.stringify(hand)}`);
   }
-  files.push({ name, checks, opts: em.emToOpts(pm.m), expect: projectExpect(names, layout, opts), project: { sources: names, missing: missingNames }, model: hasNew ? "0.1.37+" : "0.1.36 functions" });
+  files.push({ name, checks, opts: em.emToOpts(pm.m), expect: projectExpect(names, layout, opts), project: { sources: names, missing: missingNames }, model: modelName() });
 }
 if (hasNew) {
   const piece = (m, t) => em.emPieceAt(m, t);
@@ -413,7 +417,129 @@ if (hasNew) {
     return true;
   }, [], { error: "no-such-song.wav", joined: true });
 }
-if (missing.length) console.log(`note: not in ui/editmodel.js yet: ${missing.join(", ")} (0.1.36 functions used; scenarios that need them left out)`);
+// ---- 0.1.39: ungroup (U), group (G), audio clips on any audio row. On the single clip the rows are Desktop
+// (1000 Hz, stream 1) and Microphone (2500 Hz, stream 2); an ungrouped piece's sound names the clip's own file,
+// which the Rust half knows as "<clip>" (a project's source file: "<source:NAME>").
+const N139 = ["emUngroup", "emGroup", "emGroupOf", "emClipList", "emMoveClip", "emTrimClip", "emSplitClip", "emRemoveClip", "emLanes"];
+const has139 = N139.every((n) => typeof em[n] === "function");
+const D = 1000, MIC = 2500;
+const heard = (freq, from, to, db) => ({ freq, from, to, heard: true, ...(db !== undefined ? { db } : {}) });
+const quiet = (freq, from, to) => ({ freq, from, to, heard: false });
+if (has139) {
+  const one = () => { const m = single(); m.clipPath = "<clip>"; return m; };
+  const seg = (m, t) => ({ row: "video", seg: em.emSegmentAt(m, t) });
+  const row = (m, title) => m.audio.find((r) => r.kind === "track" && r.title === title);
+  const clips = (m) => em.emClipList(m);
+  scenario("ungroup a piece and move its picture: the sound stays", (check) => {
+    const m = one();
+    check("split at 5", em.emSplitAt(m, 5)); check("split at 10", em.emSplitAt(m, 10));
+    const ids = em.emUngroup(m, [seg(m, 7)]);
+    check("two audio clips made (Desktop, Microphone)", ids.length === 2, JSON.stringify(clips(m)));
+    check("each names the clip's file and its own stream", clips(m).every((x) => x.path === "<clip>") && JSON.stringify(clips(m).map((x) => x.stream).sort()) === "[1,2]", JSON.stringify(clips(m)));
+    check("the picture goes to 25", em.emPlacePart(m, em.emPieceAt(m, 7), 25, "Clip"));
+    return m;
+  }, [{ src: 0, len: 5 }, { gap: 5 }, { src: 10, len: 10 }, { gap: 5 }, { src: 5, len: 5 }],
+  { tones: [heard(D, 0.15, 4.85), heard(D, 5.15, 9.85), heard(MIC, 5.15, 9.85), heard(D, 10.15, 19.85), quiet(D, 20.15, 24.85), quiet(D, 25.15, 29.85), quiet(MIC, 25.15, 29.85)] });
+  scenario("ungroup and move the sound later: silence, then the tone late", (check) => {
+    const m = one();
+    const ids = em.emUngroup(m, [seg(m, 1)]);
+    check("two audio clips made", ids.length === 2);
+    for (const id of ids) check("moved to 3", em.emMoveClip(m, id, { at: 3 }));
+    return m;
+  }, [{ src: 0, len: 20 }], { tail: 3, tones: [quiet(D, 0.15, 2.85), quiet(MIC, 0.15, 2.85), heard(D, 3.15, 22.85), heard(MIC, 3.15, 22.85)] });
+  scenario("ungroup, trim the sound's end, then restore it (up to its file and no further)", (check) => {
+    const m = one();
+    const ids = em.emUngroup(m, [seg(m, 1)]);
+    for (const id of ids) {
+      const a = em.emTrimClip(m, id, "end", 12);
+      check("trimmed to 12", a && Math.abs(a.at + a.len - 12) < 1e-6, JSON.stringify(a));
+      const b = em.emTrimClip(m, id, "end", 35);
+      check("restored, it stops at the file's end (20)", b && Math.abs(b.at + b.len - 20) < 1e-6, JSON.stringify(b));
+    }
+    return m;
+  }, [{ src: 0, len: 20 }], { tones: [heard(D, 0.15, 19.85), heard(MIC, 0.15, 19.85)] });
+  scenario("ungroup with the Microphone muted: only Desktop becomes a clip", (check) => {
+    const m = one();
+    row(m, "Microphone").muted = true;
+    const ids = em.emUngroup(m, [seg(m, 1)]);
+    check("one audio clip made, Desktop's", ids.length === 1 && clips(m)[0].stream === 1, JSON.stringify(clips(m)));
+    return m;
+  }, [{ src: 0, len: 20 }], { tones: [heard(D, 0.15, 19.85), quiet(MIC, 0.15, 19.85)] });
+  scenario("delete the picture, keep the sound: the tone over black", (check) => {
+    const m = one();
+    check("split at 10", em.emSplitAt(m, 10));
+    check("ungrouped", em.emUngroup(m, [seg(m, 15)]).length === 2);
+    check("the picture 10..20 removed", em.emRemovePiece(m, em.emPieceAt(m, 15), true));
+    return m;
+  }, [{ src: 0, len: 10 }], { tail: 10, tones: [heard(D, 0.15, 9.85), heard(D, 10.15, 19.85), heard(MIC, 10.15, 19.85)] });
+  const toRow = (level, muted) => (check) => {
+    const m = one();
+    const ids = em.emUngroup(m, [seg(m, 1)]);
+    const desk = clips(m).find((x) => x.stream === 1);
+    check("Desktop's clip onto a new row", desk && em.emMoveClip(m, desk.id, { lane: "new" }));
+    const lane = (m.lanes || []).find((L) => L.id === clips(m).find((x) => x.id === desk.id).lane);
+    check("the new row is an added row", !!lane && em.emLanes(m).some((x) => x.id === lane.id && x.kind === "lane"), JSON.stringify(em.emLanes(m)));
+    if (lane) { lane.volume = level; lane.muted = muted; }
+    check("a video row is refused", em.emMoveClip(m, desk.id, { lane: "video" }) === false);
+    return ids.length ? m : null;
+  };
+  scenario("an ungrouped sound on another row at half level", toRow(0.5, false), [{ src: 0, len: 20 }], { tones: [heard(D, 0.15, 19.85, -6.02), heard(MIC, 0.15, 19.85)] });
+  scenario("an ungrouped sound on another row, that row muted", toRow(1, true), [{ src: 0, len: 20 }], { tones: [quiet(D, 0.15, 19.85), heard(MIC, 0.15, 19.85)] });
+  scenario("group picture and sound again and move the group: as a grouped piece moved", (check) => {
+    const m = one();
+    check("split at 5", em.emSplitAt(m, 5)); check("split at 10", em.emSplitAt(m, 10));
+    const ids = em.emUngroup(m, [seg(m, 7)]);
+    const g = em.emGroup(m, [seg(m, 7), ...ids.map((id) => ({ clip: id }))]);
+    check("grouped (picture + two clips)", g && em.emGroupOf(m, seg(m, 7)).length === 3, JSON.stringify(em.emGroupOf(m, seg(m, 7))));
+    // The timeline moves every member by the same amount: the picture to 25, its clips 20 s later.
+    for (const id of ids) check("a clip of the group moved by 20", em.emMoveClip(m, id, { at: 25 }));
+    check("the picture of the group moved to 25", em.emPlacePart(m, em.emPieceAt(m, 7), 25, "Clip"));
+    return m;
+  }, [{ src: 0, len: 5 }, { gap: 5 }, { src: 10, len: 10 }, { gap: 5 }, { src: 5, len: 5 }],
+  { tones: [heard(D, 0.15, 4.85), quiet(D, 5.15, 9.85), quiet(MIC, 5.15, 9.85), heard(D, 10.15, 19.85), heard(D, 25.15, 29.85), heard(MIC, 25.15, 29.85)] });
+  scenario("two clips over each other on one row: both heard", (check) => {
+    const m = one();
+    const song = em.emAddFile(m, { path: songPath, title: "song", duration: CLIP.song.duration }, 2);
+    check("the song onto the Desktop row", em.emMoveClip(m, song.id, { lane: row(m, "Desktop").id }));
+    check("it lies on the Desktop row", clips(m).find((x) => x.id === song.id)?.lane === row(m, "Desktop").id, JSON.stringify(clips(m)));
+    const ids = em.emUngroup(m, [seg(m, 1)]);
+    check("the clip's own Desktop sound is a clip on that row too", clips(m).filter((x) => x.lane === row(m, "Desktop").id).length === 2, JSON.stringify(clips(m)));
+    return ids.length ? m : null;
+  }, [{ src: 0, len: 20 }], { tones: [heard(CLIP.song.freq, 2.15, 7.85), heard(D, 2.15, 7.85), heard(D, 8.15, 19.85)] });
+  {
+    const checks = [];
+    const m = one();
+    const opts = em.emToOpts(m);
+    opts.audio = [{ source: "file", index: 0, path: "<clip>", stream: 7, offset: 0, trim_start: 0, length: 3, volume: 1, regions: [], through: true }];
+    files.push({ name: "an audio clip naming a stream the file does not have: a clear error, nothing written", checks, opts, expect: expect([], { error: "has no audio track 8" }), model: modelName() });
+  }
+  // A project of separate files where S4 has its tracks in another order (Microphone at 0) and no Mix.
+  const proj = (names) => {
+    const pm = projectModel(names);
+    pm.m.sources = names.map((n, k) => ({ clip: n, title: n, path: `<source:${n}>`, start: pm.starts[k], duration: byName(n).duration, missing: false, tracks: em.emShownTracks(byName(n).tracks.map((t, index) => ({ index, title: t.title }))) }));
+    return pm;
+  };
+  {
+    const pm = proj(["S1", "S4"]), m = pm.m, checks = [];
+    const check = (name, ok, detail = "") => checks.push({ name, ok: !!ok, detail: String(detail) });
+    const ids = em.emUngroup(m, [{ row: "video", seg: em.emSegmentAt(m, 2) }, { row: "video", seg: em.emSegmentAt(m, 10) }]);
+    const cl = clips(m);
+    check("S1's clips: its own file, Desktop stream 1, Microphone stream 2", cl.some((x) => x.path === "<source:S1>" && x.title === "Desktop" && x.stream === 1) && cl.some((x) => x.path === "<source:S1>" && x.title === "Microphone" && x.stream === 2), JSON.stringify(cl));
+    check("S4's clips: its own file, Microphone stream 0, Desktop stream 1", cl.some((x) => x.path === "<source:S4>" && x.title === "Microphone" && x.stream === 0) && cl.some((x) => x.path === "<source:S4>" && x.title === "Desktop" && x.stream === 1), JSON.stringify(cl));
+    check("four clips", ids.length === 4, ids.length);
+    files.push({ name: "project: ungroup where the second clip has other tracks (order, no Mix)", checks, opts: em.emToOpts(m), expect: projectExpect(["S1", "S4"], [{ k: 0, s: 0, len: 8 }, { k: 1, s: 0, len: 6 }], { joined: true, tones: [heard(1000, 0.15, 7.85), quiet(1800, 0.15, 7.85), heard(1800, 8.15, 13.85), quiet(1000, 8.15, 13.85)] }), project: { sources: ["S1", "S4"], missing: [] }, model: modelName() });
+  }
+  {
+    // S2's sound ungrouped and kept, its picture removed; then S2's file is gone: the same clear error as a missing source.
+    const pm = proj(["S1", "S2"]), m = pm.m, checks = [];
+    const check = (name, ok, detail = "") => checks.push({ name, ok: !!ok, detail: String(detail) });
+    check("S2 ungrouped", em.emUngroup(m, [{ row: "video", seg: em.emSegmentAt(m, 10) }]).length > 0);
+    check("S2's picture removed, its sound kept", em.emRemovePiece(m, em.emPieceAt(m, 10), true));
+    files.push({ name: "project: the sound of a missing clip is the clear error of a missing clip", checks, opts: em.emToOpts(m), expect: projectExpect(["S1", "S2"], [], { error: "\"S2\"" }), project: { sources: ["S1", "S2"], missing: ["S2"] }, model: modelName() });
+  }
+} else {
+  files.push({ name: "0.1.39 scenarios (ungroup, group, audio clips on rows)", checks: [{ name: `the model has ${N139.join(", ")}`, ok: false, detail: `missing: ${N139.filter((n) => typeof em[n] !== "function").join(", ")}` }], opts: null, expect: null, model: modelName() });
+}if (missing.length) console.log(`note: not in ui/editmodel.js yet: ${missing.join(", ")} (0.1.36 functions used; scenarios that need them left out)`);
 files.forEach((f, i) => fs.writeFileSync(path.join(dir, `s${String(i + 1).padStart(2, "0")}.json`), JSON.stringify(f, null, 2)));
 const bad = files.reduce((n, f) => n + f.checks.filter((c) => !c.ok).length, 0);
-console.log(`${files.length} scenarios written to ${dir} (${hasNew ? "0.1.37 model" : "0.1.36 functions"}); model checks failing: ${bad}`);
+console.log(`${files.length} scenarios written to ${dir} (model: ${modelName()}); model checks failing: ${bad}`);

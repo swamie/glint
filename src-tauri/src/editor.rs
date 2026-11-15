@@ -113,6 +113,9 @@ pub struct AudioEdit {
     /// and `regions` are then on the RESULT's timeline (seconds of kept video,
     /// before the speed change), and the row is mixed in after the cuts.
     pub through: bool,
+    /// File rows (0.1.39): which audio stream of `path` to mix (0 = the first). `path` may be a video
+    /// file with several (an ungrouped piece's sound is a track of its own clip's file).
+    pub stream: u32,
 }
 
 /// Loudness outline of one audio stream, for drawing a waveform.
@@ -890,7 +893,7 @@ enum Source {
     /// Audio stream `.0` of the clip, which has `.1` channels.
     Track(usize, u32),
     /// `len` seconds of `path` from `seek`, heard from `at` seconds after the first kept range.
-    File { path: String, seek: f64, len: f64, at: f64, channels: u32 },
+    File { path: String, seek: f64, len: f64, at: f64, channels: u32, stream: u32 },
 }
 
 struct MixRow {
@@ -1014,6 +1017,11 @@ fn audio_plan(ffmpeg: &Path, src_path: &Path, opts: &ExportOpts, titles: &[Optio
         match e.source.as_str() {
             "file" => {
                 let info = check_audio_file(ffmpeg, &e.path)?;
+                // The stream it names must be there (a clip's own file has one per track).
+                let Some(&channels) = info.channels.get(e.stream as usize) else {
+                    let name = Path::new(&e.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| e.path.clone());
+                    return Err(format!("The file \"{name}\" has no audio track {} (it has {})", e.stream + 1, info.channels.len()));
+                };
                 let fdur = info.duration;
                 let mut seek = fin(e.trim_start);
                 if fdur > 0.0 {
@@ -1039,7 +1047,7 @@ fn audio_plan(ffmpeg: &Path, src_path: &Path, opts: &ExportOpts, titles: &[Optio
                         .filter(|(a, b, _)| b - a > 1e-4)
                         .collect();
                     file_title = Path::new(&e.path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                    rows.push(MixRow { source: Source::File { path: e.path.clone(), seek, len, at, channels: info.channels[0] }, volume, regions, through: true });
+                    rows.push(MixRow { source: Source::File { path: e.path.clone(), seek, len, at, channels, stream: e.stream }, volume, regions, through: true });
                     continue;
                 }
                 // Placed on the mix timeline; a row that starts before the first
@@ -1055,7 +1063,7 @@ fn audio_plan(ffmpeg: &Path, src_path: &Path, opts: &ExportOpts, titles: &[Optio
                     continue;
                 }
                 file_title = Path::new(&e.path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                rows.push(MixRow { source: Source::File { path: e.path.clone(), seek, len, at, channels: info.channels[0] }, volume, regions, through: false });
+                rows.push(MixRow { source: Source::File { path: e.path.clone(), seek, len, at, channels, stream: e.stream }, volume, regions, through: false });
             }
             "track" => {
                 let i = e.index as usize;
@@ -1999,12 +2007,12 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
                 let gain = gain_filter(row.volume, &row.regions);
                 let chain = match &row.source {
                     Source::Track(i, ch) => format!("[{clip_audio}:a:{i}]{},{gain}[r{j}]", to_stereo(*ch)),
-                    Source::File { path, seek, len, at, channels } => {
+                    Source::File { path, seek, len, at, channels, stream } => {
                         let input = first_file + file_inputs.len();
                         file_inputs.push((path.clone(), *seek, *len));
                         let samples = (at * MIX_RATE as f64).round() as u64;
                         let delay = if samples > 0 { format!(",adelay=delays={samples}S:all=1") } else { String::new() };
-                        format!("[{input}:a:0]{},asetpts=PTS-STARTPTS{delay},{gain}[r{j}]", to_stereo(*channels))
+                        format!("[{input}:a:{stream}]{},asetpts=PTS-STARTPTS{delay},{gain}[r{j}]", to_stereo(*channels))
                     }
                 };
                 graph.push(chain);
@@ -3365,6 +3373,39 @@ fn gap_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, (f_de
     }
 }
 
+/// 0.1.39: `AudioEdit::stream`. The test clip is a video file with three audio streams (Mix, Desktop,
+/// Microphone: tones `f[0]`, `f[1]`, `f[2]`); a file row on that file mixes exactly the stream it names.
+fn stream_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, dir: &Path, f: (u32, u32, u32)) {
+    let freqs = [f.0, f.1, f.2];
+    let refs: Vec<Option<f64>> = (0..3).map(|i| band_db_at(ffmpeg, Path::new(&src.path), i, freqs[i as usize], 0.5, 3.5)).collect();
+    let row = |stream: u32| AudioEdit { source: "file".into(), path: src.path.clone(), stream, offset: 0.0, trim_start: 1.0, length: 3.0, volume: 1.0, through: true, ..Default::default() };
+    for stream in 0..3u32 {
+        match export(s, src, &ExportOpts { segments: vec![Range { start: 0.0, end: 4.0, ..Default::default() }], audio: vec![row(stream)], ..Default::default() }, &mut |_| {}) {
+            Ok(m) => {
+                let p = Path::new(&m.path);
+                let lv: Vec<Option<f64>> = freqs.iter().map(|&fq| band_db_head(ffmpeg, p, 0, fq, 0.3, 2.7)).collect();
+                let own = stream as usize;
+                let ok = titles_of_file(ffmpeg, p).len() == 1
+                    && matches!((refs[own], lv[own]), (Some(r0), Some(v)) if near(v, r0, 2.0))
+                    && (0..3).filter(|&k| k != own).all(|k| matches!((refs[k], lv[k]), (Some(r0), Some(v)) if v < r0 - 30.0 || (freqs[k] == freqs[own])));
+                r.check(&format!("stream {stream} of a video file with three audio streams: its own tone alone"), ok, &format!("levels {lv:?} (each stream alone {refs:?})"));
+            }
+            Err(e) => r.check(&format!("stream {stream} of a video file with three audio streams"), false, &e),
+        }
+    }
+    // A stream the file does not have: a clear error before anything is encoded, nothing written.
+    let count = |d: &Path| fs::read_dir(d).map(|x| x.count()).unwrap_or(0);
+    let before = count(dir);
+    let started = std::time::Instant::now();
+    let bad = export(s, src, &ExportOpts { segments: vec![Range { start: 0.0, end: 4.0, ..Default::default() }], audio: vec![row(3)], ..Default::default() }, &mut |_| {});
+    let ms = started.elapsed().as_millis();
+    let msg = bad.as_ref().err().cloned().unwrap_or_default();
+    r.check("a stream the file does not have is refused before encoding, nothing written", msg.contains("has no audio track 4") && count(dir) == before && ms < 3000, &format!("{msg:?} in {ms} ms"));
+    // Old options without `stream` read it as 0.
+    let old: Result<AudioEdit, _> = serde_json::from_str(r#"{"source":"file","path":"a.mp3","offset":1,"through":true}"#);
+    r.check("an audio entry without `stream` is stream 0", old.is_ok_and(|e| e.stream == 0), "");
+}
+
 /// Audio stream titles of `f` ("" for none).
 fn titles_of_file(ffmpeg: &Path, f: &Path) -> Vec<String> {
     audio_titles(ffmpeg, f).unwrap_or_default().into_iter().map(Option::unwrap_or_default).collect()
@@ -3707,6 +3748,7 @@ fn timeline_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, 
     tail_checks(r, ffmpeg, s, src, dir, (f_desk, f_mic));
     command_checks(r, ffmpeg, s, src, &tone_s);
     gap_checks(r, ffmpeg, s, src, (f_desk, f_mic), &tone_s);
+    stream_checks(r, ffmpeg, s, src, dir, (300, f_desk, f_mic));
     let count_before = fs::read_dir(dir).map(|d| d.count()).unwrap_or(0);
     let started = Instant::now();
     let missing = AudioEdit { path: dir.join("nope-missing.mp3").to_string_lossy().into_owned(), ..file_row.clone() };

@@ -102,7 +102,7 @@ function emSegmentAt(m, t) {
 // The part order is in the snapshot only when there are parts, so a normal clip's snapshots are as before.
 // Overlays and fades likewise, only when there are any.
 const emHasLayers = (m) => !!((m.overlays && m.overlays.length) || m.fadeIn > 0 || m.fadeOut > 0);
-const emState = (m) => JSON.stringify({ cuts: m.cuts, removed: m.removed, audio: m.audio, speed: m.speed, colors: m.colors, blank: m.blank, ...(m.parts ? { parts: m.parts } : {}), ...(emHasLayers(m) ? { ov: m.overlays || [], fi: m.fadeIn || 0, fo: m.fadeOut || 0 } : {}), ...(m.canvas ? { cv: m.canvas } : {}) });
+const emState = (m) => JSON.stringify({ cuts: m.cuts, removed: m.removed, audio: m.audio, speed: m.speed, colors: m.colors, blank: m.blank, ...(m.parts ? { parts: m.parts } : {}), ...(emHasLayers(m) ? { ov: m.overlays || [], fi: m.fadeIn || 0, fo: m.fadeOut || 0 } : {}), ...(m.canvas ? { cv: m.canvas } : {}), ...(m.lanes && m.lanes.length ? { lanes: m.lanes } : {}) });
 function emRestore(m, json) {
   const s = JSON.parse(json);
   m.overlays = Array.isArray(s.ov) ? s.ov : [];
@@ -125,8 +125,10 @@ function emRestore(m, json) {
   m.speed = s.speed;
   m.colors = s.colors;
   m.blank = s.blank;
+  m.lanes = Array.isArray(s.lanes) ? s.lanes : []; // the added audio rows (0.1.39)
   emPiecify(m, true); // an undo step from before 0.1.37 (its bookmarks were already moved with the parts above)
   emRowsThrough(m);   // ... or with a row cut with the video (0.1.38: every file row plays through)
+  emNormLanes(m);     // ... or with file rows that were their own rows (0.1.39: audio clips on rows)
 }
 
 /** Call BEFORE changing the model, so the change can be undone. Clears redo. */
@@ -552,7 +554,7 @@ function emLayGroups(m, groups, order) {
     at += g.part.len;
   });
   // One clip left, from the start of the source, and no gap: back to a plain clip (timeline = source).
-  const whole = order.length === 1 && !order[0].part.gap && Math.abs(order[0].part.src) < EM_EPS && Math.abs(order[0].part.len - (Number.isFinite(m.source) ? m.source : order[0].part.len)) < 1e-6;
+  const whole = order.length === 1 && !order[0].part.gap && !order[0].part.noSound && !order[0].part.group && Math.abs(order[0].part.src) < EM_EPS && Math.abs(order[0].part.len - (Number.isFinite(m.source) ? m.source : order[0].part.len)) < 1e-6;
   m.parts = whole ? null : order.map((g) => g.part);
   m.duration = total;
   Object.assign(m, { cuts, removed, colors, blank });
@@ -1027,6 +1029,7 @@ function emStateSave(m, joins, undo) {
     overlays: m.overlays || [], fadeIn: m.fadeIn || 0, fadeOut: m.fadeOut || 0,
     canvas: m.canvas || null,
     gone: emTracksGone(m).map((x) => x.title), // the clip's own tracks that were deleted, by title
+    ...(m.lanes && m.lanes.length ? { lanes: m.lanes } : {}), // the added audio rows (0.1.39)
   };
   if (undo) { s.undo = m.undo.slice(); s.redo = m.redo.slice(); }
   return JSON.parse(JSON.stringify(s));
@@ -1095,18 +1098,20 @@ function emStateLoad(m, s) {
     if (k >= 0) used.add(k);
     return k >= 0 ? saved[k] : null;
   };
+  const laneIds = new Map(); // a saved track row's id -> the id it has now (clips lie on track rows: 0.1.39)
   const tracks = m.audio.filter((r) => r.kind === "track").map((row) => {
     const old = find(row);
+    if (old) laneIds.set(old.id, row.id);
     return { ...row, volume: old ? Math.min(EM_MAX_GAIN, Math.max(0, old.volume)) : 1, muted: old ? !!old.muted : false, gains: old ? old.gains.slice() : Array(n).fill(1) };
   });
   // Tracks deleted in the saved edit stay deleted (they are known by title, like the rows).
   const gone = Array.isArray(s.gone) ? s.gone.filter((x) => typeof x === "string") : [];
   for (let i = tracks.length - 1; i >= 0; i--) if (gone.includes(tracks[i].title)) tracks.splice(i, 1);
   const sameTracks = used.size === saved.length && tracks.length === saved.length;
-  const files = s.audio.filter((r) => r.kind === "file").map((r) => ({ ...r, gains: r.gains.slice() }));
+  const files = s.audio.filter((r) => r.kind === "file").map((r) => ({ ...r, gains: r.gains.slice(), ...(laneIds.has(r.lane) ? { lane: laneIds.get(r.lane) } : {}) }));
   // With gaps or a lifted piece (0.1.36) the parts say how long the row is; `duration` stays the source's.
-  const whole = Array.isArray(s.parts) && s.parts.length === 1 && !s.parts[0].gap && Math.abs(s.parts[0].src) < 1e-6 && Math.abs(s.parts[0].len - s.duration) < 1e-3;
-  m.parts = Array.isArray(s.parts) && s.parts.length >= 1 && !whole ? s.parts.map((p) => (p.gap ? { src: -1, len: p.len, title: "", gap: true } : { src: p.src, len: p.len, title: p.title })) : null;
+  const whole = Array.isArray(s.parts) && s.parts.length === 1 && !s.parts[0].gap && !s.parts[0].noSound && !s.parts[0].group && Math.abs(s.parts[0].src) < 1e-6 && Math.abs(s.parts[0].len - s.duration) < 1e-3;
+  m.parts = Array.isArray(s.parts) && s.parts.length >= 1 && !whole ? s.parts.map((p) => (p.gap ? { src: -1, len: p.len, title: "", gap: true } : { src: p.src, len: p.len, title: p.title, ...(p.noSound ? { noSound: true } : {}), ...(typeof p.group === "string" ? { group: p.group } : {}) })) : null;
   m.duration = m.parts ? m.parts.reduce((a, p) => a + p.len, 0) : s.duration;
   if (m.parts && (m.parts.some((p) => p.gap) || Math.abs(m.duration - s.duration) > 1e-6)) m.source = s.duration;
   else delete m.source;
@@ -1120,12 +1125,13 @@ function emStateLoad(m, s) {
   m.fadeIn = +s.fadeIn || 0;
   m.fadeOut = +s.fadeOut || 0;
   m.canvas = s.canvas ? JSON.parse(JSON.stringify(s.canvas)) : null;
+  m.lanes = Array.isArray(s.lanes) ? JSON.parse(JSON.stringify(s.lanes)).filter((L) => L && typeof L.id === "string") : [];
   emSetMarks(m, s.marks);
   // The undo history only when the rows are the same ones (their paths are refreshed).
   const keep = (list) => (sameTracks && Array.isArray(list) ? list.filter((x) => typeof x === "string").map((json) => {
     try {
       const o = JSON.parse(json);
-      o.audio = o.audio.map((r) => { if (r.kind !== "track") return r; const now = tracks.find((x) => x.title === r.title && (r.title || x.index === r.index)); return now ? { ...r, id: now.id, index: now.index, path: now.path } : r; });
+      o.audio = o.audio.map((r) => { if (r.kind !== "track") return laneIds.has(r.lane) ? { ...r, lane: laneIds.get(r.lane) } : r; const now = tracks.find((x) => x.title === r.title && (r.title || x.index === r.index)); return now ? { ...r, id: now.id, index: now.index, path: now.path } : r; });
       return JSON.stringify(o);
     } catch { return null; }
   }).filter(Boolean) : []);
@@ -1136,6 +1142,7 @@ function emStateLoad(m, s) {
   if (Array.isArray(s.joins) && s.joins.length) m.bounds = [0, ...s.joins.filter((x) => x > EM_EPS && x < s.duration - EM_EPS)];
   emPiecify(m);
   emRowsThrough(m); // 0.1.38: a row that was cut with the video plays through, at the same place
+  emNormLanes(m);   // 0.1.39: a file row saved as its own row gets a row (lane) of its own
   return true;
 }
 
@@ -1375,6 +1382,10 @@ function emGainAt(m, row, t) {
   if (row.muted || !emRowCovers(row, t, m)) return 0;
   const i = emSegmentAt(m, t);
   if (emGameHidden(m, row, i)) return 0;
+  // 0.1.39: an audio clip is heard at its own level times its row's (and not on a muted row); a track row is silent
+  // over a piece whose sound was ungrouped (that sound is a clip now).
+  if (row.kind === "file") { const L = emLaneOf(m, row.lane); if (L && L.muted) return 0; return row.volume * (L ? L.volume : 1) * (row.gains[i] ?? 1); }
+  if (emSegNoSound(m, i)) return 0;
   return row.volume * row.gains[i];
 }
 
@@ -1432,15 +1443,22 @@ function emAddFile(m, info, at = 0) {
     fileDuration: info.duration,
   };
   m.audio.push(row);
+  row.lane = emNewLane(m, row.title).id; // its own row (0.1.39: a row may hold several clips)
   return row;
 }
 
 /** Remove an added file row. The clip's own tracks cannot be removed (mute them instead). */
 function emRemoveRow(m, id) {
   // Any row: an added file, or one of the clip's own tracks (0.1.33). A deleted track is not in the export.
+  // 0.1.39: an added row (m.lanes) goes with every clip on it; a deleted track row's clips get a row of their own.
+  const li = (m.lanes || []).findIndex((L) => L.id === id);
+  if (li >= 0) { m.lanes.splice(li, 1); m.audio = m.audio.filter((r) => !(r.kind === "file" && r.lane === id)); return true; }
   const at = m.audio.findIndex((r) => r.id === id);
   if (at < 0) return false;
+  const row = m.audio[at];
   m.audio.splice(at, 1);
+  if (row.kind === "track") for (const c of m.audio) if (c.kind === "file" && c.lane === id) c.lane = emNewLane(m, row.title).id;
+  if (row.kind === "file") emDropEmptyLanes(m);
   return true;
 }
 /** The clip's own tracks whose row was deleted: [{ index, title }]. */
@@ -1471,11 +1489,202 @@ function emPlaceFile(m, id, change) {
 function emSlipFile(m, id, delta) {
   const row = emRow(m, id);
   if (!row || row.kind !== "file" || !Number.isFinite(delta)) return false;
-  const hi = Math.max(0, row.fileDuration - row.length);
-  const next = Math.round(Math.min(hi, Math.max(0, row.trimStart + delta)) * 1000) / 1000;
+  const lo = Number.isFinite(row.fileLo) ? row.fileLo : 0, hi = Math.max(lo, (Number.isFinite(row.fileHi) ? row.fileHi : row.fileDuration) - row.length);
+  const next = Math.round(Math.min(hi, Math.max(lo, row.trimStart + delta)) * 1000) / 1000;
   if (Math.abs(next - row.trimStart) < 1e-9) return false;
   row.trimStart = next;
   return true;
+}
+
+/* ---------- audio clips on rows, ungroup and group (0.1.39) ----------
+ * An audio CLIP is a file row (kind "file" in m.audio) that lies on a row: `lane` = a track row's id (Desktop, Mic,
+ * Game: the clip's own sound rows) or an added row of m.lanes ({ id, kind: "lane", title, volume, muted }). A row may
+ * hold several clips, also over each other; its mute and level act on everything on it. A clip has `path` + `stream`
+ * (the file and its audio stream), `clip` (the preview's per-track sound: a library clip id, "" the opened clip),
+ * and may have `fileLo` / `fileHi` (how far its ends can be pulled in the file; default the whole file).
+ * A piece (part) with `noSound` is a picture whose own sound was ungrouped: the track rows are silent over it.
+ * `group`: a group id on parts and clips; members are selected, moved, split, trimmed and deleted together. */
+let emIdSeq = 0;
+const emNewId = (p) => `${p}${Date.now().toString(36)}${(emIdSeq++).toString(36)}`;
+/** The row `id` (a track row or an added row), or null. */
+const emLaneOf = (m, id) => (id ? (m.lanes || []).find((L) => L.id === id) || m.audio.find((r) => r.kind === "track" && r.id === id) || null : null);
+/** A new, empty added row at the bottom. */
+function emNewLane(m, title) {
+  const L = { id: emNewId("L"), kind: "lane", title: String(title || ""), volume: 1, muted: false };
+  (m.lanes ||= []).push(L);
+  return L;
+}
+/** Added rows that hold no clip any more go away (a track row stays). */
+function emDropEmptyLanes(m) {
+  if (!m.lanes) return;
+  m.lanes = m.lanes.filter((L) => m.audio.some((r) => r.kind === "file" && r.lane === L.id));
+}
+/** File rows from before 0.1.39 (each its own row) get a row of their own that takes the row's level and mute (the
+ *  clip keeps level 1): what is heard and what emToOpts sends stay the same. */
+function emNormLanes(m) {
+  m.lanes = Array.isArray(m.lanes) ? m.lanes : [];
+  for (const r of m.audio) {
+    if (r.kind !== "file" || emLaneOf(m, r.lane)) continue;
+    const L = emNewLane(m, r.title);
+    L.volume = Number.isFinite(r.volume) ? r.volume : 1;
+    L.muted = !!r.muted;
+    r.volume = 1;
+    r.muted = false;
+    r.lane = L.id;
+  }
+  emDropEmptyLanes(m);
+}
+/** The audio rows in display order: the clip's own track rows, then the added rows. */
+const emLanes = (m) => [
+  ...m.audio.filter((r) => r.kind === "track").map((r) => ({ id: r.id, kind: "track", title: r.title, muted: !!r.muted, volume: r.volume })),
+  ...(m.lanes || []).map((L) => ({ id: L.id, kind: "lane", title: L.title, muted: !!L.muted, volume: L.volume })),
+];
+/** How far a clip's file reaches: [lo, hi] file seconds. */
+const emClipFile = (r) => [Number.isFinite(r.fileLo) ? r.fileLo : 0, Number.isFinite(r.fileHi) ? r.fileHi : r.fileDuration];
+/** Every audio clip: [{ id, lane, at, len, path, stream, title, group, lo, hi }]; lo / hi = timeline seconds its ends can be pulled to. */
+function emClipList(m) {
+  return m.audio.filter((r) => r.kind === "file").map((r) => {
+    const [flo, fhi] = emClipFile(r), len = emRowEnd(m, r) - r.offset;
+    return { id: r.id, lane: r.lane, at: r.offset, len, path: r.path, stream: r.stream || 0, title: r.title, group: r.group || null, lo: r.offset - (r.trimStart - flo), hi: r.offset + (fhi - r.trimStart) };
+  });
+}
+/** Move clip `id` to timeline second `at` (not before 0) and/or onto row `lane` (a track or added row id, or "new"
+ *  for a new row at the bottom). A video row is refused (false). An added row left empty goes away. */
+function emMoveClip(m, id, to) {
+  const r = emRow(m, id);
+  if (!r || r.kind !== "file" || !to) return false;
+  if (to.lane !== undefined && to.lane !== r.lane) {
+    if (to.lane === "new") r.lane = emNewLane(m, r.title).id;
+    else if (emLaneOf(m, to.lane)) r.lane = to.lane;
+    else return false; // V1, V2 ...: no audio there
+  }
+  if (Number.isFinite(to.at)) r.offset = Math.max(0, to.at);
+  emDropEmptyLanes(m);
+  return true;
+}
+/** Move one end of clip `id` ("start" | "end") to timeline second `time`: inward it trims, outward it brings back
+ *  sound as far as its file has any. Returns its new { at, len }, or null. */
+function emTrimClip(m, id, side, time) {
+  const r = emRow(m, id);
+  if (!r || r.kind !== "file" || !Number.isFinite(time)) return null;
+  const [flo, fhi] = emClipFile(r), end = r.offset + r.length;
+  if (side === "start") {
+    const at = Math.max(0, r.offset - (r.trimStart - flo), Math.min(end - EM_MIN_SEG, time));
+    r.trimStart += at - r.offset;
+    r.length = end - at;
+    r.offset = at;
+  } else if (side === "end") r.length = Math.max(EM_MIN_SEG, Math.min(fhi - r.trimStart, time - r.offset));
+  else return null;
+  return { at: r.offset, len: r.length };
+}
+/** Split clip `id` at timeline second `time` (both halves at least EM_MIN_SEG). True if it became two. */
+function emSplitClip(m, id, time) {
+  const r = emRow(m, id);
+  if (!r || r.kind !== "file" || time - r.offset < EM_MIN_SEG - EM_EPS || r.offset + r.length - time < EM_MIN_SEG - EM_EPS) return false;
+  const d = time - r.offset, b = { ...r, id: emNewId("f"), gains: r.gains.slice(), offset: time, trimStart: r.trimStart + d, length: r.length - d };
+  r.length = d;
+  m.audio.splice(m.audio.indexOf(r) + 1, 0, b);
+  return true;
+}
+/** Remove clip `id` (an added row left empty goes away). */
+function emRemoveClip(m, id) {
+  const i = m.audio.findIndex((r) => r.id === id && r.kind === "file");
+  if (i < 0) return false;
+  m.audio.splice(i, 1);
+  emDropEmptyLanes(m);
+  emTidyGroups(m);
+  return true;
+}
+/** True if segment `i` is a piece whose own sound was ungrouped. */
+const emSegNoSound = (m, i) => !!m.parts && !!m.parts[emPartAt(m, emSegments(m)[i] ? (emSegments(m)[i].start + emSegments(m)[i].end) / 2 : -1)]?.noSound;
+/** A group with fewer than two members left is no group. */
+function emTidyGroups(m) {
+  const n = new Map(), all = [...(m.parts || []), ...m.audio.filter((r) => r.kind === "file")];
+  for (const x of all) if (x.group) n.set(x.group, (n.get(x.group) || 0) + 1);
+  for (const x of all) if (x.group && n.get(x.group) < 2) delete x.group;
+}
+/** The thing an item names: { part } for { row: "video", seg } (pieces form), { row } for { clip } or { row: <clip id> }. */
+function emItemOf(m, it) {
+  if (!it) return null;
+  if (it.clip || (it.row && it.row !== "video")) { const r = emRow(m, it.clip || it.row); return r && r.kind === "file" ? { row: r } : null; }
+  if (it.row === "video" && Number.isInteger(it.seg)) {
+    const s = emSegments(m)[it.seg];
+    if (!s) return null;
+    emEnsureParts(m);
+    const p = m.parts[emPartAt(m, (s.start + s.end) / 2)];
+    return p && !p.gap ? { part: p } : null;
+  }
+  return null;
+}
+/**
+ * Ungroup (U): every selected piece's picture stays on V1 without its own sound, and each of its tracks heard there
+ * becomes an audio clip on the same row, at the same place, the same stretch of the same file at the level it had:
+ * nothing heard changes. Selected things in a G group leave it. `sels` = [{ row, seg }]. Returns the new clips' ids.
+ * The file: a project that references its clips (m.sources) that clip's own file and stream; else m.clipPath (a
+ * single clip's file, a draft's file) and the track's index. Does not snapshot.
+ */
+function emUngroup(m, sels) {
+  emPiecify(m);
+  const made = [];
+  const segs = emSegments(m);
+  const pieces = new Set();
+  for (const s of sels || []) {
+    const x = emItemOf(m, s.row === "video" ? s : { clip: s.row });
+    if (x?.row) { delete x.row.group; continue; }
+    if (s.row && s.row !== "video") {
+      // A piece of a track row: its piece on V1.
+      const sg = segs[s.seg];
+      if (!sg) continue;
+      const y = emItemOf(m, { row: "video", seg: s.seg });
+      if (y?.part) pieces.add(y.part);
+    } else if (x?.part) pieces.add(x.part);
+  }
+  for (const part of pieces) {
+    delete part.group;
+    if (part.noSound) continue;
+    const P = emParts(m).find((q) => m.parts[q.i] === part);
+    if (!P) continue;
+    const i = emSegmentAt(m, P.at + P.len / 2);
+    const lim = emLimits(m, P.src, P.len);
+    for (const row of m.audio.filter((r) => r.kind === "track")) {
+      if (row.muted || !(row.volume > 0.005) || !((row.gains[i] ?? 1) > 0.005) || emGameHidden(m, row, i)) continue;
+      let path = m.clipPath || "", stream = row.index, trim = P.src, fileDur = emKeepSource(m), flo = lim.lo, fhi = lim.hi, clip = "";
+      if (Array.isArray(m.sources) && m.sources.length) {
+        const k = emSourceAt(m.sources, P.src + P.len / 2), src = m.sources[k];
+        const tr = (src?.tracks || []).find((x) => (x.title || `Track ${x.index + 1}`) === row.title);
+        if (!src || src.missing || !tr) continue; // that clip has no such track
+        path = src.path; stream = tr.index; trim = P.src - src.start; fileDur = src.duration; flo = 0; fhi = src.duration; clip = src.clip || "";
+      }
+      const r = { id: emNewId("f"), kind: "file", path, stream, clip, title: row.title, volume: row.gains[i] ?? 1, muted: false, gains: m.removed.map(() => 1),
+        offset: P.at, trimStart: trim, length: P.len, through: true, fileDuration: fileDur, fileLo: flo, fileHi: fhi, lane: row.id };
+      m.audio.push(r);
+      made.push(r.id);
+    }
+    part.noSound = true;
+  }
+  emTidyGroups(m);
+  return made;
+}
+/** Group (G): pieces on V1 and audio clips, in any mix. Returns the group id, or null for fewer than two. Does not snapshot. */
+function emGroup(m, items) {
+  emPiecify(m);
+  const things = [];
+  for (const it of items || []) { const x = emItemOf(m, it); const o = x?.part || x?.row; if (o && !things.includes(o)) things.push(o); }
+  if (things.length < 2) return null;
+  const id = emNewId("g");
+  for (const o of things) o.group = id;
+  emTidyGroups(m);
+  return id;
+}
+/** Every member of the item's group, as items ({ row: "video", seg } | { clip }); the item alone when it has none. */
+function emGroupOf(m, item) {
+  const x = emItemOf(m, item), o = x?.part || x?.row;
+  if (!o) return [];
+  if (!o.group) return [x.part ? { row: "video", seg: item.seg } : { clip: o.id }];
+  const out = [];
+  emParts(m).forEach((p) => { if (m.parts[p.i].group === o.group) out.push({ row: "video", seg: emSegmentAt(m, p.at + p.len / 2) }); });
+  for (const r of m.audio) if (r.kind === "file" && r.group === o.group) out.push({ clip: r.id });
+  return out;
 }
 
 /* ---------- overlay items on the timeline (0.1.35) ----------
@@ -1514,7 +1723,7 @@ function emTrimOverlay(o, side, at) {
 /* ---------- export ---------- */
 
 /** True if no audio row differs from the clip as recorded (so the export can keep the original tracks). */
-const emAudioUntouched = (m) => !emTracksGone(m).length && m.audio.every((r) => r.kind === "track" && !r.muted && Math.abs(r.volume - 1) < 0.005 && r.gains.every((g, i) => m.removed[i] || Math.abs(g - 1) < 0.005));
+const emAudioUntouched = (m) => !emTracksGone(m).length && !(m.parts || []).some((p) => p.noSound) && m.audio.every((r) => r.kind === "track" && !r.muted && Math.abs(r.volume - 1) < 0.005 && r.gains.every((g, i) => m.removed[i] || Math.abs(g - 1) < 0.005));
 /** True if the edit is nothing but one kept range (one in the source too): the export can cut it without re-encoding. */
 const emIsPlainCut = (m) => !emHasLayers(m) && !m.canvas && emKept(m).length === 1 &&(!m.parts || emSrcSpans(m, emKept(m)[0].start, emKept(m)[0].end).length === 1) && Math.abs(m.speed - 1) < 0.005 && emPieces(m).every((p) => !p.blank && emSameColor(p.color)) && emAudioUntouched(m);
 /** True if the result would differ from the source at all. */
@@ -1552,7 +1761,10 @@ function emToOpts(m) {
   const srcGapOf = (a, b) => (m.parts ? emSrcSpans(m, a, b).map((x) => (x.gap ? { gap: x.len } : { start: x.src, end: x.src + x.len })) : [{ start: a, end: b }]);
   const srcOf = (a, b) => srcGapOf(a, b).filter((x) => !x.gap);
   // A Game row counts as silent where Desktop is heard (see emGameHidden); left out if that is everywhere.
-  const gainOf = (r, i) => (emGameHidden(m, r, i) ? 0 : r.gains[i]);
+  // 0.1.39: a track row is silent over a piece whose sound was ungrouped (that sound is an audio clip now).
+  const gainOf = (r, i) => (emGameHidden(m, r, i) || (r.kind === "track" && emSegNoSound(m, i)) ? 0 : r.gains[i]);
+  // An audio clip's level is its own times its row's; on a muted row it is not sent.
+  const laneVol = (r) => (r.kind === "file" ? emLaneOf(m, r.lane)?.volume ?? 1 : 1), laneMuted = (r) => r.kind === "file" && !!emLaneOf(m, r.lane)?.muted;
   const regionsOf = (r) => segs.filter((s) => !s.removed && Math.abs(gainOf(r, s.i) - 1) >= 0.005)
     .flatMap((s) => srcOf(s.start, s.end).map((x) => ({ start: emRound(x.start), end: emRound(x.end), gain: emRound(gainOf(r, s.i)) })));
   const entries = (r) => {
@@ -1560,10 +1772,11 @@ function emToOpts(m) {
       source: r.kind,
       index: r.kind === "track" ? r.index : 0,
       path: r.kind === "file" ? r.path : "",
+      ...(r.kind === "file" && r.stream > 0 ? { stream: r.stream } : {}), // the audio stream of `path` (0.1.39)
       offset: r.kind === "file" ? emRound(r.offset) : 0,
       trim_start: r.kind === "file" ? emRound(r.trimStart) : 0,
       length: r.kind === "file" ? emRound(r.length) : 0,
-      volume: emRound(r.volume),
+      volume: emRound(r.volume * laneVol(r)),
       regions: regionsOf(r),
     };
     if (r.kind === "file" && r.through) {
@@ -1590,7 +1803,7 @@ function emToOpts(m) {
   };
   const audio = emAudioUntouched(m)
     ? []
-    : m.audio.filter((r) => !r.muted && r.volume > 0.005 && segs.some((s) => !s.removed && gainOf(r, s.i) > 0.005)).flatMap(entries);
+    : m.audio.filter((r) => !r.muted && !laneMuted(r) && r.volume * laneVol(r) > 0.005 && segs.some((s) => !s.removed && gainOf(r, s.i) > 0.005)).flatMap(entries);
   const segments = [];
   for (const p of pieces) for (const x of srcGapOf(p.start, p.end)) {
     if (x.gap) {
@@ -1662,5 +1875,6 @@ if (typeof module !== "undefined" && module.exports) {
     emSourceAt, emProjToFile, emFileToProj, emPieceSource, emShownTracks, emTrackTitles, emJoinPeaks,
     emPieceList, emPieceAt, emSplitAt, emRemovePiece, emTrimPiece, emPieceToItem, emPiecify, emNeedsPieces, emClipBounds, emLimits,
     emHasGaps, emGapAt, emSegIsGap, emKeepSource, emEnsureParts, emSplitPartAt, emPlacePart, emPutBeside, emCloseGap, emCloseGaps, emSetGapLen, emInsertGap, emLiftSeg, emSplitOverlay, emKeyAt, emGroups, emNormGroups, emLayGroups,
+    emUngroup, emGroup, emGroupOf, emClipList, emMoveClip, emTrimClip, emSplitClip, emRemoveClip, emLanes, emLaneOf, emNewLane, emNormLanes, emDropEmptyLanes, emSegNoSound, emTidyGroups,
     emRowEnd, emRowFileAt, emEnd, emTail, emResultDuration, emRowsThrough, emSlipFile, emMoveOverlay, emTrimOverlay, emOvMaxLen, EM_OV_MIN, emSetThrough, emTracksGone, emRemoveRow, emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS, emCanvasOk, emCanvasOpts };
 }

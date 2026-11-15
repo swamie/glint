@@ -230,7 +230,18 @@ pub fn export(s: &Settings, target: &Target, sources: &[Source], opts: &ExportOp
             return Err(format!("The clip \"{}\" of this project is missing (deleted, or its file was moved), so the project cannot be exported", src.title));
         }
     }
-    // The project's track titles: over every source that is there (what a draft of them all had).
+    // 0.1.39: an audio clip that is a source's own sound (an ungrouped piece) names that source's file:
+    // when that file is gone it is the same error as a missing source, before anything is made.
+    for e in opts.audio.iter().filter(|e| e.source == "file") {
+        if Path::new(&e.path).is_file() {
+            continue;
+        }
+        let same = |p: &str| !p.is_empty() && Path::new(p).to_string_lossy().to_lowercase() == Path::new(&e.path).to_string_lossy().to_lowercase();
+        if let Some(src) = sources.iter().find(|x| same(&x.path)) {
+            util::log(&format!("export project {}: the sound of clip {} (\"{}\") is missing", target.id, src.clip, src.title));
+            return Err(format!("The clip \"{}\" of this project is missing (deleted, or its file was moved), so the project cannot be exported", src.title));
+        }
+    }    // The project's track titles: over every source that is there (what a draft of them all had).
     let present: Vec<&Source> = sources.iter().filter(|x| !x.missing && Path::new(&x.path).is_file()).collect();
     let (_, project) = track_titles(&ffmpeg, &present)?;
     let meta_for = |path: &Path, fps: u32| -> ClipMeta {

@@ -57,6 +57,9 @@ struct TrackSpec {
     title: String,
     /// The track is the `tone` (else silent).
     tone: bool,
+    /// 0.1.39: this track's own tone instead of the clip's `tone`.
+    #[serde(default)]
+    freq: Option<u32>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -114,6 +117,8 @@ struct Tone {
     from: f64,
     to: f64,
     heard: bool,
+    /// 0.1.39: heard this many dB from the source's level (a row at half level: -6.02); None = as recorded.
+    db: Option<f64>,
 }
 
 struct Report {
@@ -207,12 +212,25 @@ fn run(r: &mut Report) {
             project_scenario(r, &ffmpeg, &s, &spec, &dir, &work, &label, p, opts, want, ref_song);
             continue;
         }
-        let (Some(opts), Some(want)) = (sc.opts, sc.expect) else {
+        let (Some(mut opts), Some(want)) = (sc.opts, sc.expect) else {
             r.check(&format!("{label}: has options and an expectation"), false, "the model could not make this edit (see above)");
             continue;
         };
+        // 0.1.39: an audio clip of the clip's own sound names its file: the node half writes "<clip>".
+        for e in &mut opts.audio {
+            if e.path == "<clip>" {
+                e.path = src.path.clone();
+            }
+        }
         let started = std::time::Instant::now();
-        let m = match editor::export(&s, &src, &opts, &mut |_| {}) {
+        let before = std::fs::read_dir(&work).map(|d| d.count()).unwrap_or(0);
+        let res = editor::export(&s, &src, &opts, &mut |_| {});
+        if !want.error.is_empty() {
+            let ok = res.as_ref().err().is_some_and(|e| e.contains(&want.error)) && std::fs::read_dir(&work).map(|d| d.count()).unwrap_or(0) == before;
+            r.check(&format!("{label}: fails with \"{}\", nothing written", want.error), ok, &format!("{:?}", res.as_ref().map(|m| m.path.clone())));
+            continue;
+        }
+        let m = match res {
             Ok(m) => m,
             Err(e) => {
                 r.check(&format!("{label}: exports"), false, &e);
@@ -243,10 +261,17 @@ fn run(r: &mut Report) {
         // Sound: heard (within 3 dB of the source) or silent (30 dB under it), on the first track.
         let mut bad: Vec<String> = Vec::new();
         for tn in &want.tones {
-            let reference = if tn.freq == spec.tone { ref_tone } else { ref_song };
+            // The level of that tone as recorded: the clip's tone, the song, or one track's own tone.
+            let reference = if tn.freq == spec.tone {
+                ref_tone
+            } else if tn.freq == spec.song.freq {
+                ref_song
+            } else {
+                spec.tracks.iter().position(|t| t.tone && t.freq == Some(tn.freq)).and_then(|i| band_db(&ffmpeg, Path::new(&src.path), i as u32, tn.freq, 0.5, spec.duration - 0.5))
+            };
             let lv = band_db(&ffmpeg, &out, 0, tn.freq, tn.from, tn.to);
             let ok = match (reference, lv) {
-                (Some(r0), Some(v)) => if tn.heard { (v - r0).abs() <= 3.0 } else { v < r0 - 30.0 },
+                (Some(r0), Some(v)) => if tn.heard { (v - r0 - tn.db.unwrap_or(0.0)).abs() <= if tn.db.is_some() { 1.5 } else { 3.0 } } else { v < r0 - 30.0 },
                 _ => false,
             };
             if !ok {
@@ -267,7 +292,7 @@ fn make_clip(ffmpeg: &Path, spec: &ClipSpec, dir: &Path) -> Option<library::Clip
     let mut cmd = util::hidden_cmd(ffmpeg);
     cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", &video]);
     for t in &spec.tracks {
-        let a = if t.tone { format!("sine=frequency={}:sample_rate=48000:duration={d}", spec.tone) } else { format!("anullsrc=r=48000:cl=stereo,atrim=end={d}") };
+        let a = if t.tone { format!("sine=frequency={}:sample_rate=48000:duration={d}", t.freq.unwrap_or(spec.tone)) } else { format!("anullsrc=r=48000:cl=stereo,atrim=end={d}") };
         cmd.args(["-f", "lavfi", "-i", &a]);
     }
     cmd.args(["-map", "0:v"]);
@@ -373,7 +398,7 @@ fn source_clip(ffmpeg: &Path, sp: &SourceSpec, work: &Path) -> Option<library::C
         let mut cmd = util::hidden_cmd(ffmpeg);
         cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", &video]);
         for t in &sp.tracks {
-            let a = if t.tone { format!("sine=frequency={}:sample_rate=48000:duration={d}", sp.tone) } else { format!("anullsrc=r=48000:cl=stereo,atrim=end={d}") };
+            let a = if t.tone { format!("sine=frequency={}:sample_rate=48000:duration={d}", t.freq.unwrap_or(sp.tone)) } else { format!("anullsrc=r=48000:cl=stereo,atrim=end={d}") };
             cmd.args(["-f", "lavfi", "-i", &a]);
         }
         cmd.args(["-map", "0:v"]);
@@ -441,6 +466,16 @@ fn project_scenario(r: &mut Report, ffmpeg: &Path, s: &Settings, spec: &ClipSpec
         sources.push(Source { clip: meta.id.clone(), title: meta.title.clone(), path: if missing { work.join("gone.mp4").to_string_lossy().into_owned() } else { meta.path.clone() }, duration: sp.duration, start, fps: sp.fps, missing });
         start += sp.duration;
     }
+    // 0.1.39: an audio clip of a source's own sound names its file: the node half writes "<source:NAME>".
+    let mut opts = opts.clone();
+    for e in &mut opts.audio {
+        if let Some(name) = e.path.strip_prefix("<source:").and_then(|x| x.strip_suffix('>')) {
+            if let Some(k) = p.sources.iter().position(|n| n == name) {
+                e.path = sources[k].path.clone();
+            }
+        }
+    }
+    let opts = &opts;
     let target = Target { id: format!("e2e-{}", util::new_id()), title: "E2E project".into(), game: "Desktop".into(), folder: String::new() };
     let results = |w: &Path| std::fs::read_dir(w).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "mp4")).count()).unwrap_or(0);
     let (joins0, files0) = (projexport::JOINS_MADE.load(Ordering::SeqCst), results(work));
@@ -489,14 +524,16 @@ fn project_scenario(r: &mut Report, ffmpeg: &Path, s: &Settings, spec: &ClipSpec
     r.check(&format!("{label}: {} frames show the right source and second, or black", want.frames.len()), bad.is_empty(), &bad.join("; "));
     let mut bad: Vec<String> = Vec::new();
     for tn in &want.tones {
-        let reference = match spec.sources.iter().find(|x| x.tone == tn.freq) {
-            Some(sp) => source_clip(ffmpeg, sp, work).and_then(|c| band_db(ffmpeg, Path::new(&c.path), 0, tn.freq, 0.5, sp.duration - 0.5)),
+        // The source and track that has this tone (a track's own, else the source's on its first track).
+        let found = spec.sources.iter().find_map(|x| x.tracks.iter().position(|t| t.tone && t.freq == Some(tn.freq)).map(|i| (x, i as u32))).or_else(|| spec.sources.iter().find(|x| x.tone == tn.freq).map(|x| (x, 0)));
+        let reference = match found {
+            Some((sp, i)) => source_clip(ffmpeg, sp, work).and_then(|c| band_db(ffmpeg, Path::new(&c.path), i, tn.freq, 0.5, sp.duration - 0.5)),
             None if tn.freq == spec.song.freq => ref_song,
             None => None,
         };
         let lv = band_db(ffmpeg, &out, 0, tn.freq, tn.from, tn.to);
         let ok = match (reference, lv) {
-            (Some(r0), Some(v)) => if tn.heard { (v - r0).abs() <= 3.0 } else { v < r0 - 30.0 },
+            (Some(r0), Some(v)) => if tn.heard { (v - r0 - tn.db.unwrap_or(0.0)).abs() <= if tn.db.is_some() { 1.5 } else { 3.0 } } else { v < r0 - 30.0 },
             _ => false,
         };
         if !ok {

@@ -41,7 +41,7 @@ const ED_LOAD_TIMEOUT = 15000;  // ms an audio element may take to load
 const ED_CHEV = '<svg class="e-chev" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>';
 const ED_ICON_UNFULL = '<svg viewBox="0 0 24 24"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>';
 // Shortcuts that act on the timeline's selection: sent to the timeline's run() when it has one.
-const ED_TL_CMDS = new Set(["split", "remove", "mute", "louder", "quieter", "solo", "blank", "selectAll", "clearSel", "hideCuts", "mark", "markNext", "markPrev", "trimStart", "trimEnd", "lift", "blade"]);
+const ED_TL_CMDS = new Set(["split", "remove", "mute", "louder", "quieter", "solo", "blank", "selectAll", "clearSel", "hideCuts", "mark", "markNext", "markPrev", "trimStart", "trimEnd", "lift", "blade", "ungroup", "group"]);
 /** True if trimming (cmd "trimStart" / "trimEnd") to source time `sec` would leave less than EM_MIN_SEG of the kept span. */
 function edTrimRefused(m, cmd, sec) {
   const b = emTrimBounds(m);
@@ -171,6 +171,8 @@ const ED_KEYS = [
   { group: "Editing", what: "Cut out the selected segment, or restore it", cmd: "remove", once: true, keys: [edCombo("Delete"), edCombo("Backspace")] },
   { group: "Editing", what: "Cut out the selected segment and leave a gap", cmd: "lift", once: true, keys: [edCombo("Delete", { shift: true })] },
   { group: "Editing", what: "Blade: click the video or an overlay to split it there", cmd: "blade", once: true, keys: [edCombo("KeyC")] },
+  { group: "Editing", what: "Ungroup: the selected pieces' sound becomes clips of its own", cmd: "ungroup", once: true, keys: [edCombo("KeyU")] },
+  { group: "Editing", what: "Group the selected pieces and clips", cmd: "group", once: true, keys: [edCombo("KeyG")] },
   { group: "Editing", what: "Mute or unmute the selected audio segment", cmd: "mute", once: true, keys: [edCombo("KeyM")] },
   { group: "Editing", what: "Raise the selected audio segment by 10%", cmd: "louder", keys: [edCombo("ArrowUp")] },
   { group: "Editing", what: "Lower the selected audio segment by 10%", cmd: "quieter", keys: [edCombo("ArrowDown")] },
@@ -1100,6 +1102,25 @@ function mountPlayer(root, c) {
     });
   }
   /** Gives every file row of the model an audio element, and drops elements whose row is gone (undo). */
+  /** An audio clip that is a clip's own track (0.1.39: ungrouped, `clip` set): the per-track file the editor already
+   *  loads for that track (an <audio> on the video file would play its first stream only). Else its own path. */
+  function clipPreviewPath(row) {
+    if (row.clip === undefined || !Number.isFinite(row.stream)) return row.path;
+    if (VS) { const s = VS.find((x) => x.clip === row.clip); const tr = s && (s.tracks || []).find((x) => x.index === row.stream); return tr?.path || row.path; }
+    const tr = P.model?.audio.find((r) => r.kind === "track" && r.index === row.stream);
+    return tr?.path || row.path;
+  }
+  /** Its waveform from the track row's, on the file's own time (a project's track rows are on project time). */
+  function clipTrackWave(row) {
+    if (row.clip === undefined || !Number.isFinite(row.stream) || !P.model) return null;
+    const s = VS ? VS.find((x) => x.clip === row.clip) : null, title = s ? (s.tracks || []).find((x) => x.index === row.stream)?.title : null;
+    const tr = P.model.audio.find((r) => r.kind === "track" && (s ? r.title === title : r.index === row.stream));
+    const w = tr && P.waves.get(tr.id);
+    if (!w || !(w.perSecond > 0)) return null;
+    if (!s) return w;
+    const a = Math.floor(s.start * w.perSecond), b = Math.ceil((s.start + s.duration) * w.perSecond);
+    return { peaks: w.peaks.slice(a, b), perSecond: w.perSecond };
+  }
   function syncRows() {
     const m = P.model;
     if (!m) return;
@@ -1107,7 +1128,7 @@ function mountPlayer(root, c) {
     for (const [id, s] of [...P.src]) if (s.kind === "file" && !files.has(id)) { dropSrc(s); P.src.delete(id); }
     for (const [id, row] of files) {
       if (P.src.has(id)) continue;
-      const s = newSrc(id, "file", row.path, row.title);
+      const s = newSrc(id, "file", clipPreviewPath(row), row.title);
       s.ready.then(() => {
         if (dead || P.src.get(id) !== s) return;
         if (s.state === "failed") flash(t("{name} cannot be played in the preview. The export still includes it.", { name: s.title }), true);
@@ -1115,8 +1136,8 @@ function mountPlayer(root, c) {
         output(true);
         P.ed?.sync("audio");
       });
-      const wave = P.waves.get(id); // a row brought back by redo
-      if (wave) tl((h) => h.setWaveform(id, wave));
+      const wave = P.waves.get(id) || clipTrackWave(row); // a row brought back by redo; an ungrouped sound (0.1.39)
+      if (wave) { P.waves.set(id, wave); tl((h) => h.setWaveform(id, wave)); }
       else {
         // A file row that came back with a saved project has no waveform: read the file's loudness again.
         invoke("editor_audio_info", { path: row.path }).then((info) => {
@@ -1410,6 +1431,7 @@ function mountPlayer(root, c) {
       if (dead) return null;
       const m = emNew(dur(), tracks);
       m.clipTitle = c.title || ""; // a piece of a single clip is named after it (0.1.37)
+      m.clipPath = c.path || "";   // the file an ungrouped piece's sound comes from (0.1.39; a draft: its file)
       // A project's draft: its saved edit comes back (projects.js); false = nothing usable saved.
       let restored = false;
       if (P.draft && typeof projRestore === "function") {
@@ -1472,6 +1494,7 @@ function mountPlayer(root, c) {
     const m = emNew(dur(), []);
     m.clipTitle = c.title || "";
     m.virtual = true; // its ranges never run across two clips' files (emSrcSpans)
+    m.sources = VS;   // an ungrouped piece's sound comes from its own clip's file and stream (0.1.39)
     titleRows(m, emTrackTitles(VS.map((s) => s.tracks)));
     let restored = false;
     if (P.draft && typeof projRestore === "function") {
