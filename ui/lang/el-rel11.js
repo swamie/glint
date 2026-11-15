@@ -163,4 +163,5 @@ glintAddLanguage("el", "Ελληνικά", {
   "Your voice, saved as its own track": "Η φωνή σας, αποθηκευμένη ως ξεχωριστό κομμάτι ήχου",
   "In a window that was not maximized, the editor's player controls (play, the seek bar, volume, speed) did not react to clicks.": "Σε παράθυρο που δεν ήταν μεγιστοποιημένο, τα χειριστήρια αναπαραγωγής του επεξεργαστή (αναπαραγωγή, γραμμή αναζήτησης, ένταση, ταχύτητα) δεν αντιδρούσαν στα κλικ.",
   "The hover sound no longer repeats while the pointer rests on a clip and the list is redrawn.": "Ο ήχος αιώρησης δεν επαναλαμβάνεται πλέον όταν ο δείκτης μένει πάνω σε ένα κλιπ και η λίστα σχεδιάζεται ξανά.",
+  "The GAME / DESKTOP switch is a box like the other top bar buttons, and narrower.": "Ο διακόπτης GAME / DESKTOP είναι πλέον πλαίσιο όπως τα άλλα κουμπιά της επάνω γραμμής, και πιο στενός.",
 });

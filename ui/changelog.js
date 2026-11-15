@@ -14,6 +14,12 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.29", date: "2026-11-15",
+    improved: [
+      t("The GAME / DESKTOP switch is a box like the other top bar buttons, and narrower."),
+    ],
+  },
+  {
     version: "0.1.28", date: "2026-11-15",
     new: [
       t("A GAME / DESKTOP switch in the top bar. DESKTOP records the whole monitor and all the sound, as before. GAME records only the game: its window and its own sound, plus your microphone. Glint finds the game by itself; right-click the switch to pick it by hand or to say “This is not a game”."),

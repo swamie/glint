@@ -163,4 +163,5 @@ glintAddLanguage("ko", "한국어", {
   "Your voice, saved as its own track": "내 목소리를 별도 트랙으로 저장해요",
   "In a window that was not maximized, the editor's player controls (play, the seek bar, volume, speed) did not react to clicks.": "창을 최대화하지 않았을 때 편집기의 플레이어 컨트롤(재생, 탐색 바, 볼륨, 속도)이 클릭에 반응하지 않던 문제를 고쳤어요.",
   "The hover sound no longer repeats while the pointer rests on a clip and the list is redrawn.": "포인터를 클립 위에 올려 둔 채 목록이 다시 그려질 때 호버 소리가 계속 반복되지 않아요.",
+  "The GAME / DESKTOP switch is a box like the other top bar buttons, and narrower.": "GAME / DESKTOP 스위치가 상단 바의 다른 버튼처럼 네모난 모양이 되었고, 폭도 좁아졌어요.",
 });

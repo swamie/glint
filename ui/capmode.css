@@ -1,19 +1,20 @@
 /* The GAME / DESKTOP switch in the top bar (ui/capmode.js, 0.1.27).
-   A pill of two halves of equal width; the chosen half sits on a thumb in the accent color that
+   A box like the top bar's buttons (same height, corners, fill and border), of two halves of equal
+   width; the chosen half sits on a thumb in the accent color that
    slides to the other half (a transform only: nothing around it moves). 30 px high like the top
    bar's buttons. In narrow windows the words give way to two icons, as the clip button's keycaps do. */
 #capmode-slot { display: flex; align-items: center; height: 100%; flex: none; }
 .cm-pill { position: relative; display: grid; grid-template-columns: 1fr 1fr; height: 30px; padding: 2px; box-sizing: border-box;
-  background: var(--panel); border: 1px solid var(--line-2); border-radius: 999px; isolation: isolate; }
+  background: var(--raised); border: 1px solid var(--line-2); border-radius: var(--radius); isolation: isolate; }
 .cm-pill:hover { border-color: color-mix(in srgb, var(--line-2) 72%, var(--text)); }
 /* Half of the padding box less the padding: exactly one half, so translateX(100%) lands on the other. */
-.cm-thumb { position: absolute; z-index: 0; top: 2px; bottom: 2px; left: 2px; width: calc(50% - 2px); border-radius: 999px;
-  background: var(--accent); box-shadow: 0 1px 8px color-mix(in srgb, var(--accent) 30%, transparent);
+.cm-thumb { position: absolute; z-index: 0; top: 2px; bottom: 2px; left: 2px; width: calc(50% - 2px); border-radius: calc(var(--radius) - 2px);
+  background: var(--accent); 
   transform: translateX(100%); transition: transform .2s cubic-bezier(.3, .7, .2, 1); pointer-events: none; }
 .cm-pill.is-game .cm-thumb { transform: translateX(0); }
 .cm-half { position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; height: 100%;
-  padding: 0 12px; border: 0; border-radius: 999px; background: none; color: var(--muted); cursor: pointer; white-space: nowrap;
-  font: 700 11px/1 var(--sans); letter-spacing: .07em; transition: color .2s; }
+  padding: 0 8px; border: 0; border-radius: calc(var(--radius) - 2px); background: none; color: var(--muted); cursor: pointer; white-space: nowrap;
+  font: 700 11px/1 var(--sans); letter-spacing: .03em; transition: color .2s; }
 .cm-half[aria-checked="true"] { color: var(--accent-ink); cursor: default; }
 .cm-half:not([aria-checked="true"]):hover { color: var(--text); }
 .cm-half:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -22,7 +23,7 @@
 .cm-pill.waiting .cm-thumb { animation: cm-breathe 1.8s ease-in-out infinite; }
 @keyframes cm-breathe { 50% { opacity: .55; } }
 @media (max-width: 920px) {
-  .cm-half { padding: 0 9px; }
+  .cm-half { padding: 0 7px; }
   .cm-half svg { display: block; }
   .cm-half .cm-label { display: none; }
 }
