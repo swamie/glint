@@ -69,6 +69,102 @@ function audHint(text, devs, want, none) {
   return out;
 }
 
+/* ---------- the mixer (0.1.32): a fader, a meter and an on / off button per source ---------- */
+
+const AUD_DB_MIN = -40, AUD_DB_MAX = 12; // the fader's range (audio.rs GAIN_DB_MIN / GAIN_DB_MAX)
+const AUD_FLOOR = -60; // the meter's lowest mark, dB
+/** [id, setting that turns the source on, its fader's setting, its name]. */
+const audStrips = () => [
+  ["desktop", "desktop_audio", "desktop_gain_db", t("Desktop audio")],
+  ["mic", "mic", "mic_gain_db", t("Microphone")],
+  ["game", "game_audio", "game_gain_db", t("Game audio")],
+];
+const audDbText = (db) => `${db > 0 ? "+" : ""}${(Math.round(db * 10) / 10).toFixed(1)} dB`;
+/** A level in dB as the filled share of the meter (0..1). */
+const audFill = (db) => Math.min(1, Math.max(0, (db - AUD_FLOOR) / -AUD_FLOOR));
+/** What a meter shows next: the new level, or the old one falling by `fall` dB when the sound got quieter. */
+const audFallTo = (shown, level, fall) => Math.max(level, shown - fall, -120);
+const AUD_METER = { shown: {}, hold: {}, busy: false, timer: 0 };
+
+/** The mixer block at the top of the Audio section. */
+function audMixerHtml() {
+  const s = S.settings, st = S.status || {};
+  const gameMode = s.capture_mode === "game";
+  const marks = [0, -10, -20, -30, -40, -50, -60];
+  const strip = ([id, onKey, gainKey, name]) => {
+    // In GAME mode the desktop is not recorded and the game's own sound always is.
+    const forced = gameMode && id === "game", unused = gameMode && id === "desktop";
+    const on = unused ? false : forced ? true : !!s[onKey];
+    const db = Math.min(AUD_DB_MAX, Math.max(AUD_DB_MIN, +s[gainKey] || 0));
+    const muteTip = unused ? t("Not recorded in GAME mode") : forced ? t("Always recorded in GAME mode") : on ? t("Recorded. Click to turn it off") : t("Not recorded. Click to turn it on");
+    return `<div class="aud-strip${on ? "" : " off"}" data-aud-strip="${id}">
+        <div class="aud-name" title="${esc(name)}">${esc(name)}</div>
+        <div class="aud-db">${audDbText(db)}</div>
+        <div class="aud-body">
+          <input type="range" class="aud-fader" data-native min="${AUD_DB_MIN}" max="${AUD_DB_MAX}" step="0.5" value="${db}" data-aud-gain="${gainKey}" aria-label="${esc(t("{name} volume", { name }))}" title="${esc(t("Double-click for 0 dB"))}">
+          <div class="aud-meter" aria-hidden="true"><div class="aud-bar"><i></i><u></u></div><div class="aud-bar"><i></i><u></u></div></div>
+          <div class="aud-scale" aria-hidden="true">${marks.map((m) => `<span style="top:${(1 - audFill(m)) * 100}%">${m}</span>`).join("")}</div>
+        </div>
+        <button type="button" class="aud-mute" data-aud-mute="${onKey}" aria-pressed="${on}"${unused || forced ? " disabled" : ""} title="${esc(muteTip)}" aria-label="${esc(muteTip)}">${on ? PICON.vol : PICON.mute}</button>
+      </div>`;
+  };
+  const note = st.recording ? t("The faders set how loud each source is in your clips, from now on. The meters show what is being recorded")
+    : t("The meters move while the replay buffer is on");
+  return `<div class="aud-mixer-row"><div class="aud-mixer">${audStrips().map(strip).join("")}</div><div class="small aud-mixer-note">${esc(note)}</div></div>`;
+}
+
+/** Move the meters: called on a timer while a mixer is on the page. */
+async function audMeterTick() {
+  const mixer = document.querySelector(".aud-mixer");
+  if (!mixer || document.hidden || AUD_METER.busy) return;
+  AUD_METER.busy = true;
+  let lv = null;
+  try { lv = await invoke("audio_levels"); } catch { /* the meters rest */ }
+  AUD_METER.busy = false;
+  if (!lv) return;
+  const now = performance.now();
+  for (const el of mixer.querySelectorAll("[data-aud-strip]")) {
+    const id = el.dataset.audStrip, src = lv[id] || {}, off = el.classList.contains("off");
+    [src.left, src.right].forEach((raw, ch) => {
+      const key = `${id}${ch}`, level = off || !Number.isFinite(raw) ? -120 : raw;
+      const shown = audFallTo(AUD_METER.shown[key] ?? -120, level, 2.2); // falls about 30 dB a second
+      AUD_METER.shown[key] = shown;
+      // The loudest point stays marked for a second, then falls.
+      const hold = AUD_METER.hold[key];
+      if (!hold || shown >= hold.db || now - hold.at > 1000) AUD_METER.hold[key] = { db: hold && shown < hold.db ? Math.max(shown, hold.db - 3) : shown, at: hold && shown < hold.db ? hold.at : now };
+      const bar = el.querySelectorAll(".aud-bar")[ch];
+      if (!bar) return;
+      bar.firstElementChild.style.height = `${(1 - audFill(shown)) * 100}%`;
+      const line = bar.lastElementChild, h = AUD_METER.hold[key].db;
+      line.style.bottom = `${audFill(h) * 100}%`;
+      line.style.opacity = h > AUD_FLOOR ? "1" : "0";
+    });
+  }
+}
+if (typeof document !== "undefined") {
+  AUD_METER.timer = setInterval(audMeterTick, 70);
+  document.addEventListener("input", (e) => {
+    const f = e.target.closest?.("[data-aud-gain]");
+    if (!f || !S.settings) return;
+    S.settings[f.dataset.audGain] = +f.value;
+    const label = f.closest(".aud-strip")?.querySelector(".aud-db");
+    if (label) label.textContent = audDbText(+f.value);
+    saveSettings(); // no redraw of the page: the fader is being dragged
+  });
+  document.addEventListener("dblclick", (e) => {
+    const f = e.target.closest?.("[data-aud-gain]");
+    if (!f || !S.settings) return;
+    f.value = "0";
+    f.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest?.("[data-aud-mute]");
+    if (!b || b.disabled || !S.settings) return;
+    S.settings[b.dataset.audMute] = !S.settings[b.dataset.audMute];
+    saveSettings(true);
+  });
+}
+
 /** The whole "Audio" section of the Settings page. */
 function audSectionHtml() {
   const s = S.settings;
@@ -79,6 +175,7 @@ function audSectionHtml() {
   const gameNote = s.game_audio && st.game_audio === "unavailable" ? `<br><b>${t("Not available on this version of Windows.")}</b>`
     : s.game_audio && st.game_audio === "failed" ? `<br><b>${t("The current game's sound could not be captured.")}</b>` : "";
   return `<div class="section aud-section"><h2>${t("Audio")}</h2>
+      ${audMixerHtml()}
       ${row(t("Desktop audio"), t("Everything you hear on the output device chosen below"), toggle("desktop_audio"))}
       ${row(t("Desktop audio device"), audHint(t("The output whose sound is recorded. Pick the headphones or speakers your game plays on"), outs, s.desktop_device, t("No output device was found.")), audSelect("desktop_device", outs, s.desktop_audio, t("Desktop audio device")))}
       ${row(t("Microphone"), t("Your voice, saved as its own track"), toggle("mic"))}

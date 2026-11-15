@@ -2,3 +2,33 @@
 select.aud-dev, .dd-btn.aud-dev { width: 300px; max-width: 42vw; }
 .aud-section .row .ctl { min-width: 0; }
 .aud-warn { color: var(--warn); }
+
+/* The mixer (0.1.32): one strip per source, side by side: name, fader position in dB, a vertical fader beside a
+   two-channel meter with its dB scale, and the on / off button. */
+.aud-mixer-row { display: flex; flex-direction: column; gap: 8px; padding: 14px 18px 12px; border-bottom: 1px solid var(--line); }
+.aud-mixer { display: flex; flex-wrap: wrap; gap: 10px; }
+.aud-strip { display: flex; flex-direction: column; align-items: stretch; gap: 6px; width: 132px; padding: 9px 10px 8px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--panel); }
+.aud-name { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aud-db { color: var(--muted); font: 600 11.5px var(--mono); }
+.aud-body { display: flex; align-items: stretch; gap: 9px; height: 150px; }
+/* The fader: a range input turned upright (lowest at the bottom). */
+.aud-fader { writing-mode: vertical-lr; direction: rtl; width: 20px; height: 100%; margin: 0; padding: 0; accent-color: var(--accent); cursor: pointer; background: none; border: 0; }
+.aud-meter { display: flex; gap: 2px; height: 100%; }
+/* A channel: green up to -20 dB, yellow up to -9, red above; the dark cover (i) hides what is over the level,
+   the line (u) marks the loudest point of the last second. */
+.aud-bar { position: relative; width: 9px; height: 100%; border-radius: 2px; overflow: hidden;
+  background: linear-gradient(to top, #2fbf52 0, #2fbf52 66.6%, #d6b02a 66.6%, #d6b02a 85%, #d8433b 85%, #d8433b 100%); }
+.aud-bar > i { position: absolute; left: 0; right: 0; top: 0; height: 100%; background: color-mix(in srgb, var(--bg, #05070c) 82%, transparent); }
+.aud-bar > u { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; margin-bottom: -1px; background: #fff; opacity: 0; }
+.aud-scale { position: relative; flex: 1 1 auto; min-width: 22px; color: var(--dim, var(--muted)); font: 10px var(--mono); }
+.aud-scale > span { position: absolute; left: 0; transform: translateY(-50%); }
+.aud-scale > span:first-child { transform: none; }
+.aud-scale > span:last-child { transform: translateY(-100%); }
+.aud-mute { align-self: flex-start; display: grid; place-items: center; width: 28px; height: 26px; padding: 0; border: 1px solid var(--line-2); border-radius: 6px; background: var(--raised); color: var(--text); cursor: pointer; }
+.aud-mute svg { width: 15px; height: 15px; }
+.aud-mute:hover:not(:disabled) { border-color: var(--accent); }
+.aud-mute:disabled { opacity: .5; cursor: default; }
+.aud-strip.off .aud-name, .aud-strip.off .aud-db { color: var(--dim, var(--muted)); }
+.aud-strip.off .aud-body { opacity: .4; }
+.aud-strip.off .aud-mute { color: var(--warn); }
+.aud-mixer-note { max-width: 520px; }

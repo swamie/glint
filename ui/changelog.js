@@ -14,6 +14,15 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.32", date: "2026-11-15",
+    new: [
+      t("Settings → Audio has a mixer: a fader, a live level meter and an on / off button for Desktop audio, Microphone and Game audio. The faders set how loud each source is in your clips."),
+    ],
+    improved: [
+      t("The categories under Settings in the sidebar are drawn as a tree."),
+    ],
+  },
+  {
     version: "0.1.31", date: "2026-11-15",
     new: [
       t("Editor: crop the picture. Under Canvas, pick “Crop to a part of the picture” and drag the box, or its edges and corners, on the picture. The export is the box at its own size."),

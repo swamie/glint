@@ -377,7 +377,17 @@ fn capture(pid: u32, ring: &Mutex<AudioRing>, stop: &AtomicBool, shared: &Shared
                 } else {
                     let s = unsafe { std::slice::from_raw_parts(data as *const i16, samples) };
                     shared.loud.fetch_add(s.iter().filter(|v| v.unsigned_abs() > 32).count() as u64, Ordering::Relaxed);
-                    buf.extend_from_slice(s);
+                    // The mixer's Game fader (Settings → Audio), and the packet's loudest samples for its meter.
+                    let g = crate::audio::gain(crate::audio::Source::Game);
+                    let (mut pl, mut pr) = (0f32, 0f32);
+                    for pair in s.chunks_exact(2) {
+                        let (l, r) = (pair[0] as f32 * g, pair[1] as f32 * g);
+                        pl = pl.max(l.abs());
+                        pr = pr.max(r.abs());
+                        buf.push(l.clamp(-32768.0, 32767.0) as i16);
+                        buf.push(r.clamp(-32768.0, 32767.0) as i16);
+                    }
+                    crate::audio::note_peak(crate::audio::Source::Game, pl / 32768.0, pr / 32768.0);
                 }
                 shared.delivered.fetch_add(frames as u64, Ordering::Relaxed);
                 let _ = unsafe { cap.ReleaseBuffer(frames) };

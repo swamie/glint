@@ -5,7 +5,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use serde::Serialize;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -346,7 +347,84 @@ fn downmix(frame: &[f32]) -> (f32, f32) {
     }
 }
 
+/* ---------- the mixer of Settings → Audio: a gain per source, and its live level ---------- */
+
+/// A source with a fader and a meter in the mixer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Source {
+    Desktop = 0,
+    Mic = 1,
+    Game = 2,
+}
+
+/// The fader's range in dB. The gain is applied as the sound is captured, so
+/// the rings, every clip and the meters hold what the fader made of it.
+pub const GAIN_DB_MIN: f32 = -40.0;
+pub const GAIN_DB_MAX: f32 = 12.0;
+
+const UNITY: u32 = 0x3f80_0000; // 1.0f32
+/// Linear gain per source, as f32 bits.
+static GAIN: [AtomicU32; 3] = [AtomicU32::new(UNITY), AtomicU32::new(UNITY), AtomicU32::new(UNITY)];
+/// The loudest sample (0..1, times a million) of the left and the right
+/// channel of each source since `levels` last read them.
+static PEAK: [[AtomicU32; 2]; 3] = [
+    [AtomicU32::new(0), AtomicU32::new(0)],
+    [AtomicU32::new(0), AtomicU32::new(0)],
+    [AtomicU32::new(0), AtomicU32::new(0)],
+];
+
+/// A fader position in dB as a linear factor (clamped to the fader's range; not a number = 0 dB).
+pub fn db_to_gain(db: f32) -> f32 {
+    let db = if db.is_finite() { db.clamp(GAIN_DB_MIN, GAIN_DB_MAX) } else { 0.0 };
+    10f32.powf(db / 20.0)
+}
+
+/// Set the three faders (dB). Takes effect on the next audio packet; nothing restarts.
+pub fn set_gains(desktop_db: f32, mic_db: f32, game_db: f32) {
+    for (i, db) in [desktop_db, mic_db, game_db].into_iter().enumerate() {
+        GAIN[i].store(db_to_gain(db).to_bits(), Ordering::Relaxed);
+    }
+}
+
+/// The linear gain of `src` right now.
+pub fn gain(src: Source) -> f32 {
+    f32::from_bits(GAIN[src as usize].load(Ordering::Relaxed))
+}
+
+/// Report the loudest left and right sample (0..1, after the gain) of a packet of `src`.
+pub fn note_peak(src: Source, left: f32, right: f32) {
+    for (ch, v) in [left, right].into_iter().enumerate() {
+        PEAK[src as usize][ch].fetch_max((v.clamp(0.0, 1.0) * 1_000_000.0) as u32, Ordering::Relaxed);
+    }
+}
+
+/// One source's level for the meters: the loudest left and right sample
+/// since the last call, in dB below full scale (-120 = silence).
+#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+pub struct Level {
+    pub left: f32,
+    pub right: f32,
+}
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+pub struct Levels {
+    pub desktop: Level,
+    pub mic: Level,
+    pub game: Level,
+}
+
+/// Read the levels and start a new measuring interval.
+pub fn levels() -> Levels {
+    let db = |a: &AtomicU32| {
+        let v = a.swap(0, Ordering::Relaxed) as f32 / 1_000_000.0;
+        if v > 0.000_001 { (20.0 * v.log10()).max(-120.0) } else { -120.0 }
+    };
+    let one = |s: Source| Level { left: db(&PEAK[s as usize][0]), right: db(&PEAK[s as usize][1]) };
+    Levels { desktop: one(Source::Desktop), mic: one(Source::Mic), game: one(Source::Game) }
+}
+
 fn build_stream(device: &cpal::Device, loopback: bool, ring: Arc<Mutex<AudioRing>>, max_secs: f64, failed: Arc<AtomicBool>) -> Option<Stream> {
+    let source = if loopback { Source::Desktop } else { Source::Mic };
     let cfg = if loopback { device.default_output_config().ok()? } else { device.default_input_config().ok()? };
     let rate = cfg.sample_rate().0;
     let ch = cfg.channels() as usize;
@@ -365,14 +443,21 @@ fn build_stream(device: &cpal::Device, loopback: bool, ring: Arc<Mutex<AudioRing
                 move |data: &[$t], _: &cpal::InputCallbackInfo| {
                     let now = now_secs();
                     scratch.clear();
+                    // The mixer's fader for this source, and the loudest sample of the packet for its meter.
+                    let g = gain(source);
+                    let (mut pl, mut pr) = (0f32, 0f32);
                     for f in data.chunks_exact(ch.max(1)) {
                         for (dst, s) in frame.iter_mut().zip(f.iter()) {
                             *dst = $conv(*s);
                         }
                         let (l, r) = downmix(&frame);
+                        let (l, r) = (l * g, r * g);
+                        pl = pl.max(l.abs());
+                        pr = pr.max(r.abs());
                         scratch.push(to_i16(l));
                         scratch.push(to_i16(r));
                     }
+                    note_peak(source, pl, pr);
                     if let Ok(mut ring) = ring.lock() {
                         ring.push(&scratch, now);
                     }
@@ -564,6 +649,24 @@ pub fn self_test(report_path: &str) {
     check("pick: an unplugged device falls back to the default", pick(&names, "Arctis 7 Game").is_none(), String::new());
     check("pick: no device at all falls back to the default", pick(&[], "Headphones (USB Audio)").is_none(), String::new());
     check("pick: a part of a name is not a match", pick(&names, "Headphones").is_none(), String::new());
+
+    // The mixer (0.1.32): faders in dB, the gain a capture reads, the meters' levels. Nothing is captured here.
+    let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+    check("mixer: 0 dB is unity, -6 dB about half, +6 dB about double", near(db_to_gain(0.0), 1.0) && near(db_to_gain(-6.0206), 0.5) && near(db_to_gain(6.0206), 2.0), format!("{} {}", db_to_gain(-6.0206), db_to_gain(6.0206)));
+    check("mixer: the fader stops at its ends, and not-a-number is 0 dB", near(db_to_gain(-500.0), db_to_gain(GAIN_DB_MIN)) && near(db_to_gain(99.0), db_to_gain(GAIN_DB_MAX)) && near(db_to_gain(f32::NAN), 1.0), String::new());
+    set_gains(-6.0206, 0.0, 6.0206);
+    check("mixer: each source reads its own fader", near(gain(Source::Desktop), 0.5) && near(gain(Source::Mic), 1.0) && near(gain(Source::Game), 2.0), format!("{} {} {}", gain(Source::Desktop), gain(Source::Mic), gain(Source::Game)));
+    set_gains(0.0, 0.0, 0.0);
+    let _ = levels();
+    note_peak(Source::Mic, 0.5, 0.1);
+    note_peak(Source::Mic, 0.25, 1.0);
+    let lv = levels();
+    check("mixer: a meter shows the loudest sample of each channel since the last reading", near(lv.mic.left, -6.02) && near(lv.mic.right, 0.0), format!("{:?}", lv.mic));
+    check("mixer: sources that got nothing are silent", lv.desktop.left <= -119.0 && lv.game.right <= -119.0, format!("{:?} {:?}", lv.desktop, lv.game));
+    let again = levels();
+    check("mixer: a reading starts a new interval", again.mic.left <= -119.0 && again.mic.right <= -119.0, format!("{:?}", again.mic));
+    let old: Result<crate::settings::Settings, _> = serde_json::from_str(r#"{"mic":true,"desktop_audio":true}"#);
+    check("mixer: settings from before the faders load with 0 dB", old.as_ref().is_ok_and(|s| s.desktop_gain_db == 0.0 && s.mic_gain_db == 0.0 && s.game_gain_db == 0.0), String::new());
 
     // The choice reaches a running capture through a counter that moves only on a change.
     let g0 = choice().2;

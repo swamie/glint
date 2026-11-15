@@ -228,6 +228,11 @@ pub struct Settings {
     pub mic_denoise: bool,
     /// Also record the current game's own sound (its process tree) as an extra "Game" track.
     pub game_audio: bool,
+    /// The mixer's faders in Settings → Audio, in dB (0 = as captured): applied
+    /// as the sound is captured, so clips and meters hold the result.
+    pub desktop_gain_db: f32,
+    pub mic_gain_db: f32,
+    pub game_gain_db: f32,
     /// Settings → Audio: the output device whose sound is recorded and the microphone,
     /// by name. "" = the Windows default; a device that is not there falls back to it.
     pub desktop_device: String,
@@ -386,6 +391,9 @@ impl Default for Settings {
             sound_volume: 40,
             sound_file: String::new(),
             sound_start: 0.0,
+            desktop_gain_db: 0.0,
+            mic_gain_db: 0.0,
+            game_gain_db: 0.0,
             sound_end: 0.0,
             toast: true,
             toast_pos: "tr".into(),

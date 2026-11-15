@@ -104,6 +104,8 @@ Clips open in Glint's own player. `Space` play/pause, `←` `→` 5 s (`Shift` 1
 
 ## Clip sound, overlay, microphone
 
+**Audio mixer.** Settings → Audio starts with a mixer: one strip each for Desktop audio, Microphone and Game audio, with a fader (-40 to +12 dB, double-click for 0 dB), a two-channel level meter and an on / off button. A fader changes how loud that source is in every clip saved from then on (it is applied as the sound is captured); the meters show what is being recorded while the replay buffer is on.
+
 **Clip sound.** Sixteen built-in sounds, all synthesised in code (no audio files), with a volume slider, or your own file: WAV, MP3 or other audio. The volume slider applies to it too (100% is the file's own loudness), and a bar under it shows the file's loudness over time: drag its ends to choose the part that is played (at most 15 seconds), for example to skip silence at the start. Set under Settings. The sound plays the moment the key is pressed.
 
 **Clip overlay.** A small box in a corner of the recorded monitor when a clip is on disk. Pick the corner under Settings. It shows a microphone icon while the microphone is being recorded. The box never takes focus and clicks pass through it. It is an ordinary always-on-top window, so it shows over windowed and borderless games but not over exclusive fullscreen.

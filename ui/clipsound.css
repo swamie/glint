@@ -12,6 +12,12 @@
 .cs-sel > i[data-cs="end"] { right: -1px; border-radius: 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0; }
 .cs-times { min-width: 96px; text-align: right; color: var(--muted); font: 600 12px var(--mono); white-space: nowrap; }
 
-/* The sidebar's sub-items of Settings: a dot where the other items have an icon. */
-.nav-dot { flex: none; width: 15px; height: 15px; display: grid; place-items: center; }
-.nav-dot::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .55; }
+/* The sidebar's sub-items of Settings, drawn as a file tree: a line runs down from under the gear and a
+   rounded branch goes off to each item. Every item draws the piece from its top to its middle with the
+   branch (::before); all but the last also draw the piece from the middle down to the next item (::after). */
+#nav-settings { padding-left: 30px; }
+#nav-settings .nav-item { position: relative; }
+#nav-settings .nav-item::before, #nav-settings .nav-item::after { content: ""; position: absolute; left: -11px; border-left: 1.5px solid color-mix(in srgb, var(--muted) 60%, transparent); pointer-events: none; }
+#nav-settings .nav-item::before { top: -2px; bottom: 50%; width: 8px; border-bottom: 1.5px solid color-mix(in srgb, var(--muted) 60%, transparent); border-bottom-left-radius: 6px; }
+#nav-settings .nav-item:not(:last-child)::after { top: 50%; bottom: -2px; }
+#nav-settings .nav-item:last-child::after { display: none; }

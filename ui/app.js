@@ -327,7 +327,7 @@ function renderChrome() {
     navItem("blur", t("Blur"), "blur") +
     // Settings is long: its categories are sub-items under it while the page is open. The item itself shows everything.
     navItem("settings", t("Settings"), "gear").replace(' active"', S.setCat ? '"' : ' active"') +
-    `<div class="nav-sub" id="nav-settings"${S.page === "settings" ? "" : " hidden"}>${setCats().map(([id, name]) => `<button class="nav-item small${S.page === "settings" && S.setCat === id ? " active" : ""}" data-page="settings" data-setcat="${id}" data-hover title="${esc(name)}"><span class="nav-dot" aria-hidden="true"></span><span class="label">${esc(name)}</span></button>`).join("")}</div>`;
+    `<div class="nav-sub" id="nav-settings"${S.page === "settings" ? "" : " hidden"}>${setCats().map(([id, name]) => `<button class="nav-item small${S.page === "settings" && S.setCat === id ? " active" : ""}" data-page="settings" data-setcat="${id}" data-hover title="${esc(name)}"><span class="label">${esc(name)}</span></button>`).join("")}</div>`;
 
   const st = S.status || {};
   const on = !!st.recording;

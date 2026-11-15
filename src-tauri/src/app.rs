@@ -361,6 +361,12 @@ fn audio_devices() -> crate::audio::DeviceList {
     crate::audio::list_devices()
 }
 
+/// The mixer's meters (Settings → Audio): each source's loudest samples since the last call.
+#[tauri::command]
+fn audio_levels() -> crate::audio::Levels {
+    crate::audio::levels()
+}
+
 /// Play the clip sound as currently set, so the user can hear a choice.
 #[tauri::command(async)]
 fn preview_sound(core: St) {
@@ -891,6 +897,7 @@ pub fn run(minimized: bool) {
             audio_devices,
             preview_sound,
             pick_sound_file,
+            audio_levels,
             preview_toast,
             list_games,
             pick_game_icon,

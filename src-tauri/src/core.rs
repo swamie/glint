@@ -233,6 +233,7 @@ impl Core {
         let settings = Settings::load();
         hotkeys::set_binds(&settings.keybinds);
         crate::audio::set_devices(&settings.desktop_device, &settings.mic_device);
+        crate::audio::set_gains(settings.desktop_gain_db, settings.mic_gain_db, settings.game_gain_db);
         if settings.sound_name == "custom" {
             let s = settings.clone();
             std::thread::spawn(move || { crate::sound::warm(&s, 0); });
@@ -710,6 +711,7 @@ impl Core {
         hotkeys::set_binds(&new.keybinds);
         // A running audio capture switches device on its own (audio.rs); nothing else restarts.
         crate::audio::set_devices(&new.desktop_device, &new.mic_device);
+        crate::audio::set_gains(new.desktop_gain_db, new.mic_gain_db, new.game_gain_db);
         // A custom clip sound is decoded now, so the next clip key plays it at once.
         if new.sound_name == "custom" && (new.sound_name != old.sound_name || new.sound_file != old.sound_file || new.sound_start != old.sound_start || new.sound_end != old.sound_end || new.sound_volume != old.sound_volume || new.ffmpeg_path != old.ffmpeg_path) {
             let s = new.clone();

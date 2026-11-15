@@ -12,7 +12,7 @@ if (!window.__TAURI__) {
   const state = {
     settings: {
       clips_dir: "C:\\Users\\you\\Videos\\Glint", game_folders: false, clip_name: [{ kind: "game" }, { kind: "date" }, { kind: "time" }], monitor: 0, height: 0, fps: 60, quality: "high", bitrate: 0, encoder: "auto", method: "auto", buffer: "mixed", buffer_ram_secs: 30, buffer_dir: "",
-      cursor: true, desktop_audio: true, mic: true, mic_denoise: false, game_audio: false, desktop_device: "", mic_device: "Microphone (Old Webcam)", capture_mode: "desktop", game_auto: true, game_pick: "", game_exes: [], not_game_exes: [], record_on_start: true, sound: true, sound_name: "chirp", sound_volume: 40, sound_file: "",
+      cursor: true, desktop_audio: true, mic: true, mic_denoise: false, game_audio: false, desktop_device: "", desktop_gain_db: -3, mic_gain_db: 0, game_gain_db: 0, mic_device: "Microphone (Old Webcam)", capture_mode: "desktop", game_auto: true, game_pick: "", game_exes: [], not_game_exes: [], record_on_start: true, sound: true, sound_name: "chirp", sound_volume: 40, sound_file: "",
       toast: true, toast_pos: "tr", toast_opacity: 96, toast_scale: 100, toast_secs: 3.5, toast_length: true, toast_game: true, toast_mic: true,
       ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", icon_theme: false, icon_accent: "", icon_accent_2: "", card_tags: [], nav_opacity: 60, theme_order: [], gif: { width: 480, fps: 20, max_mb: 0, copy: false }, upscale: { height: 2160, filter: "sharp", quality: "high", encoder: "auto" }, rules: [], rules_after_export: "", canvas_presets: [], discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true, update_check: true, update_auto: true,
       compress_mb: 10, ui_sounds: false, ui_sounds_hover: false, ui_sounds_volume: 50,
@@ -605,6 +605,8 @@ if (!window.__TAURI__) {
             outputs: [{ name: "Speakers (Realtek(R) Audio)", default: true }, { name: "Headphones (Arctis 7 Game)", default: false }, { name: "LG ULTRAGEAR (NVIDIA High Definition Audio)", default: false }],
             inputs: [{ name: "Microphone (Arctis 7 Chat)", default: true }, { name: "Microphone (Realtek(R) Audio)", default: false }],
           };
+          // The mixer's meters (audiodev.js): made-up levels that move, the game silent.
+          case "audio_levels": { const w = Date.now() / 1000, lvl = (f, top) => top - 14 - 12 * Math.sin(w * f) - 6 * Math.abs(Math.sin(w * f * 3.7)); return { desktop: { left: lvl(1.3, -6), right: lvl(1.5, -7) }, mic: { left: lvl(2.1, -18), right: lvl(2.1, -18) }, game: { left: -120, right: -120 } }; }
           case "set_game": clips.forEach((c) => { if (args.ids.includes(c.id)) c.game = args.game; }); return null;
           case "sort_by_game": { let n = 0; clips.forEach((c) => { if (!c.folder) { c.folder = c.game; if (!folders.includes(c.game)) folders.push(c.game); n++; } }); return n; }
           case "list_folders": return [...folders];
