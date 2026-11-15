@@ -28,6 +28,7 @@ mod naming;
 mod polish;
 mod procaudio;
 mod projects;
+mod projexport;
 mod recorder;
 mod rules;
 mod settings;

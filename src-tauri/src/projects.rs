@@ -1,6 +1,13 @@
 //! Editor projects: an "Edit together" draft that is KEPT, plus the editor's
 //! saved state, so an editing session survives closing the editor and Glint.
 //!
+//! 0.1.38 (CONTRACT_0138): a project made from now on is VIRTUAL (`virtual` in
+//! projects.json): only its list of library clips and the saved edit, no draft
+//! file. Adding is instant (`add` -> `add_now`), "Edit together" makes one at
+//! once (`join_clips`), and `open` (`project_open`) hands the editor the project
+//! as one clip made of `sources` laid end to end ("project time", `virtual_clip`).
+//! A project made before keeps its draft and everything below, unchanged.
+//!
 //! - `<data_dir>\projects.json`: every project (id, name, times, the library
 //!   clips added, `exported`). The draft itself is a library entry (`draft`
 //!   true, kind "joined", id = the project id) whose file is in
@@ -46,13 +53,28 @@ pub const TOO_MANY: &str = "A project takes at most 20 clips";
 pub const TOO_LONG: &str = "A project takes at most 30 minutes of clips";
 pub const NO_NAME: &str = "Type a name for the project";
 
-/// A library clip added to a project.
+pub const EMPTY: &str = "This project has no clips yet";
+pub const NO_DRAFT: &str = "The working copy of this project is missing";
+
+/// A library clip added to a project. Since 0.1.38 it keeps what is needed to
+/// show the clip when it has gone from the library (size, picture, tracks).
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
 pub struct ProjectClip {
     pub id: String,
     pub title: String,
+    /// Its length when it was added: the length of its stretch of project time.
     pub duration: f64,
+    pub size: u64,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub audio_tracks: u32,
+    pub game: String,
+}
+
+fn pclip(c: &ClipMeta) -> ProjectClip {
+    ProjectClip { id: c.id.clone(), title: c.title.clone(), duration: c.duration, size: c.size, width: c.width, height: c.height, fps: c.fps, audio_tracks: c.audio_tracks, game: c.game.clone() }
 }
 
 /// What projects.json keeps of a project.
@@ -65,6 +87,10 @@ struct Stored {
     modified: u64,
     clips: Vec<ProjectClip>,
     exported: bool,
+    /// 0.1.38: the project is its clip list (no draft file). Absent (false) in a
+    /// project made by 0.1.37 or earlier: that one keeps its draft and old ways.
+    #[serde(rename = "virtual")]
+    virt: bool,
 }
 
 /// A project as the UI gets it.
@@ -75,8 +101,16 @@ pub struct Project {
     /// Unix milliseconds.
     pub created: u64,
     pub modified: u64,
-    /// The draft (draft: true, kind "joined", joins, join_names); None while empty.
+    /// The draft of a project made before 0.1.38 (draft: true, kind "joined", joins, join_names); None while empty and for a virtual project.
+    #[serde(skip)]
     pub clip: Option<ClipMeta>,
+    /// What the UI gets as `clip`: the draft above, or for a virtual project what
+    /// `project_open` returns (null while it has no clips).
+    #[serde(rename = "clip")]
+    pub clip_json: Option<Value>,
+    /// 0.1.38: a project of references (`clip_json.virtual`), no draft file.
+    #[serde(rename = "virtual")]
+    pub virt: bool,
     /// The library clips added, in the order added.
     pub clips: Vec<ProjectClip>,
     /// Something was exported from it since its last change.
@@ -199,9 +233,81 @@ fn changed(core: &Core) {
 // Commands
 
 fn view(lib: &Library, p: Stored, busy: bool) -> Project {
+    if p.virt {
+        let clip_json = virtual_clip(lib, &p);
+        return Project { id: p.id, name: p.name, created: p.created, modified: p.modified, clip: None, clip_json, virt: true, clips: p.clips, exported: p.exported, size: 0, busy };
+    }
     let clip = lib.get(&p.id).filter(|c| c.draft && Path::new(&c.path).is_file());
     let size = clip.as_ref().map(|c| fs::metadata(&c.path).map(|m| m.len()).unwrap_or(c.size)).unwrap_or(0);
-    Project { id: p.id, name: p.name, created: p.created, modified: p.modified, clip, clips: p.clips, exported: p.exported, size, busy }
+    let clip_json = clip.as_ref().and_then(|c| serde_json::to_value(c).ok());
+    Project { id: p.id, name: p.name, created: p.created, modified: p.modified, clip, clip_json, virt: false, clips: p.clips, exported: p.exported, size, busy }
+}
+
+/// The length of project clip `c`'s stretch of project time (its length when added).
+fn span(c: &ProjectClip) -> f64 {
+    c.duration.max(0.0)
+}
+
+/// A virtual project as the clip the editor opens (CONTRACT_0138, "What the editor
+/// opens"): its clips end to end in the order added, each a source with its start
+/// in project time. A clip the library no longer has, or whose file is gone, is
+/// `missing` (shown from what the project kept of it). None while it has no clips.
+fn virtual_clip(lib: &Library, p: &Stored) -> Option<Value> {
+    if p.clips.is_empty() {
+        return None;
+    }
+    let mut sources: Vec<Value> = Vec::with_capacity(p.clips.len());
+    let mut joins: Vec<f64> = Vec::with_capacity(p.clips.len());
+    let mut names: Vec<String> = Vec::with_capacity(p.clips.len());
+    let (mut at, mut size) = (0.0_f64, 0_u64);
+    let mut first: Option<(u32, u32, u32, u32, String)> = None;
+    let mut thumb = String::new();
+    for pc in &p.clips {
+        let live = lib.get(&pc.id).filter(|c| !c.draft && Path::new(&c.path).is_file());
+        let (path, title, w, h, fps, tracks, th, game, sz) = match &live {
+            Some(c) => (c.path.clone(), c.title.clone(), c.width, c.height, c.fps, c.audio_tracks, c.thumb.clone(), c.game.clone(), c.size),
+            None => (String::new(), pc.title.clone(), pc.width, pc.height, pc.fps, pc.audio_tracks, String::new(), pc.game.clone(), pc.size),
+        };
+        let d = span(pc);
+        if first.is_none() {
+            first = Some((w, h, fps, tracks, game));
+        }
+        if thumb.is_empty() && !th.is_empty() {
+            thumb = th.clone();
+        }
+        size += sz;
+        joins.push(at);
+        names.push(title.clone());
+        sources.push(json!({
+            "clip": pc.id, "path": path, "title": title, "duration": d, "start": at,
+            "width": w, "height": h, "fps": fps, "audio_tracks": tracks, "thumb": th, "missing": live.is_none(),
+        }));
+        at += d;
+    }
+    let (width, height, fps, audio_tracks, game) = first.unwrap_or_default();
+    Some(json!({
+        "id": p.id, "draft": true, "virtual": true, "kind": "joined",
+        "title": p.name, "game": game, "created": p.created, "duration": at,
+        "width": width, "height": height, "fps": fps,
+        "path": "", "joins": joins, "join_names": names,
+        "audio_tracks": audio_tracks, "sources": sources,
+        // Not in the design's list, for the card and the viewer's info line: the first clip's thumbnail, the sources' bytes.
+        "thumb": thumb, "size": size, "folder": "", "favorite": false,
+    }))
+}
+
+/// `project_open`: the clip the editor opens for project `id`. A virtual project:
+/// `virtual_clip`. A project made before 0.1.38: its draft, exactly as before.
+pub fn open(core: &Core, id: &str) -> Result<Value, String> {
+    let p = stored(id).ok_or(NOT_FOUND)?;
+    let lib = core.lib.lock().unwrap();
+    if p.virt {
+        return virtual_clip(&lib, &p).ok_or_else(|| EMPTY.into());
+    }
+    match lib.get(id).filter(|c| c.draft && Path::new(&c.path).is_file()) {
+        Some(c) => serde_json::to_value(&c).map_err(|e| e.to_string()),
+        None => Err(if p.clips.is_empty() { EMPTY.into() } else { NO_DRAFT.into() }),
+    }
 }
 
 /// Every project, most recently modified first.
@@ -231,10 +337,11 @@ fn clean_name(name: &str) -> String {
     n.trim().to_string()
 }
 
-fn make(name: &str) -> Stored {
+/// A new project in the store. `virt`: one of references (every project made from 0.1.38 on; false only in the self-test's old-style ones).
+fn make(name: &str, virt: bool) -> Stored {
     let name = clean_name(name);
     let now = util::unix_ms();
-    let p = Stored { id: util::new_id(), name: if name.is_empty() { DEFAULT_NAME.into() } else { name }, created: now, modified: now, clips: Vec::new(), exported: false };
+    let p = Stored { id: util::new_id(), name: if name.is_empty() { DEFAULT_NAME.into() } else { name }, created: now, modified: now, clips: Vec::new(), exported: false, virt };
     let _g = LOCK.lock().unwrap();
     let mut list = load();
     list.push(p.clone());
@@ -244,7 +351,7 @@ fn make(name: &str) -> Stored {
 
 /// A new, empty project.
 pub fn create(core: &Core, name: &str) -> Project {
-    let p = make(name);
+    let p = make(name, true);
     util::log(&format!("projects: created {} \"{}\"", p.id, p.name));
     changed(core);
     get(core, &p.id).unwrap_or_default()
@@ -373,21 +480,90 @@ fn draft_of(core: &Core, id: &str) -> Option<ClipMeta> {
     core.lib.lock().unwrap().get(id).filter(|c| c.draft && Path::new(&c.path).is_file())
 }
 
-/// Queue a job that appends library clips `ids` to project `id`.
+/// What `project_add_clips` answers: the job of a project made before 0.1.38
+/// (its draft is rebuilt, "project-changed" follows), or at once for a virtual
+/// project: { project, added, starts, titles, job_id: "", mode: "reference", secs }
+/// (`starts` = where each added clip starts in project time).
+#[derive(Serialize, Debug)]
+#[serde(untagged)]
+pub enum Added {
+    Job(Job),
+    Now(Value),
+}
+
+/// `project_add_clips`: a virtual project (or an empty one of before 0.1.38, which
+/// becomes virtual) takes the clips at once; one with a draft queues the old job.
+pub fn add(core: &Arc<Core>, id: &str, ids: Vec<String>) -> Result<Added, String> {
+    let proj = stored(id).ok_or(NOT_FOUND)?;
+    let empty_old = !proj.virt && proj.clips.is_empty() && draft_of(core, id).is_none() && pending_of(core, id).is_empty();
+    if proj.virt || empty_old {
+        return add_now(core, id, ids).map(Added::Now);
+    }
+    add_clips(core, id, ids).map(Added::Job)
+}
+
+/// Append library clips `ids` to project `pid` as references: no job, no file.
+/// A repeat inside one call counts once; a clip already in the project may come
+/// again (it is then two sources).
+fn add_now(core: &Core, pid: &str, ids: Vec<String>) -> Result<Value, String> {
+    let proj = stored(pid).ok_or(NOT_FOUND)?;
+    let clips = pick(core, &ids, proj.clips.len(), proj.clips.iter().map(span).sum())?;
+    let added: Vec<ProjectClip> = clips.iter().map(pclip).collect();
+    let titles: Vec<String> = added.iter().map(|c| c.title.clone()).collect();
+    // Checked again under the store's lock, against the list as it is now.
+    let starts = edit(pid, |p| {
+        if p.clips.len() + added.len() > MAX_CLIPS {
+            return Err(TOO_MANY.to_string());
+        }
+        let mut at: f64 = p.clips.iter().map(span).sum();
+        if at + added.iter().map(span).sum::<f64>() > MAX_TOTAL_SECS {
+            return Err(TOO_LONG.to_string());
+        }
+        let mut starts = Vec::with_capacity(added.len());
+        for c in &added {
+            starts.push(at);
+            at += span(c);
+        }
+        p.virt = true;
+        p.clips.extend(added.iter().cloned());
+        p.modified = util::unix_ms().max(p.modified + 1);
+        p.exported = false;
+        Ok(starts)
+    })
+    .ok_or(NOT_FOUND)??;
+    util::log(&format!("projects: {pid}: {} clip(s) added as references at {starts:?}", added.len()));
+    changed(core);
+    Ok(json!({ "project": get(core, pid), "added": added, "starts": starts, "titles": titles, "job_id": "", "mode": "reference", "secs": 0.0 }))
+}
+
+/// Queue a job that appends library clips `ids` to project `id` (a project made before 0.1.38).
 pub fn add_clips(core: &Arc<Core>, id: &str, ids: Vec<String>) -> Result<Job, String> {
     enqueue_add(core, id, ids, false)
 }
 
-/// "Edit together" from the library: a project named as `joined_title` does,
-/// with the clips added (the old refusals and texts of join.rs).
-pub fn join_clips(core: &Arc<Core>, ids: Vec<String>) -> Result<Job, String> {
+/// "Edit together" from the library (0.1.38): a virtual project of the clips, in
+/// the order given, named as `joined_title` does, made at once (the refusals and
+/// texts of join.rs). The UI opens it.
+pub fn join_clips(core: &Core, ids: Vec<String>) -> Result<Project, String> {
+    let clips = join::pick(core, &ids)?;
+    let p = make(&join::joined_title(&clips[0].title, clips.len() - 1), true);
+    let list: Vec<ProjectClip> = clips.iter().map(pclip).collect();
+    edit(&p.id, |s| s.clips = list);
+    util::log(&format!("projects: Edit together made {} of {} clip(s)", p.id, clips.len()));
+    changed(core);
+    get(core, &p.id).ok_or_else(|| NOT_FOUND.into())
+}
+
+/// "Edit together" as it was before 0.1.38 (a project with a joined draft, made by
+/// a job). Only the self-tests still make such projects (`join::enqueue`), to prove they keep working.
+pub(crate) fn join_clips_legacy(core: &Arc<Core>, ids: Vec<String>) -> Result<Job, String> {
     let clips = join::pick(core, &ids)?;
     let ids: Vec<String> = clips.iter().map(|c| c.id.clone()).collect();
     let key = format!("join:{}", ids.join(","));
     if core.jobs.list().iter().any(|j| j.clip_id == key && matches!(j.state.as_str(), "queued" | "running")) {
         return Err("Those clips are already being joined".into());
     }
-    let p = make(&join::joined_title(&clips[0].title, clips.len() - 1));
+    let p = make(&join::joined_title(&clips[0].title, clips.len() - 1), false);
     match enqueue_add(core, &p.id, ids, true) {
         Ok(job) => Ok(job),
         Err(e) => {
@@ -639,7 +815,7 @@ fn build(core: &Arc<Core>, pid: &str, clips: &[ClipMeta], ffmpeg: &Path, s: &cra
             library::remove_draft_files(d);
         }
     }
-    let added: Vec<ProjectClip> = clips.iter().map(|c| ProjectClip { id: c.id.clone(), title: c.title.clone(), duration: c.duration }).collect();
+    let added: Vec<ProjectClip> = clips.iter().map(pclip).collect();
     let had = old.is_some();
     edit(pid, |p| {
         if !had {
@@ -737,6 +913,13 @@ fn events() -> Vec<(String, Value)> {
     RECORD.lock().unwrap().clone().unwrap_or_default()
 }
 
+/// A project as 0.1.37 made them (a draft file, filled by jobs), to prove those keep working.
+fn create_legacy(core: &Core, name: &str) -> Project {
+    let p = make(name, false);
+    changed(core);
+    get(core, &p.id).unwrap_or_default()
+}
+
 fn run_self_test(r: &mut Report) {
     // 0. Pure: appending parts keeps the old ones exactly.
     let sv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -810,8 +993,9 @@ fn run_self_test(r: &mut Report) {
         }
     };
 
+    // 1-7 run on projects as 0.1.37 made them (a draft file, jobs): they must keep working.
     // 1. Create, list, refusals.
-    let p1 = create(&core, "  ");
+    let p1 = create_legacy(&core, "  ");
     r.check("create: empty, named \"New project\", no draft, not busy", p1.name == DEFAULT_NAME && p1.clip.is_none() && p1.clips.is_empty() && !p1.busy && p1.size == 0 && !p1.exported && p1.created > 0 && p1.modified == p1.created, &format!("{p1:?}"));
     r.check("create: \"projects-changed\" sent", events().iter().any(|(e, v)| e == "projects-changed" && v.is_null()), "");
     r.check("list: has it", list(&core).iter().any(|p| p.id == p1.id), "");
@@ -872,12 +1056,12 @@ fn run_self_test(r: &mut Report) {
     r.check("project-changed: starts and titles of the NEW parts only", st == d2.joins && ev["titles"] == json!(["Clip PB", "Clip PC"]) && ev["added"].as_array().is_some_and(|x| x.len() == 2), &ev.to_string());
 
     // 4. "Edit together" makes a project; adding again keeps the old joins exactly.
-    let j = join_clips(&core, vec![b.clone(), a.clone()]);
+    let j = join_clips_legacy(&core, vec![b.clone(), a.clone()]);
     let done = finish(&j);
     let p2 = get(&core, &done.result_id).unwrap_or_default();
     let e1 = p2.clip.clone().unwrap_or_default();
     r.check("join_clips: makes a project named \"<first> + 1 more\" with the draft", done.state == "done" && p2.name == "Clip PB + 1 more" && e1.title == p2.name && e1.joins.len() == 1 && e1.join_names == ["Clip PB", "Clip PA"], &format!("{} {:?} {:?}", p2.name, e1.joins, e1.join_names));
-    r.check("join_clips: one clip is still refused, as before", join_clips(&core, vec![a.clone()]).is_err_and(|e| e == "Pick at least two clips to edit together"), "");
+    r.check("join_clips: one clip is still refused, as before", join_clips_legacy(&core, vec![a.clone()]).is_err_and(|e| e == "Pick at least two clips to edit together"), "");
     let j = add_clips(&core, &p2.id, vec![c.clone()]);
     let done = finish(&j);
     let e2 = get(&core, &p2.id).and_then(|p| p.clip).unwrap_or_default();
@@ -890,7 +1074,7 @@ fn run_self_test(r: &mut Report) {
     let px = dir.join("px.mp4");
     let j = add_clips(&core, &p1.id, vec![x.clone()]);
     let n_before = list(&core).len();
-    let jt = join_clips(&core, vec![x.clone(), a.clone()]);
+    let jt = join_clips_legacy(&core, vec![x.clone(), a.clone()]);
     r.check("adds wait behind another join job, busy", j.is_ok() && jt.is_ok() && get(&core, &p1.id).is_some_and(|p| p.busy) && list(&core).len() == n_before + 1, &format!("{:?} {:?}", j.as_ref().err(), jt.as_ref().err()));
     let _ = fs::rename(&px, dir.join("px gone.mp4"));
     release(blocker);
@@ -903,7 +1087,7 @@ fn run_self_test(r: &mut Report) {
     let _ = fs::rename(dir.join("px gone.mp4"), &px);
     let blocker = hold();
     let n0 = list(&core).len();
-    let jq = join_clips(&core, vec![c.clone(), b.clone()]);
+    let jq = join_clips_legacy(&core, vec![c.clone(), b.clone()]);
     let grew = list(&core).len() == n0 + 1;
     if let Ok(j) = &jq {
         core.jobs.cancel(&j.id);
@@ -930,12 +1114,144 @@ fn run_self_test(r: &mut Report) {
     let _ = save_state(&core, &p2.id, "x");
     r.check("delete: true, draft entry, file, thumbnail and state gone", delete(&core, &p2.id) && !exists(&p2.id) && core.lib.lock().unwrap().get(&p2.id).is_none() && !Path::new(&p2c.path).exists() && !Path::new(&p2c.thumb).exists() && state(&p2.id).is_none(), "");
     r.check("delete: again is false", !delete(&core, &p2.id), "");
-    let p3 = create(&core, "Third");
+    let p3 = create_legacy(&core, "Third");
     let j = add_clips(&core, &p3.id, vec![c.clone()]);
     let _ = finish(&j);
     let p3c = get(&core, &p3.id).and_then(|p| p.clip).unwrap_or_default();
     r.check("discard_draft deletes a project too", join::discard_draft(&core, &p3.id) && !exists(&p3.id) && !Path::new(&p3c.path).exists(), "");
     r.check("the source clips are untouched", [&a, &b, &c].iter().all(|id| core.lib.lock().unwrap().get(id).is_some_and(|m| Path::new(&m.path).is_file())), "");
+
+    // 7b. 0.1.38: projects of references (no draft file, no job).
+    let drafts_dir = root.join(".drafts");
+    let n_files = || fs::read_dir(&drafts_dir).map(|r| r.count()).unwrap_or(0);
+    let meta = |id: &str| core.lib.lock().unwrap().get(id).unwrap_or_default();
+    let (ma, mb, mx) = (meta(&a), meta(&b), meta(&x));
+    let v1 = create(&core, "Refs");
+    r.check("virtual: create makes a project of references, empty, no clip", v1.virt && v1.clip.is_none() && v1.clip_json.is_none() && v1.clips.is_empty() && v1.name == "Refs", &format!("{v1:?}"));
+    r.check("virtual: project_open of an empty one is refused", open(&core, &v1.id).is_err_and(|e| e == EMPTY), "");
+    let files0 = n_files();
+    let jobs0 = core.jobs.list().len();
+    let pc_n = || events().iter().filter(|(e, _)| e == "project-changed").count();
+    let pc0 = pc_n();
+    let t0 = Instant::now();
+    let ad = add(&core, &v1.id, vec![a.clone(), b.clone(), a.clone()]);
+    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let now = match &ad {
+        Ok(Added::Now(v)) => v.clone(),
+        _ => Value::Null,
+    };
+    r.check("virtual add: answered at once (no job, no file, no project-changed)", !now.is_null() && core.jobs.list().len() == jobs0 && n_files() == files0 && pc_n() == pc0 && ms < 1000.0, &format!("{ms:.0} ms {:?}", ad.as_ref().err()));
+    r.check("virtual add: the answer has project, added, starts [0, a], titles (a repeat in one add counts once)", now["project"]["id"] == v1.id.as_str() && now["added"].as_array().is_some_and(|x| x.len() == 2) && now["starts"] == json!([0.0, ma.duration]) && now["titles"] == json!(["Clip PA", "Clip PB"]) && now["mode"] == "reference" && now["job_id"] == "", &now.to_string());
+    let o = open(&core, &v1.id).unwrap_or_default();
+    let src = o["sources"].as_array().cloned().unwrap_or_default();
+    r.line(&format!("INFO project_open of two clips: {o}"));
+    r.check("project_open: virtual, draft, kind joined, no path, id and title of the project", o["virtual"] == true && o["draft"] == true && o["kind"] == "joined" && o["path"] == "" && o["title"] == "Refs" && o["id"] == v1.id.as_str(), &o.to_string());
+    r.check("project_open: duration = the sum, joins = the starts [0, a], names in order", o["duration"].as_f64() == Some(ma.duration + mb.duration) && o["joins"] == json!([0.0, ma.duration]) && o["join_names"] == json!(["Clip PA", "Clip PB"]), &o.to_string());
+    r.check(
+        "project_open: sources in order with clip id, file, start, length, picture, tracks, not missing",
+        src.len() == 2 && src[0]["clip"] == a.as_str() && src[0]["path"] == ma.path.as_str() && src[0]["start"] == 0.0 && src[1]["clip"] == b.as_str() && src[1]["path"] == mb.path.as_str() && src[1]["start"].as_f64() == Some(ma.duration) && src[1]["duration"].as_f64() == Some(mb.duration) && src[0]["width"] == ma.width && src[0]["height"] == ma.height && src[0]["fps"] == 30 && src[1]["audio_tracks"] == mb.audio_tracks && src[0]["thumb"] == ma.thumb.as_str() && src.iter().all(|s| s["missing"] == false && s["title"].is_string()),
+        &format!("{src:?}"),
+    );
+    r.check("project_open: the picture and tracks are the first source's", o["width"] == ma.width && o["height"] == ma.height && o["fps"] == ma.fps && o["audio_tracks"] == ma.audio_tracks && o["thumb"] == ma.thumb.as_str(), "");
+    let ad2 = add(&core, &v1.id, vec![a.clone()]);
+    let o2 = open(&core, &v1.id).unwrap_or_default();
+    let s2 = o2["sources"].as_array().cloned().unwrap_or_default();
+    let end2 = ma.duration + mb.duration;
+    r.check("virtual add: the same clip again is a second source, after the others", matches!(&ad2, Ok(Added::Now(v)) if v["starts"] == json!([end2])) && s2.len() == 3 && s2[2]["clip"] == a.as_str() && s2[2]["start"].as_f64() == Some(end2) && o2["joins"] == json!([0.0, ma.duration, end2]) && o2["duration"].as_f64() == Some(end2 + ma.duration), &o2.to_string());
+    r.check("virtual add: clips kept in order with size, picture and tracks", get(&core, &v1.id).is_some_and(|p| p.clips.iter().map(|c| c.id.clone()).collect::<Vec<_>>() == [a.clone(), b.clone(), a.clone()] && p.clips[1].size == mb.size && p.clips[1].fps == 30 && p.clips[1].width == mb.width && p.clips[1].audio_tracks == mb.audio_tracks && p.clips[1].game == "Proj Game" && !p.busy), "");
+    // The export (projexport.rs) lays the sources out exactly as project_open does: same clips, starts, paths.
+    let ex = crate::projexport::sources_of(&core, &v1.id).map(|(_, s)| s).unwrap_or_default();
+    r.check(
+        "export_project's sources are project_open's: clips, starts, lengths, paths, none missing",
+        ex.len() == s2.len() && ex.iter().zip(&s2).all(|(e, o)| o["clip"] == e.clip.as_str() && o["start"].as_f64() == Some(e.start) && o["duration"].as_f64() == Some(e.duration) && o["path"] == e.path.as_str() && !e.missing),
+        &format!("{:?}", ex.iter().map(|e| (e.clip.clone(), e.start, e.duration)).collect::<Vec<_>>()),
+    );
+    let fake: Vec<String> = (0..18).map(|i| format!("z{i}")).collect();
+    r.check("virtual add: past 20 clips is refused", add(&core, &v1.id, fake).is_err_and(|e| e == TOO_MANY), "");
+    core.lib.lock().unwrap().add(ClipMeta { id: "long".into(), path: ma.path.clone(), title: "long".into(), duration: 1795.0, ..Default::default() });
+    r.check("virtual add: past 30 minutes is refused", add(&core, &v1.id, vec!["long".into()]).is_err_and(|e| e == TOO_LONG), "");
+    core.lib.lock().unwrap().remove("long");
+    r.check("virtual add: an unknown clip and nothing are refused", add(&core, &v1.id, vec!["zz".into()]).is_err_and(|e| e == "Clip not found") && add(&core, &v1.id, vec![]).is_err_and(|e| e == NOTHING), "");
+    r.check("virtual add: the refusals left it as it was", open(&core, &v1.id).is_ok_and(|o| o["sources"].as_array().map(|s| s.len()) == Some(3)), "");
+    let lj = serde_json::to_value(list(&core)).unwrap_or_default();
+    let entry = lj.as_array().and_then(|l| l.iter().find(|p| p["id"] == v1.id.as_str()).cloned()).unwrap_or_default();
+    r.check("list_projects: virtual true, clip = what project_open returns, size 0", entry["virtual"] == true && entry["clip"] == open(&core, &v1.id).unwrap_or_default() && entry["size"] == 0 && entry["clips"].as_array().map(|c| c.len()) == Some(3), "");
+
+    // "Edit together": a project of references, made at once.
+    let n0 = list(&core).len();
+    let jv = join_clips(&core, vec![x.clone(), a.clone()]);
+    let v2 = jv.clone().unwrap_or_default();
+    r.check(
+        "Edit together: a project of references made at once, named \"<first> + 1 more\", no job, no file",
+        jv.is_ok() && v2.virt && v2.name == "Clip PX + 1 more" && list(&core).len() == n0 + 1 && v2.clip_json.as_ref().is_some_and(|c| c["sources"].as_array().map(|s| s.len()) == Some(2) && c["title"] == "Clip PX + 1 more" && c["sources"][1]["start"].as_f64() == Some(mx.duration)) && core.jobs.list().len() == jobs0 && n_files() == files0,
+        &format!("{:?}", jv.as_ref().err()),
+    );
+    r.check("Edit together: one clip is still refused", join_clips(&core, vec![a.clone()]).is_err_and(|e| e == "Pick at least two clips to edit together"), "");
+
+    // A missing clip: the file gone, then the clip gone from the library.
+    let px_path = PathBuf::from(&mx.path);
+    let away = px_path.with_file_name("px away.mp4");
+    let _ = fs::rename(&px_path, &away);
+    let om = open(&core, &v2.id);
+    let sm = om.as_ref().map(|o| o["sources"].clone()).unwrap_or_default();
+    r.check(
+        "missing file: the project opens, that source missing, no path, its title, length and the starts kept",
+        om.is_ok() && sm[0]["missing"] == true && sm[0]["path"] == "" && sm[0]["title"] == "Clip PX" && sm[0]["duration"].as_f64() == Some(mx.duration) && sm[1]["start"].as_f64() == Some(mx.duration) && sm[1]["missing"] == false && om.as_ref().is_ok_and(|o| o["width"] == mx.width && o["duration"].as_f64() == Some(mx.duration + ma.duration)),
+        &format!("{om:?}"),
+    );
+    let _ = fs::rename(&away, &px_path);
+    r.check("missing file: back again, the source is found", open(&core, &v2.id).is_ok_and(|o| o["sources"][0]["missing"] == false && o["sources"][0]["path"] == mx.path.as_str()), "");
+    let gone = core.lib.lock().unwrap().remove(&x);
+    let om = open(&core, &v2.id);
+    r.check("clip gone from the library: the project opens and lists, the source missing, shown from what was kept", om.as_ref().is_ok_and(|o| o["sources"][0]["missing"] == true && o["sources"][0]["fps"] == 30 && o["sources"][0]["width"] == mx.width && o["sources"][0]["title"] == "Clip PX" && o["sources"][0]["thumb"] == "") && list(&core).iter().any(|p| p.id == v2.id), &format!("{om:?}"));
+    if let Some(m) = gone {
+        core.lib.lock().unwrap().add(m);
+    }
+
+    // Rename, saved edit, export mark, delete.
+    let rv = rename(&core, &v1.id, " Refs 2 ");
+    r.check("virtual rename: the name and the opened title", rv.is_ok_and(|p| p.name == "Refs 2") && open(&core, &v1.id).is_ok_and(|o| o["title"] == "Refs 2"), "");
+    let sv = save_state(&core, &v1.id, "{\"v\":1}");
+    r.check("virtual state: saved and read back, exported cleared", sv.is_ok_and(|p| !p.exported) && state(&v1.id).as_deref() == Some("{\"v\":1}"), "");
+    mark_exported(&core, &v1.id);
+    r.check("virtual: marked exported", get(&core, &v1.id).is_some_and(|p| p.exported), "");
+    let lib_n = core.lib.lock().unwrap().clips.len();
+    r.check(
+        "virtual delete: record and state gone, the library clips and their files untouched",
+        delete(&core, &v1.id) && !exists(&v1.id) && state(&v1.id).is_none() && core.lib.lock().unwrap().clips.len() == lib_n && [&a, &b].iter().all(|id| core.lib.lock().unwrap().get(id).is_some_and(|m| Path::new(&m.path).is_file())),
+        "",
+    );
+
+    // A project made before 0.1.38 (a draft): every command as before.
+    let p5 = create_legacy(&core, "Old one");
+    let _ = finish(&enqueue_add(&core, &p5.id, vec![a.clone()], false));
+    let d5 = get(&core, &p5.id).and_then(|p| p.clip).unwrap_or_default();
+    let o5 = open(&core, &p5.id).unwrap_or_default();
+    r.check("old project: project_open gives its draft as before (no virtual, its file)", o5["id"] == p5.id.as_str() && o5.get("virtual").is_none() && o5.get("sources").is_none() && o5["path"] == d5.path.as_str() && o5["draft"] == true && Path::new(&d5.path).is_file(), &o5.to_string());
+    let a5 = add(&core, &p5.id, vec![b.clone()]);
+    let job5 = match &a5 {
+        Ok(Added::Job(j)) => Ok(j.clone()),
+        _ => Err(format!("{a5:?}")),
+    };
+    let done5 = finish(&job5);
+    let after5 = get(&core, &p5.id).unwrap_or_default();
+    r.check("old project: project_add_clips still queues the job and rebuilds its draft", job5.is_ok() && done5.state == "done" && !after5.virt && after5.clip.as_ref().is_some_and(|c| c.joins.len() == 1 && c.path != d5.path && Path::new(&c.path).is_file()) && after5.clips.len() == 2, &format!("{} {} {:?}", done5.state, done5.message, job5.err()));
+    let lj5 = serde_json::to_value(get(&core, &p5.id)).unwrap_or_default();
+    r.check("old project: listed with virtual false and its draft as clip", lj5["virtual"] == false && lj5["clip"]["path"] == after5.clip.as_ref().map(|c| c.path.clone()).unwrap_or_default().as_str() && lj5["clip"]["joins"].as_array().map(|j| j.len()) == Some(1), "");
+    let p6 = create_legacy(&core, "Old empty");
+    let files6 = n_files();
+    let a6 = add(&core, &p6.id, vec![c.clone()]);
+    r.check("an empty old project takes clips at once and becomes one of references", matches!(a6, Ok(Added::Now(_))) && get(&core, &p6.id).is_some_and(|p| p.virt && p.clips.len() == 1) && n_files() == files6, "");
+    {
+        // An entry exactly as 0.1.37 wrote it (no "virtual", clips with id, title, duration only).
+        let _g = LOCK.lock().unwrap();
+        let mut raw: Vec<Value> = serde_json::from_str(&fs::read_to_string(file()).unwrap_or_default()).unwrap_or_default();
+        raw.push(json!({ "id": "old1", "name": "Old file", "created": 1, "modified": 1, "clips": [{ "id": a, "title": "Clip PA", "duration": 4.0 }], "exported": false }));
+        let _ = fs::write(file(), serde_json::to_string(&raw).unwrap_or_default());
+    }
+    let o1 = get(&core, "old1");
+    r.check("a 0.1.37 entry: read as an old project, its clip kept, its missing draft a clear refusal", o1.as_ref().is_some_and(|p| !p.virt && p.clips.len() == 1 && p.clips[0].size == 0 && p.clip.is_none() && p.clip_json.is_none()) && open(&core, "old1").is_err_and(|e| e == NO_DRAFT), &format!("{o1:?}"));
+    r.check("a 0.1.37 entry: deleted as before", delete(&core, "old1") && !exists("old1"), "");
 
     // 8. The start-up sweep keeps project drafts and removes orphans.
     let p4 = create(&core, "Empty one");
@@ -960,6 +1276,8 @@ fn run_self_test(r: &mut Report) {
     let core2 = Core::new();
     let back = get(&core2, &p1.id).unwrap_or_default();
     r.check("after a restart: the project, its draft, joins and state are back", back.name == "My montage" && back.clip.as_ref().is_some_and(|c| c.joins == keep.joins && c.path == keep.path) && back.clips.len() == 3 && state(&p1.id).as_deref() == Some(text) && !core2.lib.lock().unwrap().visible().iter().any(|c| c.id == p1.id), &format!("{back:?}"));
+    let ov = open(&core2, &v2.id);
+    r.check("after a restart: a project of references opens with its sources, an old one with its draft", ov.as_ref().is_ok_and(|o| o["virtual"] == true && o["sources"].as_array().map(|s| s.len()) == Some(2) && o["sources"][0]["missing"] == false) && open(&core2, &p5.id).is_ok_and(|o| o.get("virtual").is_none()), &format!("{ov:?}"));
     *RECORD.lock().unwrap() = None;
     let _ = fs::remove_dir_all(&root);
 }

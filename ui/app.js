@@ -842,7 +842,9 @@ async function menuAction(m, arg) {
     case "select": if (S.sel.has(id)) S.sel.delete(id); else S.sel.add(id); S.anchor = id; return syncSel();
     case "deselect": return clearSel();
     case "delete": {
-      if (!(await ask(ids.length === 1 ? t('Move "{title}" to the Recycle Bin?', { title: c.title }) : t("Move {clips} to the Recycle Bin?", { clips: plural(ids.length) }), t("Move to Recycle Bin")))) return;
+      // projects.js: one more line when projects of references use these clips (0.1.38).
+      const used = typeof projUsedNote === "function" ? projUsedNote(ids) : "";
+      if (!(await ask((ids.length === 1 ? t('Move "{title}" to the Recycle Bin?', { title: c.title }) : t("Move {clips} to the Recycle Bin?", { clips: plural(ids.length) })) + (used ? " " + used : ""), t("Move to Recycle Bin")))) return;
       try { await invoke("delete_clips", { ids }); sfx("close"); flash(t("{clips} moved to the Recycle Bin", { clips: plural(ids.length) })); } finally { await refreshClips(); }
       return;
     }
@@ -1005,7 +1007,8 @@ async function newFolder() {
 }
 async function bulkDelete() {
   const ids = [...S.sel];
-  if (!ids.length || !(await ask(t("Move {clips} to the Recycle Bin?", { clips: plural(ids.length) }), t("Move to Recycle Bin")))) return;
+  const used = typeof projUsedNote === "function" ? projUsedNote(ids) : ""; // projects.js (0.1.38)
+  if (!ids.length || !(await ask(t("Move {clips} to the Recycle Bin?", { clips: plural(ids.length) }) + (used ? " " + used : ""), t("Move to Recycle Bin")))) return;
   try {
     const n = await invoke("delete_clips", { ids });
     sfx("close");

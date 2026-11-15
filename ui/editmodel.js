@@ -126,6 +126,7 @@ function emRestore(m, json) {
   m.colors = s.colors;
   m.blank = s.blank;
   emPiecify(m, true); // an undo step from before 0.1.37 (its bookmarks were already moved with the parts above)
+  emRowsThrough(m);   // ... or with a row cut with the video (0.1.38: every file row plays through)
 }
 
 /** Call BEFORE changing the model, so the change can be undone. Clears redo. */
@@ -444,7 +445,10 @@ function emSrcSpans(m, a, b) {
       continue;
     }
     const s = { tl: lo, src: p.src + (lo - p.at), len: hi - lo };
-    if (last && !last.gap && Math.abs(last.src + last.len - s.src) < EM_EPS) last.len += s.len;
+    // A project that references its clips (0.1.38, m.virtual): footage that follows on across two clips' border is
+    // still two files, so the ranges are not merged there.
+    const border = m.virtual && Array.isArray(m.bounds) && m.bounds.some((x) => x > EM_EPS && Math.abs(x - s.src) < EM_EPS);
+    if (last && !last.gap && !border && Math.abs(last.src + last.len - s.src) < EM_EPS) last.len += s.len;
     else out.push(s);
   }
   return out;
@@ -555,6 +559,61 @@ function emLayGroups(m, groups, order) {
   m.audio.forEach((r, k) => { r.gains = gains[k]; });
   // Sorted; one at the very end of the clip can land on a border where another starts: keep one of them.
   if (m.marks) m.marks = marks.sort((a, b) => a - b).filter((x, i, l) => i === 0 || x - l[i - 1] >= EM_MARK_GAP - EM_EPS);
+}
+
+/* ---------- a project that references its clips (0.1.38) ----------
+ * The project's clips laid end to end in the order they were added are "project time": source k starts at
+ * sources[k].start and is sources[k].duration long. A piece's `src` is project time; the player and the export map it
+ * to the clip's own file. `sources`: [{ start, duration, missing?, ... }] in order. */
+
+/** Index of the source holding project second `s` (a border belongs to the source after it; past the end the last). */
+function emSourceAt(sources, s) {
+  const L = Array.isArray(sources) ? sources : [];
+  let k = 0;
+  while (k < L.length - 1 && s >= L[k + 1].start - EM_EPS) k++;
+  return k;
+}
+/** Project second `s` -> { k, local }: the source and the second in its own file (kept inside the file). */
+function emProjToFile(sources, s) {
+  const k = emSourceAt(sources, s), src = sources[k] || { start: 0, duration: 0 };
+  return { k, local: Math.max(0, Math.min(src.duration, s - src.start)) };
+}
+/** Second `local` of source `k`'s file -> project second. */
+const emFileToProj = (sources, k, local) => (sources[k] ? sources[k].start + local : local);
+/** Which source piece `i` of model `m` shows (-1 for a gap). */
+function emPieceSource(m, sources, i) {
+  const p = emPieceList(m)[i];
+  return !p || p.gap ? -1 : emSourceAt(sources, p.src + p.len / 2);
+}
+/** A clip's track list as the editor shows it (emNew's rule): without "Mix" when there are titled tracks, without
+ *  track 0 for an untitled 3-track clip. */
+function emShownTracks(list) {
+  const L = Array.isArray(list) ? list : [];
+  const titled = L.length > 1 && L.some((x) => x.title === "Mix");
+  return titled ? L.filter((x) => x.title !== "Mix") : L.length === 3 ? L.filter((x) => x.index !== 0) : L;
+}
+/** One row per track title across the sources, in the order they first appear: ["Desktop", "Microphone", ...].
+ *  `lists`: each source's shown tracks ([{ index, title }]). */
+function emTrackTitles(lists) {
+  const out = [];
+  for (const L of lists || []) for (const x of L || []) { const title = x.title || `Track ${x.index + 1}`; if (!out.includes(title)) out.push(title); }
+  return out;
+}
+/** A row's waveform on project time from each source's own: `parts` [{ start, duration, peaks, ps }] (peaks null =
+ *  silent there), laid at `ps` peaks per second over `total` seconds. */
+function emJoinPeaks(parts, total, ps) {
+  const n = Math.max(0, Math.ceil(total * ps)), out = new Array(n).fill(0);
+  for (const p of parts || []) {
+    if (!p || !Array.isArray(p.peaks) || !(p.ps > 0)) continue;
+    const a = Math.max(0, Math.floor(p.start * ps)), b = Math.min(n, Math.ceil((p.start + p.duration) * ps));
+    for (let i = a; i < b; i++) {
+      const sec = i / ps - p.start, j0 = Math.floor(sec * p.ps + 1e-9), j1 = Math.max(j0 + 1, Math.floor((sec + 1 / ps) * p.ps + 1e-9));
+      let mx = 0;
+      for (let j = Math.max(0, j0); j < Math.min(p.peaks.length, j1); j++) if (p.peaks[j] > mx) mx = p.peaks[j];
+      out[i] = mx;
+    }
+  }
+  return out;
 }
 
 /** True if the parts are not in source order. */
@@ -1076,6 +1135,7 @@ function emStateLoad(m, s) {
   // edit saved before pieces made into pieces (cut-out stretches leave the row, every time keeps its moment).
   if (Array.isArray(s.joins) && s.joins.length) m.bounds = [0, ...s.joins.filter((x) => x > EM_EPS && x < s.duration - EM_EPS)];
   emPiecify(m);
+  emRowsThrough(m); // 0.1.38: a row that was cut with the video plays through, at the same place
   return true;
 }
 
@@ -1256,9 +1316,22 @@ function emEnd(m) {
 const emTail = (m) => Math.max(0, emEnd(m) - (m.duration || 0));
 /** Length of the finished clip with the time after the video (output seconds); emOutDuration without anything after it. */
 const emResultDuration = (m) => emSrcToOut(m, emEnd(m)) / (m.speed || 1);
-/** Switch a file row between playing through cuts and being cut with the video; its block keeps its place on the timeline. */
+/**
+ * 0.1.38: an added audio file is its own clip, heard wherever its block lies, with video under it or not. With pieces
+ * nothing is left for "cut with the video" to mean, so every file row plays through: a row saved without `through`
+ * becomes one, at the same place, playing the same part of the file (on a model in pieces form, emPiecify first,
+ * timeline time is the result's time, so its offset, trimStart and length stay as they are). True if one changed.
+ */
+function emRowsThrough(m) {
+  let any = false;
+  for (const r of m.audio || []) if (r.kind === "file" && !r.through) { r.through = true; any = true; }
+  return any;
+}
+/** Switch a file row between playing through cuts and being cut with the video; its block keeps its place on the timeline.
+ *  0.1.38: a row only ever goes to playing through (the other way is gone). */
 function emSetThrough(m, id, on) {
   const row = emRow(m, id);
+  if (!on) return false;
   if (!row || row.kind !== "file" || !!row.through === !!on) return false;
   const end = emRowEnd(m, row);
   row.through = !!on;
@@ -1533,6 +1606,9 @@ function emToOpts(m) {
   const tail = emRound(emTail(m) / (m.speed || 1));
   return {
     ...(tail > 0 ? { tail } : {}),
+    // A project that references its clips (0.1.38): a track row's `index` is its place in this list of titles (one
+    // row per title across the sources); the export finds each source's own track by title.
+    ...(Array.isArray(m.trackTitles) ? { track_titles: m.trackTitles.slice() } : {}),
     start: 0,
     end: 0,
     speed: m.speed,
@@ -1583,7 +1659,8 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = { EM_MIN_SEG, EM_MAX_GAIN, EM_EPS, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emTrimBounds, emSameSeg, emSetTrimStart, emSetTrimEnd, emSegCopy, emSegPaste, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emTrackRow, emGameHidden, emRowHint, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts,
     emSetParts, emParts, emPartAt, emToSrc, emFromSrc, emSrcSpans, emMovePart, emCutLocked, emLockedTimes, emPartSegs, emPartRemoved, emSetPartRemoved, emReordered, emState, emRestore,
     emAddParts, emNewParts, emStateSave, emStateOk, emStateLoad, EM_STATE_V,
+    emSourceAt, emProjToFile, emFileToProj, emPieceSource, emShownTracks, emTrackTitles, emJoinPeaks,
     emPieceList, emPieceAt, emSplitAt, emRemovePiece, emTrimPiece, emPieceToItem, emPiecify, emNeedsPieces, emClipBounds, emLimits,
     emHasGaps, emGapAt, emSegIsGap, emKeepSource, emEnsureParts, emSplitPartAt, emPlacePart, emPutBeside, emCloseGap, emCloseGaps, emSetGapLen, emInsertGap, emLiftSeg, emSplitOverlay, emKeyAt, emGroups, emNormGroups, emLayGroups,
-    emRowEnd, emRowFileAt, emEnd, emTail, emResultDuration, emSlipFile, emMoveOverlay, emTrimOverlay, emOvMaxLen, EM_OV_MIN, emSetThrough, emTracksGone, emRemoveRow, emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS, emCanvasOk, emCanvasOpts };
+    emRowEnd, emRowFileAt, emEnd, emTail, emResultDuration, emRowsThrough, emSlipFile, emMoveOverlay, emTrimOverlay, emOvMaxLen, EM_OV_MIN, emSetThrough, emTracksGone, emRemoveRow, emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS, emCanvasOk, emCanvasOpts };
 }

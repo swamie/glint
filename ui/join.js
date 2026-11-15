@@ -77,11 +77,21 @@ function joinError(e) {
   return t(msg);
 }
 
-/** Queue "Edit together" of clips `ids`, in that order (the order selected). It makes a project. */
+/** "Edit together" of clips `ids`, in that order (the order selected). It makes a project. */
 async function joinClips(ids) {
   ids = [...new Set(ids)];
   try {
     const job = await invoke("join_clips", { ids });
+    // 0.1.38: the project of references is made at once and comes back (a project has a name, a job a kind): open it.
+    if (job && job.id && !job.kind && typeof job.name === "string") {
+      if (typeof projUpsert === "function") projUpsert(job);
+      if (typeof projRefreshUI === "function") projRefreshUI();
+      sfx("success");
+      if (!joinPending.includes(job.id)) joinPending.push(job.id);
+      if (joinBusy()) flash(t("The clips are ready for the editor. They open when you close what is open now."));
+      joinOpenPending();
+      return;
+    }
     if (job && job.id) {
       joinOpenWhenDone.add(job.id);
       // Shown at once; the backend's "jobs-changed" brings the real list right after.

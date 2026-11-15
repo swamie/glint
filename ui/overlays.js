@@ -463,7 +463,7 @@ function ovMount(root, c, P) {
   function place() {
     const br = box.getBoundingClientRect(), vr = v.getBoundingClientRect();
     const cs = P.cv?.size?.(); // a canvas (canvas.js): the overlays lie on it, not on the clip's own picture
-    const vw = cs ? cs.width : v.videoWidth || c.width || 16, vh = cs ? cs.height : v.videoHeight || c.height || 9;
+    const vw = cs ? cs.width : (c.virtual ? c.width : v.videoWidth) || c.width || 16, vh = cs ? cs.height : (c.virtual ? c.height : v.videoHeight) || c.height || 9;
     if (!vr.width || !vr.height) return false;
     const k = Math.min(vr.width / vw, vr.height / vh), W = vw * k, H = vh * k;
     const left = vr.left - br.left + (vr.width - W) / 2, top = vr.top - br.top + (vr.height - H) / 2;
@@ -729,7 +729,7 @@ function ovMount(root, c, P) {
     if (!m() || !info?.path) return null;
     commitText();
     const cs = P.cv?.size?.();
-    const pw = cs ? cs.width : v.videoWidth || c.width || 16, ph = cs ? cs.height : v.videoHeight || c.height || 9;
+    const pw = cs ? cs.width : (c.virtual ? c.width : v.videoWidth) || c.width || 16, ph = cs ? cs.height : (c.virtual ? c.height : v.videoHeight) || c.height || 9;
     const o = medMake(info, now(), pw, ph);
     change((mm) => { mm.overlays.push(o); });
     setTool("select");
@@ -1321,7 +1321,7 @@ function ovMount(root, c, P) {
       const mm = m();
       if (!mm) return [];
       const cs = P.cv?.size?.();
-      const W = cs ? cs.width : v.videoWidth || c.width || 1920, H = cs ? cs.height : v.videoHeight || c.height || 1080;
+      const W = cs ? cs.width : (c.virtual ? c.width : v.videoWidth) || c.width || 1920, H = cs ? cs.height : (c.virtual ? c.height : v.videoHeight) || c.height || 1080;
       const out = [];
       for (const g of ovGroups(mm)) {
         if (g.media) {

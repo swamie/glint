@@ -166,6 +166,12 @@
 .tl.tl-dragging[data-tl-drag="piece-end"], .tl.tl-dragging[data-tl-drag="piece-end"] * { cursor: col-resize !important; }
 .tl.tl-dragging.tl-limit[data-tl-drag="piece-end"], .tl.tl-dragging.tl-limit[data-tl-drag="piece-end"] * { cursor: not-allowed !important; }
 
+/* 0.1.38, a project that references its clips: the last picture held while the video takes another clip's file, and
+   the label on a missing clip's black picture. Both live in the player (ui/editor.js). */
+.player .e-hold { position: absolute; z-index: 0; pointer-events: none; }
+.player .e-hold[hidden], .player .e-missing-tag[hidden] { display: none; }
+.player .e-missing-tag { position: absolute; left: 50%; top: 50%; transform: translate(-50%, 44px); z-index: 2; text-align: center; max-width: calc(100% - 24px); padding: 3px 9px; border-radius: 6px; background: rgba(255, 255, 255, .1); color: rgba(255, 255, 255, .8); font-size: 11.5px; font-weight: 600; pointer-events: none; overflow-wrap: anywhere; }
+
 /* After the video the player is black (editor.js adds e-blank and e-after): not "Video hidden in this segment". */
 .player.e-after .e-blank-tag { display: none; }
 .tl-lane[data-tl-kind="ov"] { background: color-mix(in srgb, var(--bg) 35%, transparent); }

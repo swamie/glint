@@ -14,6 +14,20 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.38", date: "2026-11-16",
+    new: [
+      t("Projects use your original clips directly. A project is now only the list of its clips and your edit: adding clips is instant, no joined copy is made, and a project takes almost no disk space."),
+      t("The editor plays each piece of a project from its own clip file, and the export reads the same files. A project whose pieces all come from one clip exports that clip directly."),
+    ],
+    improved: [
+      t("If a clip of a project is deleted from the Library, the project still opens: its pieces are black and say which clip is missing. Deleting a clip that projects use now says so first."),
+      t("Projects made before this version keep their working file and open as before."),
+    ],
+    fixed: [
+      t("An added song or sound was silent wherever there was no video under it (in a gap, or after a moved piece). It is now heard everywhere its block lies on the timeline, with video under it or not."),
+    ],
+  },
+  {
     version: "0.1.37", date: "2026-11-16",
     new: [
       t("Cutting really removes footage from the timeline. No greyed stretch stays behind: what is left are pieces, each its own block. A split makes two pieces, and dragging a piece moves only that piece."),

@@ -90,12 +90,55 @@ if (!window.__TAURI__) {
     active: (j) => ["queued", "running"].includes(j.state),
     busy: (id) => jobs.some((j) => j.kind === "join" && j.project === id && mockProj.active(j)),
     view: (p) => {
+      if (p.virt) return { id: p.id, name: p.name, created: p.created, modified: p.modified, clip: mockProj.virtual(p), virtual: true, clips: p.clips.map((c) => ({ ...c })), exported: p.exported, size: 0, busy: false };
       const clip = drafts.find((d) => d.id === p.id) || null;
-      return { id: p.id, name: p.name, created: p.created, modified: p.modified, clip: clip && { ...clip, joins: [...clip.joins], join_names: [...clip.join_names] }, clips: p.clips.map((c) => ({ ...c })), exported: p.exported, size: clip ? clip.size : 0, busy: mockProj.busy(p.id) };
+      return { id: p.id, name: p.name, created: p.created, modified: p.modified, clip: clip && { ...clip, joins: [...clip.joins], join_names: [...clip.join_names] }, virtual: false, clips: p.clips.map((c) => ({ ...c })), exported: p.exported, size: clip ? clip.size : 0, busy: mockProj.busy(p.id) };
     },
-    make: (name) => {
+    // 0.1.38 (CONTRACT_0138): every project made now is VIRTUAL, only its clip list (p.virt). `virtual(p)` is
+    // what project_open returns, as projects.rs virtual_clip: the clips end to end, each a source. Every source
+    // plays the real test video ("/__test.mp4?src=<clip id>"), so a source is at most MOCK_VIDEO_SECS long.
+    // window.__mockMissing = "<clip id>": that clip counts as gone (as one deleted from the library).
+    virtual: (p) => {
+      if (!p.clips.length) return null;
+      let at = 0;
+      const sources = p.clips.map((pc) => {
+        const c = window.__mockMissing === pc.id ? null : clips.find((x) => x.id === pc.id);
+        const s = c
+          ? { clip: pc.id, path: `/__test.mp4?src=${pc.id}`, title: c.title, duration: pc.duration, start: at, width: c.width, height: c.height, fps: c.fps, audio_tracks: c.audio_tracks, thumb: c.thumb || "", missing: false }
+          : { clip: pc.id, path: "", title: pc.title, duration: pc.duration, start: at, width: pc.width, height: pc.height, fps: pc.fps, audio_tracks: pc.audio_tracks, thumb: "", missing: true };
+        at += pc.duration;
+        return s;
+      });
+      const f = sources[0];
+      return {
+        id: p.id, draft: true, virtual: true, kind: "joined", title: p.name, game: p.clips[0].game || "", created: p.created, duration: at,
+        width: f.width, height: f.height, fps: f.fps, path: "", joins: sources.map((s) => s.start), join_names: sources.map((s) => s.title),
+        audio_tracks: f.audio_tracks, sources, thumb: (sources.find((s) => s.thumb) || {}).thumb || "", size: p.clips.reduce((n, c) => n + (c.size || 0), 0), folder: "", favorite: false,
+      };
+    },
+    /** What a project keeps of a library clip (projects.rs ProjectClip). */
+    keep: (c) => ({ id: c.id, title: c.title, duration: Math.min(c.duration, MOCK_VIDEO_SECS), size: c.size, width: c.width, height: c.height, fps: c.fps, audio_tracks: c.audio_tracks, game: c.game }),
+    /** project_add_clips on a virtual project: at once, no job (projects.rs add_now). */
+    addNow: (p, ids) => {
+      const uniq = [...new Set(ids)];
+      if (!uniq.length) throw "Pick at least one clip to add";
+      if (p.clips.length + uniq.length > 20) throw "A project takes at most 20 clips";
+      const picked = uniq.map((id) => clips.find((c) => c.id === id));
+      if (picked.some((c) => !c)) throw "Clip not found";
+      const added = picked.map(mockProj.keep);
+      let at = p.clips.reduce((s, c) => s + c.duration, 0);
+      if (at + added.reduce((s, c) => s + c.duration, 0) > 1800) throw "A project takes at most 30 minutes of clips";
+      const starts = added.map((c) => { const s = at; at += c.duration; return s; });
+      p.virt = true;
+      p.clips.push(...added);
+      p.modified = Math.max(Date.now(), p.modified + 1);
+      p.exported = false;
+      mockProj.changed();
+      return { project: mockProj.view(p), added: added.map((c) => ({ ...c })), starts, titles: added.map((c) => c.title), job_id: "", mode: "reference", secs: 0 };
+    },
+    make: (name, virt = true) => {
       const now = Date.now();
-      const p = { id: "p" + now + "-" + mockProj.seq++, name: String(name || "").trim().slice(0, 100) || "New project", created: now, modified: now, clips: [], exported: false, state: null };
+      const p = { id: "p" + now + "-" + mockProj.seq++, name: String(name || "").trim().slice(0, 100) || "New project", created: now, modified: now, clips: [], exported: false, state: null, virt };
       mockProj.list.push(p);
       return p;
     },
@@ -185,6 +228,12 @@ if (!window.__TAURI__) {
     },
   };
   window.__mockProjects = mockProj; // for checks in the console
+  // A project of three sources (20 s, 14 s, 20 s) to open from the Editor page (0.1.38).
+  {
+    const p = mockProj.make("Three sources (mock)");
+    p.clips = ["c2", "c7", "c9"].map((id) => mockProj.keep(clips.find((c) => c.id === id)));
+    p.created = p.modified = now - 3600000;
+  }
   // A pretend render queue: each job takes about 4 s. Blur jobs run at most settings.blur_parallel
   // at once; compress jobs ("Compress for Discord") one at a time in their own lane, as in jobs.rs.
   let jobs = [];
@@ -550,9 +599,36 @@ if (!window.__TAURI__) {
             if (picked.length > 20) throw "Edit together takes at most 20 clips";
             if (picked.reduce((s, c) => s + c.duration, 0) > 1800) throw "Edit together takes at most 30 minutes of clips";
             if (window.__mockJoinMissing) throw `The video file of "${picked[picked.length - 1].title}" is missing`;
-            if (jobs.some((j) => j.clip_id === "join:" + picked.map((c) => c.id).join(",") && ["queued", "running"].includes(j.state))) throw "Those clips are already being joined";
+            // 0.1.38: a project of references, made at once and returned (the UI opens it).
             const p = mockProj.make(`${picked[0].title} + ${picked.length - 1} more`);
-            try { return mockProj.add(p, args.ids, true); } catch (e) { mockProj.remove(p.id); throw e; }
+            p.clips = picked.map(mockProj.keep);
+            mockProj.changed();
+            return mockProj.view(p);
+          }
+          case "project_open": {
+            const p = mockProj.list.find((x) => x.id === args.id);
+            if (!p) throw "Project not found";
+            if (p.virt) { const v = mockProj.virtual(p); if (!v) throw "This project has no clips yet"; return v; }
+            const d = drafts.find((x) => x.id === p.id);
+            if (!d) throw p.clips.length ? "The working copy of this project is missing" : "This project has no clips yet";
+            return { ...d, joins: [...d.joins], join_names: [...d.join_names] };
+          }
+          case "export_project": {
+            // Agent A's command (projects.rs): as export_clip, from the project's sources. A missing source the
+            // ranges use is an error that names it, before anything is made (here: any missing source).
+            const p = mockProj.list.find((x) => x.id === args.id);
+            if (!p) throw "Project not found";
+            const v = mockProj.virtual(p);
+            if (!v) throw "This project has no clips yet";
+            const lost = v.sources.find((s) => s.missing);
+            if (lost) throw `The clip "${lost.title}" is missing, so the project cannot be exported`;
+            for (const pct of [10, 40, 70, 100]) { await new Promise((r) => setTimeout(r, 150)); window.__mockEmit("export-progress", { id: args.id, pct }); }
+            const first = clips.find((x) => x.id === v.sources[0].clip) || {};
+            const made = { ...first, id: "e" + Date.now(), title: p.name + " (edit)", kind: "edit", created: Date.now(), draft: false, duration: v.duration, path: "/__test.mp4", joins: [], join_names: [] };
+            clips.push(made);
+            p.exported = true;
+            mockProj.changed();
+            return made;
           }
           case "discard_draft": case "delete_project": {
             // As projects.rs: false while a job builds or reads it; removes draft, thumbnail, state.
@@ -576,6 +652,9 @@ if (!window.__TAURI__) {
           case "project_add_clips": {
             const p = mockProj.list.find((x) => x.id === args.id);
             if (!p) throw "Project not found";
+            // A virtual project (or an empty old one) takes the clips at once; one with a draft queues the old job.
+            const hasDraft = drafts.some((d) => d.id === p.id);
+            if (p.virt || (!hasDraft && !p.clips.length && !mockProj.busy(p.id))) return mockProj.addNow(p, args.ids || []);
             return mockProj.add(p, args.ids || [], false);
           }
           case "project_save_state": {

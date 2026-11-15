@@ -489,6 +489,21 @@ fn export_clip(core: St, id: String, opts: crate::editor::ExportOpts) -> Result<
     Ok(new)
 }
 
+/// Export a project that references its library clips (0.1.38, `projexport.rs`): `opts` in project
+/// time, as the editor sends them. Progress as "export-progress" events { id, pct }, the join first.
+#[tauri::command(async)]
+fn export_project(core: St, id: String, opts: crate::editor::ExportOpts) -> Result<ClipMeta, String> {
+    let _working = crate::update::working(); // no automatic update restart meanwhile
+    let (target, sources) = crate::projexport::sources_of(core.inner(), &id)?;
+    let emitter = core.inner().clone();
+    let source = id.clone();
+    let mut progress = |pct: f32| emitter.emit("export-progress", serde_json::json!({ "id": source, "pct": pct }));
+    let new = crate::projexport::export(&core.settings(), &target, &sources, &opts, &mut progress)?;
+    core.lib.lock().unwrap().add(new.clone());
+    crate::projects::mark_exported(core.inner(), &id); // the project shows "Exported"
+    core.emit("clips-changed", new.id.clone());
+    Ok(new)
+}
 /// The exported clip `id` replaces clips `ids`: they go to the Recycle Bin
 /// (`Core::replace_clips`). `adopt`: it takes the first one's name, date and
 /// favourite (one clip trimmed or edited, not a project).
@@ -746,12 +761,18 @@ fn compress_clip(core: St, id: String, mb: u32) -> Result<crate::jobs::Job, Stri
 }
 
 /// "Edit together": make an editor project of clips `ids` (2..=20, in the order
-/// given, which is the order selected) and queue the job that joins them into
-/// its draft (kind "joined", `draft` true, never listed), announced with
-/// "project-changed" and "clip-joined" (see projects.rs, join.rs).
+/// given, which is the order selected). Since 0.1.38 it is made at once, a project
+/// of references (no job, no file): the project is returned and the UI opens it.
 #[tauri::command(async)]
-fn join_clips(core: St, ids: Vec<String>) -> Result<crate::jobs::Job, String> {
-    crate::join::enqueue(core.inner(), ids)
+fn join_clips(core: St, ids: Vec<String>) -> Result<crate::projects::Project, String> {
+    crate::projects::join_clips(core.inner(), ids)
+}
+
+/// The project as the clip the editor opens (projects.rs `open`): a virtual one
+/// made of `sources`, or the draft of a project made before 0.1.38.
+#[tauri::command(async)]
+fn project_open(core: St, id: String) -> Result<serde_json::Value, String> {
+    crate::projects::open(core.inner(), &id)
 }
 
 /// Another name for `delete_project` (a draft of no project is still deleted).
@@ -773,10 +794,11 @@ fn create_project(core: St, name: String) -> crate::projects::Project {
     crate::projects::create(core.inner(), &name)
 }
 
-/// Queue a job (kind "join") that appends library clips `ids` to project `id`.
+/// Append library clips `ids` to project `id`: at once for a project of references
+/// (0.1.38: { project, added, starts, titles, ... }), else the old job (kind "join").
 #[tauri::command(async)]
-fn project_add_clips(core: St, id: String, ids: Vec<String>) -> Result<crate::jobs::Job, String> {
-    crate::projects::add_clips(core.inner(), &id, ids)
+fn project_add_clips(core: St, id: String, ids: Vec<String>) -> Result<crate::projects::Added, String> {
+    crate::projects::add(core.inner(), &id, ids)
 }
 
 #[tauri::command(async)]
@@ -958,6 +980,7 @@ pub fn run(minimized: bool) {
             import_run,
             pick_import_folder,
             export_clip,
+            export_project,
             replace_clips,
             take_pending_edit,
             clipboard_text,
@@ -973,6 +996,7 @@ pub fn run(minimized: bool) {
             crate::compress::compress_copy,
             crate::compress::compress_reveal,
             join_clips,
+            project_open,
             discard_draft,
             list_projects,
             create_project,

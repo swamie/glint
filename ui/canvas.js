@@ -270,7 +270,7 @@ function cvMount(root, c, P) {
   };
   const m = () => P.model;
   const cv = () => m()?.canvas || null;
-  const src = () => ({ w: v.videoWidth || c.width || 1920, h: v.videoHeight || c.height || 1080 });
+  const src = () => ({ w: (c.virtual ? c.width : v.videoWidth) || c.width || 1920, h: (c.virtual ? c.height : v.videoHeight) || c.height || 1080 }); // a project that references its clips: its own size (0.1.38)
   const piece = (id) => cv()?.pieces.find((p) => p.id === id) || null;
   /** A piece as it is at the playhead (keyframes.js): its own boxes when it has no keyframes. */
   const shown = (p, tm = P.time()) => (p && kfHas(p) ? kfPieceAt(p, tm, cv(), src()) : p);

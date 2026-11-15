@@ -5,6 +5,9 @@
 .pj-card:focus-visible .thumb { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
 .pj-card .thumb .ph svg { width: 40px; height: 40px; opacity: .7; }
 .pj-card .thumb .tag.pj-tag-empty { background: var(--raised-2); color: var(--muted); }
+/* 0.1.38: clips of the project gone from the library (top right: the tick is top left, the other tags at the bottom). */
+.pj-card .thumb .tag.pj-tag-missing { top: 8px; bottom: auto; left: auto; right: 8px; background: var(--danger); color: #1a0606; }
+.pj-missing { margin-top: 6px; color: var(--danger); overflow-wrap: anywhere; }
 .pj-card-busy { position: absolute; inset: 0; display: grid; place-items: center; padding: 12px; background: rgba(4, 7, 12, .62); color: #fff; font-size: 12.5px; font-weight: 600; text-align: center; }
 .pj-empty-page p { margin: 8px 0; line-height: 1.45; }
 .pj-empty-page .btn { margin-top: 14px; }

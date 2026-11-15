@@ -184,11 +184,15 @@ pub struct ExportOpts {
     /// clip's frame rate, so overlays and keyframes go on; every audio result is padded with
     /// silence to the same length; files that play through cuts may sound there. 0 = none.
     pub tail: f64,
+    /// 0.1.38, a project that references its clips (`projexport.rs`): the timeline's audio rows by title,
+    /// one per title across the sources; a track row's `index` is its place in this list. Empty = a clip's own
+    /// stream index, as before. `editor::export` itself never reads it.
+    pub track_titles: Vec<String>,
 }
 
 impl Default for ExportOpts {
     fn default() -> Self {
-        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new(), ordered: false, overlays: Vec::new(), blurs: Vec::new(), fade_in: 0.0, fade_out: 0.0, canvas: None, canvas_tracks: Vec::new(), tail: 0.0 }
+        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new(), ordered: false, overlays: Vec::new(), blurs: Vec::new(), fade_in: 0.0, fade_out: 0.0, canvas: None, canvas_tracks: Vec::new(), tail: 0.0, track_titles: Vec::new() }
     }
 }
 

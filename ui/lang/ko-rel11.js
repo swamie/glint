@@ -244,4 +244,9 @@ glintAddLanguage("ko", "한국어", {
   "Drag a piece up onto a row above the video to lay it over the whole picture, with its sound as its own track.": "조각을 영상 위의 줄로 끌어 올리면 화면 전체를 덮도록 놓이고, 소리는 따로 트랙이 돼요.",
   "Clips laid on the picture play in step with the video at every speed, across gaps and after the end.": "화면 위에 올린 클립이 모든 속도에서, 빈 구간과 영상 끝 뒤에서도 영상과 맞춰 재생돼요.",
   "Projects made before this version open with their cut-out parts as pieces and export exactly as before. “Hide cut parts” is gone: there is nothing left to hide.": "이 버전 이전에 만든 프로젝트는 잘라 낸 부분이 조각으로 열리고, 내보낸 결과는 이전과 똑같아요. “잘라 낸 부분 숨기기”는 숨길 것이 없어져서 없앴어요.",
+  "Projects use your original clips directly. A project is now only the list of its clips and your edit: adding clips is instant, no joined copy is made, and a project takes almost no disk space.": "프로젝트가 원본 클립을 그대로 써요. 이제 프로젝트는 클립 목록과 편집 내용뿐이에요. 클립은 바로 추가되고, 이어 붙인 사본을 만들지 않아서 디스크 공간을 거의 쓰지 않아요.",
+  "The editor plays each piece of a project from its own clip file, and the export reads the same files. A project whose pieces all come from one clip exports that clip directly.": "편집기는 프로젝트의 각 조각을 해당 클립 파일에서 바로 재생하고, 내보낼 때도 같은 파일을 읽어요. 모든 조각이 한 클립에서 온 프로젝트는 그 클립을 바로 내보내요.",
+  "If a clip of a project is deleted from the Library, the project still opens: its pieces are black and say which clip is missing. Deleting a clip that projects use now says so first.": "프로젝트의 클립을 라이브러리에서 지워도 프로젝트는 열려요. 그 조각은 검게 나오고 어떤 클립이 없는지 알려 줘요. 프로젝트에서 쓰는 클립을 지울 때는 먼저 알려 줘요.",
+  "Projects made before this version keep their working file and open as before.": "이 버전 이전에 만든 프로젝트는 작업 파일을 그대로 두고 이전처럼 열려요.",
+  "An added song or sound was silent wherever there was no video under it (in a gap, or after a moved piece). It is now heard everywhere its block lies on the timeline, with video under it or not.": "추가한 노래나 소리가 아래에 영상이 없는 곳(빈 구간이나 옮긴 조각 뒤)에서 들리지 않았어요. 이제 아래에 영상이 있든 없든 타임라인에서 블록이 놓인 곳 어디서나 들려요.",
 });

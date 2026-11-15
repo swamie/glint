@@ -13,6 +13,13 @@
 //   draft is loaded and every edit kept (emStateLoad + emAddParts in editmodel.js).
 // - The edit is saved debounced (projDirty) and when the project is left (projFlush), never when
 //   nothing changed. Closing never asks and never deletes.
+// 0.1.38 (CONTRACT_0138): a project made now is VIRTUAL (`p.virtual`): only its clip list and the edit, no
+// draft file. `p.clip` is then what `project_open` returns (virtual: true, `sources` laid end to end, `joins` =
+// every source's start INCLUDING 0, one `join_names` entry per source). It opens with
+// openClip(<that object>) (projOpenVirtual); adding answers at once and the open editor takes the new sources
+// with P.addSources (editor.js, no reload); "Edit together" makes one at once (join.js). A clip gone from the
+// library is a `missing` source: the card and the clip list say so. Projects made before keep their draft and
+// the job path below. projJoinsOf gives both kinds the draft's joins (starts after the first) for the saved edit.
 // A normal library clip never comes here: editor.js calls these only for a draft (P.draft).
 // Loaded after join.js, before app.js: at load time it only defines things and listens.
 // Names start with `proj` / `PROJ_`, plus renderEditorPage (called by app.js render()).
@@ -52,6 +59,29 @@ function projAddRefusal(p, clips) {
   const secs = have.reduce((s, c) => s + (+c.duration || 0), 0) + clips.reduce((s, c) => s + (+c.duration || 0), 0);
   if (secs > JOIN_MAX_MIN * 60) return t("A project takes at most {n} minutes of clips", { n: JOIN_MAX_MIN });
   return "";
+}
+/**
+ * The joins the saved edit uses: where each clip after the first starts. A draft's `joins` are that; a virtual
+ * project's start with the first clip's 0 (one per source), which is dropped here, so its `join_names[i + 1]`
+ * is the name of join i for both kinds.
+ */
+function projJoinsOf(c) {
+  const j = Array.isArray(c?.joins) ? c.joins.map(Number) : [];
+  return c?.virtual ? j.slice(1) : j;
+}
+/** The titles of a project's clips that are gone from the library (its missing sources). */
+function projMissing(p) {
+  const src = p?.virtual && Array.isArray(p?.clip?.sources) ? p.clip.sources : [];
+  return src.filter((s) => s && s.missing).map((s) => String(s.title || ""));
+}
+/** The extra line of the question before library clips `ids` are deleted: how many projects use them ("" for none). */
+function projUsedNote(ids) {
+  const set = new Set(ids || []);
+  const n = projList().filter((p) => p && p.virtual && (p.clips || []).some((c) => set.has(c.id))).length;
+  if (!n) return "";
+  const one = set.size <= 1;
+  if (n === 1) return one ? t("Used in 1 project: its pieces there will be empty.") : t("Used in 1 project: their pieces there will be empty.");
+  return one ? t("Used in {n} projects: its pieces there will be empty.", { n }) : t("Used in {n} projects: their pieces there will be empty.", { n });
 }
 /** True if the saved joins `saved` are the start of the draft's joins `now` (the old ones never move when clips are added). */
 function projJoinsPrefix(saved, now) {
@@ -152,7 +182,7 @@ function projBusyInfo(p) {
 /* ---------- the Editor page ---------- */
 
 function projCardHtml(p) {
-  const { n, secs } = projSummary(p), busy = projBusyInfo(p), c = p.clip;
+  const { n, secs } = projSummary(p), busy = projBusyInfo(p), c = p.clip, lost = projMissing(p);
   const bg = c && c.thumb ? "" : `style="background:linear-gradient(135deg,hsl(${hue(p.name)} 40% 22%),hsl(${(hue(p.name) + 50) % 360} 45% 12%))"`;
   const meta = [n === 1 ? t("1 clip") : t("{n} clips", { n }), ...(secs > 0 ? [fmtDur(secs)] : [])].join(" · ");
   return `<article class="card pj-card${projSel.ids.includes(p.id) ? " sel" : ""}" data-pj="${esc(p.id)}" tabindex="0" data-hover title="${esc(p.name)}">
@@ -160,6 +190,7 @@ function projCardHtml(p) {
       <span class="check" data-pjp="pick" title="${esc(t("Select"))}">${ICON.check}</span>
       ${c && c.thumb ? `<img class="thumb-img" src="${esc(fileSrc(c.thumb))}" alt="" draggable="false" decoding="async" onerror="this.remove()" style="${typeof THUMB_IMG_STYLE === "string" ? THUMB_IMG_STYLE : ""}">` : `<div class="ph">${n ? JOIN_ICON : ICON.plus}</div>`}
       ${p.exported ? `<span class="tag pj-tag-exp">${esc(t("Exported"))}</span>` : !n ? `<span class="tag pj-tag-empty">${esc(t("Empty"))}</span>` : ""}
+      ${lost.length ? `<span class="tag pj-tag-missing" title="${esc(t("Missing from the library: {titles}", { titles: lost.join(", ") }))}">${esc(lost.length === 1 ? t("1 clip missing") : t("{n} clips missing", { n: lost.length }))}</span>` : ""}
       ${secs > 0 ? `<span class="dur">${fmtDur(secs)}</span>` : ""}
       ${busy ? `<div class="pj-card-busy"><span>${esc(busy.text)}</span></div><div class="job"><i style="width:${busy.pct}%"></i></div>` : ""}
     </div>
@@ -375,8 +406,21 @@ function projOpen(id) {
   const p = projById(id);
   if (!p) return;
   if (projLib.id !== id) { projLib.id = id; projLib.sel = []; projLib.anchor = null; }
+  if (p.virtual && p.clips && p.clips.length) return void projOpenVirtual(id);
   if (p.clip && p.clip.id === id) return openClip(id);
   projOpenEmpty(p);
+}
+
+let projOpening = 0; // the newest projOpenVirtual: an older answer arriving late opens nothing
+/** A virtual project (0.1.38): the editor opens what project_open returns (openClip takes the object). */
+async function projOpenVirtual(id) {
+  const ticket = ++projOpening;
+  let c;
+  try { c = await invoke("project_open", { id }); } catch (e) { return fail(e); }
+  if (ticket !== projOpening || !c || !c.id) return;
+  const p = projById(id);
+  if (p) p.clip = c; // clipById finds the same object
+  openClip(c);
 }
 
 /** An empty project: the editor frame, with the clip list and a hint where the video goes. */
@@ -416,7 +460,8 @@ function projMountPanel(root, id) {
   aside.dataset.pjFor = id;
   aside.innerHTML = `
     <div class="pj-head"><div class="pj-h">${esc(t("Library"))}</div>
-      <div class="small pj-hint">${esc(t("Double-click, press Enter or drag clips onto the timeline to add them to the project."))} ${esc(t("Rest the pointer on a clip to preview it."))}</div></div>
+      <div class="small pj-hint">${esc(t("Double-click, press Enter or drag clips onto the timeline to add them to the project."))} ${esc(t("Rest the pointer on a clip to preview it."))}</div>
+      <div class="small pj-missing" hidden></div></div>
     <div class="pj-tools">
       <input class="field pj-q" type="search" spellcheck="false" autocomplete="off" placeholder="${esc(t("Search clips"))}" aria-label="${esc(t("Search clips"))}" value="${esc(projLib.q)}">
       <select class="field pj-game" aria-label="${esc(t("Game"))}"></select>
@@ -499,6 +544,13 @@ function projRenderPanel() {
   const opts = `<option value="all">${esc(t("All games"))}</option>` + games.map((g) => `<option value="${esc(g)}"${g === projLib.game ? " selected" : ""}>${esc(g)}</option>`).join("");
   if (sel.innerHTML !== opts) sel.innerHTML = opts;
   sel.value = projLib.game;
+  // The project's clips that are gone from the library (0.1.38): their pieces show empty in the editor.
+  const lost = projMissing(projById(aside.dataset.pjFor)), miss = $(".pj-missing", aside);
+  if (miss) {
+    const txt = lost.length ? t("Missing from the library: {titles}", { titles: lost.join(", ") }) : "";
+    miss.hidden = !lost.length;
+    if (miss.textContent !== txt) miss.textContent = txt;
+  }
   projRenderList();
   projRenderBusy();
 }
@@ -603,6 +655,13 @@ async function projAdd(pid, ids) {
   if (why) return flash(why, true);
   try {
     const job = await invoke("project_add_clips", { id: pid, ids: clips.map((c) => c.id) });
+    // 0.1.38: a virtual project took them at once ({ project, added, starts, titles }; a job has a kind).
+    if (job && job.project && !job.kind) {
+      projLib.sel = [];
+      projLib.anchor = null;
+      await projAdded(pid, job);
+      return projRefreshUI();
+    }
     if (job && job.id) {
       projJobs.set(job.id, pid);
       if (!projJobsNow.some((j) => j.id === job.id)) projJobsNow = [...projJobsNow, job];
@@ -636,14 +695,35 @@ function projChanged(pl) {
   projRefreshUI();
 }
 
-/** The open project's draft was rebuilt: open it again, handing over the edit (with its undo), and go to the new clips. */
+/**
+ * Clips added to a virtual project at once (0.1.38; `res` = project_add_clips' answer). The open editor takes
+ * the new sources without reloading (P.addSources, editor.js); the empty frame, or an editor that could not
+ * take them, opens the project again with its edit handed over (projReload).
+ */
+async function projAdded(pid, res) {
+  const p = res.project;
+  projUpsert(p);
+  const n = Array.isArray(res.added) ? res.added.length : 0;
+  sfx("success");
+  if (S.open === pid) {
+    const P = S.player;
+    let took = false;
+    if (P && P.clipMeta && P.clipMeta.id === pid && P.clipMeta.virtual && typeof P.addSources === "function" && p.clip) {
+      try { took = !!(await P.addSources(p.clip)); } catch (e) { console.warn("Glint: the editor could not take the new clips; the project opens again", e); took = false; }
+    }
+    if (!took && S.open === pid) projReload(projById(pid) || p);
+    if (n) flash(t("Added {clips} to the project", { clips: plural(n) }));
+  } else if (n) flash(t('Added {clips} to "{name}"', { clips: plural(n), name: p.name }));
+}
+
+/** The open project's draft was rebuilt (or a virtual one grew): open it again, handing over the edit (with its undo), and go to the new clips. */
 function projReload(p) {
   if (!p.clip || p.clip.id !== p.id) return;
   const P = S.player;
   let at = null;
   if (P && P.draft && P.model && P.clipMeta && P.clipMeta.id === p.id) {
     try {
-      projCarry = { id: p.id, state: emStateSave(P.model, P.clipMeta.joins || [], true) };
+      projCarry = { id: p.id, state: emStateSave(P.model, projJoinsOf(P.clipMeta), true) };
       at = P.model.duration; // where the new clips start
     } catch (e) { console.warn("Glint: could not hand the edit over; it comes back from the last save", e); projCarry = null; }
   }
@@ -697,7 +777,7 @@ function projAskReplace(pid) {
 /* ---------- the saved edit ---------- */
 
 /** The open project's edit as the text that is saved. */
-const projStateText = (P) => JSON.stringify(emStateSave(P.model, Array.isArray(P.clipMeta?.joins) ? P.clipMeta.joins : []));
+const projStateText = (P) => JSON.stringify(emStateSave(P.model, projJoinsOf(P.clipMeta)));
 
 /**
  * editor.js, making a project's model `m` (a fresh emNew of draft `c`): put the saved edit on it.
@@ -717,7 +797,8 @@ async function projRestore(c, m) {
   if (text == null || text === "") return false;
   let s = text;
   if (typeof s === "string") { try { s = JSON.parse(s); } catch { console.warn("Glint: the project's saved edit is not readable; it opens clean"); return false; } }
-  const joins = Array.isArray(c.joins) ? c.joins.map(Number) : [];
+  // A virtual project's joins start with 0 (one per source): projJoinsOf drops it, so names[k + 1 + j] below fits both kinds.
+  const joins = projJoinsOf(c);
   if (!s || !projJoinsPrefix(s.joins, joins)) { console.warn("Glint: the project's saved edit does not fit its clips; it opens clean"); return false; }
   const end = m.duration; // the draft's length now
   const k = s.joins.length, fresh = joins.slice(k);
@@ -985,7 +1066,8 @@ if (typeof document !== "undefined" && typeof window !== "undefined" && window._
       if (S.page === "editor" && !S.open && projList().some((p) => p.busy || projJobOf(p.id))) projRefreshUI();
     });
     // The library changed under the open project's list.
-    listen("clips-changed", () => setTimeout(projRenderPanel, 400));
+    // A deleted clip makes sources of virtual projects missing (0.1.38): the list is read again, which redraws the panel.
+    listen("clips-changed", () => setTimeout(projRefresh, 400));
   }
   // S.projects for the sidebar badge. A timer can fire between two script files, so wait until
   // app.js (loaded after this file) has defined S and invoke.

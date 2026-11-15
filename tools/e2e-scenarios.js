@@ -26,7 +26,16 @@ const old = oldPath && fs.existsSync(oldPath) ? require(path.resolve(oldPath)) :
 // x = trunc(s * (width - 8) / duration). The tracks are titled as a Glint clip's; Mix and Desktop are a `tone` Hz sine,
 // the microphone is silent (so Mix = Desktop + Microphone holds the tone once, as a real clip's mix does). A project is the same
 // file seen as two library clips joined: A = 0..10, B = 10..20.
-const CLIP = { duration: 20, width: 640, height: 360, fps: 30, bar: 8, tone: 1000, tracks: [{ title: "Mix", tone: true }, { title: "Desktop", tone: true }, { title: "Microphone", tone: false }], parts: [{ src: 0, len: 10, title: "A" }, { src: 10, len: 10, title: "B" }], song: { file: "song.wav", freq: 400, duration: 6 } };
+const CLIP = { duration: 20, width: 640, height: 360, fps: 30, bar: 8, tone: 1000, tracks: [{ title: "Mix", tone: true }, { title: "Desktop", tone: true }, { title: "Microphone", tone: false }], parts: [{ src: 0, len: 10, title: "A" }, { src: 10, len: 10, title: "B" }], song: { file: "song.wav", freq: 400, duration: 6 },
+  // 0.1.38: separate clip files for projects. Each draws its bar only in its own third of the picture
+  // (`band`), has its own tone; S3 is smaller and has one track only.
+  sources: [
+    { name: "S1", duration: 8, width: 640, height: 360, fps: 30, bar: 8, band: 0, tone: 1000, tracks: [{ title: "Mix", tone: true }, { title: "Desktop", tone: true }, { title: "Microphone", tone: false }] },
+    { name: "S2", duration: 6, width: 640, height: 360, fps: 30, bar: 8, band: 1, tone: 1500, tracks: [{ title: "Mix", tone: true }, { title: "Desktop", tone: true }, { title: "Microphone", tone: false }] },
+    { name: "S3", duration: 5, width: 480, height: 270, fps: 30, bar: 6, band: 2, tone: 700, tracks: [{ title: "Mix", tone: true }] },
+    // Tracks in another order and no Mix: Microphone first (its own tone), then a silent Desktop.
+    { name: "S4", duration: 6, width: 640, height: 360, fps: 30, bar: 8, band: 1, tone: 1800, tracks: [{ title: "Microphone", tone: true }, { title: "Desktop", tone: false }] },
+  ] };
 fs.writeFileSync(path.join(dir, "clip.json"), JSON.stringify(CLIP, null, 2));
 
 // A song to add as an audio file: `song.freq` Hz, 48 kHz mono 16-bit WAV.
@@ -266,6 +275,144 @@ scenario("a single clip trimmed to one piece is the lossless cut", (check) => {
   return m;
 }, [{ src: 0, len: 14 }], { kind: "trim" });
 
+// ---- 0.1.38: projects that reference separate clip files (no joined working file). The sources are
+// in clip.json too; the model works on "project time" (the clips end to end, joins = their starts) and
+// the Rust half exports through projexport.rs. A layout item is { k (source in the project), s (seconds
+// into it), len } or { gap }.
+const SOURCES = CLIP.sources;
+const byName = (n) => SOURCES.find((x) => x.name === n);
+// The model as the editor builds it for such a project (ui/editor.js `virtualModel` / `titleRows`): no tracks of
+// its own, one track row per title across the clips (each clip's shown tracks), its parts, m.bounds, m.trackTitles.
+function projectModel(names) {
+  const srcs = names.map(byName);
+  const starts = [];
+  let acc = 0;
+  for (const x of srcs) { starts.push(acc); acc += x.duration; }
+  const m = em.emNew(acc, []);
+  m.virtual = true;
+  const titles = em.emTrackTitles(srcs.map((x) => em.emShownTracks(x.tracks.map((t, index) => ({ index, title: t.title })))));
+  const n = m.removed.length;
+  m.audio = [...titles.map((title, k) => ({ id: `t${k}`, kind: "track", index: k, title, path: "", volume: 1, muted: false, gains: Array(n).fill(1) })), ...m.audio.filter((r) => r.kind !== "track")];
+  m.tracks0 = titles.map((title, k) => ({ index: k, title }));
+  m.trackTitles = titles.slice();
+  if (srcs.length > 1) em.emSetParts(m, starts, names);
+  m.bounds = starts.slice();
+  return { m, starts, srcs };
+}
+function projectExpect(names, layout, { speed = 1, tail = 0, song = null, kind = "", joined = null, error = "", tones: given = null } = {}) {
+  if (error) return { error, frames: [], tones: [], duration: 0, kind: "", joined };
+  const srcs = names.map(byName);
+  const frames = [], tones = [];
+  let tl = 0;
+  const out = (x) => +(x / speed).toFixed(4);
+  for (const it of layout) {
+    const len = it.gap !== undefined ? it.gap : it.len;
+    for (const d of len > 0.6 ? [0.2, len / 2, len - 0.2] : [len / 2]) {
+      frames.push(it.gap !== undefined ? { t: out(tl + d), black: true } : { t: out(tl + d), source: srcs[it.k].name, src: +(it.s + d).toFixed(4) });
+    }
+    if (len > 0.5) tones.push(it.gap !== undefined
+      ? { freq: srcs[0].tone, from: out(tl + 0.15), to: out(tl + len - 0.15), heard: false }
+      : { freq: srcs[it.k].tone, from: out(tl + 0.15), to: out(tl + len - 0.15), heard: true });
+    tl += len;
+  }
+  const video = tl / speed;
+  if (tail > 0) frames.push({ t: +(video + tail / 2).toFixed(4), black: true });
+  if (song) tones.push({ freq: CLIP.song.freq, from: song.from, to: song.to, heard: true });
+  return { duration: +(video + tail).toFixed(4), kind, frames, tones: given || tones, joined };
+}
+function projectScenario(name, names, build, layout, opts = {}, missingNames = []) {
+  const checks = [];
+  const check = (what, ok, detail = "") => checks.push({ name: what, ok: !!ok, detail: String(detail) });
+  let pm = null, err = null;
+  try { pm = projectModel(names); if (!build(pm, check)) pm = null; } catch (e) { err = e; pm = null; }
+  if (!pm) {
+    check("the edit can be made with the model", false, err ? err.stack || err : "the scenario built no edit");
+    files.push({ name, checks, opts: null, expect: null, project: { sources: names, missing: missingNames } });
+    return;
+  }
+  if (hasNew && !opts.error) {
+    const row = em.emPieceList(pm.m).map((p) => (p.gap ? { gap: +p.len.toFixed(3) } : { src: +p.src.toFixed(3), len: +p.len.toFixed(3) }));
+    const hand = layout.map((it) => (it.gap !== undefined ? { gap: +it.gap.toFixed(3) } : { src: +(pm.starts[it.k] + it.s).toFixed(3), len: +it.len.toFixed(3) }));
+    check("emPieceList is the layout of the scenario (project time)", JSON.stringify(row) === JSON.stringify(hand), `${JSON.stringify(row)} vs ${JSON.stringify(hand)}`);
+  }
+  files.push({ name, checks, opts: em.emToOpts(pm.m), expect: projectExpect(names, layout, opts), project: { sources: names, missing: missingNames }, model: hasNew ? "0.1.37+" : "0.1.36 functions" });
+}
+if (hasNew) {
+  const piece = (m, t) => em.emPieceAt(m, t);
+  projectScenario("project: pieces of three sources reordered", ["S1", "S2", "S3"], ({ m }, check) => {
+    check("S1 goes after S3", em.emPutBeside(m, piece(m, 1), piece(m, 15), true));
+    return true;
+  }, [{ k: 1, s: 0, len: 6 }, { k: 2, s: 0, len: 5 }, { k: 0, s: 0, len: 8 }], { joined: true });
+  projectScenario("project: a piece of source 2 between pieces of source 1", ["S1", "S2"], ({ m }, check) => {
+    check("split S1 at 4", em.emSplitAt(m, 4));
+    check("S2 goes after the first half of S1", em.emPutBeside(m, piece(m, 10), piece(m, 2), true));
+    return true;
+  }, [{ k: 0, s: 0, len: 4 }, { k: 1, s: 0, len: 6 }, { k: 0, s: 4, len: 4 }], { joined: true });
+  projectScenario("project: trim and restore up to a source's own end and no further", ["S1", "S2"], ({ m }, check) => {
+    check("trim S1's end to 5", em.emTrimPiece(m, 0, "end", 5));
+    const r = em.emTrimPiece(m, 0, "end", 12);
+    check("pulled out, it stops at S1's own end (8)", r && Math.abs(r.src + r.len - 8) < 1e-6, JSON.stringify(r));
+    return true;
+  }, [{ k: 0, s: 0, len: 8 }, { k: 1, s: 0, len: 6 }], { joined: true });
+  projectScenario("project: a gap", ["S1", "S2"], ({ m }, check) => {
+    check("split at 3", em.emSplitAt(m, 3)); check("split at 5", em.emSplitAt(m, 5));
+    check("3..5 out, a gap stays", em.emRemovePiece(m, piece(m, 4), true));
+    return true;
+  }, [{ k: 0, s: 0, len: 3 }, { gap: 2 }, { k: 0, s: 5, len: 3 }, { k: 1, s: 0, len: 6 }], { joined: true });
+  projectScenario("project: the same source twice", ["S1", "S2", "S1"], () => true,
+    [{ k: 0, s: 0, len: 8 }, { k: 1, s: 0, len: 6 }, { k: 2, s: 0, len: 8 }], { joined: true });
+  projectScenario("project: speed 2x", ["S1", "S2"], ({ m }, check) => {
+    check("split at 4", em.emSplitAt(m, 4));
+    check("0..4 out, closed up", em.emRemovePiece(m, piece(m, 2), false));
+    m.speed = 2;
+    return true;
+  }, [{ k: 0, s: 4, len: 4 }, { k: 1, s: 0, len: 6 }], { speed: 2, joined: true });
+  projectScenario("project: a tail with a song", ["S1", "S2"], ({ m }, check) => {
+    const row = em.emAddFile(m, { path: songPath, title: "song", duration: CLIP.song.duration }, 10);
+    check("the song plays through", row && row.through === true, JSON.stringify(row));
+    em.emPlaceFile(m, row.id, { length: CLIP.song.duration });
+    check("the result ends 2 s after the video", Math.abs(em.emTail(m) - 2) < 1e-6, em.emTail(m));
+    return true;
+  }, [{ k: 0, s: 0, len: 8 }, { k: 1, s: 0, len: 6 }], { tail: 2, song: { from: 10.2, to: 15.8 }, joined: true });
+  projectScenario("project: all ranges in one source (its own file, no join)", ["S1", "S2"], ({ m }, check) => {
+    check("S2 out, closed up", em.emRemovePiece(m, piece(m, 10), false));
+    check("split at 3", em.emSplitAt(m, 3)); check("split at 5", em.emSplitAt(m, 5));
+    check("3..5 out, closed up", em.emRemovePiece(m, piece(m, 4), false));
+    return true;
+  }, [{ k: 0, s: 0, len: 3 }, { k: 0, s: 5, len: 3 }], { joined: false });
+  projectScenario("project: one trimmed piece of one source is the lossless cut of its file", ["S1", "S2"], ({ m }, check) => {
+    check("S2 out, closed up", em.emRemovePiece(m, piece(m, 10), false));
+    check("trim S1's end to 6", em.emTrimPiece(m, 0, "end", 6));
+    return true;
+  }, [{ k: 0, s: 0, len: 6 }], { kind: "trim", joined: false });
+  // Rows by title (0.1.38): S4 has Microphone and Desktop in that order, and no Mix. With only the Desktop row
+  // heard, S1 sounds (its Desktop) and S4 is silent (its Desktop is); with only the Microphone row, the other way.
+  const solo = (title) => ({ m }, check) => {
+    check("the rows are Desktop, Microphone", JSON.stringify(m.trackTitles) === JSON.stringify(["Desktop", "Microphone"]), JSON.stringify(m.trackTitles));
+    for (const r of m.audio) if (r.kind === "track" && r.title !== title) r.muted = true;
+    check("sent with the titles", JSON.stringify(em.emToOpts(m).track_titles) === JSON.stringify(["Desktop", "Microphone"]), JSON.stringify(em.emToOpts(m).track_titles));
+    return true;
+  };
+  projectScenario("project: rows by title, Desktop alone (the second clip has its tracks in another order, no Mix)", ["S1", "S4"], solo("Desktop"),
+    [{ k: 0, s: 0, len: 8 }, { k: 1, s: 0, len: 6 }], { joined: true, tones: [{ freq: 1000, from: 0.15, to: 7.85, heard: true }, { freq: 1800, from: 0.15, to: 7.85, heard: false }, { freq: 1800, from: 8.15, to: 13.85, heard: false }, { freq: 1000, from: 8.15, to: 13.85, heard: false }] });
+  projectScenario("project: rows by title, Microphone alone", ["S1", "S4"], solo("Microphone"),
+    [{ k: 0, s: 0, len: 8 }, { k: 1, s: 0, len: 6 }], { joined: true, tones: [{ freq: 1000, from: 0.15, to: 7.85, heard: false }, { freq: 1800, from: 8.15, to: 13.85, heard: true }] });
+  projectScenario("project: rows by title, one clip's own Microphone track first in its file (direct)", ["S4", "S1"], ({ m }, check) => {
+    check("S1 out, closed up", em.emRemovePiece(m, piece(m, 8), false));
+    for (const r of m.audio) if (r.kind === "track" && r.title !== "Microphone") r.muted = true;
+    return true;
+  }, [{ k: 0, s: 0, len: 6 }], { joined: false, tones: [{ freq: 1800, from: 0.15, to: 5.85, heard: true }] });
+  // Options the model never sends (its pieces stay inside one clip): one range across the border of S1 and S2.
+  // The export splits it at the border; the result is the end of S1 then the start of S2.
+  files.push({ name: "project: a range across two clips is split at their border", checks: [], opts: { segments: [{ start: 6, end: 10 }], ordered: true, speed: 1 },
+    expect: projectExpect(["S1", "S2"], [{ k: 0, s: 6, len: 2 }, { k: 1, s: 0, len: 2 }], { joined: true }), project: { sources: ["S1", "S2"], missing: [] }, model: "options by hand" });
+  projectScenario("project: a missing source is a clear error, nothing written", ["S1", "S2"], () => true,
+    [], { error: "\"S2\"", joined: false }, ["S2"]);
+  projectScenario("project: a failed export after the join leaves no working file", ["S1", "S2"], ({ m }) => {
+    em.emAddFile(m, { path: path.resolve(dir, "no-such-song.wav"), title: "gone", duration: 3 }, 2);
+    return true;
+  }, [], { error: "no-such-song.wav", joined: true });
+}
 if (missing.length) console.log(`note: not in ui/editmodel.js yet: ${missing.join(", ")} (0.1.36 functions used; scenarios that need them left out)`);
 files.forEach((f, i) => fs.writeFileSync(path.join(dir, `s${String(i + 1).padStart(2, "0")}.json`), JSON.stringify(f, null, 2)));
 const bad = files.reduce((n, f) => n + f.checks.filter((c) => !c.ok).length, 0);

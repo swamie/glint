@@ -1191,8 +1191,11 @@ pub fn pick(core: &Core, ids: &[String]) -> Result<Vec<ClipMeta>, String> {
 /// draft's id is the project's. The job's `clip_id` is "join:<ids in that
 /// order>", so the same selection cannot be queued twice (and `Jobs::busy`
 /// sees every source clip in it); its title is the draft's.
+/// Since 0.1.38 the app's "Edit together" makes a project of references at once
+/// (`projects::join_clips`, no job): this old way (a draft joined by a job) is
+/// kept for the self-tests of the joining itself.
 pub fn enqueue(core: &Arc<Core>, ids: Vec<String>) -> Result<Job, String> {
-    crate::projects::join_clips(core, ids)
+    crate::projects::join_clips_legacy(core, ids)
 }
 
 /// The cut points to store: every start but the first, rounded to the millisecond,

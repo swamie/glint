@@ -459,6 +459,8 @@ function medPieceInto(m, piece, clip) {
 function medFromPiece(P, piece, m) {
   const c = P?.clipMeta || {}, v = P?.v;
   const clip = { path: c.path, title: c.title, duration: +c.duration || (typeof P?.duration === "function" ? P.duration() : 0), width: c.width || v?.videoWidth, height: c.height || v?.videoHeight };
+  // A project that references its clips (0.1.38, ui/editor.js pieceFile): the piece's own clip file, length, size and name.
+  if (piece && piece.path && +piece.mlen > 0) Object.assign(clip, { path: piece.path, duration: +piece.mlen, title: piece.title || clip.title, width: +piece.width || clip.width, height: +piece.height || clip.height });
   if (!piece || !(+piece.len > 0) || !(piece.path || clip.path)) return null;
   let id = null;
   if (m) id = medPieceInto(m, piece, clip).item.id;

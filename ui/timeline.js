@@ -623,7 +623,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
         <span class="tl-htag">A${i + 1}</span>
         <button type="button" class="tl-btn tl-hmute" data-tl-act="row-mute" data-tl-row="${esc(r.id)}"></button>
         <span class="tl-hname"></span>
-        ${file ? `<button type="button" class="tl-btn tl-hthru" data-tl-act="row-through" data-tl-row="${esc(r.id)}"></button>` : ""}
+        <!-- 0.1.38: no "plays through cuts" switch: an added file is always heard wherever its block lies -->
         <button type="button" class="tl-btn tl-hx" data-tl-act="row-remove" data-tl-row="${esc(r.id)}" title="${esc(file ? t("Remove this audio file") : t("Delete this track from the result"))}" aria-label="${esc(file ? t("Remove this audio file") : t("Delete this track from the result"))}">${ICON.trash}</button>
       </div>
       <div class="tl-hline"><input type="range" class="tl-range" min="0" max="200" step="1" data-tl-vol="${esc(r.id)}" aria-label="${esc(t("Track volume"))}"><output class="tl-pct"></output></div>
@@ -1633,6 +1633,17 @@ function mountTimeline(host, opts) {  const m = opts.model;
       if (p.gap) continue;
       const a = Math.max(bx0, X(p.at)), b = Math.min(bx1, X(p.at + p.len));
       if (b - a < 2) continue;
+      // A project's clip that is missing (0.1.38): its pieces are black and say so.
+      const gone = typeof opts.missingAt === "function" ? opts.missingAt(p.src + p.len / 2) : null;
+      if (gone) {
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = "#000";
+        rr(ctx, a, y, b - a, bh, 6);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        label(ctx, C, "eyeOff", t("Clip missing: {title}", { title: gone }), a, b, y + 5);
+        continue;
+      }
       label(ctx, C, "film", p.title || opts.title || t("Video"), a, b, y + 5);
       if (b - a < 18) continue;
       ctx.fillStyle = C.text;

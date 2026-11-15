@@ -26,6 +26,30 @@ struct ClipSpec {
     tone: u32,
     tracks: Vec<TrackSpec>,
     song: SongSpec,
+    /// 0.1.38: separate clip files for project scenarios.
+    #[serde(default)]
+    sources: Vec<SourceSpec>,
+}
+
+/// A clip file of its own (0.1.38): its bar only in its third of the picture (`band`), its own tone.
+#[derive(Deserialize, Debug, Clone)]
+struct SourceSpec {
+    name: String,
+    duration: f64,
+    width: u32,
+    height: u32,
+    fps: u32,
+    bar: u32,
+    band: u32,
+    tone: u32,
+    tracks: Vec<TrackSpec>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+#[serde(default)]
+struct ProjectSpec {
+    sources: Vec<String>,
+    missing: Vec<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -49,6 +73,7 @@ struct Scenario {
     opts: Option<ExportOpts>,
     expect: Option<Expect>,
     model: String,
+    project: Option<ProjectSpec>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -66,6 +91,10 @@ struct Expect {
     kind: String,
     frames: Vec<Frame>,
     tones: Vec<Tone>,
+    /// Projects: the export must fail with this in its message.
+    error: String,
+    /// Projects: a temporary working file was joined (true) or the one clip's file exported directly.
+    joined: Option<bool>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -74,6 +103,8 @@ struct Frame {
     t: f64,
     src: Option<f64>,
     black: bool,
+    /// Projects: the source (`SourceSpec::name`) on screen.
+    source: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -167,6 +198,14 @@ fn run(r: &mut Report) {
         let label = format!("{file} {}", sc.name);
         for c in &sc.checks {
             r.check(&format!("{label}: model: {}", c.name), c.ok, &c.detail);
+        }
+        if let Some(p) = &sc.project {
+            let (Some(opts), Some(want)) = (&sc.opts, &sc.expect) else {
+                r.check(&format!("{label}: has options and an expectation"), false, "the model could not make this edit (see above)");
+                continue;
+            };
+            project_scenario(r, &ffmpeg, &s, &spec, &dir, &work, &label, p, opts, want, ref_song);
+            continue;
         }
         let (Some(opts), Some(want)) = (sc.opts, sc.expect) else {
             r.check(&format!("{label}: has options and an expectation"), false, "the model could not make this edit (see above)");
@@ -320,4 +359,151 @@ fn stream_durations(ffmpeg: &Path, file: &Path) -> Vec<f64> {
 
 fn probe_len(ffmpeg: &Path, file: &Path) -> Option<f64> {
     ffprobe_lines(ffmpeg, file, "format=duration").first().copied()
+}
+
+/// The files of the project sources, made once per run: `<work>\sources\<name>.mp4`, registered.
+fn source_clip(ffmpeg: &Path, sp: &SourceSpec, work: &Path) -> Option<library::ClipMeta> {
+    let dir = work.join("sources");
+    let _ = std::fs::create_dir_all(&dir);
+    let out = dir.join(format!("{}.mp4", sp.name));
+    if !out.is_file() {
+        let (w, h, fps, d, bar) = (sp.width, sp.height, sp.fps, sp.duration, sp.bar);
+        let (bh, y) = (h / 3, sp.band * (h / 3));
+        let video = format!("color=c=black:s={w}x{h}:r={fps}:d={d}[bg];color=c=white:s={bar}x{bh}:r={fps}:d={d}[bar];[bg][bar]overlay=x='trunc(t*{}/{d})':y={y}:eval=frame:shortest=1", w - bar);
+        let mut cmd = util::hidden_cmd(ffmpeg);
+        cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", &video]);
+        for t in &sp.tracks {
+            let a = if t.tone { format!("sine=frequency={}:sample_rate=48000:duration={d}", sp.tone) } else { format!("anullsrc=r=48000:cl=stereo,atrim=end={d}") };
+            cmd.args(["-f", "lavfi", "-i", &a]);
+        }
+        cmd.args(["-map", "0:v"]);
+        for (i, t) in sp.tracks.iter().enumerate() {
+            cmd.args(["-map", &format!("{}:a", i + 1)]).arg(format!("-metadata:s:a:{i}")).arg(format!("title={}", t.title));
+        }
+        cmd.args(["-c:v", "libx264", "-preset", "ultrafast", "-g", &fps.to_string(), "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "2", "-t", &format!("{d}")]).arg(&out);
+        if !cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success()) {
+            return None;
+        }
+    }
+    let mut meta = library::register(ffmpeg, &out, &sp.name, "Desktop", "clip");
+    meta.fps = sp.fps;
+    Some(meta)
+}
+
+/// Which source (by its band) and which second of it a frame of a project's result shows, or black.
+fn read_project_frame(ffmpeg: &Path, file: &Path, t: f64, sources: &[SourceSpec]) -> Option<(Option<String>, f64)> {
+    const W: usize = 640;
+    let out = util::hidden_cmd(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-ss", &format!("{t:.3}"), "-i"])
+        .arg(file)
+        .args(["-frames:v", "1", "-vf", &format!("scale={W}:3:flags=area,format=gray"), "-f", "rawvideo", "pipe:1"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if out.stdout.len() != W * 3 {
+        return None;
+    }
+    if out.stdout.iter().all(|v| *v < 40) {
+        return Some((None, 0.0));
+    }
+    for band in 0..3usize {
+        let row = &out.stdout[band * W..(band + 1) * W];
+        let lit: Vec<usize> = (0..W).filter(|&x| row[x] > 128).collect();
+        if lit.is_empty() {
+            continue;
+        }
+        let sp = sources.iter().find(|s| s.band as usize == band)?;
+        let centre = (lit.iter().sum::<usize>() as f64 / lit.len() as f64 + 0.5) / W as f64;
+        let sec = (centre * sp.width as f64 - sp.bar as f64 / 2.0) * sp.duration / (sp.width - sp.bar) as f64;
+        return Some((Some(sp.name.clone()), sec.max(0.0)));
+    }
+    Some((Some("?".into()), 0.0))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_scenario(r: &mut Report, ffmpeg: &Path, s: &Settings, spec: &ClipSpec, dir: &Path, work: &Path, label: &str, p: &ProjectSpec, opts: &ExportOpts, want: &Expect, ref_song: Option<f64>) {
+    use crate::projexport::{self, Source, Target};
+    use std::sync::atomic::Ordering;
+    // The project's sources, in its order, with their starts on project time.
+    let mut sources: Vec<Source> = Vec::new();
+    let mut start = 0.0;
+    for name in &p.sources {
+        let Some(sp) = spec.sources.iter().find(|x| &x.name == name) else {
+            r.check(&format!("{label}: source {name} is in clip.json"), false, "");
+            return;
+        };
+        let Some(meta) = source_clip(ffmpeg, sp, work) else {
+            r.check(&format!("{label}: source {name} is made"), false, "ffmpeg could not write it");
+            return;
+        };
+        let missing = p.missing.contains(name);
+        sources.push(Source { clip: meta.id.clone(), title: meta.title.clone(), path: if missing { work.join("gone.mp4").to_string_lossy().into_owned() } else { meta.path.clone() }, duration: sp.duration, start, fps: sp.fps, missing });
+        start += sp.duration;
+    }
+    let target = Target { id: format!("e2e-{}", util::new_id()), title: "E2E project".into(), game: "Desktop".into(), folder: String::new() };
+    let results = |w: &Path| std::fs::read_dir(w).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "mp4")).count()).unwrap_or(0);
+    let (joins0, files0) = (projexport::JOINS_MADE.load(Ordering::SeqCst), results(work));
+    let started = std::time::Instant::now();
+    let res = projexport::export(s, &target, &sources, opts, &mut |_| {});
+    let joined = projexport::JOINS_MADE.load(Ordering::SeqCst) > joins0;
+    let left = projexport::leftovers();
+    r.check(&format!("{label}: no temporary working file left"), left.is_empty(), &format!("{left:?}"));
+    if let Some(j) = want.joined {
+        r.check(&format!("{label}: {}", if j { "the used clips joined into a temporary file" } else { "the one clip's own file, no join" }), joined == j, &format!("joined {joined}"));
+    }
+    if !want.error.is_empty() {
+        let ok = res.as_ref().err().is_some_and(|e| e.contains(&want.error)) && results(work) == files0;
+        r.check(&format!("{label}: fails with \"{}\", nothing written", want.error), ok, &format!("{:?}", res.as_ref().map(|m| m.path.clone())));
+        return;
+    }
+    let m = match res {
+        Ok(m) => m,
+        Err(e) => {
+            r.check(&format!("{label}: exports"), false, &e);
+            return;
+        }
+    };
+    let out = PathBuf::from(&m.path);
+    r.line(&format!("INFO {label}: {} ({}) in {} ms", out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), m.kind, started.elapsed().as_millis()));
+    if !want.kind.is_empty() {
+        r.check(&format!("{label}: kind {}", want.kind), m.kind == want.kind, &m.kind);
+    }
+    let durs = stream_durations(ffmpeg, &out);
+    let len_ok = !durs.is_empty() && durs.iter().all(|d| (d - want.duration).abs() <= 0.05 + 1.0 / 30.0) && probe_len(ffmpeg, &out).is_some_and(|d| (d - want.duration).abs() <= 0.06);
+    r.check(&format!("{label}: {:.3} s long", want.duration), len_ok, &format!("streams {durs:?}"));
+    let mut bad: Vec<String> = Vec::new();
+    for fr in &want.frames {
+        // Bands are told apart within the project's own sources.
+        let mine: Vec<SourceSpec> = spec.sources.iter().filter(|x| p.sources.contains(&x.name)).cloned().collect();
+        let got = read_project_frame(ffmpeg, &out, fr.t, &mine);
+        let ok = match (&got, fr.black) {
+            (Some((None, _)), true) => true,
+            (Some((Some(name), x)), false) => fr.source.as_ref() == Some(name) && fr.src.is_some_and(|s0| (x - s0).abs() <= SRC_TOL),
+            _ => false,
+        };
+        if !ok {
+            bad.push(format!("at {:.2} s want {} got {:?}", fr.t, if fr.black { "black".to_string() } else { format!("{} {:.2}", fr.source.clone().unwrap_or_default(), fr.src.unwrap_or(f64::NAN)) }, got));
+        }
+    }
+    r.check(&format!("{label}: {} frames show the right source and second, or black", want.frames.len()), bad.is_empty(), &bad.join("; "));
+    let mut bad: Vec<String> = Vec::new();
+    for tn in &want.tones {
+        let reference = match spec.sources.iter().find(|x| x.tone == tn.freq) {
+            Some(sp) => source_clip(ffmpeg, sp, work).and_then(|c| band_db(ffmpeg, Path::new(&c.path), 0, tn.freq, 0.5, sp.duration - 0.5)),
+            None if tn.freq == spec.song.freq => ref_song,
+            None => None,
+        };
+        let lv = band_db(ffmpeg, &out, 0, tn.freq, tn.from, tn.to);
+        let ok = match (reference, lv) {
+            (Some(r0), Some(v)) => if tn.heard { (v - r0).abs() <= 3.0 } else { v < r0 - 30.0 },
+            _ => false,
+        };
+        if !ok {
+            bad.push(format!("{} Hz {:.2}..{:.2} s want {} got {lv:?} ({reference:?})", tn.freq, tn.from, tn.to, if tn.heard { "heard" } else { "silent" }));
+        }
+    }
+    r.check(&format!("{label}: {} stretches of sound heard or silent as they should be", want.tones.len()), bad.is_empty(), &bad.join("; "));
+    let _ = dir;
+    let _ = std::fs::remove_file(&out);
 }
