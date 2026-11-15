@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glint · Memory and comparison</title>
+<meta name="description" content="Where a clipper's memory goes, how Glint keeps it small, and an honest comparison with Medal, the NVIDIA app and Outplayed.">
+<meta name="theme-color" content="#070a10">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="./" aria-label="Glint, home">
+      <svg class="logo" viewBox="0 0 48 48" aria-hidden="true"><path d="M21 4l4.2 13.8L39 22l-13.8 4.2L21 40l-4.2-13.8L3 22l13.8-4.2z"/><path class="spark" d="M38 3l1.8 5.2L45 10l-5.2 1.8L38 17l-1.8-5.2L31 10l5.2-1.8z"/></svg>
+      <span>Glint</span>
+      <span class="brand-ver" data-version hidden></span>
+    </a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#parts">Where it goes</a>
+      <a href="#calc">Work it out</a>
+      <a href="#compare">Comparison</a>
+      <a href="#check">Check it</a>
+    </nav>
+    <div class="nav-end">
+      <a class="nav-gh" href="./">Home</a>
+      <a class="btn btn-solid btn-sm" href="https://github.com/swamie/glint/releases/latest/download/GlintSetup.exe">Download Glint</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="page-hero">
+  <div class="wrap">
+    <p class="label"><span>I</span>Memory</p>
+    <h1>Where a clipper's memory goes, <em>and why Glint keeps so little of it.</em></h1>
+    <p class="lede">An instant-replay clipper holds the last minutes of your game somewhere. Most of its memory is that footage, the encoder that makes it, and the window you look at it through. Here is what Glint does with each, with figures we measured and a calculator for your own settings.</p>
+  </div>
+</section>
+
+<!-- ============ The three parts ============ -->
+<section class="mem-parts" id="parts">
+  <div class="wrap">
+    <div class="mem-head">
+      <p class="label"><span>II</span>Where it goes</p>
+      <h2>Three parts, and one of them is most of it.</h2>
+    </div>
+
+    <div class="stage mem-stack-stage">
+      <div class="panel mem-stack">
+        <div class="ms-row">
+          <div class="ms-name"><b>Replay buffer</b><small>the footage itself</small></div>
+          <div class="ms-bar"><i class="ms-buf" style="--w: 100%"><span>3.98 GB on disk</span></i><i class="ms-ram" style="--w: 5%"><span>199 MB in RAM</span></i></div>
+          <p class="ms-note">10 minutes at 50 Mbps, with sound. By default only the newest 30 seconds are in RAM; the rest is in temporary files on disk. You can also keep all of it in RAM, or all of it on disk.</p>
+        </div>
+        <div class="ms-row">
+          <div class="ms-name"><b>Encoder</b><small>ffmpeg, on the graphics card</small></div>
+          <div class="ms-bar"><i class="ms-enc" style="--w: 3.3%"><span>95 to 131 MB</span></i></div>
+          <p class="ms-note">Measured while buffering, from 1080 × 720 to 2160 × 1440, 60 to 280 fps.</p>
+        </div>
+        <div class="ms-row">
+          <div class="ms-name"><b>Glint itself</b><small>recorder, hotkeys, tray</small></div>
+          <div class="ms-bar"><i class="ms-app" style="--w: .4%"><span>17 MB</span></i></div>
+          <p class="ms-note">The program without its window. Closing the window frees the window's browser engine completely.</p>
+        </div>
+      </div>
+    </div>
+    <p class="mem-fine">Measured on one PC: RTX 5060 Ti, Core i5-11600, Windows 11, 2160 × 1440 at 280 Hz, with video, desktop sound and microphone. The bars are to scale; the buffer's size is worked out the same way as the calculator below.</p>
+  </div>
+</section>
+
+<!-- ============ What keeps it small ============ -->
+<section class="mem-why">
+  <div class="wrap">
+    <div class="mem-head">
+      <p class="label"><span>III</span>How</p>
+      <h2>The choices that keep it small.</h2>
+    </div>
+    <ol class="why-grid">
+      <li>
+        <b>Recent seconds in RAM, the rest on disk</b>
+        <p>By default only the newest 30 seconds stay in RAM (15 seconds to 2 minutes, your choice). Everything older goes to temporary files in 64 MB pieces, deleted as the buffer moves past them. A clip up to the RAM length is saved straight from RAM.</p>
+      </li>
+      <li>
+        <b>No browser engine in the background</b>
+        <p>Glint's window is drawn by WebView2, the engine Windows already has. When you close the window, Glint destroys it, so the interface costs nothing while you play. The recorder is a small native program written in Rust.</p>
+      </li>
+      <li>
+        <b>A still screen costs almost nothing</b>
+        <p>Glint never makes up duplicate frames. When the picture does not change, nothing new is encoded, and silent audio is not written at all.</p>
+      </li>
+      <li>
+        <b>The graphics card does the work</b>
+        <p>Video is encoded by NVENC, AMF or Quick Sync, so the buffer holds compressed video, never raw frames. Without a hardware encoder Glint falls back to the processor, and the log says so.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- ============ Calculator ============ -->
+<section class="mem-calc" id="calc">
+  <div class="wrap">
+    <div class="mem-head">
+      <p class="label"><span>IV</span>Work it out</p>
+      <h2>What your settings would hold.</h2>
+      <p class="mem-sub">The size of a buffer is bitrate times length, for every clipper. What changes is where it is kept. Move the controls to see where Glint keeps yours.</p>
+    </div>
+
+    <div class="stage calc-stage">
+      <div class="panel calc" data-calc>
+        <div class="calc-in">
+          <label class="calc-field">
+            <span>Bitrate <output data-out="rate">50 Mbps</output></span>
+            <input type="range" min="5" max="100" step="5" value="50" data-in="rate">
+          </label>
+          <label class="calc-field">
+            <span>Buffer length <output data-out="len">10 min</output></span>
+            <input type="range" min="0" max="7" step="1" value="4" data-in="len">
+          </label>
+          <div class="calc-field">
+            <span>Where the buffer lives</span>
+            <div class="calc-seg" role="radiogroup" aria-label="Where the buffer lives">
+              <button type="button" role="radio" aria-checked="true" data-mode="mixed">RAM + disk</button>
+              <button type="button" role="radio" aria-checked="false" data-mode="ram">RAM only</button>
+              <button type="button" role="radio" aria-checked="false" data-mode="disk">Disk only</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="calc-out" aria-live="polite">
+          <div class="calc-big">
+            <div><small>In RAM</small><b data-res="ram">—</b></div>
+            <div><small>On disk</small><b data-res="disk">—</b></div>
+          </div>
+          <div class="calc-bar" aria-hidden="true"><i class="cb-ram" data-bar="ram"></i><i class="cb-disk" data-bar="disk"></i></div>
+          <div class="calc-legend" aria-hidden="true"><span class="lg-ram">RAM</span><span class="lg-disk">Disk</span></div>
+          <p class="calc-total">Glint in total: <b data-res="total">—</b> of RAM, with the encoder and the program.</p>
+        </div>
+      </div>
+    </div>
+    <p class="mem-fine">The calculator assumes the bitrate is used in full, as in a busy game at a fixed rate; a quiet screen fills the buffer more slowly. Desktop sound and microphone add about 0.38 MB a second, as measured. In Disk only, RAM keeps about one second of video and ten of audio. The encoder figure is the 131 MB measured at 2160 × 1440.</p>
+  </div>
+</section>
+
+<!-- ============ Comparison ============ -->
+<section class="mem-compare" id="compare">
+  <div class="wrap">
+    <div class="mem-head">
+      <p class="label"><span>V</span>Comparison</p>
+      <h2>Glint next to Medal, the NVIDIA app and Outplayed.</h2>
+      <p class="mem-sub">The things people ask about when they choose, including where Glint does less. None of the three publishes memory figures with a method behind them, so this table does not guess at any.</p>
+    </div>
+
+    <div class="cmp-scroll" tabindex="0" role="region" aria-label="Comparison table">
+      <table class="cmp">
+        <thead>
+          <tr><th scope="col"><span class="sr">Question</span></th><th scope="col" class="cmp-glint">Glint</th><th scope="col">Medal</th><th scope="col">NVIDIA app</th><th scope="col">Outplayed</th></tr>
+        </thead>
+        <tbody>
+          <tr class="cmp-group"><th colspan="5" scope="colgroup">Memory and recording</th></tr>
+          <tr><th scope="row">Where the replay buffer lives</th><td class="cmp-glint"><i class="y"></i>RAM and disk by default; all RAM or all disk</td><td><i class="y"></i>RAM or disk, your choice</td><td><i class="p"></i>Disk (temporary files)</td><td><i class="y"></i>RAM by default; disk option</td></tr>
+          <tr><th scope="row">Memory figures published with a method</th><td class="cmp-glint"><i class="y"></i>Yes, in the manual</td><td><i class="n"></i>None found</td><td><i class="n"></i>None found</td><td><i class="n"></i>None found</td></tr>
+          <tr><th scope="row">Interface while you play</th><td class="cmp-glint"><i class="y"></i>Closed; window engine freed</td><td><i class="q"></i>Electron app; not documented</td><td><i class="q"></i>Not documented</td><td><i class="q"></i>Runs inside the Overwolf client</td></tr>
+          <tr><th scope="row">Graphics cards</th><td class="cmp-glint"><i class="y"></i>NVIDIA, AMD, Intel; processor fallback</td><td><i class="y"></i>NVIDIA, AMD, Intel</td><td><i class="n"></i>GeForce only</td><td><i class="y"></i>NVIDIA, AMD, Intel</td></tr>
+          <tr><th scope="row">Record only the game's window</th><td class="cmp-glint"><i class="y"></i>Yes, GAME mode</td><td><i class="y"></i>Yes, game capture</td><td><i class="q"></i>Not documented</td><td><i class="p"></i>In supported games</td></tr>
+          <tr><th scope="row">Separate audio tracks</th><td class="cmp-glint"><i class="y"></i>Game, desktop, microphone</td><td><i class="y"></i>Game, microphone, Discord</td><td><i class="p"></i>Microphone apart</td><td><i class="q"></i>Not documented</td></tr>
+          <tr><th scope="row">Automatic clips of kills and highlights</th><td class="cmp-glint"><i class="n"></i>No</td><td><i class="y"></i>Yes, about 15 games</td><td><i class="y"></i>Yes, supported games</td><td><i class="y"></i>Yes, supported games</td></tr>
+
+          <tr class="cmp-group"><th colspan="5" scope="colgroup">Editing and sharing</th></tr>
+          <tr><th scope="row">Timeline editor</th><td class="cmp-glint"><i class="y"></i>Yes</td><td><i class="y"></i>Yes</td><td><i class="n"></i>No editor documented</td><td><i class="p"></i>Trim and combine; full editor paid</td></tr>
+          <tr><th scope="row">Vertical 9:16 export</th><td class="cmp-glint"><i class="y"></i>Yes, with saved layouts</td><td><i class="y"></i>Yes</td><td><i class="q"></i>Not documented</td><td><i class="q"></i>Not documented</td></tr>
+          <tr><th scope="row">Cloud upload and share links</th><td class="cmp-glint"><i class="n"></i>No, files only</td><td><i class="y"></i>Yes; auto sync paid</td><td><i class="n"></i>No</td><td><i class="y"></i>Yes, hosted for 3 to 12 months</td></tr>
+          <tr><th scope="row">Phone apps</th><td class="cmp-glint"><i class="n"></i>No</td><td><i class="y"></i>Android and iOS</td><td><i class="n"></i>No</td><td><i class="n"></i>No</td></tr>
+
+          <tr class="cmp-group"><th colspan="5" scope="colgroup">Cost and trust</th></tr>
+          <tr><th scope="row">Price</th><td class="cmp-glint"><i class="y"></i>Free</td><td><i class="p"></i>Free; Premium tier</td><td><i class="y"></i>Free</td><td><i class="p"></i>Free; Premium tier</td></tr>
+          <tr><th scope="row">Ads in the free version</th><td class="cmp-glint"><i class="y"></i>None</td><td><i class="n"></i>Yes</td><td><i class="y"></i>None found</td><td><i class="n"></i>Yes</td></tr>
+          <tr><th scope="row">Account to record</th><td class="cmp-glint"><i class="y"></i>None</td><td><i class="q"></i>Asked for at setup</td><td><i class="y"></i>Not needed</td><td><i class="p"></i>Not needed; watermark without a free login</td></tr>
+          <tr><th scope="row">Source code you can read</th><td class="cmp-glint"><i class="y"></i>Yes, on GitHub</td><td><i class="n"></i>No</td><td><i class="n"></i>No</td><td><i class="n"></i>No</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="cmp-key" aria-hidden="true"><span><i class="y"></i>Yes</span><span><i class="p"></i>In part</span><span><i class="n"></i>No</span><span><i class="q"></i>Not documented</span></div>
+
+    <details class="sources">
+      <summary>Sources, checked November 2026</summary>
+      <ul>
+        <li>Medal: <a href="https://support.medal.tv/support/solutions/articles/48001165759-what-is-the-recording-buffer-" rel="noopener">recording buffer</a>, <a href="https://support.medal.tv/support/solutions/articles/48001218475-medal-premium-faq" rel="noopener">Premium FAQ</a>, <a href="https://support.medal.tv/support/solutions/articles/48001167701" rel="noopener">auto clipping</a>, <a href="https://support.medal.tv/support/solutions/articles/48001275437-medal-s-advanced-video-editor" rel="noopener">editor</a>, <a href="https://support.medal.tv/support/solutions/articles/48001220265-9-16-video-cropping" rel="noopener">9:16</a>, <a href="https://medal.tv/features/separate-audio-tracks" rel="noopener">audio tracks</a>, <a href="https://support.medal.tv/support/solutions/articles/48001157616-how-to-choose-your-recording-method" rel="noopener">recording method</a>, <a href="https://support.medal.tv/support/solutions/articles/48001147502-what-is-medal-and-how-to-create-an-account" rel="noopener">account</a>, <a href="https://jobs.generalcatalyst.com/companies/medal/jobs/95111708-senior-staff-software-engineer-game-integrations" rel="noopener">Electron (job posting)</a>.</li>
+        <li>NVIDIA app: <a href="https://www.nvidia.com/en-us/geforce/news/nvidia-app-download-and-features/" rel="noopener">features and login</a>, <a href="https://www.nvidia.com/en-us/software/nvidia-app/faq/" rel="noopener">FAQ (GPUs)</a>, <a href="https://www.nvidia.com/en-au/geforce/news/nvidia-app-beta-download/" rel="noopener">sharing removed</a>, <a href="https://shacknews.com/article/142202/change-shadowplay-save-file-location-nvidia-app" rel="noopener">temporary files location</a>.</li>
+        <li>Outplayed: <a href="https://support.overwolf.com/support/solutions/articles/9000209065-outplayed-faq" rel="noopener">FAQ (RAM buffer)</a>, <a href="https://support.overwolf.com/support/solutions/articles/9000240941-outplayed-account-plans" rel="noopener">account plans</a>, <a href="https://www.overwolf.com/app/Overwolf-Outplayed" rel="noopener">app page (ads)</a>, <a href="https://support.overwolf.com/support/solutions/articles/9000178267-overwolf-recording-minimum-requirements" rel="noopener">encoders</a>, <a href="https://dev.overwolf.com/ow-native/getting-started/onboarding-resources/framework-overview" rel="noopener">Overwolf framework</a>.</li>
+        <li>Glint: <a href="https://github.com/swamie/glint#readme" rel="noopener">the manual</a>, sections Replay buffer and Measured.</li>
+      </ul>
+      <p>Products change. If a row is out of date, <a href="https://github.com/swamie/glint/issues" rel="noopener">say so on GitHub</a> and it will be fixed.</p>
+    </details>
+  </div>
+</section>
+
+<!-- ============ Check it yourself ============ -->
+<section class="mem-check" id="check">
+  <div class="wrap check-in">
+    <div class="mem-head">
+      <p class="label"><span>VI</span>Check it</p>
+      <h2>Measure it on your own PC.</h2>
+      <p class="mem-sub">Numbers from someone else's computer only go so far. Compare clippers with the same settings, on your machine.</p>
+    </div>
+    <ol class="steps">
+      <li><b>Match the settings</b><span>Same resolution, frame rate, bitrate and buffer length in each clipper.</span></li>
+      <li><b>Play for ten minutes</b><span>A buffer fills over its length. Measure once it is full, in the same game.</span></li>
+      <li><b>Open Task Manager, Details</b><span>Right-click a column header, Select columns, tick Memory (private working set).</span></li>
+      <li><b>Add up every process</b><span>Count the clipper's helpers and encoder too. Glint's status bar shows its own total, buffer included.</span></li>
+    </ol>
+  </div>
+</section>
+
+<section class="close">
+  <div class="wrap close-in">
+    <svg class="close-mark" viewBox="0 0 48 48" aria-hidden="true"><path d="M21 4l4.2 13.8L39 22l-13.8 4.2L21 40l-4.2-13.8L3 22l13.8-4.2z"/><path class="spark" d="M38 3l1.8 5.2L45 10l-5.2 1.8L38 17l-1.8-5.2L31 10l5.2-1.8z"/></svg>
+    <h2>Keep the moment. <em>Keep the memory.</em></h2>
+    <div class="hero-actions">
+      <a class="btn btn-solid" href="https://github.com/swamie/glint/releases/latest/download/GlintSetup.exe">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></svg>Download for Windows
+      </a>
+      <a class="btn btn-line" href="./">Back to the start</a>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <div class="foot-brand">
+      <a class="brand" href="./" aria-label="Glint, home">
+        <svg class="logo" viewBox="0 0 48 48" aria-hidden="true"><path d="M21 4l4.2 13.8L39 22l-13.8 4.2L21 40l-4.2-13.8L3 22l13.8-4.2z"/><path class="spark" d="M38 3l1.8 5.2L45 10l-5.2 1.8L38 17l-1.8-5.2L31 10l5.2-1.8z"/></svg>
+        <span>Glint</span>
+      </a>
+      <p>An instant-replay clipper for Windows. Free, with its source on GitHub.</p>
+    </div>
+    <nav class="foot-col" aria-label="Product">
+      <b>Product</b>
+      <a href="https://github.com/swamie/glint/releases/latest/download/GlintSetup.exe">Download</a>
+      <a href="https://github.com/swamie/glint/releases" rel="noopener">Releases</a>
+      <a href="./#inside">Features</a>
+    </nav>
+    <nav class="foot-col" aria-label="Source">
+      <b>Source</b>
+      <a href="https://github.com/swamie/glint" rel="noopener">GitHub</a>
+      <a href="https://github.com/swamie/glint/issues" rel="noopener">Report a problem</a>
+      <a href="https://github.com/swamie/glint#readme" rel="noopener">Read the manual</a>
+    </nav>
+    <p class="foot-note">Medal, NVIDIA and Outplayed are trademarks of their owners. Glint is not connected with them.</p>
+  </div>
+</footer>
+
+<script src="main.js" defer></script>
+<script src="memory.js" defer></script>
+</body>
+</html>

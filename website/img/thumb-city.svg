@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180">
+<defs>
+<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0d1b3a"/><stop offset=".7" stop-color="#2d4f86"/><stop offset="1" stop-color="#e09a6a"/></linearGradient>
+<pattern id="win" width="8" height="9" patternUnits="userSpaceOnUse"><rect x="2" y="2" width="3" height="4" fill="#ffd98a" opacity=".85"/></pattern>
+<linearGradient id="road" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a2f3a"/><stop offset="1" stop-color="#11141a"/></linearGradient>
+</defs>
+<rect width="320" height="180" fill="url(#sky)"/>
+<g fill="#16213a"><rect x="0" y="60" width="38" height="80"/><rect x="40" y="38" width="30" height="102"/><rect x="74" y="72" width="26" height="68"/><rect x="214" y="44" width="34" height="96"/><rect x="250" y="66" width="30" height="74"/><rect x="282" y="30" width="38" height="110"/></g>
+<g fill="url(#win)"><rect x="0" y="60" width="38" height="80"/><rect x="40" y="38" width="30" height="102"/><rect x="214" y="44" width="34" height="96"/><rect x="282" y="30" width="38" height="110"/></g>
+<path d="M100 118Q160 70 220 118" stroke="#9fb4d6" stroke-width="3" fill="none"/>
+<path d="M100 118H220" stroke="#9fb4d6" stroke-width="4"/>
+<path d="M120 118V104M140 118V92M160 118V88M180 118V92M200 118V104" stroke="#9fb4d6" stroke-width="1.5"/>
+<path d="M0 138H320V180H0Z" fill="url(#road)"/>
+<path d="M150 180L158 140H162L170 180Z" fill="#f2d27a" opacity=".55"/>
+<path d="M96 166l6-30 10-6 10 6 4 30Z" fill="#c45a3c"/>
+<circle cx="110" cy="124" r="7" fill="#e8c9a8"/>
+<path d="M126 140l22-6 2 5-22 6Z" fill="#62b6f7"/>
+<g stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" opacity=".9"><circle cx="196" cy="98" r="6" fill="none"/></g>
+<rect x="12" y="158" width="74" height="12" rx="2" fill="#0b0f14" opacity=".6"/>
+<rect x="15" y="161" width="14" height="6" fill="#f3f3f3"/><rect x="31" y="161" width="14" height="6" fill="#f3f3f3"/><rect x="47" y="161" width="14" height="6" fill="#f3f3f3"/><rect x="63" y="161" width="14" height="6" fill="#f3f3f3" opacity=".3"/>
+<circle cx="296" cy="154" r="14" fill="#0b0f14" opacity=".6"/>
+<path d="M296 142a12 12 0 1 1 -11.5 15" stroke="#62b6f7" stroke-width="3" fill="none" stroke-linecap="round"/>
+</svg>

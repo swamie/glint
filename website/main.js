@@ -2,7 +2,7 @@
 /* Glint's site: three small things.
    1. A picture's motion runs only while the picture is on screen.
    2. "Pause motion" stops every picture (and is remembered).
-   3. The newest version number is read from GitHub and shown beside the eyebrow. */
+   3. The newest version number is read from GitHub and shown beside the name in the bar. */
 
 (function () {
   const root = document.documentElement;

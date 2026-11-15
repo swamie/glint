@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180">
+<defs>
+<linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e7966a"/><stop offset=".7" stop-color="#f4d3a3"/></linearGradient>
+<linearGradient id="ground" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#b8693f"/><stop offset="1" stop-color="#5a2f1f"/></linearGradient>
+</defs>
+<rect width="320" height="180" fill="url(#sky)"/>
+<circle cx="236" cy="56" r="20" fill="#fbe7c2" opacity=".9"/>
+<path d="M0 92L40 70L76 78L110 58L150 80L190 72L240 90L280 68L320 80V120H0Z" fill="#c98a62" opacity=".7"/>
+<path d="M0 64L26 60L40 120H0Z" fill="#8f4b2c"/>
+<path d="M260 50L300 44L320 46V130H248Z" fill="#7d3f25"/>
+<path d="M266 70H312M262 92H316" stroke="#5e2c19" stroke-width="2"/>
+<path d="M0 112C80 104 200 104 320 116V180H0Z" fill="url(#ground)"/>
+<path d="M120 180L150 120H170L200 180Z" fill="#cf8c5c" opacity=".55"/>
+<path d="M150 122a6 6 0 1 1 12 0v4h4l2 18h-4l-1 14h-4l-1-12h-2l-1 12h-4l-1-14h-4l2-18h4Z" fill="#2a1b16"/>
+<g stroke="#fff" stroke-width="1.6" stroke-linecap="round" opacity=".9"><path d="M160 84v4M160 96v4M152 92h4M164 92h4"/></g>
+<rect x="12" y="156" width="78" height="14" rx="2" fill="#0b0f14" opacity=".55"/>
+<rect x="15" y="159" width="20" height="3" fill="#7ab8ff"/><rect x="37" y="159" width="20" height="3" fill="#7ab8ff"/><rect x="59" y="159" width="20" height="3" fill="#7ab8ff" opacity=".35"/>
+<rect x="15" y="164" width="64" height="3" fill="#f3f3f3"/>
+<rect x="246" y="158" width="62" height="12" rx="2" fill="#0b0f14" opacity=".55"/>
+<rect x="250" y="162" width="30" height="4" fill="#f3f3f3"/><rect x="284" y="162" width="20" height="4" fill="#f4c35a"/>
+</svg>

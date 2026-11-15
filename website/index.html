@@ -12,7 +12,7 @@
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -23,11 +23,13 @@
     <a class="brand" href="#top" aria-label="Glint, to the top">
       <svg class="logo" viewBox="0 0 48 48" aria-hidden="true"><path d="M21 4l4.2 13.8L39 22l-13.8 4.2L21 40l-4.2-13.8L3 22l13.8-4.2z"/><path class="spark" d="M38 3l1.8 5.2L45 10l-5.2 1.8L38 17l-1.8-5.2L31 10l5.2-1.8z"/></svg>
       <span>Glint</span>
+      <span class="brand-ver" data-version hidden></span>
     </a>
     <nav class="nav-links" aria-label="Sections">
       <a href="#editor">Editor</a>
       <a href="#vertical">Vertical</a>
-      <a href="#inside">What is in it</a>
+      <a href="#inside">Features</a>
+      <a href="memory.html">Memory</a>
       <a href="#questions">Questions</a>
     </nav>
     <div class="nav-end">
@@ -44,7 +46,6 @@
 <section class="hero" id="top">
   <div class="wrap">
     <div class="hero-copy" data-enter>
-      <p class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span>Instant replay for Windows <span class="eyebrow-ver" data-version hidden></span></p>
       <h1>The clipper that stays <em>on your PC.</em></h1>
       <p class="lede">Glint keeps the last minutes of your screen in memory. Press a key and the moment is a clip. Cut it, turn it vertical and export it, without an account and without an upload.</p>
       <div class="hero-actions">
@@ -53,7 +54,6 @@
         </a>
         <a class="btn btn-line" href="https://github.com/swamie/glint" rel="noopener">Read the source</a>
       </div>
-      <p class="hero-fact"><span>GlintSetup.exe</span><span>2 MB</span><span>Windows 10 and 11</span><span>updates itself</span></p>
     </div>
 
     <!-- The hero picture: a clip being saved. -->
@@ -73,14 +73,14 @@
           </aside>
           <div class="cap-main">
             <div class="cap-grid" aria-hidden="true">
-              <div class="card card-new"><div class="thumb t1"><span>0:30</span></div><b></b><small></small></div>
-              <div class="card"><div class="thumb t2"><span>0:31</span></div><b></b><small></small></div>
-              <div class="card"><div class="thumb t3"><span>0:20</span></div><b></b><small></small></div>
-              <div class="card"><div class="thumb t4"><span>1:00</span></div><b></b><small></small></div>
-              <div class="card"><div class="thumb t5"><span>0:14</span></div><b></b><small></small></div>
-              <div class="card"><div class="thumb t6"><span>0:30</span></div><b></b><small></small></div>
-              <div class="card"><div class="thumb t2"><span>0:45</span></div><b></b><small></small></div>
-              <div class="card"><div class="thumb t4"><span>0:30</span></div><b></b><small></small></div>
+              <div class="card card-new"><div class="thumb t1"><span>0:30</span></div><b>Valorant 2026-11-14 21-04-12</b><small>Valorant · just now</small></div>
+              <div class="card"><div class="thumb t2"><span>0:31</span></div><b>Rocket League 2026-11-14 20-41-55</b><small>Rocket League · 22 min ago</small></div>
+              <div class="card"><div class="thumb t3"><span>0:20</span></div><b>Fortnite 2026-11-14 19-12-08</b><small>Fortnite · 2 h ago</small></div>
+              <div class="card"><div class="thumb t4"><span>1:00</span></div><b>Apex Legends 2026-11-13 23-50-31</b><small>Apex Legends · yesterday</small></div>
+              <div class="card"><div class="thumb t5"><span>0:14</span></div><b>Counter-Strike 2 2026-11-13 22-31-05</b><small>Counter-Strike 2 · yesterday</small></div>
+              <div class="card"><div class="thumb t6"><span>0:30</span></div><b>Overwatch 2 2026-11-13 21-02-44</b><small>Overwatch 2 · yesterday</small></div>
+              <div class="card"><div class="thumb t2"><span>0:45</span></div><b>Rocket League 2026-11-12 18-27-19</b><small>Rocket League · 2 days ago</small></div>
+              <div class="card"><div class="thumb t4"><span>0:30</span></div><b>Apex Legends 2026-11-12 17-09-40</b><small>Apex Legends · 2 days ago</small></div>
             </div>
             <div class="cap-status" aria-hidden="true">
               <span class="cap-rec"></span><span>Clipping</span><span class="cap-dim">2560 × 1440 at 60 fps</span>
@@ -89,7 +89,7 @@
           </div>
           <div class="toast" aria-hidden="true">
             <svg viewBox="0 0 48 48"><path d="M21 4l4.2 13.8L39 22l-13.8 4.2L21 40l-4.2-13.8L3 22l13.8-4.2z"/></svg>
-            <span><b>Captured last 30s</b><small>Overwatch</small></span>
+            <span><b>Captured last 30s</b><small>Valorant</small></span>
           </div>
           <div class="keycap" aria-hidden="true">F8</div>
         </div>
@@ -104,7 +104,7 @@
   <article class="block" id="buffer">
     <div class="wrap block-in">
       <div class="block-copy">
-        <p class="label"><span>01</span>Replay buffer</p>
+        <p class="label"><span>I</span>Replay buffer</p>
         <h2>A buffer that is always a key away.</h2>
         <p>The buffer runs while you play and holds up to an hour. Each clip key has its own length, so one key keeps thirty seconds and another keeps ten minutes of the same buffer.</p>
         <ul class="ticks">
@@ -129,8 +129,8 @@
             <div class="buf-key k-long"><kbd>Shift</kbd><kbd>F8</kbd><span>10 minutes</span></div>
           </div>
           <div class="buf-out" aria-hidden="true">
-            <div class="clipline c-short"><i class="t1"></i><span>Overwatch 20-02-44</span><em>0:30</em></div>
-            <div class="clipline c-long"><i class="t3"></i><span>Overwatch 20-02-51</span><em>10:00</em></div>
+            <div class="clipline c-short"><i class="t1"></i><span>Valorant 2026-11-14 21-04-12</span><em>0:30</em></div>
+            <div class="clipline c-long"><i class="t1"></i><span>Valorant 2026-11-14 21-04-19</span><em>10:00</em></div>
           </div>
         </div>
       </div>
@@ -140,7 +140,7 @@
   <article class="block flip" id="editor">
     <div class="wrap block-in">
       <div class="block-copy">
-        <p class="label"><span>02</span>Timeline editor</p>
+        <p class="label"><span>II</span>Timeline editor</p>
         <h2>An editor built for cutting clips.</h2>
         <p>Split, cut out and trim on a timeline with the clip's own sound on separate rows. Add a song and it plays straight through every cut, so the beat never jumps when the footage does.</p>
         <ul class="ticks">
@@ -191,7 +191,7 @@
   <article class="block" id="vertical">
     <div class="wrap block-in">
       <div class="block-copy">
-        <p class="label"><span>03</span>Canvas</p>
+        <p class="label"><span>III</span>Canvas</p>
         <h2>Vertical video from a wide clip.</h2>
         <p>Pick 9:16 and place pieces of the picture on the canvas: the gameplay in the middle, the kill feed zoomed above it, the health bar below. Save the layout and the next clip takes one click.</p>
         <ul class="ticks">
@@ -205,16 +205,15 @@
           <div class="cv-src" aria-hidden="true">
             <div class="cv-frame">
               <i class="cv-box b1"></i><i class="cv-box b2"></i><i class="cv-box b3"></i>
-              <span class="hud hud-feed"></span><span class="hud hud-hp"></span><span class="hud hud-cross"></span>
             </div>
             <small>The clip, 16:9</small>
           </div>
           <div class="cv-arrow" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 12h15M13 6l6 6-6 6"/></svg></div>
           <div class="cv-out" aria-hidden="true">
             <div class="cv-phone">
-              <i class="cv-piece p1"><span class="hud hud-feed"></span></i>
-              <i class="cv-piece p2"><span class="hud hud-cross"></span></i>
-              <i class="cv-piece p3"><span class="hud hud-hp"></span></i>
+              <i class="cv-piece p1"></i>
+              <i class="cv-piece p2"></i>
+              <i class="cv-piece p3"></i>
             </div>
             <small>1080 × 1920</small>
           </div>
@@ -226,7 +225,7 @@
   <article class="block flip" id="keyframes">
     <div class="wrap block-in">
       <div class="block-copy">
-        <p class="label"><span>04</span>Overlays and keyframes</p>
+        <p class="label"><span>IV</span>Overlays and keyframes</p>
         <h2>Text, shapes and blur that follow the action.</h2>
         <p>Type on the picture, draw on it, or drag a box that blurs what is inside. Add a keyframe, move the playhead, drag the item, and it travels between the two.</p>
         <ul class="ticks">
@@ -255,7 +254,7 @@
   <article class="block" id="capture">
     <div class="wrap block-in">
       <div class="block-copy">
-        <p class="label"><span>05</span>Capture and sound</p>
+        <p class="label"><span>V</span>Capture and sound</p>
         <h2>The game alone, or the whole desktop.</h2>
         <p>One switch decides what is recorded. GAME takes only the game's window and its own sound. DESKTOP takes the monitor and everything you hear. A mixer sets how loud each source is in your clips.</p>
         <ul class="ticks">
@@ -280,7 +279,7 @@
   <article class="block flip" id="rules">
     <div class="wrap block-in">
       <div class="block-copy">
-        <p class="label"><span>06</span>Render rules</p>
+        <p class="label"><span>VI</span>Render rules</p>
         <h2>One button for the whole export.</h2>
         <p>Chain the steps you repeat for every clip into a rule: a color look, a saved vertical layout, motion blur, a file size. Run it from the right-click menu and walk away.</p>
         <ul class="ticks">
@@ -299,7 +298,7 @@
             <span class="rl-block r4"><i>4</i>Compress: 50 MB</span>
           </div>
           <div class="rl-job" aria-hidden="true">
-            <div class="clipline"><i class="t5"></i><span>Overwatch 20-02-44</span><em class="rl-state"></em></div>
+            <div class="clipline"><i class="t5"></i><span>Counter-Strike 2 2026-11-13 22-31-05</span><em class="rl-state"></em></div>
             <div class="rl-prog"><i></i></div>
           </div>
         </div>
@@ -312,7 +311,7 @@
 <section class="inside" id="inside">
   <div class="wrap">
     <div class="inside-head">
-      <p class="label"><span>07</span>What is in it</p>
+      <p class="label"><span>VII</span>Features</p>
       <h2>Sixteen things, all on your own machine.</h2>
     </div>
     <ol class="list">
@@ -340,7 +339,7 @@
 <section class="faq" id="questions">
   <div class="wrap faq-in">
     <div class="faq-head">
-      <p class="label"><span>08</span>Questions</p>
+      <p class="label"><span>VIII</span>Questions</p>
       <h2>Short answers before you install.</h2>
     </div>
     <div class="faq-list">
@@ -361,7 +360,7 @@
         <p>Yes. The import dialog reads the folders of other clipping software and adds those clips to your library, in place or as copies.</p>
       </details>
       <details>
-        <summary>Which languages does it speak?</summary>
+        <summary>What languages are currently supported?</summary>
         <p>English, Korean and Greek.</p>
       </details>
     </div>
@@ -396,7 +395,8 @@
       <b>Product</b>
       <a href="https://github.com/swamie/glint/releases/latest/download/GlintSetup.exe">Download</a>
       <a href="https://github.com/swamie/glint/releases" rel="noopener">Releases</a>
-      <a href="#inside">What is in it</a>
+      <a href="#inside">Features</a>
+      <a href="memory.html">Memory and comparison</a>
     </nav>
     <nav class="foot-col" aria-label="Source">
       <b>Source</b>
