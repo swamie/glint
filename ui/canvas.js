@@ -572,7 +572,7 @@ function cvMount(root, c, P) {
         if (sp) {
           const D = mm.duration || 1, tm = P.time();
           html += `<div class="ov-when kf-piece"><div class="cv-row"><span>${esc(t("Piece {n}", { n: C.pieces.indexOf(sp) + 1 }))}</span></div>`
-            + `<div class="ov-rbar kf-bar" title="${esc(t("Click to move the playhead"))}"><div class="ov-rnow" style="left:${cvClamp((tm / D) * 100, 0, 100)}%"></div>${kfDiamonds(sp.keys, D, tm)}</div>`
+            + `<div class="ov-rbar kf-bar" title="${esc(t("Drag here to scrub. Drag a diamond to move its keyframe"))}"><div class="ov-rnow" style="left:${cvClamp((tm / D) * 100, 0, 100)}%"></div>${kfDiamonds(sp.keys, D, tm)}</div>`
             + `${kfControls(sp.keys, tm, sp.smooth)}</div>`;
         }
       }
@@ -668,9 +668,35 @@ function cvMount(root, c, P) {
     const bar = e.target.closest?.(".kf-bar");
     if (!bar || e.button !== 0 || !m()) return;
     e.preventDefault();
-    const dia = e.target.closest("[data-kf-t]"), r = bar.getBoundingClientRect();
-    P.seek(dia ? +dia.dataset.kfT : cvClamp((e.clientX - r.left) / (r.width || 1), 0, 1) * (m().duration || 0), false, !!dia);
+    const dia = e.target.closest("[data-kf-t]"), r = bar.getBoundingClientRect(), D = m().duration || 0;
+    const timeAt = (x) => cvClamp((x - r.left) / (r.width || 1), 0, 1) * D;
+    P.seek(dia ? +dia.dataset.kfT : timeAt(e.clientX), false, !!dia);
     refresh();
+    // Held and dragged (0.1.33): on the bar the playhead follows the pointer (scrubbing through the
+    // keyframes); a diamond takes its keyframe along to another time (one undo step).
+    const p = dia ? piece(st.sel) : null;
+    let at = dia ? +dia.dataset.kfT : 0, tx = null;
+    const move = (ev) => {
+      if (st.dead || !m()) return;
+      if (!p) return P.seek(timeAt(ev.clientX), false, false);
+      if (!tx) { if (Math.abs(ev.clientX - e.clientX) < 3) return; tx = begin(); }
+      const now = kfRetime(p.keys, at, timeAt(ev.clientX), D);
+      if (now === at) return;
+      at = now;
+      P.seek(at, false, true);
+      st.dirty = true;
+      draw();
+      renderLayer();
+      st.lastPanel = "";
+      renderPanel();
+    };
+    const up = () => {
+      for (const ev of ["pointermove", "pointerup", "pointercancel"]) window.removeEventListener(ev, ev === "pointermove" ? move : up, true);
+      if (tx) finish(tx); else refresh();
+    };
+    window.addEventListener("pointermove", move, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
   });
 
   panel.addEventListener("mousedown", (e) => { if (e.target.closest("button")) e.preventDefault(); });

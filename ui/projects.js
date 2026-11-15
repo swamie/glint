@@ -415,7 +415,7 @@ function projMountPanel(root, id) {
   aside.dataset.pjFor = id;
   aside.innerHTML = `
     <div class="pj-head"><div class="pj-h">${esc(t("Library"))}</div>
-      <div class="small pj-hint">${esc(t("Double-click, press Enter or drag clips onto the timeline to add them to the project."))}</div></div>
+      <div class="small pj-hint">${esc(t("Double-click, press Enter or drag clips onto the timeline to add them to the project."))} ${esc(t("Rest the pointer on a clip to preview it."))}</div></div>
     <div class="pj-tools">
       <input class="field pj-q" type="search" spellcheck="false" autocomplete="off" placeholder="${esc(t("Search clips"))}" aria-label="${esc(t("Search clips"))}" value="${esc(projLib.q)}">
       <select class="field pj-game" aria-label="${esc(t("Game"))}"></select>
@@ -454,6 +454,35 @@ function projMountPanel(root, id) {
     if (item && !projLib.sel.includes(item.dataset.pjc)) { projLib.sel = [item.dataset.pjc]; projLib.anchor = item.dataset.pjc; projPaintSel(); }
     projOpenLibMenu(e.clientX, e.clientY);
   });
+  // A clip's preview (0.1.33): rest the pointer on a clip and it plays, without sound, in a small player
+  // beside the list. Gone when the pointer leaves the clip, on a press (a drag may start) and on a scroll.
+  let pvTimer = 0, pvWait = null, pvFor = null;
+  const pvHide = () => { clearTimeout(pvTimer); pvTimer = 0; pvWait = pvFor = null; root.querySelector(".pj-preview")?.remove(); };
+  const pvShow = (id2) => {
+    const item = aside.querySelector(`.pj-item[data-pjc="${CSS.escape(id2)}"]`), c = S.clips.find((x) => x.id === id2);
+    if (!item || !c || !aside.isConnected) return pvHide();
+    root.querySelector(".pj-preview")?.remove();
+    const el = document.createElement("div");
+    el.className = "pj-preview";
+    el.innerHTML = `<video muted autoplay loop playsinline disablepictureinpicture${c.thumb ? ` poster="${esc(fileSrc(c.thumb))}"` : ""} src="${esc(fileSrc(c.path))}"></video>
+      <div class="pj-pv-cap"><b>${esc(c.title)}</b><span>${fmtDur(c.duration)}</span></div>`;
+    const r = item.getBoundingClientRect(), ar = aside.getBoundingClientRect(), W = Math.min(400, Math.max(240, window.innerWidth - ar.right - 30)), H = Math.round((W * 9) / 16) + 32;
+    Object.assign(el.style, { left: `${ar.right + 10}px`, top: `${clamp(r.top + r.height / 2 - H / 2, 8, Math.max(8, window.innerHeight - H - 8))}px`, width: `${W}px` });
+    root.appendChild(el);
+    pvWait = null;
+    pvFor = id2;
+  };
+  aside.addEventListener("mousemove", (e) => {
+    const id2 = e.target.closest(".pj-item")?.dataset.pjc || null;
+    if (e.buttons || !id2) return pvHide();
+    if (id2 === pvFor || id2 === pvWait) return;
+    pvHide();
+    pvWait = id2;
+    pvTimer = setTimeout(() => pvShow(id2), 450);
+  });
+  aside.addEventListener("mouseleave", pvHide);
+  aside.addEventListener("mousedown", pvHide, true);
+  aside.querySelector(".pj-list").addEventListener("scroll", pvHide, { passive: true });
   projRenderPanel();
 }
 

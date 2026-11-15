@@ -92,11 +92,15 @@ function audMixerHtml() {
   const gameMode = s.capture_mode === "game";
   const marks = [0, -10, -20, -30, -40, -50, -60];
   const strip = ([id, onKey, gainKey, name]) => {
-    // In GAME mode the desktop is not recorded and the game's own sound always is.
-    const forced = gameMode && id === "game", unused = gameMode && id === "desktop";
-    const on = unused ? false : forced ? true : !!s[onKey];
+    // In GAME mode the game's own sound is always recorded, and the desktop's sound has its own
+    // switch there (game_desktop_audio, off to begin with): the game's picture with everything you hear.
+    const forced = gameMode && id === "game", unused = false;
+    if (gameMode && id === "desktop") onKey = "game_desktop_audio";
+    const on = forced ? true : !!s[onKey];
     const db = Math.min(AUD_DB_MAX, Math.max(AUD_DB_MIN, +s[gainKey] || 0));
-    const muteTip = unused ? t("Not recorded in GAME mode") : forced ? t("Always recorded in GAME mode") : on ? t("Recorded. Click to turn it off") : t("Not recorded. Click to turn it on");
+    const muteTip = forced ? t("Always recorded in GAME mode")
+      : gameMode && id === "desktop" ? (on ? t("Recorded with the game. Click to record only the game's sound") : t("Not recorded in GAME mode. Click to record everything you hear as well"))
+        : on ? t("Recorded. Click to turn it off") : t("Not recorded. Click to turn it on");
     return `<div class="aud-strip${on ? "" : " off"}" data-aud-strip="${id}">
         <div class="aud-name" title="${esc(name)}">${esc(name)}</div>
         <div class="aud-db">${audDbText(db)}</div>
@@ -172,12 +176,15 @@ function audSectionHtml() {
   if (!AUD.list && !AUD.loading) setTimeout(audLoad, 0);
   const outs = (AUD.list && AUD.list.outputs) || [];
   const ins = (AUD.list && AUD.list.inputs) || [];
+  const gameMode = s.capture_mode === "game";
   const gameNote = s.game_audio && st.game_audio === "unavailable" ? `<br><b>${t("Not available on this version of Windows.")}</b>`
     : s.game_audio && st.game_audio === "failed" ? `<br><b>${t("The current game's sound could not be captured.")}</b>` : "";
   return `<div class="section aud-section"><h2>${t("Audio")}</h2>
       ${audMixerHtml()}
-      ${row(t("Desktop audio"), t("Everything you hear on the output device chosen below"), toggle("desktop_audio"))}
-      ${row(t("Desktop audio device"), audHint(t("The output whose sound is recorded. Pick the headphones or speakers your game plays on"), outs, s.desktop_device, t("No output device was found.")), audSelect("desktop_device", outs, s.desktop_audio, t("Desktop audio device")))}
+      ${gameMode
+        ? row(t("Desktop audio in GAME mode"), t("Records everything you hear on the output device chosen below, as well as the game: the game's window with all the sound. Off: only the game's own sound and your microphone"), toggle("game_desktop_audio"))
+        : row(t("Desktop audio"), t("Everything you hear on the output device chosen below"), toggle("desktop_audio"))}
+      ${row(t("Desktop audio device"), audHint(t("The output whose sound is recorded. Pick the headphones or speakers your game plays on"), outs, s.desktop_device, t("No output device was found.")), audSelect("desktop_device", outs, gameMode ? s.game_desktop_audio : s.desktop_audio, t("Desktop audio device")))}
       ${row(t("Microphone"), t("Your voice, saved as its own track"), toggle("mic"))}
       ${row(t("Microphone device"), audHint(t("The microphone that is recorded"), ins, s.mic_device, t("No microphone was found.")), audSelect("mic_device", ins, s.mic, t("Microphone device")))}
       ${row(t("Microphone noise suppression"), t("Cuts background noise such as fans and hum from your voice (RNNoise). Applied when a clip is saved, so it costs nothing while clipping"), toggle("mic_denoise"))}

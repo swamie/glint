@@ -14,6 +14,24 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.33", date: "2026-11-15",
+    new: [
+      t("GAME mode can record the desktop's sound too: the game's window with everything you hear. Turn Desktop audio on in Settings → Audio while GAME is chosen. Off, GAME records only the game's own sound and your microphone, as before."),
+      t("Editor projects: rest the pointer on a clip in the Library list and it plays, without sound, in a small player beside the list."),
+      t("Editor: any audio row can be deleted, the clip's own tracks too (the bin on the row). A deleted track is not in the export."),
+      t("Keyframes: drag along a keyframe bar to scrub through the animation, and drag a diamond to move that keyframe to another time."),
+      t("Editor shortcuts: a search box, and a right-click on a shortcut removes it."),
+    ],
+    improved: [
+      t("With cut parts hidden, a trim bracket can be dragged back out to bring cut footage back: the cut parts show while you drag."),
+      t("Waveforms are drawn twice as tall, and a button on the timeline shows or hides the names written on the audio."),
+    ],
+    fixed: [
+      t("An added audio file lost its waveform when a project was closed and opened again."),
+      t("An edit with every audio row muted was exported with its sound. It is silent now."),
+    ],
+  },
+  {
     version: "0.1.32", date: "2026-11-15",
     new: [
       t("Settings → Audio has a mixer: a fader, a live level meter and an on / off button for Desktop audio, Microphone and Game audio. The faders set how loud each source is in your clips."),

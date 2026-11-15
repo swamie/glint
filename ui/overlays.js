@@ -915,7 +915,46 @@ function ovMount(root, c, P) {
   panel.addEventListener("pointerdown", (e) => {
     // A keyframe's diamond: the playhead goes there.
     const dia = e.target.closest?.("[data-kf-t]");
-    if (dia && e.button === 0) { e.preventDefault(); P.seek(+dia.dataset.kfT, false, true); redraw(); renderPanel(); return; }
+    if (dia && e.button === 0) {
+      e.preventDefault();
+      P.seek(+dia.dataset.kfT, false, true);
+      redraw();
+      renderPanel();
+      // Held and dragged (0.1.33): the keyframe goes along to another time (one undo step).
+      const own = item(st.sel), bar = dia.closest(".ov-rbar"), r = bar?.getBoundingClientRect(), D = dur();
+      if (!own || !r) return;
+      let at = +dia.dataset.kfT, tx = null;
+      const move = (ev) => {
+        if (st.dead || !item(own.id)) return;
+        if (!tx) { if (Math.abs(ev.clientX - e.clientX) < 3) return; tx = begin(); }
+        const now2 = kfRetime(own.keys, at, ovClamp(((ev.clientX - r.left) / (r.width || 1)) * D, 0, D), D);
+        if (now2 === at) return;
+        at = now2;
+        P.seek(at, false, true);
+        st.lastPanel = "";
+        redraw();
+        renderPanel();
+      };
+      const up = () => {
+        for (const ev of ["pointermove", "pointerup", "pointercancel"]) window.removeEventListener(ev, ev === "pointermove" ? move : up, true);
+        if (tx) finish(tx);
+      };
+      window.addEventListener("pointermove", move, true);
+      window.addEventListener("pointerup", up, true);
+      window.addEventListener("pointercancel", up, true);
+      return;
+    }
+    // The playhead's line on the bar: held and dragged, the playhead follows (scrubbing through the keyframes).
+    if (e.target.closest?.(".ov-rnow") && e.button === 0) {
+      e.preventDefault();
+      const r = e.target.closest(".ov-rbar").getBoundingClientRect(), D = dur();
+      const move = (ev) => { if (!st.dead) P.seek(ovClamp(((ev.clientX - r.left) / (r.width || 1)) * D, 0, D), false, false); };
+      const up = () => { for (const ev of ["pointermove", "pointerup", "pointercancel"]) window.removeEventListener(ev, ev === "pointermove" ? move : up, true); };
+      window.addEventListener("pointermove", move, true);
+      window.addEventListener("pointerup", up, true);
+      window.addEventListener("pointercancel", up, true);
+      return;
+    }
     const rb = e.target.closest(".ov-rbar"), o = item(st.sel);
     if (!rb || !o || e.button !== 0) return;
     e.preventDefault();

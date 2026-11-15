@@ -599,11 +599,14 @@ impl Core {
         let mon = cfg.monitor;
         // The game's own sound for the same time, when it was captured for any of it.
         let game_pcm = if s.game_audio || game_mode { crate::procaudio::global().plan(&snap.segments).map(crate::audio::Plan::read) } else { None };
-        // Game mode: nothing of the desktop's sound, only the game's and the microphone.
-        let desk = if game_mode { None } else { desk };
+        // Game mode: nothing of the desktop's sound, only the game's and the microphone, unless the
+        // user asked for the desktop's sound there too. Then the clip has the usual tracks
+        // (Mix, Desktop, Microphone, Game) around the game's picture.
+        let game_only = game_mode && !s.game_desktop_audio;
+        let desk = if game_only { None } else { desk };
         let cap = clip::Capture { snap, desk, mic, game: game_pcm, width: cfg.width, height: cfg.height, fps: cfg.fps };
         let started = std::time::Instant::now();
-        match if game_mode { clip::write_game(&s, cap, &game) } else { clip::write(&s, cap, &game) } {
+        match if game_only { clip::write_game(&s, cap, &game) } else { clip::write(&s, cap, &game) } {
             Ok(meta) => {
                 util::log(&format!("clip {seconds}s of monitor {mon}: saved {:.1}s, {:.1} MB in {} ms -> {}", meta.duration, meta.size as f64 / 1e6, started.elapsed().as_millis(), meta.path));
                 self.lib.lock().unwrap().add(meta.clone());

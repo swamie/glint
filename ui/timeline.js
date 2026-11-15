@@ -26,8 +26,8 @@
 // re-applies emSetTrimStart / emSetTrimEnd to the segments as they were when the drag began (emSegCopy),
 // so a drag never piles up cut points and a part cut out in the middle comes back cut out if the bracket
 // is dragged past it and back. The cut point under a bracket has no handle of its own (the bracket is it).
-// With cut parts hidden there is no footage outside the brackets to drag into, so they only move inward;
-// the view mapping is held as it was for the drag (st.mapHold) and catches up on release.
+// With cut parts hidden, a bracket drag shows them for as long as it lasts (d.rehide), so a bracket can be
+// pulled back out over footage that was cut away; they are hidden again on release.
 //
 // Parts (m.parts, "Edit together"): a strip of clip blocks (lane "parts") above the video row, one per part in
 // display order. Drag a block sideways to move the clip (emMovePart, one undo step, onChange("order")); click
@@ -77,6 +77,7 @@ const tlPaths = {
   solo: "M4 16v-4a8 8 0 0 1 16 0v4M4 15h3v5H4zM17 15h3v5h-3z",
   join: "M12 4v5M12 15v5M4 12h16M7 9l-3 3 3 3M17 9l3 3-3 3",
   hideCuts: "M3 12h5M16 12h5M5 9l3 3-3 3M19 9l-3 3 3 3M12 5v14",
+  names: "M4 6h9l7 6-7 6H4zM8.5 12h.01",
   selAll: "M4 4h16v16H4zM8 12l3 3 5-6",
   keys: "M3 6h18v12H3zM7 10h1M11 10h1M15 10h1M7 14h10",
   full: "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5",
@@ -264,6 +265,8 @@ function tlTrimLeft(row0, at, minSeg) {
 }
 
 /** Largest peak in index range [i0, i1) (at least one index), 0 outside the array. */
+/** How much taller than its true level a waveform is drawn (clipped at the row's height): quiet audio stays readable. */
+const tlWaveGain = 2;
 function tlPeakMax(peaks, i0, i1) {
   const n = peaks.length;
   let a = Math.floor(i0), b = Math.max(a + 1, Math.ceil(i1));
@@ -364,6 +367,8 @@ function mountTimeline(host, opts) {  const m = opts.model;
     rdrag: null,           // the grip drag in progress { y, k0, base, moved }
   };
   try { st.hideCuts = localStorage.getItem("glint.tl.hideCuts") === "1"; } catch {}
+  st.names = true; // the name written on each audio row's block (a song's title); remembered like "Hide cut parts"
+  try { st.names = localStorage.getItem("glint.tl.names") !== "0"; } catch {}
   try { st.rowK = tlRowKParse(localStorage.getItem(tlRowKKey)); } catch {}
   const vidH = () => Math.round(tlVideoH * st.rowK);
   const audH = () => Math.round(tlAudioH * st.rowK);
@@ -385,6 +390,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       ${btn("zoom-in", tlPaths.zoomIn, t("Zoom in (+)"))}
       ${btn("fit", tlPaths.fit, t("Fit the whole clip (Shift+F)"))}
       ${btn("hide-cuts", tlPaths.hideCuts, t("Hide cut parts (H)"), ' aria-pressed="false"')}
+      ${btn("names", tlPaths.names, t("Names on the audio"), ' aria-pressed="true"')}
       <span class="tl-sep"></span>
       <button type="button" class="btn sm tl-add" data-tl-act="add" title="${esc(t("Add an audio file as a new track"))}">${ICON.plus}<span>${esc(t("Add audio"))}</span></button>
     </div>
@@ -404,7 +410,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
   const el = {
     bar: q(".tl-bar"), body: q(".tl-body"), sbar: q(".tl-sbar"), grip: q(".tl-grip"), hrows: q(".tl-hrows"), lanes: q(".tl-lanes"), rows: q(".tl-rows"),
     ruler: q(".tl-ruler canvas"), phK: q(".tl-ph-k"), ph: q(".tl-ph"), cuts: q(".tl-cuts"), joints: q(".tl-joints"), tip: q(".tl-tip"), band: q(".tl-band"),
-    bHide: q('[data-tl-act="hide-cuts"]'), bFit: q('[data-tl-act="fit"]'),
+    bHide: q('[data-tl-act="hide-cuts"]'), bNames: q('[data-tl-act="names"]'), bFit: q('[data-tl-act="fit"]'),
     bmFlags: q(".tl-bmks"), bmLines: q(".tl-bmls"),
     trimS: q('[data-tl-trim="start"]'), trimE: q('[data-tl-trim="end"]'), pdrop: q(".tl-pdrop"),
     scroll: q(".tl-scroll"), spacer: q(".tl-spacer"),
@@ -433,7 +439,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       const k = keyName(side === "start" ? "trimStart" : "trimEnd") ?? (side === "start" ? "I" : "O");
       const lines = [side === "start" ? t("Drag to trim the start") : t("Drag to trim the end")];
       if (k) lines.push(t("To the playhead: {key}", { key: k }));
-      if (st.hideCuts) lines.push(t("Only inward while cut parts are hidden. Show them to drag it back out."));
+      lines.push(t("Drag it back out to bring cut footage back."));
       const title = lines.join("\n");
       if (b.title !== title) b.title = title;
     }
@@ -536,7 +542,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       <div class="tl-hline">
         <button type="button" class="tl-btn tl-hmute" data-tl-act="row-mute" data-tl-row="${esc(r.id)}"></button>
         <span class="tl-hname"></span>
-        ${file ? `<button type="button" class="tl-btn tl-hx" data-tl-act="row-remove" data-tl-row="${esc(r.id)}" title="${esc(t("Remove this audio file"))}" aria-label="${esc(t("Remove this audio file"))}">${ICON.trash}</button>` : ""}
+        <button type="button" class="tl-btn tl-hx" data-tl-act="row-remove" data-tl-row="${esc(r.id)}" title="${esc(file ? t("Remove this audio file") : t("Delete this track from the result"))}" aria-label="${esc(file ? t("Remove this audio file") : t("Delete this track from the result"))}">${ICON.trash}</button>
       </div>
       <div class="tl-hline"><input type="range" class="tl-range" min="0" max="200" step="1" data-tl-vol="${esc(r.id)}" aria-label="${esc(t("Track volume"))}"><output class="tl-pct"></output></div>
     </div>`;
@@ -771,6 +777,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     el.bIn.disabled = st.pps >= maxPps() * 0.9999;
     el.bHide.classList.toggle("on", st.hideCuts);
     el.bHide.setAttribute("aria-pressed", String(st.hideCuts));
+    if (el.bNames) { el.bNames.classList.toggle("on", st.names); el.bNames.setAttribute("aria-pressed", String(st.names)); }
     updateBarCheap(st.shownT, true);
   }
   /** The parts that can change every frame (playhead, undo stacks): only touches the DOM on change. */
@@ -966,6 +973,14 @@ function mountTimeline(host, opts) {  const m = opts.model;
     const all = allPieces();
     if (!all.length) return false;
     setSels(all, st.sel && tlSelHas(all, st.sel) ? st.sel : all[0]);
+    return true;
+  }
+  /** Show or hide the name written on each audio row's block. */
+  function setNames(on) {
+    st.names = !!on;
+    try { localStorage.setItem("glint.tl.names", st.names ? "1" : "0"); } catch {}
+    if (el.bNames) { el.bNames.classList.toggle("on", st.names); el.bNames.setAttribute("aria-pressed", String(st.names)); }
+    markAll();
     return true;
   }
   function setHideCuts(on) {
@@ -1395,7 +1410,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
         const base = file ? row.trimStart - row.offset : 0, mapped = !file && hasParts();
         const w0 = mapped ? srcAt(s0) : s0, w1 = mapped ? w0 + (s1 - s0) : s1;
         const p = tlPeakMax(wave.peaks, (w0 + base) * wave.ps, (w1 + base) * wave.ps);
-        const hh = Math.max(1, Math.min(1, p * g) * half);
+        const hh = Math.max(1, Math.min(1, p * g * tlWaveGain) * half);
         (g > 0 ? loud : quiet).roundRect(x + 0.5, mid - hh, tlBarW, hh * 2, 1);
       }
       ctx.fillStyle = tint;
@@ -1454,7 +1469,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       ctx.fillStyle = g > 1 ? C.warn : C.text;
       ctx.fillText(txt, right - w + 5, y + 11.5);
     }
-    label(ctx, C, "note", tlRowName(row, opts.game), bx0, bx1, y + bh - 24);
+    if (st.names) label(ctx, C, "note", tlRowName(row, opts.game), bx0, bx1, y + bh - 24); // the name can be switched off (toolbar, menu)
   }
 
   /** The clip blocks ("Edit together"): one per part in display order with its title and length. A clip cut out
@@ -1692,7 +1707,18 @@ function mountTimeline(host, opts) {  const m = opts.model;
     // what is there now, so not to the cut it makes itself.
     else if (trim) {
       Object.assign(d, { type: "trim", side: trim.dataset.tlTrim === "end" ? "end" : "start", base: emSegCopy(m), b0: emTrimBounds(m), cands: snapCands({}), selT: selTimes() });
-      if (st.hideCuts) st.mapHold = vmap();
+      if (st.hideCuts) {
+        // Cut parts hidden: they are shown for the drag, so the bracket can be pulled back out over footage that
+        // was cut away (0.1.33). The bracket stays under the pointer, the zoom stays, and the parts are hidden
+        // again on release (endDrag).
+        const at = d.side === "start" ? d.b0.start : d.b0.end, x = X(at);
+        d.rehide = { fitted: st.fitted };
+        st.hideCuts = false;
+        st.fitted = false;
+        markAll();
+        relayout();
+        setScroll(tlPad + toV(at) * st.pps - x);
+      }
     }
     // A bookmark flag: the playhead goes exactly onto it; dragging on from there is an ordinary ruler drag.
     else if (bmAt !== undefined) Object.assign(d, { type: "seek", at: bmAt });
@@ -1769,8 +1795,6 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (d.type === "trim") {
       if (!d.snapped) { emSnapshot(m); d.snapped = true; }
       let sec = free ? raw : snapAt(raw, d.cands).at;
-      // Cut parts hidden: nothing outside the brackets to drag into, so inward only.
-      if (st.hideCuts) sec = d.side === "start" ? Math.max(sec, d.b0.start) : Math.min(sec, d.b0.end);
       emSegPaste(m, d.base);
       const used = d.side === "start" ? emSetTrimStart(m, sec) : emSetTrimEnd(m, sec);
       remapSels(d.selT);
@@ -1883,6 +1907,16 @@ function mountTimeline(host, opts) {  const m = opts.model;
       if (d.snapped && m.undo[m.undo.length - 1] === emState(m)) m.undo.pop();
       // Cut parts hidden: the view catches up with what is cut out now.
       if (st.mapHold) { st.mapHold = null; markAll(); if (st.hideCuts) relayout(); }
+      // The cut parts were shown only for this drag: hidden again, the bracket staying where it is on screen.
+      if (d.rehide) {
+        const now = emTrimBounds(m), at = d.side === "start" ? now.start : now.end, x = X(at);
+        st.hideCuts = true;
+        if (d.rehide.fitted) st.fitted = true;
+        markAll();
+        relayout();
+        if (!st.fitted) setScroll(tlPad + toV(at) * st.pps - x);
+        trimTips();
+      }
       updateBar();
     }
     host.classList.remove("tl-dragging");
@@ -2016,6 +2050,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     out.push(...top);
     if (top.length) out.push("<hr>");
     out.push(item("hide-cuts", tlPaths.hideCuts, t("Hide cut parts"), { on: st.hideCuts }));
+    out.push(item("names", tlPaths.names, t("Names on the audio"), { on: st.names }));
     out.push(item("select-all", tlPaths.selAll, t("Select all pieces")), item("fit", tlPaths.fit, t("Fit the whole clip")));
     if (typeof opts.onCommand === "function") out.push("<hr>", item("shortcuts", tlPaths.keys, t("Shortcuts…")), item("fullscreen", tlPaths.full, t("Fullscreen")));
     return out.join("");
@@ -2060,6 +2095,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       case "solo": return doSolo();
       case "blank": return doBlank();
       case "hide-cuts": return setHideCuts(!st.hideCuts);
+      case "names": return setNames(!st.names);
       case "select-all": return selectAll();
       case "fit": fit(); return true;
       case "shortcuts": case "fullscreen": opts.onCommand?.(act); return true;
@@ -2139,6 +2175,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       case "zoom-in": zoom(1.25); break;
       case "fit": fit(); break;
       case "hide-cuts": setHideCuts(!st.hideCuts); break;
+      case "names": setNames(!st.names); break;
       case "add": opts.onAddAudio?.(); break;
       case "row-mute": {
         const row = emRow(m, id);

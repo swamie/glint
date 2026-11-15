@@ -63,6 +63,9 @@ function emNew(duration, tracks) {
     cuts: [],
     removed: [false],
     audio: shown.map((t) => ({ id: `t${t.index}`, kind: "track", index: t.index, title: t.title || `Track ${t.index + 1}`, path: t.path || "", volume: 1, muted: false, gains: [1] })),
+    // The clip's own tracks as the editor first showed them: a row of them can be deleted (emRemoveRow), and
+    // this tells which are gone (emTracksGone). Not part of the undo state: it never changes.
+    tracks0: shown.map((x) => ({ index: x.index, title: x.title || `Track ${x.index + 1}` })),
     colors: [emNoColor()],
     blank: [false],
     speed: 1,
@@ -571,6 +574,7 @@ function emStateSave(m, joins, undo) {
     parts: m.parts, marks: m.marks || [],
     overlays: m.overlays || [], fadeIn: m.fadeIn || 0, fadeOut: m.fadeOut || 0,
     canvas: m.canvas || null,
+    gone: emTracksGone(m).map((x) => x.title), // the clip's own tracks that were deleted, by title
   };
   if (undo) { s.undo = m.undo.slice(); s.redo = m.redo.slice(); }
   return JSON.parse(JSON.stringify(s));
@@ -638,6 +642,9 @@ function emStateLoad(m, s) {
     const old = find(row);
     return { ...row, volume: old ? Math.min(EM_MAX_GAIN, Math.max(0, old.volume)) : 1, muted: old ? !!old.muted : false, gains: old ? old.gains.slice() : Array(n).fill(1) };
   });
+  // Tracks deleted in the saved edit stay deleted (they are known by title, like the rows).
+  const gone = Array.isArray(s.gone) ? s.gone.filter((x) => typeof x === "string") : [];
+  for (let i = tracks.length - 1; i >= 0; i--) if (gone.includes(tracks[i].title)) tracks.splice(i, 1);
   const sameTracks = used.size === saved.length && tracks.length === saved.length;
   const files = s.audio.filter((r) => r.kind === "file").map((r) => ({ ...r, gains: r.gains.slice() }));
   m.duration = s.duration;
@@ -906,11 +913,14 @@ function emAddFile(m, info, at = 0) {
 
 /** Remove an added file row. The clip's own tracks cannot be removed (mute them instead). */
 function emRemoveRow(m, id) {
-  const at = m.audio.findIndex((r) => r.id === id && r.kind === "file");
+  // Any row: an added file, or one of the clip's own tracks (0.1.33). A deleted track is not in the export.
+  const at = m.audio.findIndex((r) => r.id === id);
   if (at < 0) return false;
   m.audio.splice(at, 1);
   return true;
 }
+/** The clip's own tracks whose row was deleted: [{ index, title }]. */
+const emTracksGone = (m) => (m.tracks0 || []).filter((x) => !m.audio.some((r) => r.kind === "track" && r.index === x.index));
 
 /**
  * Move or trim a file row. Any of { offset, trimStart, length } may be given;
@@ -931,7 +941,7 @@ function emPlaceFile(m, id, change) {
 /* ---------- export ---------- */
 
 /** True if no audio row differs from the clip as recorded (so the export can keep the original tracks). */
-const emAudioUntouched = (m) => m.audio.every((r) => r.kind === "track" && !r.muted && Math.abs(r.volume - 1) < 0.005 && r.gains.every((g, i) => m.removed[i] || Math.abs(g - 1) < 0.005));
+const emAudioUntouched = (m) => !emTracksGone(m).length && m.audio.every((r) => r.kind === "track" && !r.muted && Math.abs(r.volume - 1) < 0.005 && r.gains.every((g, i) => m.removed[i] || Math.abs(g - 1) < 0.005));
 /** True if the edit is nothing but one kept range (one in the source too): the export can cut it without re-encoding. */
 const emIsPlainCut = (m) => !emHasLayers(m) && !m.canvas && emKept(m).length === 1 &&(!m.parts || emSrcSpans(m, emKept(m)[0].start, emKept(m)[0].end).length === 1) && Math.abs(m.speed - 1) < 0.005 && emPieces(m).every((p) => !p.blank && emSameColor(p.color)) && emAudioUntouched(m);
 /** True if the result would differ from the source at all. */
@@ -1002,7 +1012,9 @@ function emToOpts(m) {
     end: 0,
     speed: m.speed,
     color: uniform && pieces.length ? { ...pieces[0].color } : emNoColor(),
-    tracks: [],
+    // Nothing is heard (every row muted or deleted): the older per-track list with one silent track says "no sound"
+    // (an empty `audio` alone would mean "keep the clip's tracks as recorded").
+    tracks: !audio.length && !emAudioUntouched(m) ? [{ index: 0, volume: 0 }] : [],
     segments,
     ...(ordered ? { ordered: true } : {}),
     audio,
@@ -1045,5 +1057,5 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = { EM_MIN_SEG, EM_MAX_GAIN, EM_EPS, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emTrimBounds, emSameSeg, emSetTrimStart, emSetTrimEnd, emSegCopy, emSegPaste, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emTrackRow, emGameHidden, emRowHint, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts,
     emSetParts, emParts, emPartAt, emToSrc, emFromSrc, emSrcSpans, emMovePart, emCutLocked, emLockedTimes, emPartSegs, emPartRemoved, emSetPartRemoved, emReordered, emState, emRestore,
     emAddParts, emNewParts, emStateSave, emStateOk, emStateLoad, EM_STATE_V,
-    emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS, emCanvasOk, emCanvasOpts };
+    emTracksGone, emRemoveRow, emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS, emCanvasOk, emCanvasOpts };
 }

@@ -53,3 +53,9 @@
 .ov-it { flex: 0 0 auto; font: 11px var(--mono); color: var(--muted); }
 .ov-fades { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .ov-num { width: 58px; padding: 3px 6px; }
+
+/* The playhead's line on an overlay item's time bar can be dragged to scrub (0.1.33): a wider grip around it. */
+.e-ov .ov-rnow { pointer-events: auto; cursor: ew-resize; }
+.e-ov .ov-rnow::after { content: ""; position: absolute; top: 0; bottom: 0; left: -5px; right: -5px; }
+.kf-bar { cursor: ew-resize; }
+.kf-dia { cursor: grab; }

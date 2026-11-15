@@ -134,10 +134,12 @@ pub fn window_size(cw: u32, ch: u32, cap: u32) -> (u32, u32, bool) {
 
 /// The capture of target `t` on its monitor `m`: its window when `window` (window capture is
 /// possible and has not failed for it), else the whole monitor (today's path). Either way
-/// without desktop sound, and with a buffer for the longest clip keybind (all clip keys take the game).
+/// without desktop sound unless the user asked for it in game mode too (`game_desktop_audio`:
+/// the game's picture with everything that is heard), and with a buffer for the longest clip
+/// keybind (all clip keys take the game).
 pub fn cfg_for(s: &Settings, t: &Target, m: &Monitor, window: bool) -> CaptureCfg {
     let mut c = core::capture_cfg_for(s, m, s.max_clip_secs());
-    c.desktop_audio = false;
+    c.desktop_audio = s.game_desktop_audio;
     if window && t.hwnd != 0 && t.width > 0 && t.height > 0 {
         let (w, h, scaled) = window_size(t.width, t.height, s.height);
         c.window = t.hwnd;
@@ -313,7 +315,7 @@ pub fn status_of(s: &Settings, running: bool, caps: &[CapStats]) -> (String, Str
 
 /// A setting that changes what is recorded in game mode (or the mode itself) changed.
 pub fn marks_changed(old: &Settings, new: &Settings) -> bool {
-    old.capture_mode != new.capture_mode || old.game_auto != new.game_auto || old.game_pick != new.game_pick || old.game_exes != new.game_exes || old.not_game_exes != new.not_game_exes
+    old.capture_mode != new.capture_mode || old.game_desktop_audio != new.game_desktop_audio || old.game_auto != new.game_auto || old.game_pick != new.game_pick || old.game_exes != new.game_exes || old.not_game_exes != new.not_game_exes
 }
 
 /// One choice of the switch's menu: the user's mark `action` on executable `exe` (`games::exe_key`).
@@ -629,6 +631,10 @@ fn test_targets(r: &mut Report) {
     let f = cfg_for(&s, &t, &mons[1], false);
     let desk = core::capture_cfg_for(&s, &mons[1], s.max_clip_secs());
     r.check("cfg: the fallback is the monitor as desktop mode records it, without desktop sound", f.window == 0 && f.width == desk.width && f.height == desk.height && !f.desktop_audio && CaptureCfg { desktop_audio: true, ..f.clone() } == desk, "");
+    // 0.1.33: the desktop's sound can be recorded in game mode too.
+    let both = Settings { game_desktop_audio: true, ..s.clone() };
+    r.check("cfg: game mode with desktop sound asked for records it, window and fallback alike", cfg_for(&both, &t, &mons[1], true).desktop_audio && cfg_for(&both, &t, &mons[1], false).desktop_audio && cfg_for(&both, &t, &mons[1], true).window == 0x2a0b4, "");
+    r.check("cfg: desktop sound in game mode is off unless asked for, and a mark that needs a new look", !Settings::default().game_desktop_audio && marks_changed(&s, &both), "");
     let capped = cfg_for(&Settings { height: 720, ..s.clone() }, &Target { width: 2560, height: 1440, ..t.clone() }, &mons[0], true);
     r.check("cfg: the height setting caps a window", (capped.width, capped.height) == (1280, 720) && capped.scaled, &format!("{}x{}", capped.width, capped.height));
     r.check("window_size: a height at or over the window's is no cap", window_size(1600, 900, 1080) == (1600, 900, false) && window_size(1600, 900, 900) == (1600, 900, false), "");

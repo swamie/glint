@@ -406,7 +406,7 @@ function edOpenKeys(host) {
   box.className = "e-keys";
   box.setAttribute("role", "dialog");
   box.setAttribute("aria-label", t("Keyboard shortcuts"));
-  let cap = null, renew = 0, msg = "", bad = false;
+  let cap = null, renew = 0, msg = "", bad = false, q = "";
 
   const keysHtml = (entry) => {
     const list = edKeysOf(entry);
@@ -425,15 +425,34 @@ function edOpenKeys(host) {
       </div>`;
     }
     const keepScroll = $(".e-keys-box", box)?.scrollTop || 0;
+    const hadFocus = document.activeElement?.matches?.("[data-e-keys-q]") && box.contains(document.activeElement);
     box.innerHTML = `<div class="e-keys-box">
         <div class="e-keys-head"><div class="e-title">${esc(t("Keyboard shortcuts"))}</div>
+          <label class="search e-keys-search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.500-3.500"/></svg><input type="text" data-e-keys-q value="${esc(q)}" placeholder="${esc(t("Search shortcuts"))}" aria-label="${esc(t("Search shortcuts"))}" spellcheck="false" autocomplete="off"></label>
           <button type="button" class="btn sm" data-e-keys-resetall ${Object.keys(user).length ? "" : "disabled"}>${esc(t("Reset all"))}</button>
           <button type="button" class="btn sm" data-e-keys-close>${esc(t("Close"))}</button></div>
-        <div class="small">${esc(t("These work while the editor is open."))} ${esc(t("Click a shortcut, then press the new keys. Esc cancels."))}</div>
+        <div class="small">${esc(t("These work while the editor is open."))} ${esc(t("Click a shortcut, then press the new keys. Esc cancels."))} ${esc(t("Right-click a shortcut to remove it."))}</div>
         <div class="small e-keys-msg${bad ? " e-bad" : ""}" role="status" ${msg ? "" : "hidden"}>${esc(msg)}</div>
         <div class="e-keys-list">${rows}</div>
+        <div class="small e-keys-none" hidden>${esc(t("No shortcut matches."))}</div>
       </div>`;
     $(".e-keys-box", box).scrollTop = keepScroll;
+    filter();
+    if (hadFocus) { const inp = $("[data-e-keys-q]", box); inp.focus(); inp.setSelectionRange(q.length, q.length); }
+  }
+  /** Show only the rows whose action or keys contain the search text; a group's title only with a row under it. */
+  function filter() {
+    const needle = q.trim().toLowerCase();
+    let shown = 0, head = null, any = false;
+    for (const el of $$(".e-keys-list > *", box)) {
+      if (el.classList.contains("e-kgroup")) { if (head) head.hidden = !any; head = el; any = false; continue; }
+      const hit = !needle || el.textContent.toLowerCase().includes(needle);
+      el.hidden = !hit;
+      if (hit) { any = true; shown++; }
+    }
+    if (head) head.hidden = !any;
+    const none = $(".e-keys-none", box);
+    if (none) none.hidden = shown > 0;
   }
   const say = (text, isBad = false) => { msg = text; bad = isBad; };
   const suspend = (on) => { try { invoke("suspend_hotkeys", { on }).catch((e) => console.warn("Glint: suspend_hotkeys failed", e)); } catch (e) { console.warn("Glint: suspend_hotkeys failed", e); } };
@@ -481,6 +500,26 @@ function edOpenKeys(host) {
     stopCapture();
     box.remove();
   }
+  box.addEventListener("input", (e) => {
+    if (!e.target.matches?.("[data-e-keys-q]")) return;
+    q = e.target.value;
+    filter();
+  });
+  // A right-click on a shortcut removes it ("No shortcut"); Reset brings the default back.
+  box.addEventListener("contextmenu", (e) => {
+    const bind = e.target.closest("[data-e-bind]");
+    if (!bind) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const cmd = bind.dataset.eBind, entry = ED_KEYS.find((k) => k.cmd === cmd);
+    if (!entry) return;
+    stopCapture();
+    if (edKeysOf(entry).length) {
+      edSaveKeys({ ...edUserKeys(), [cmd]: [] });
+      say(t('"{what}" has no shortcut now. Reset brings it back.', { what: t(entry.what) }));
+    }
+    render();
+  });
   box.addEventListener("click", async (e) => {
     if (e.target === box || e.target.closest("[data-e-keys-close]")) return close();
     const bind = e.target.closest("[data-e-bind]"), reset = e.target.closest("[data-e-reset]");
@@ -900,6 +939,15 @@ function mountPlayer(root, c) {
       });
       const wave = P.waves.get(id); // a row brought back by redo
       if (wave) tl((h) => h.setWaveform(id, wave));
+      else {
+        // A file row that came back with a saved project has no waveform: read the file's loudness again.
+        invoke("editor_audio_info", { path: row.path }).then((info) => {
+          if (dead || P.waves.has(id) || !P.model?.audio.some((r) => r.id === id)) return;
+          const w = { peaks: Array.isArray(info?.peaks) ? info.peaks : [], perSecond: +info?.per_second || 0 };
+          P.waves.set(id, w);
+          tl((h) => h.setWaveform(id, w));
+        }).catch((e) => { if (!dead) console.warn("Glint: no waveform for the added audio file", row.path, e); });
+      }
     }
   }
 
@@ -1284,10 +1332,10 @@ function mountPlayer(root, c) {
     const m = P.model;
     emSnapshot(m);
     const row = emAddFile(m, info, tlNow());
+    const wave = { peaks: Array.isArray(info.peaks) ? info.peaks : [], perSecond: +info.per_second || 0 };
+    P.waves.set(row.id, wave); // before syncRows, which would otherwise read the file again for it
     syncRows(); // creates its audio element
     tl((h) => h.refresh());
-    const wave = { peaks: Array.isArray(info.peaks) ? info.peaks : [], perSecond: +info.per_second || 0 };
-    P.waves.set(row.id, wave);
     tl((h) => h.setWaveform(row.id, wave));
     P.edSync("file");
     return row;

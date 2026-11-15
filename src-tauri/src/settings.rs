@@ -230,6 +230,9 @@ pub struct Settings {
     pub game_audio: bool,
     /// The mixer's faders in Settings → Audio, in dB (0 = as captured): applied
     /// as the sound is captured, so clips and meters hold the result.
+    /// In game mode, record the desktop's sound as well as the game's (the game's
+    /// picture with everything that is heard). Off: only the game and the microphone.
+    pub game_desktop_audio: bool,
     pub desktop_gain_db: f32,
     pub mic_gain_db: f32,
     pub game_gain_db: f32,
@@ -391,6 +394,7 @@ impl Default for Settings {
             sound_volume: 40,
             sound_file: String::new(),
             sound_start: 0.0,
+            game_desktop_audio: false,
             desktop_gain_db: 0.0,
             mic_gain_db: 0.0,
             game_gain_db: 0.0,

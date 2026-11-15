@@ -77,6 +77,16 @@ function kfPut(keys, tm, vals) {
   return list.slice(0, KF_MAX);
 }
 /** `keys` without the one at `tm`. */
+/** Move the keyframe at time `from` to `to` (a diamond dragged along its time bar): kept between its neighbours
+ *  and inside 0..D. Changes `keys`; returns the time the keyframe is at now (`from` if there is none there). */
+function kfRetime(keys, from, to, D) {
+  const i = (keys || []).findIndex((k) => Math.abs(k.t - from) < 1e-6);
+  if (i < 0) return from;
+  const gap = KF_NEAR * 2 + 0.001, lo = i > 0 ? keys[i - 1].t + gap : 0, hi = i < keys.length - 1 ? keys[i + 1].t - gap : D;
+  if (hi < lo) return from;
+  keys[i].t = kfR(kfClamp(to, lo, hi), 1000);
+  return keys[i].t;
+}
 const kfDrop = (keys, tm) => { const i = kfIndexAt(keys, tm); return i < 0 ? keys.slice() : keys.filter((_, k) => k !== i); };
 /** Every key `d` seconds later (a part moved). */
 const kfShift = (keys, d) => (keys || []).map((k) => ({ ...k, t: k.t + d }));
@@ -274,5 +284,5 @@ function kfControls(keys, tm, smooth) {
 
 // Lets the pure functions be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { KF_NEAR, KF_STEP, KF_UNIFORM, kfEase, kfHas, kfIndexAt, kfPrev, kfNext, kfValues, kfPut, kfDrop, kfShift, kfNormOv, kfNormPiece, kfOvT, kfOvMid, kfOvBake, kfOvAt, kfOvMoveT, kfOvResizeT, kfOvFrame, kfPieceKey, kfPieceBoxes, kfPieceAt, kfPieceSet, kfPieceRefit, kfOutTrack, kfOvTrack, kfPieceTrack };
+  module.exports = { kfRetime, KF_NEAR, KF_STEP, KF_UNIFORM, kfEase, kfHas, kfIndexAt, kfPrev, kfNext, kfValues, kfPut, kfDrop, kfShift, kfNormOv, kfNormPiece, kfOvT, kfOvMid, kfOvBake, kfOvAt, kfOvMoveT, kfOvResizeT, kfOvFrame, kfPieceKey, kfPieceBoxes, kfPieceAt, kfPieceSet, kfPieceRefit, kfOutTrack, kfOvTrack, kfPieceTrack };
 }
