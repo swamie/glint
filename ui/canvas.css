@@ -1,10 +1,14 @@
 /* The editor's canvas (canvas.js): the composed preview, the piece boxes, the side panel. */
 
 /* The preview lies where the picture is shown (its place is set by canvas.js); the video under it keeps playing, unseen. */
-.cv-view { position: absolute; z-index: 0; display: block; background: #000; pointer-events: none; }
-.cv-view[hidden], .cv-layer[hidden], .cv-tool[hidden], .cv-sep[hidden] { display: none; }
+.cv-view { position: absolute; z-index: 0; display: block; pointer-events: none; }
+/* Under the pieces: the background. A small canvas of the clip, blurred and darkened here (on the graphics card),
+   drawn a little larger than its box so the blur has picture at the edges; or the box's own plain color. */
+.cv-bgw { position: absolute; z-index: 0; overflow: hidden; background: #000; pointer-events: none; }
+.cv-bg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; transform: scale(1.12); }
+.cv-view[hidden], .cv-bgw[hidden], .cv-bg[hidden], .cv-layer[hidden], .cv-tool[hidden], .cv-sep[hidden] { display: none; }
 .player.cv-on video { opacity: 0; }
-.player.e-blank .cv-view { opacity: 0; }
+.player.e-blank .cv-view, .player.e-blank .cv-bgw { opacity: 0; }
 
 /* The piece boxes: over the picture and the overlays, only while arranging. */
 .cv-layer { position: absolute; z-index: 2; touch-action: none; cursor: default; }

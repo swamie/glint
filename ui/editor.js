@@ -1056,7 +1056,10 @@ function mountPlayer(root, c) {
     if (m) {
       const now = tlNow(), past = pastPart(m);
       const p = past ? afterPart(m, past) : emPlayable(m, now);
-      if (p === null) setTl(emPlayable(m, 0) ?? 0);
+      // At the end, play starts over. Playback stops one frame before the end (guard), so "at the end" is
+      // the last two frames of the last kept part, not only past it.
+      const kept = emKept(m), end = kept.length ? kept[kept.length - 1].end : 0;
+      if (p === null || (!past && now >= end - Math.max(frame * 2, 0.05))) setTl(emPlayable(m, 0) ?? 0);
       else if (past || p > now + 0.001) setTl(p);
     } else if (v.ended) v.currentTime = 0;
     v.play().catch((e) => console.warn("Glint: play() was refused", e));

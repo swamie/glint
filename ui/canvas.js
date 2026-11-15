@@ -223,10 +223,14 @@ function cvThumb(C, pieces) {
 function cvMount(root, c, P) {
   const box = root.querySelector(".player"), v = box?.querySelector("video"), pane = root.querySelector(".v-edit");
   if (!box || !v || !pane) return null;
-  v.insertAdjacentHTML("afterend", `<canvas class="cv-view" hidden></canvas>`);
+  // The blurred background is an element of its own under the pieces: a small canvas of the clip, blurred and
+  // darkened by CSS. (Blurring inside the pieces' canvas with ctx.filter, on a canvas too small for the browser
+  // to keep on the graphics card, copied every video frame back to memory: the preview stuttered badly.)
+  v.insertAdjacentHTML("afterend", `<div class="cv-bgw" hidden><canvas class="cv-bg"></canvas></div><canvas class="cv-view" hidden></canvas>`);
   box.querySelector(".p-audio").insertAdjacentHTML("beforebegin", `<div class="cv-layer" hidden></div>`);
   const view = box.querySelector(".cv-view"), layer = box.querySelector(".cv-layer");
-  const bg = document.createElement("canvas"); // the blurred background, a quarter of the size
+  const bgw = box.querySelector(".cv-bgw"), bg = bgw.querySelector(".cv-bg");
+  const hasFrames = typeof v.requestVideoFrameCallback === "function";
   const panel = document.createElement("section");
   panel.className = "e-sec e-cv";
   pane.insertBefore(panel, pane.querySelector(".e-ov") || pane.querySelector(".e-export"));
@@ -238,6 +242,7 @@ function cvMount(root, c, P) {
   const st = {
     editing: false, arrange: false, view: "result", draw: false, sel: null, custom: false,
     W: 0, H: 0, left: 0, top: 0, drag: null, band: null, lastPanel: "", lastLayer: "", lastT: -1, dirty: true, dead: false, wheel: null,
+    drawAt: 0, bgAt: 0, bgDirty: true, bgSig: "", // when the pieces and the background were last drawn; the background's look as set
   };
   const m = () => P.model;
   const cv = () => m()?.canvas || null;
@@ -280,34 +285,53 @@ function cvMount(root, c, P) {
       const dpr = window.devicePixelRatio || 1;
       const pw = Math.max(2, Math.min(C.width, Math.round(W * dpr))), ph = Math.max(2, Math.round((pw * C.height) / C.width));
       if (view.width !== pw || view.height !== ph) { view.width = pw; view.height = ph; }
+      // The background's canvas: small (it is blurred anyway), yet large enough to stay on the graphics card.
+      Object.assign(bgw.style, css);
+      const bw = Math.max(160, Math.ceil(Math.sqrt((24000 * C.width) / C.height))), bh = Math.max(2, Math.round((bw * C.height) / C.width));
+      if (bg.width !== bw || bg.height !== bh) { bg.width = bw; bg.height = bh; st.bgDirty = true; }
+      styleBg();
     }
     return true;
   }
+  /** The background's look: the clip blurred and darkened (with the clip's color preview), or a plain color. */
+  function styleBg() {
+    const C = cv();
+    if (!C) return;
+    const blur = C.background === "blur";
+    const color = !blur && /^#[0-9a-f]{6}$/i.test(C.background) ? C.background : "#000";
+    const look = v.style.filter && v.style.filter !== "none" ? `${v.style.filter} ` : ""; // the clip's color preview ("none" = neutral)
+    const css = blur ? `${look}blur(${(0.02 * st.H).toFixed(2)}px) brightness(0.7)` : "";
+    const sig = `${blur}|${color}|${css}`;
+    if (sig === st.bgSig) return;
+    st.bgSig = sig;
+    bg.hidden = !blur;
+    bgw.style.background = color;
+    bg.style.filter = css;
+    st.bgDirty = true;
+  }
 
-  /* ----- the preview: the background, then each piece, as the export lays them ----- */
+  /* ----- the preview: the background under it, then each piece, as the export lays them ----- */
   function draw() {
     if (st.dead || !on() || srcView()) return;
     const C = cv(), s = src(), W = view.width, H = view.height;
     const ctx = view.getContext("2d");
+    const tnow = performance.now();
     st.dirty = false;
     st.lastT = v.currentTime;
+    st.drawAt = tnow;
     const ready = v.readyState >= 2;
-    if (C.background === "blur" && ready) {
-      const bw = Math.max(2, Math.round(W / 4)), bh = Math.max(2, Math.round(H / 4));
-      if (bg.width !== bw || bg.height !== bh) { bg.width = bw; bg.height = bh; }
-      const b = bg.getContext("2d");
-      // The clip covering the canvas, a little past its edges so the blur has picture to work with there.
-      const k = Math.max(bw / s.w, bh / s.h) * 1.08, dw = s.w * k, dh = s.h * k;
-      b.filter = `blur(${(0.02 * bh).toFixed(2)}px) brightness(0.7)`;
-      b.drawImage(v, (bw - dw) / 2, (bh - dh) / 2, dw, dh);
-      b.filter = "none";
-      ctx.drawImage(bg, 0, 0, W, H);
-    } else {
-      ctx.fillStyle = /^#[0-9a-f]{6}$/i.test(C.background) ? C.background : "#000";
-      ctx.fillRect(0, 0, W, H);
+    // The background changes slowly and is blurred: 30 pictures a second are plenty.
+    if (C.background === "blur" && ready && (st.bgDirty || tnow - st.bgAt > 32)) {
+      const bw = bg.width, bh = bg.height, k = Math.max(bw / s.w, bh / s.h), dw = s.w * k, dh = s.h * k;
+      bg.getContext("2d").drawImage(v, (bw - dw) / 2, (bh - dh) / 2, dw, dh);
+      st.bgAt = tnow;
+      st.bgDirty = false;
     }
+    ctx.clearRect(0, 0, W, H);
     if (!ready) return;
-    ctx.imageSmoothingQuality = "high";
+    // A still picture gets the best scaling. While playing, plain bilinear: the better kinds build a set of
+    // smaller copies of the whole video frame for every piece, every frame.
+    ctx.imageSmoothingQuality = v.paused ? "high" : "low";
     const tm = P.time();
     for (const p0 of C.pieces) {
       const p = shown(p0, tm);
@@ -316,10 +340,11 @@ function cvMount(root, c, P) {
   }
   // Every frame the video shows (also the one after a seek while paused).
   const onFrame = () => { if (st.dead) return; draw(); v.requestVideoFrameCallback(onFrame); };
-  if (typeof v.requestVideoFrameCallback === "function") v.requestVideoFrameCallback(onFrame);
-  const onSeeked = () => { st.dirty = true; draw(); };
+  if (hasFrames) v.requestVideoFrameCallback(onFrame);
+  const onSeeked = () => { st.dirty = true; st.bgDirty = true; draw(); };
   v.addEventListener("seeked", onSeeked);
   v.addEventListener("loadeddata", onSeeked);
+  v.addEventListener("pause", onSeeked); // the still picture, drawn once more at full quality
 
   /* ----- the piece boxes over the picture (only while arranging) ----- */
   const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
@@ -341,8 +366,9 @@ function cvMount(root, c, P) {
   function refresh() {
     if (st.dead) return;
     const active = on();
-    view.hidden = !active || srcView();
+    view.hidden = bgw.hidden = !active || srcView();
     box.classList.toggle("cv-on", active && !srcView());
+    st.bgDirty = true;
     if (barBtn) { barBtn.hidden = barSep.hidden = !active; barBtn.classList.toggle("on", st.arrange); barBtn.setAttribute("aria-pressed", String(st.arrange)); }
     if (active) { place(); st.dirty = true; draw(); }
     renderLayer();
@@ -666,7 +692,11 @@ function cvMount(root, c, P) {
       if (st.dead || !on()) return;
       // The canvas takes the clip's color preview (a CSS filter on the video).
       if (view.style.filter !== v.style.filter) view.style.filter = v.style.filter;
-      if (st.dirty || v.currentTime !== st.lastT) draw();
+      styleBg();
+      // Each new video frame is drawn by the video's own frame callback (onFrame), once. This call comes at the
+      // screen's refresh rate (up to 280 times a second), so it draws only after a change of the edit, or when
+      // the frame callback has been silent for a moment (or does not exist).
+      if (st.dirty || (v.currentTime !== st.lastT && performance.now() - st.drawAt > (hasFrames ? 50 : 0))) draw();
       // Keyframes (keyframes.js): the piece boxes follow moving pieces, the time bar and its buttons the playhead.
       if (st.arrange && !st.drag && cv().pieces.some(kfHas)) renderLayer();
       const tm = P.time(), nowEl = panel.querySelector(".kf-bar .ov-rnow");
@@ -710,9 +740,11 @@ function cvMount(root, c, P) {
       ro?.disconnect();
       v.removeEventListener("seeked", onSeeked);
       v.removeEventListener("loadeddata", onSeeked);
+      v.removeEventListener("pause", onSeeked);
       bar?.removeEventListener("click", onBar);
       box.classList.remove("cv-on", "cv-arranging", "cv-src");
       view.remove();
+      bgw.remove();
       layer.remove();
       panel.remove();
       barBtn?.remove();

@@ -164,4 +164,6 @@ glintAddLanguage("ko", "한국어", {
   "In a window that was not maximized, the editor's player controls (play, the seek bar, volume, speed) did not react to clicks.": "창을 최대화하지 않았을 때 편집기의 플레이어 컨트롤(재생, 탐색 바, 볼륨, 속도)이 클릭에 반응하지 않던 문제를 고쳤어요.",
   "The hover sound no longer repeats while the pointer rests on a clip and the list is redrawn.": "포인터를 클립 위에 올려 둔 채 목록이 다시 그려질 때 호버 소리가 계속 반복되지 않아요.",
   "The GAME / DESKTOP switch is a box like the other top bar buttons, and narrower.": "GAME / DESKTOP 스위치가 상단 바의 다른 버튼처럼 네모난 모양이 되었고, 폭도 좁아졌어요.",
+  "The canvas preview (vertical formats) stuttered. It is now drawn once for each video frame instead of on every screen refresh, and the blurred background is done by the graphics card.": "캔버스(세로 형식) 미리보기가 심하게 끊기던 문제를 고쳤어요. 이제 화면이 새로 고쳐질 때마다가 아니라 영상 프레임마다 한 번만 그리고, 흐린 배경은 그래픽 카드가 처리해요.",
+  "In the editor, Play at the end of the clip starts again from the beginning.": "편집기에서 클립이 끝난 뒤 재생을 누르면 처음부터 다시 재생돼요.",
 });

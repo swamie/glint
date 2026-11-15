@@ -14,6 +14,13 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.30", date: "2026-11-15",
+    fixed: [
+      t("The canvas preview (vertical formats) stuttered. It is now drawn once for each video frame instead of on every screen refresh, and the blurred background is done by the graphics card."),
+      t("In the editor, Play at the end of the clip starts again from the beginning."),
+    ],
+  },
+  {
     version: "0.1.29", date: "2026-11-15",
     improved: [
       t("The GAME / DESKTOP switch is a box like the other top bar buttons, and narrower."),

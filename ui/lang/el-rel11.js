@@ -164,4 +164,6 @@ glintAddLanguage("el", "Ελληνικά", {
   "In a window that was not maximized, the editor's player controls (play, the seek bar, volume, speed) did not react to clicks.": "Σε παράθυρο που δεν ήταν μεγιστοποιημένο, τα χειριστήρια αναπαραγωγής του επεξεργαστή (αναπαραγωγή, γραμμή αναζήτησης, ένταση, ταχύτητα) δεν αντιδρούσαν στα κλικ.",
   "The hover sound no longer repeats while the pointer rests on a clip and the list is redrawn.": "Ο ήχος αιώρησης δεν επαναλαμβάνεται πλέον όταν ο δείκτης μένει πάνω σε ένα κλιπ και η λίστα σχεδιάζεται ξανά.",
   "The GAME / DESKTOP switch is a box like the other top bar buttons, and narrower.": "Ο διακόπτης GAME / DESKTOP είναι πλέον πλαίσιο όπως τα άλλα κουμπιά της επάνω γραμμής, και πιο στενός.",
+  "The canvas preview (vertical formats) stuttered. It is now drawn once for each video frame instead of on every screen refresh, and the blurred background is done by the graphics card.": "Η προεπισκόπηση του καμβά (κάθετες μορφές) κολλούσε. Τώρα σχεδιάζεται μία φορά για κάθε καρέ του βίντεο και όχι σε κάθε ανανέωση της οθόνης, και το θολωμένο φόντο το αναλαμβάνει η κάρτα γραφικών.",
+  "In the editor, Play at the end of the clip starts again from the beginning.": "Στον επεξεργαστή, η Αναπαραγωγή στο τέλος του κλιπ ξεκινά ξανά από την αρχή.",
 });
