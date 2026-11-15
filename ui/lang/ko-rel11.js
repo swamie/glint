@@ -216,4 +216,9 @@ glintAddLanguage("ko", "한국어", {
   "Names on the audio": "오디오 위의 이름",
   "Drag it back out to bring cut footage back.": "바깥으로 끌면 잘라 낸 영상을 되살릴 수 있어요.",
   "Delete this track from the result": "결과에서 이 트랙 삭제",
+  "Editor: an audio file you add (a song) plays on through every cut in the video. Cutting a part out no longer chops the song; the clip's own sound is still cut with the picture. A button on the file's row switches it back to being cut with the video.": "편집기: 추가한 오디오 파일(노래)은 영상을 잘라도 끊기지 않고 계속 재생돼요. 일부를 잘라 내도 노래는 잘리지 않고, 클립 자체의 소리는 영상과 함께 잘려요. 파일 줄의 버튼으로 다시 영상과 함께 잘리게 바꿀 수 있어요.",
+  "Plays through cuts. Click to cut it with the video": "잘라도 계속 재생돼요. 클릭하면 영상과 함께 잘려요",
+  "Cut with the video. Click to let it play through cuts": "영상과 함께 잘려요. 클릭하면 잘라도 계속 재생돼요",
+  "Plays on through every cut in the video": "영상을 잘라도 계속 재생돼요",
+  "Cut together with the video": "영상과 함께 잘려요",
 });

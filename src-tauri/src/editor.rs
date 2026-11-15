@@ -100,6 +100,10 @@ pub struct AudioEdit {
     /// The row's level, 0..=2.
     pub volume: f32,
     pub regions: Vec<GainRegion>,
+    /// File rows: the file plays on through every cut (0.1.34). `offset`, `length`
+    /// and `regions` are then on the RESULT's timeline (seconds of kept video,
+    /// before the speed change), and the row is mixed in after the cuts.
+    pub through: bool,
 }
 
 /// Loudness outline of one audio stream, for drawing a waveform.
@@ -791,6 +795,9 @@ struct MixRow {
     volume: f64,
     /// (start, end, gain) on the mix timeline (0 = the first kept range's start).
     regions: Vec<(f64, f64, f64)>,
+    /// A file that plays through cuts: `at` and `regions` are on the result's timeline
+    /// (kept seconds), and it is mixed in after the cuts.
+    through: bool,
 }
 
 enum AudioPlan {
@@ -851,7 +858,7 @@ fn check_audio_file(ffmpeg: &Path, path: &str) -> Result<AudioProbe, String> {
 /// Decide what the result's audio is, and check every file it uses.
 /// `base` is the lowest kept source time and `total` the span from it up to the highest.
 #[allow(clippy::too_many_arguments)]
-fn audio_plan(ffmpeg: &Path, src_path: &Path, opts: &ExportOpts, titles: &[Option<String>], duration: f64, base: f64, total: f64, ranges: usize, speed: f64) -> Result<AudioPlan, String> {
+fn audio_plan(ffmpeg: &Path, src_path: &Path, opts: &ExportOpts, titles: &[Option<String>], duration: f64, base: f64, total: f64, ranges: usize, speed: f64, kept: f64) -> Result<AudioPlan, String> {
     let n_audio = titles.len();
     let level = |v: f32, hi: f64| if v.is_finite() { (v as f64).clamp(0.0, hi) } else { 0.0 };
     let clip_channels = || probe_audio(ffmpeg, src_path).map(|p| p.channels).unwrap_or_default();
@@ -874,7 +881,7 @@ fn audio_plan(ffmpeg: &Path, src_path: &Path, opts: &ExportOpts, titles: &[Optio
             let i = t.index as usize;
             let v = level(t.volume, 4.0);
             if i < n_audio && v > 0.0005 && !rows.iter().any(|r| matches!(r.source, Source::Track(p, _) if p == i)) {
-                rows.push(MixRow { source: Source::Track(i, ch.get(i).copied().unwrap_or(2)), volume: v, regions: Vec::new() });
+                rows.push(MixRow { source: Source::Track(i, ch.get(i).copied().unwrap_or(2)), volume: v, regions: Vec::new(), through: false });
             }
         }
         let title = match rows.as_slice() {
@@ -913,6 +920,25 @@ fn audio_plan(ffmpeg: &Path, src_path: &Path, opts: &ExportOpts, titles: &[Optio
                 if fdur > 0.0 {
                     len = len.min(fdur - seek);
                 }
+                if e.through {
+                    // Plays on through every cut: placed on the result's own timeline (kept
+                    // seconds) and mixed in after the cuts; it stops where the result ends.
+                    let at = fin(e.offset).min(kept);
+                    len = len.min(kept - at);
+                    if len < 0.001 {
+                        continue;
+                    }
+                    let regions: Vec<(f64, f64, f64)> = e
+                        .regions
+                        .iter()
+                        .filter(|g| g.start.is_finite() && g.end.is_finite())
+                        .map(|g| (g.start.clamp(0.0, kept), g.end.clamp(0.0, kept), level(g.gain, 2.0)))
+                        .filter(|(a, b, _)| b - a > 1e-4)
+                        .collect();
+                    file_title = Path::new(&e.path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                    rows.push(MixRow { source: Source::File { path: e.path.clone(), seek, len, at, channels: info.channels[0] }, volume, regions, through: true });
+                    continue;
+                }
                 // Placed on the mix timeline; a row that starts before the first
                 // kept range loses the part that would come before it.
                 let mut at = fin(e.offset).min(duration) - base;
@@ -926,12 +952,12 @@ fn audio_plan(ffmpeg: &Path, src_path: &Path, opts: &ExportOpts, titles: &[Optio
                     continue;
                 }
                 file_title = Path::new(&e.path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                rows.push(MixRow { source: Source::File { path: e.path.clone(), seek, len, at, channels: info.channels[0] }, volume, regions });
+                rows.push(MixRow { source: Source::File { path: e.path.clone(), seek, len, at, channels: info.channels[0] }, volume, regions, through: false });
             }
             "track" => {
                 let i = e.index as usize;
                 if i < n_audio {
-                    rows.push(MixRow { source: Source::Track(i, ch.get(i).copied().unwrap_or(2)), volume, regions });
+                    rows.push(MixRow { source: Source::Track(i, ch.get(i).copied().unwrap_or(2)), volume, regions, through: false });
                 }
             }
             _ => {}
@@ -1586,7 +1612,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     let titles = audio_titles(&ffmpeg, &src_path)?;
     let mut tempo = atempo_chain(speed);
     // Every file the mix needs is checked here, before the long encode starts.
-    let mut plan = audio_plan(&ffmpeg, &src_path, opts, &titles, duration, base, total, k_count, speed)?;
+    let mut plan = audio_plan(&ffmpeg, &src_path, opts, &titles, duration, base, total, k_count, speed, kept)?;
     if let Some(l) = &layers {
         // The sound fades with the picture (after the speed change, so on the result's time).
         if l.fade_in > 0.0 {
@@ -1743,6 +1769,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             // Every row is brought to 48 kHz stereo and laid out on the timeline
             // that starts at `base`; the mix is then cut like the video.
             let mut labels = String::new();
+            let mut thru = String::new();
             for (j, row) in rows.iter().enumerate() {
                 let to_stereo = |ch: u32| {
                     // A mono source plays on both speakers at full level (as in the
@@ -1762,15 +1789,24 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
                     }
                 };
                 graph.push(chain);
-                labels += &format!("[r{j}]");
+                // A file that plays through cuts joins after them (below); the others are cut with the video.
+                if row.through { thru += &format!("[r{j}]") } else { labels += &format!("[r{j}]") }
             }
+            let n_thru = rows.iter().filter(|r| r.through).count();
             // A silent bed as long as the kept span: the mix always covers the
             // whole result, even where only a short file row is heard.
             graph.push(format!("anullsrc=r={MIX_RATE}:cl=stereo,atrim=end={total:.6},aformat=sample_fmts=fltp[bed]"));
             // normalize=0: each row plays at exactly the volume the user set, as
             // in the preview, instead of amix dividing by the input count.
-            graph.push(format!("{labels}[bed]amix=inputs={}:duration=longest:normalize=0,atrim=end={total:.6}[mix]", rows.len() + 1));
-            graph.push(cut_chain("[mix]", &local, "m", &tempo, "[a]"));
+            graph.push(format!("{labels}[bed]amix=inputs={}:duration=longest:normalize=0,atrim=end={total:.6}[mix]", rows.len() - n_thru + 1));
+            if n_thru == 0 {
+                graph.push(cut_chain("[mix]", &local, "m", &tempo, "[a]"));
+            } else {
+                // The cut mix first, then the files that play through the cuts on top of it, on the
+                // result's own timeline. `duration=first`: the result stays as long as the video.
+                graph.push(cut_chain("[mix]", &local, "m", "anull", "[mc]"));
+                graph.push(format!("[mc]{thru}amix=inputs={}:duration=first:normalize=0,{tempo}[a]", n_thru + 1));
+            }
             maps.extend(["-map", "[a]"].map(String::from));
             audio_args.extend(["-metadata:s:a:0".to_string(), format!("title={title}"), "-disposition:a:0".into(), "default".into()]);
             aac(&mut audio_args);
@@ -3024,6 +3060,33 @@ fn timeline_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, 
             );
         }
         Err(e) => r.check("file row is silent before its offset, then the trimmed file plays", false, &e),
+    }
+    // 0.1.34: a file that plays THROUGH cuts. Cut to 0..2 and 3..6 (5 s), the file from 1 s of the result
+    // for 3 s: heard without a break from 1 to 4 s, across the cut at 2 s.
+    let through_row = AudioEdit { through: true, offset: 1.0, ..file_row.clone() };
+    match ex(ExportOpts { segments: seg(&[(0.0, 2.0), (3.0, 6.0)]), audio: vec![track(2, 1.0, vec![]), through_row.clone()], ..Default::default() }) {
+        Ok((m, p, ms)) => {
+            let f = Path::new(&m.path);
+            let lv = |freq: u32, a: f64, b: f64| band_db_at(ffmpeg, f, 0, freq, a, b);
+            let (before, across, after, mic) = (lv(f_file, 0.2, 0.8), lv(f_file, 1.3, 3.7), lv(f_file, 4.3, 4.9), lv(f_mic, 0.3, 4.7));
+            let ok = p.audio_streams == 1
+                && near(p.duration, 5.0, 0.07)
+                && matches!((ref_file, before, across, after), (Some(r0), Some(b), Some(d), Some(a)) if b < r0 - 40.0 && near(d, r0, 1.5) && a < r0 - 40.0)
+                && matches!((ref_mic, mic), (Some(r0), Some(x)) if near(x, r0, 1.0));
+            r.check("a file that plays through cuts is not cut with the video", ok, &format!("{} file before {before:?} across the cut {across:?} after {after:?}, mic {mic:?}", desc(&p, ms)));
+        }
+        Err(e) => r.check("a file that plays through cuts is not cut with the video", false, &e),
+    }
+    // The same file alone (every clip track deleted), at twice the speed: it plays through, sped up with the rest.
+    match ex(ExportOpts { segments: seg(&[(0.0, 2.0), (3.0, 6.0)]), speed: 2.0, audio: vec![through_row.clone()], ..Default::default() }) {
+        Ok((m, p, ms)) => {
+            let f = Path::new(&m.path);
+            let heard = band_db_at(ffmpeg, f, 0, f_file, 0.7, 1.8); // the tempo changes, the pitch does not
+            let quiet = band_db_at(ffmpeg, f, 0, f_file, 2.15, 2.45);
+            let ok = p.audio_streams == 1 && near(p.duration, 2.5, 0.07) && matches!((ref_file, heard, quiet), (Some(r0), Some(h), Some(q)) if near(h, r0, 2.5) && q < r0 - 35.0);
+            r.check("a through file alone, at 2x: one track, sped up, as long as the video", ok, &format!("{} heard {heard:?} after it {quiet:?}", desc(&p, ms)));
+        }
+        Err(e) => r.check("a through file alone, at 2x: one track, sped up, as long as the video", false, &e),
     }
     // Microphone + file, cut to 0..2 and 3..6: the file is heard from 2 s of the result.
     match ex(ExportOpts { segments: seg(&[(0.0, 2.0), (3.0, 6.0)]), audio: vec![track(2, 1.0, vec![]), file_row.clone()], ..Default::default() }) {

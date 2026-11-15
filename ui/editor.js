@@ -972,7 +972,7 @@ function mountPlayer(root, c) {
       if (s.state !== "on" || !a) continue;
       const row = m && heard(s) ? m.audio.find((r) => r.id === s.id) : null;
       let want = null;
-      if (row) want = s.kind === "file" ? (emRowCovers(row, now) ? row.trimStart + (now - row.offset) : null) : src;
+      if (row) want = s.kind === "file" ? (emRowCovers(row, now, m) ? emRowFileAt(m, row, now) : null) : src; // a file that plays through cuts keeps its place in the file across a jump
       const end = Number.isFinite(a.duration) ? a.duration : Infinity;
       if (want === null || want >= end - 0.01) { if (!a.paused) a.pause(); continue; }
       if (a.playbackRate !== v.playbackRate) a.playbackRate = v.playbackRate;

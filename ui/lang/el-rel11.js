@@ -216,4 +216,9 @@ glintAddLanguage("el", "Ελληνικά", {
   "Names on the audio": "Ονόματα πάνω στον ήχο",
   "Drag it back out to bring cut footage back.": "Σύρετέ την ξανά προς τα έξω για να επαναφέρετε κομμένο υλικό.",
   "Delete this track from the result": "Διαγραφή αυτού του κομματιού από το αποτέλεσμα",
+  "Editor: an audio file you add (a song) plays on through every cut in the video. Cutting a part out no longer chops the song; the clip's own sound is still cut with the picture. A button on the file's row switches it back to being cut with the video.": "Επεξεργαστής: ένα αρχείο ήχου που προσθέτετε (ένα τραγούδι) παίζει συνεχόμενα μέσα από κάθε κοπή του βίντεο. Η αφαίρεση ενός μέρους δεν κόβει πλέον το τραγούδι· ο ήχος του ίδιου του κλιπ κόβεται ακόμη μαζί με την εικόνα. Ένα κουμπί στη γραμμή του αρχείου το επαναφέρει ώστε να κόβεται μαζί με το βίντεο.",
+  "Plays through cuts. Click to cut it with the video": "Παίζει μέσα από τις κοπές. Κάντε κλικ για να κόβεται μαζί με το βίντεο",
+  "Cut with the video. Click to let it play through cuts": "Κόβεται μαζί με το βίντεο. Κάντε κλικ για να παίζει μέσα από τις κοπές",
+  "Plays on through every cut in the video": "Παίζει συνεχόμενα μέσα από κάθε κοπή του βίντεο",
+  "Cut together with the video": "Κόβεται μαζί με το βίντεο",
 });

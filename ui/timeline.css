@@ -139,3 +139,6 @@
 .tl-grip span { width: 38px; height: 4px; border-radius: 2px; background: var(--line-2); transition: background .12s, width .12s; }
 .tl-grip:hover span, .tl.tl-dragging[data-tl-drag="rows"] .tl-grip span { width: 54px; background: var(--accent); }
 .tl.tl-dragging[data-tl-drag="rows"], .tl.tl-dragging[data-tl-drag="rows"] * { cursor: ns-resize !important; }
+
+/* A file row's "plays through cuts" switch in its head (timeline.js). */
+.tl-hthru.on { color: var(--accent); }

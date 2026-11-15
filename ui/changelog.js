@@ -14,6 +14,12 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.34", date: "2026-11-15",
+    new: [
+      t("Editor: an audio file you add (a song) plays on through every cut in the video. Cutting a part out no longer chops the song; the clip's own sound is still cut with the picture. A button on the file's row switches it back to being cut with the video."),
+    ],
+  },
+  {
     version: "0.1.33", date: "2026-11-15",
     new: [
       t("GAME mode can record the desktop's sound too: the game's window with everything you hear. Turn Desktop audio on in Settings → Audio while GAME is chosen. Off, GAME records only the game's own sound and your microphone, as before."),

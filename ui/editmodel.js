@@ -822,8 +822,25 @@ function emPrevMark(m, sec) {
 
 const emRow = (m, id) => m.audio.find((r) => r.id === id) || null;
 
-/** True if file row `row` has sound at source time `t`. Track rows always do. */
-const emRowCovers = (row, t) => row.kind !== "file" || (t >= row.offset - EM_EPS && t < row.offset + row.length);
+/* An added file "plays through" cuts (row.through, 0.1.34; every file added since): it starts at timeline time
+ * `offset` and then plays `length` seconds of the RESULT without a break, whatever is cut out of the video under
+ * it. On the timeline it therefore pauses under a cut-out part and ends later (emRowEnd). A row without the flag
+ * (older projects, or switched by hand) is laid on the timeline and cut with the video, as before. */
+/** Where a row's block ends on the timeline. */
+const emRowEnd = (m, row) => (row.kind !== "file" ? m.duration : row.through ? emOutToSrc(m, emSrcToOut(m, row.offset) + row.length) : row.offset + row.length);
+/** The time inside the file that file row `row` plays at timeline time `t`. */
+const emRowFileAt = (m, row, t) => row.trimStart + (row.through ? emSrcToOut(m, t) - emSrcToOut(m, row.offset) : t - row.offset);
+/** True if file row `row` has sound at source time `t`. Track rows always do. (`m` is needed for a row that plays through cuts.) */
+const emRowCovers = (row, t, m) => row.kind !== "file" || (t >= row.offset - EM_EPS && (row.through && m ? emRowFileAt(m, row, t) - row.trimStart < row.length - EM_EPS : t < row.offset + row.length));
+/** Switch a file row between playing through cuts and being cut with the video; its block keeps its place on the timeline. */
+function emSetThrough(m, id, on) {
+  const row = emRow(m, id);
+  if (!row || row.kind !== "file" || !!row.through === !!on) return false;
+  const end = emRowEnd(m, row);
+  row.through = !!on;
+  row.length = Math.max(EM_MIN_SEG, on ? emSrcToOut(m, end) - emSrcToOut(m, row.offset) : end - row.offset);
+  return true;
+}
 
 /* The "Game" track (only the game's own sound) is already part of "Desktop"
  * (everything the PC played). Played or mixed together, the game would be
@@ -844,6 +861,7 @@ function emGameHidden(m, row, i) {
 
 /** What the timeline says about a row, in English (translate with t()): "" for most rows. */
 function emRowHint(m, row) {
+  if (row && row.kind === "file") return row.through ? "Plays on through every cut in the video" : "Cut together with the video";
   if (!row || row.kind !== "track") return "";
   if (row.title === "Game" && emTrackRow(m, "Desktop")) return "Only the game's sound. Desktop already includes it, so Game is heard only where Desktop is muted";
   if (row.title === "Desktop" && emTrackRow(m, "Game")) return "Everything the PC played, the game included. Mute it and keep Game on to drop voice chat and music";
@@ -852,7 +870,7 @@ function emRowHint(m, row) {
 
 /** How loud `row` is at source time `t`: 0 = silent, 1 = as recorded. */
 function emGainAt(m, row, t) {
-  if (row.muted || !emRowCovers(row, t)) return 0;
+  if (row.muted || !emRowCovers(row, t, m)) return 0;
   const i = emSegmentAt(m, t);
   if (emGameHidden(m, row, i)) return 0;
   return row.volume * row.gains[i];
@@ -904,7 +922,9 @@ function emAddFile(m, info, at = 0) {
     gains: m.removed.map(() => 1),
     offset,
     trimStart: 0,
-    length: Math.max(EM_MIN_SEG, Math.min(info.duration, m.duration - offset)),
+    // It plays through cuts (see emRowEnd): as long as the result has room for from where it starts.
+    through: true,
+    length: Math.max(EM_MIN_SEG, Math.min(info.duration, emKeptDuration(m) - emSrcToOut(m, offset))),
     fileDuration: info.duration,
   };
   m.audio.push(row);
@@ -933,7 +953,8 @@ function emPlaceFile(m, id, change) {
   trimStart = Math.min(Math.max(0, trimStart), Math.max(0, row.fileDuration - EM_MIN_SEG));
   length = Math.min(Math.max(EM_MIN_SEG, length), row.fileDuration - trimStart);
   offset = Math.min(Math.max(0, offset), Math.max(0, m.duration - EM_MIN_SEG));
-  length = Math.max(EM_MIN_SEG, Math.min(length, m.duration - offset));
+  // Inside the clip: a row that plays through cuts counts the result's seconds, another the timeline's.
+  length = Math.max(EM_MIN_SEG, Math.min(length, row.through ? emKeptDuration(m) - emSrcToOut(m, offset) : m.duration - offset));
   Object.assign(row, { offset, trimStart, length });
   return true;
 }
@@ -989,6 +1010,13 @@ function emToOpts(m) {
       volume: emRound(r.volume),
       regions: regionsOf(r),
     };
+    if (r.kind === "file" && r.through) {
+      // Plays on through every cut: placed on the result's own timeline (kept seconds, before the speed), and its
+      // levels likewise. The backend mixes it in after the cuts (`through`).
+      const k0 = emSrcToOut(m, r.offset);
+      return [{ ...e, through: true, offset: emRound(k0), length: emRound(Math.max(0, Math.min(r.length, emKeptDuration(m) - k0))),
+        regions: segs.filter((s) => !s.removed && Math.abs(gainOf(r, s.i) - 1) >= 0.005).map((s) => ({ start: emRound(emSrcToOut(m, s.start)), end: emRound(emSrcToOut(m, s.end)), gain: emRound(gainOf(r, s.i)) })) }];
+    }
     if (r.kind !== "file" || !m.parts) return [e];
     const spans = emSrcSpans(m, r.offset, r.offset + r.length);
     if (spans.length <= 1) return [{ ...e, offset: emRound(spans[0] ? spans[0].src : emToSrc(m, r.offset)) }];
@@ -1057,5 +1085,5 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = { EM_MIN_SEG, EM_MAX_GAIN, EM_EPS, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emTrimBounds, emSameSeg, emSetTrimStart, emSetTrimEnd, emSegCopy, emSegPaste, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emTrackRow, emGameHidden, emRowHint, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts,
     emSetParts, emParts, emPartAt, emToSrc, emFromSrc, emSrcSpans, emMovePart, emCutLocked, emLockedTimes, emPartSegs, emPartRemoved, emSetPartRemoved, emReordered, emState, emRestore,
     emAddParts, emNewParts, emStateSave, emStateOk, emStateLoad, EM_STATE_V,
-    emTracksGone, emRemoveRow, emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS, emCanvasOk, emCanvasOpts };
+    emRowEnd, emRowFileAt, emSetThrough, emTracksGone, emRemoveRow, emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS, emCanvasOk, emCanvasOpts };
 }

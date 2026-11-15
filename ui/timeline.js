@@ -78,6 +78,7 @@ const tlPaths = {
   join: "M12 4v5M12 15v5M4 12h16M7 9l-3 3 3 3M17 9l3 3-3 3",
   hideCuts: "M3 12h5M16 12h5M5 9l3 3-3 3M19 9l-3 3 3 3M12 5v14",
   names: "M4 6h9l7 6-7 6H4zM8.5 12h.01",
+  through: "M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4",
   selAll: "M4 4h16v16H4zM8 12l3 3 5-6",
   keys: "M3 6h18v12H3zM7 10h1M11 10h1M15 10h1M7 14h10",
   full: "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5",
@@ -542,6 +543,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       <div class="tl-hline">
         <button type="button" class="tl-btn tl-hmute" data-tl-act="row-mute" data-tl-row="${esc(r.id)}"></button>
         <span class="tl-hname"></span>
+        ${file ? `<button type="button" class="tl-btn tl-hthru" data-tl-act="row-through" data-tl-row="${esc(r.id)}"></button>` : ""}
         <button type="button" class="tl-btn tl-hx" data-tl-act="row-remove" data-tl-row="${esc(r.id)}" title="${esc(file ? t("Remove this audio file") : t("Delete this track from the result"))}" aria-label="${esc(file ? t("Remove this audio file") : t("Delete this track from the result"))}">${ICON.trash}</button>
       </div>
       <div class="tl-hline"><input type="range" class="tl-range" min="0" max="200" step="1" data-tl-vol="${esc(r.id)}" aria-label="${esc(t("Track volume"))}"><output class="tl-pct"></output></div>
@@ -644,6 +646,19 @@ function mountTimeline(host, opts) {  const m = opts.model;
       const hint = typeof emRowHint === "function" ? emRowHint(m, r) : "";
       const tip = hint ? `${shown}\n${t(hint)}` : shown;
       if (name.title !== tip) name.title = tip;
+      const tb = h.querySelector(".tl-hthru");
+      if (tb) {
+        const key2 = r.through ? "1" : "0";
+        if (tb.dataset.tlState !== key2) {
+          tb.dataset.tlState = key2;
+          tb.innerHTML = tlSvg(tlPaths.through);
+          tb.classList.toggle("on", !!r.through);
+          tb.setAttribute("aria-pressed", String(!!r.through));
+          const tip2 = r.through ? t("Plays through cuts. Click to cut it with the video") : t("Cut with the video. Click to let it play through cuts");
+          tb.title = tip2;
+          tb.setAttribute("aria-label", tip2);
+        }
+      }
       const mb = h.querySelector(".tl-hmute");
       const key = r.muted ? "m" : "v";
       if (mb.dataset.tlState !== key) {
@@ -715,7 +730,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (!row) return false;
     if (row.kind !== "file") return true;
     const s = emSegments(m)[seg];
-    return Math.min(s.end, row.offset + row.length) - Math.max(s.start, row.offset) > 1e-6;
+    return Math.min(s.end, emRowEnd(m, row)) - Math.max(s.start, row.offset) > 1e-6;
   }
   const allPieces = () => rowOrder().flatMap((id) => m.removed.map((_, i) => ({ row: id, seg: i })).filter((s) => pieceExists(s.row, s.seg)));
   /** Selected audio pieces with their rows: [{ row, seg, r }]. */
@@ -1365,7 +1380,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     const row = emRow(m, L.id);
     if (!row) return;
     const file = row.kind === "file";
-    const a = file ? row.offset : 0, b = file ? row.offset + row.length : dur();
+    const a = file ? row.offset : 0, b = file ? emRowEnd(m, row) : dur();
     const sp = span(a, b);
     if (!sp) return;
     const [bx0, bx1] = sp, y = 4, bh = h - 8, mid = y + bh / 2, half = bh / 2 - 4;
@@ -1408,7 +1423,9 @@ function mountTimeline(host, opts) {  const m = opts.model;
         const g = row.muted || (typeof emGameHidden === "function" && emGameHidden(m, row, si)) ? 0 : (row.gains[si] ?? 1) * row.volume;
         // A file's peaks follow the timeline; a track's follow the source (with parts: the part under the bar).
         const base = file ? row.trimStart - row.offset : 0, mapped = !file && hasParts();
-        const w0 = mapped ? srcAt(s0) : s0, w1 = mapped ? w0 + (s1 - s0) : s1;
+        // A file that plays through cuts: the place in the file under the bar (it pauses under a cut-out part).
+        const thru = file && row.through;
+        const w0 = thru ? emRowFileAt(m, row, s0) - base : mapped ? srcAt(s0) : s0, w1 = thru ? emRowFileAt(m, row, s1) - base : mapped ? w0 + (s1 - s0) : s1;
         const p = tlPeakMax(wave.peaks, (w0 + base) * wave.ps, (w1 + base) * wave.ps);
         const hh = Math.max(1, Math.min(1, p * g * tlWaveGain) * half);
         (g > 0 ? loud : quiet).roundRect(x + 0.5, mid - hh, tlBarW, hh * 2, 1);
@@ -1653,7 +1670,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
   function snapCands(skip) {
     const c = [0, dur(), ...m.cuts.filter((_, i) => !(skip.cut === i)), ...shownMarks()];
     if (!skip.playhead) c.push(st.shownT);
-    for (const r of m.audio) if (r.kind === "file" && r.id !== skip.row) c.push(r.offset, r.offset + r.length);
+    for (const r of m.audio) if (r.kind === "file" && r.id !== skip.row) c.push(r.offset, emRowEnd(m, r));
     return c;
   }
   const snapTol = () => tlSnapPx / st.pps;
@@ -1665,7 +1682,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     el.tip.style.transform = `translateX(${Math.min(st.laneW - 30, Math.max(30, X(sec)))}px) translateX(-50%)`;
   }
   /** Which part of file row `row`'s clip is under lane x `x` (see tlSpanHit), measured on screen. */
-  const fileHit = (row, x) => tlSpanHit(toV(row.offset), toV(row.offset + row.length), vAtX(x), st.pps);
+  const fileHit = (row, x) => tlSpanHit(toV(row.offset), toV(emRowEnd(m, row)), vAtX(x), st.pps);
   /** The lane under client y, or null. */
   const laneAt = (clientY) => st.lanes.find((L) => { const r = L.el.getBoundingClientRect(); return clientY >= r.top && clientY < r.bottom; }) || null;
   /** The piece under lane x `x` on lane `id`: { row, seg }, or null (outside the clip, on a file row off its clip). */
@@ -1686,7 +1703,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     const row = id === "video" ? null : emRow(m, id);
     if (id !== "video" && !row) return [];
     const file = row?.kind === "file";
-    const a = file ? row.offset : 0, b = file ? row.offset + row.length : dur();
+    const a = file ? row.offset : 0, b = file ? emRowEnd(m, row) : dur();
     const cx = (sec) => tlPad + toV(sec) * st.pps;
     return emSegments(m).filter((s) => segShown(s.i)).map((s) => ({ seg: s.i, x0: cx(Math.max(a, s.start)), x1: cx(Math.min(b, s.end)) })).filter((p) => p.x1 > p.x0);
   }
@@ -1807,7 +1824,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (!d.snapped) { emSnapshot(m); d.snapped = true; }
     const r0 = d.row0;
     if (d.type === "move") {
-      const len = row.length, hi = Math.max(0, dur() - len);
+      const len = emRowEnd(m, row) - row.offset, hi = Math.max(0, row.through ? dur() - EM_MIN_SEG : dur() - len); // a file that plays through cuts may start anywhere: its end follows
       let o = Math.min(hi, Math.max(0, r0.offset + raw - d.grab));
       if (!free) {
         const c = snapCands({ row: d.rowId });
@@ -1818,11 +1835,18 @@ function mountTimeline(host, opts) {  const m = opts.model;
       emPlaceFile(m, d.rowId, { offset: o });
       showTip(row.offset);
     } else if (d.type === "left") {
-      emPlaceFile(m, d.rowId, tlTrimLeft(r0, snap(raw, { row: d.rowId }), EM_MIN_SEG));
+      const at = snap(raw, { row: d.rowId });
+      if (row.through) {
+        // Plays through cuts: the edge moves by seconds of the result (what is cut out under it does not count).
+        const k0 = emSrcToOut(m, r0.offset), want = emSrcToOut(m, at) - k0;
+        const dk = Math.min(r0.length - EM_MIN_SEG, Math.max(want, -r0.trimStart, -k0));
+        emPlaceFile(m, d.rowId, { offset: Math.abs(dk - want) < 1e-9 ? at : emOutToSrc(m, k0 + dk), trimStart: r0.trimStart + dk, length: r0.length - dk });
+      } else emPlaceFile(m, d.rowId, tlTrimLeft(r0, at, EM_MIN_SEG));
       showTip(row.offset);
     } else if (d.type === "right") {
-      emPlaceFile(m, d.rowId, { length: snap(raw, { row: d.rowId }) - r0.offset });
-      showTip(row.offset + row.length);
+      const at = snap(raw, { row: d.rowId });
+      emPlaceFile(m, d.rowId, { length: row.through ? emSrcToOut(m, at) - emSrcToOut(m, r0.offset) : at - r0.offset });
+      showTip(emRowEnd(m, row));
     }
     changed("file", false);
   }
@@ -2183,6 +2207,15 @@ function mountTimeline(host, opts) {  const m = opts.model;
         emSnapshot(m);
         row.muted = !row.muted; // the model has no setter for this; see the report
         changed("mute");
+        break;
+      }
+      case "row-through": {
+        // An added file: play on through every cut, or be cut with the video (emSetThrough).
+        const row = emRow(m, id);
+        if (!row) return;
+        emSnapshot(m);
+        if (!emSetThrough(m, id, !row.through)) { m.undo.pop(); return; }
+        changed("file");
         break;
       }
       case "row-remove":
