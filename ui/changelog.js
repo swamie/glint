@@ -14,6 +14,18 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.37", date: "2026-11-16",
+    new: [
+      t("Cutting really removes footage from the timeline. No greyed stretch stays behind: what is left are pieces, each its own block. A split makes two pieces, and dragging a piece moves only that piece."),
+      t("Both ends of a piece are handles. Drag an end inward to trim it; drag it back out to bring back what was cut, as far as the clip has footage. At the limit the handle stops and says “No more footage”. Nothing is changed in the clip's file."),
+      t("Drag a piece up onto a row above the video to lay it over the whole picture, with its sound as its own track."),
+    ],
+    improved: [
+      t("Clips laid on the picture play in step with the video at every speed, across gaps and after the end."),
+      t("Projects made before this version open with their cut-out parts as pieces and export exactly as before. “Hide cut parts” is gone: there is nothing left to hide."),
+    ],
+  },
+  {
     version: "0.1.36", date: "2026-11-16",
     new: [
       t("The editor's main video row is free-form. Drag a clip to any time: dropped on empty space it sits exactly there and leaves a gap behind, dropped onto another clip it goes before or after it. A single clip can be moved later the same way."),

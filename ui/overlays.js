@@ -496,8 +496,11 @@ function ovMount(root, c, P) {
     // Pictures load once; GIFs and clips change with the playhead, like items with keyframes (media.js).
     const media = shown.filter(isMedia);
     for (const o of media) if (o.kind !== "video" && typeof medLoad === "function") medLoad(o, () => { if (!st.dead) { st.dirty = true; redraw(); } });
-    videos?.sync(media.filter((o) => o.kind === "video"), tm, playing());
-    st.moving = shown.some(kfHas) || media.some((o) => o.kind !== "image");
+    // At the main picture's rate (the edit's speed times the player's own; editor.js applyRate), so a clip item keeps pace.
+    const soon = mm ? list().filter((o) => o.kind === "video" && o.from > tm && o.from - tm < 1.5) : [];
+    videos?.sync(media.filter((o) => o.kind === "video"), tm, playing(), v.playbackRate || 1, soon);
+    // Redrawn at every new playhead time: keyframes, GIFs and clips move; a clip about to start is made ready.
+    st.moving = shown.some(kfHas) || media.some((o) => o.kind !== "image") || soon.length > 0;
     st.lastT = tm;
     const ctx = art.getContext("2d");
     ctx.setTransform(st.dpr, 0, 0, st.dpr, 0, 0);

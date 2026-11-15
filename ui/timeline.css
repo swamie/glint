@@ -160,6 +160,12 @@
 }
 .tl.tl-dragging[data-tl-drag="gap-edge"], .tl.tl-dragging[data-tl-drag="gap-edge"] * { cursor: col-resize !important; }
 
+/* 0.1.37: pieces have their own end handles; the brackets of the kept span and "Hide cut parts" are gone. */
+.tl .tl-trim[hidden], .tl .tl-btn[hidden] { display: none; }
+.tl-lanes[data-tl-cur="limit"] { cursor: not-allowed; }
+.tl.tl-dragging[data-tl-drag="piece-end"], .tl.tl-dragging[data-tl-drag="piece-end"] * { cursor: col-resize !important; }
+.tl.tl-dragging.tl-limit[data-tl-drag="piece-end"], .tl.tl-dragging.tl-limit[data-tl-drag="piece-end"] * { cursor: not-allowed !important; }
+
 /* After the video the player is black (editor.js adds e-blank and e-after): not "Video hidden in this segment". */
 .player.e-after .e-blank-tag { display: none; }
 .tl-lane[data-tl-kind="ov"] { background: color-mix(in srgb, var(--bg) 35%, transparent); }

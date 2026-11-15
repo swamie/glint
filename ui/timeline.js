@@ -422,7 +422,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     tcText: "",            // the timecode shown in the toolbar
     tool: "select",        // "select" or "blade" (0.1.36): with the blade a click splits there
   };
-  try { st.hideCuts = localStorage.getItem("glint.tl.hideCuts") === "1"; } catch {}
+  st.hideCuts = false; // 0.1.37: a cut really removes, so "Hide cut parts" has nothing to hide (its button is gone)
   st.names = true; // the name written on each audio row's block (a song's title); remembered like "Hide cut parts"
   try { st.names = localStorage.getItem("glint.tl.names") !== "0"; } catch {}
   try { st.rowK = tlRowKParse(localStorage.getItem(tlRowKKey)); } catch {}
@@ -449,7 +449,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       ${btn("zoom-out", tlPaths.zoomOut, t("Zoom out (-)"))}
       ${btn("zoom-in", tlPaths.zoomIn, t("Zoom in (+)"))}
       ${btn("fit", tlPaths.fit, t("Fit the whole clip (Shift+F)"))}
-      ${btn("hide-cuts", tlPaths.hideCuts, t("Hide cut parts (H)"), ' aria-pressed="false"')}
+      ${btn("hide-cuts", tlPaths.hideCuts, t("Hide cut parts (H)"), ' aria-pressed="false" hidden')}
       ${btn("names", tlPaths.names, t("Names on the audio"), ' aria-pressed="true"')}
       <span class="tl-sep"></span>
       <button type="button" class="btn sm tl-add" data-tl-act="add" title="${esc(t("Add an audio file as a new track"))}">${ICON.plus}<span>${esc(t("Add audio"))}</span></button>
@@ -545,7 +545,8 @@ function mountTimeline(host, opts) {  const m = opts.model;
   /** True for a clip made of parts ("Edit together"): the clip blocks strip is shown. */
   const hasParts = () => Array.isArray(m.parts) && m.parts.length > 0; // timeline != source (parts, or gaps: 0.1.36)
   /** The strip of clip blocks is shown for two clips or more (a single clip with gaps has none). */
-  const showStrip = () => Array.isArray(m.parts) && m.parts.filter((p) => !p.gap).length > 1;
+  // 0.1.37: the pieces themselves lie on the video row and move there: the strip of clip blocks above it is not shown.
+  const showStrip = () => false;
   /** Display index of the gap at timeline second `sec`, or -1; and whether segment `i` is a gap (0.1.36). */
   const gapAt = (sec) => (m.parts ? emGapAt(m, sec) : -1);
   const segGap = (i) => !!m.parts && emSegIsGap(m, i);
@@ -971,15 +972,13 @@ function mountTimeline(host, opts) {  const m = opts.model;
   }
   /** Cut out the selected segments, or restore them (see removePlan). */
   function doRemove() {
+    // 0.1.37: the selected pieces really leave the row and what follows moves left (emRemovePiece).
     const plan = removePlan();
-    if (!plan.ok) return false;
-    emSnapshot(m);
-    for (const i of plan.segs) {
-      if (!!m.removed[i] === !plan.restore) continue;
-      if (!emSetRemoved(m, i, !plan.restore)) throw new Error(`timeline: emSetRemoved(${i}, ${!plan.restore}) refused`);
-    }
-    changed(plan.restore ? "restore" : "remove");
-    return true;
+    if (!plan.ok || plan.restore) return false;
+    const segAll = emSegments(m), times = plan.segs.map((i) => (segAll[i].start + segAll[i].end) / 2).sort((a, b) => b - a);
+    const ok = layout(() => { let any = false; for (const at of times) any = emRemovePiece(m, emPieceAt(m, at), false) || any; return any; });
+    if (ok) relaid("remove");
+    return ok;
   }
   /* ----- gaps and free placement on the main video row (0.1.36) ----- */
   /** The row was laid out anew (gaps, clips moved): the old segment indexes mean nothing now, the selection goes
@@ -1035,6 +1034,40 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (g.mode === "free") at = g.from + Math.min(c.len / 2, 0.05);
     else { const q = P.find((p) => !p.gap && Math.abs(p.len - c.len) < 1e-6 && (g.after ? p.at >= g.from - 1e-6 : true)); at = q ? q.at + Math.min(q.len / 2, 0.05) : null; }
     relaid("order", at === null ? [] : [at]);
+    return true;
+  }
+  /** The piece end under lane x `x` (0.1.37): { i, side: "start" | "end" }, or null. Inside a piece its own ends;
+   *  in a gap (not at its right edge, which resizes the gap) or after the end, a piece end right beside it. */
+  function pieceEndHit(x) {
+    const sec = timeAtX(x), L = emPieceList(m);
+    const inside = L.find((p) => !p.gap && sec >= p.at && sec < p.at + p.len);
+    if (inside) {
+      const edge = Math.min(tlEdgePx, (inside.len * st.pps) / 3);
+      if (x - X(inside.at) <= edge) return { i: inside.i, side: "start" };
+      if (X(inside.at + inside.len) - x <= edge) return { i: inside.i, side: "end" };
+      return null;
+    }
+    if (gapHitRight(x) >= 0) return null;
+    for (const p of L) {
+      if (p.gap) continue;
+      if (Math.abs(X(p.at + p.len) - x) <= tlEdgePx) return { i: p.i, side: "end" };
+      if (Math.abs(X(p.at) - x) <= tlEdgePx) return { i: p.i, side: "start" };
+    }
+    return null;
+  }
+  /** Put piece `i` on the picture at timeline second `at` (0.1.37): the media code makes a clip item covering the
+   *  picture and its sound row (opts.pieceUp, inside this undo step), and the piece leaves the row with a gap. */
+  function doPieceUp(i, at) {
+    const info = emPieceToItem(m, i);
+    if (!info || typeof opts.pieceUp !== "function") return false;
+    const n0 = m.undo.length;
+    emSnapshot(m);
+    let id = null;
+    try { id = opts.pieceUp({ ...info, at: Math.max(0, at) }, m); } catch (e) { console.error("Glint timeline: pieceUp failed", e); }
+    if (!id) { if (m.undo.length > n0) emRestore(m, m.undo.pop()); return false; }
+    emRemovePiece(m, i, true); // the last piece with footage stays (then the item is a copy of it)
+    ovChanged();
+    relaid("overlay");
     return true;
   }
   /** The gap whose right edge is under lane x `x` (within the grab zone), or -1. */
@@ -1118,9 +1151,10 @@ function mountTimeline(host, opts) {  const m = opts.model;
   const trimTo = (side, sec) => (side === "start" ? emSetTrimStart(m, sec, true) : emSetTrimEnd(m, sec, true));
   /** True if trimming `side` to `sec` would change anything (for the menu: tried, then put back). */
   function trimWould(side, sec) {
-    const base = emSegCopy(m), before = emState(m);
+    const before = emState(m), marks0 = (m.marks || []).slice();
     const ok = trimTo(side, sec) !== null && emState(m) !== before;
-    emSegPaste(m, base);
+    emRestore(m, before);
+    if (m.marks) m.marks = marks0;
     return ok;
   }
   /** Trim the start (or end) to source time `sec`: I and O, and the menu. One undo step. */
@@ -1227,6 +1261,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
   }
   function setHideCuts(on) {
     on = !!on;
+    if (on) return false; // 0.1.37: nothing is left on the row to hide
     if (on === st.hideCuts || st.drag) return false;
     const x = st.laneW ? X(st.shownT) : 0; // keep the playhead where it is on screen
     st.hideCuts = on;
@@ -1593,8 +1628,18 @@ function mountTimeline(host, opts) {  const m = opts.model;
     ctx.stroke();
     drawGaps(ctx, C, y, bh, true);
     selOutline(ctx, C, 0, dur(), y, bh, "video");
-    const first = hasParts() ? emParts(m).find((p) => !p.gap) : null;
-    label(ctx, C, "film", opts.title || t("Video"), first ? Math.max(bx0, X(first.at)) : bx0, first ? Math.min(bx1, X(first.end)) : bx1, y + 5);
+    // Each piece (0.1.37): its name at its visible left end and a grip at each end (they trim and restore).
+    for (const p of emPieceList(m)) {
+      if (p.gap) continue;
+      const a = Math.max(bx0, X(p.at)), b = Math.min(bx1, X(p.at + p.len));
+      if (b - a < 2) continue;
+      label(ctx, C, "film", p.title || opts.title || t("Video"), a, b, y + 5);
+      if (b - a < 18) continue;
+      ctx.fillStyle = C.text;
+      ctx.globalAlpha = 0.75;
+      for (const ex of [X(p.at) + 3, X(p.at + p.len) - 5]) if (ex > -4 && ex < st.laneW + 4) { rr(ctx, ex, y + bh / 2 - 9, 2, 18, 1); ctx.fill(); }
+      ctx.globalAlpha = 1;
+    }
     drawGhost(ctx, C, y, bh);
     drawTail(ctx, C, y, bh);
   }
@@ -1639,8 +1684,10 @@ function mountTimeline(host, opts) {  const m = opts.model;
     ctx.globalAlpha = 1;
     ctx.lineWidth = 2;
     ctx.strokeStyle = C["accent-2"] || C.accent;
+    if (g.mode === "up") ctx.setLineDash([5, 4]); // going onto the picture (0.1.37)
     rr(ctx, sp[0] + 1, y + 1, sp[1] - sp[0] - 2, bh - 2, 8);
     ctx.stroke();
+    ctx.setLineDash([]);
   }
   /** After the video, up to where the result ends (0.1.35): a black block, as the result is there. */
   function drawTail(ctx, C, y, bh) {
@@ -1978,12 +2025,8 @@ function mountTimeline(host, opts) {  const m = opts.model;
   }
   /** The two trim brackets, at the ends of the kept span (with cut parts hidden: the ends of what is shown). */
   function placeTrims() {
-    const b = emTrimBounds(m);
-    for (const [node, sec, side] of [[el.trimS, b.start, "start"], [el.trimE, b.end, "end"]]) {
-      const x = Math.round(X(sec) * 2) / 2, vis = x > -12 && x < st.laneW + 12;
-      node.style.transform = `translateX(${vis ? x : -100}px)`;
-      node.classList.toggle("drag", st.drag?.type === "trim" && st.drag.moved && st.drag.side === side);
-    }
+    // 0.1.37: every piece has its own end handles on the video row; the brackets of the whole kept span are gone.
+    if (!el.trimS.hidden) el.trimS.hidden = el.trimE.hidden = true;
   }
   /** Per shown bookmark: a flag on the ruler (.tl-bmk: click goes there, hover shows the time, in ruler time) and a thin line through the rows (.tl-bml). */
   function placeMarks() {
@@ -2187,7 +2230,12 @@ function mountTimeline(host, opts) {  const m = opts.model;
       else Object.assign(d, { type: "click", sel });
       // The video row (0.1.36): a press on a clip drags it once it moves (free placement, or beside another clip);
       // one on a gap's right edge makes the gap longer or shorter.
-      if (id === "video" && sel) {
+      // 0.1.37: a press on either end of a piece trims it, or pulls cut-away footage back out (emTrimPiece).
+      const pe = id === "video" ? pieceEndHit(x) : null;
+      if (pe) {
+        const p = emPieceList(m)[pe.i];
+        Object.assign(d, { type: "piece-end", sel, i: pe.i, side: pe.side, base: emState(m), marks0: (m.marks || []).slice(), at0: p.at, src0: p.src, len0: p.len, lo: p.lo, hi: p.hi });
+      } else if (id === "video" && sel) {
         const gi = gapHitRight(x);
         if (gi >= 0) Object.assign(d, { type: "gap-edge", gap: gi, base: emState(m), at0: emParts(m)[gi].at, len0: emParts(m)[gi].len });
         else if (!segGap(sel.seg) && !d.ctrl && !d.shift) {
@@ -2250,6 +2298,17 @@ function mountTimeline(host, opts) {  const m = opts.model;
       // A clip on the video row (0.1.36): over another clip it goes beside it (the nearer half), anywhere else it
       // sits where it is dropped (snapped by its start or its end). Shown as an outline; applied on release.
       const c = d.clip, P = emParts(m), drop = hasParts() ? tlDropAt(P, c.i, raw) : { mode: "free" };
+      // Above the video row (0.1.37): onto the overlay rows, as a clip item over the whole picture.
+      const vTop = st.lanes.find((L) => L.id === "video")?.el.getBoundingClientRect().top ?? -Infinity;
+      if (e.clientY < vTop - 2 && opts.canPieceUp?.()) {
+        el.pdrop.hidden = true;
+        let from = Math.max(0, c.at0 + raw - c.grab);
+        if (!free) { const cands = [0, st.shownT, ...shownMarks(), ...ovItems().flatMap((o) => [o.from, o.to])]; const s1 = snapAt(from, cands), s2 = snapAt(from + c.len, cands); if (s1.hit || s2.hit) from = Math.max(0, s1.dist <= s2.dist ? s1.at : s2.at - c.len); }
+        d.ghost = { mode: "up", from, to: from + c.len };
+        showTip(from, t("On the picture at {time}", { time: tlFmtPrecise(toV(from)) }));
+        st.dirty.add("video");
+        return;
+      }
       if (drop.mode === "beside") {
         const q = P[drop.k], from = drop.after ? q.end : q.at - c.len;
         d.ghost = { mode: "beside", k: drop.k, after: drop.after, from: drop.after ? q.end : Math.max(0, from), to: drop.after ? q.end + c.len : q.at };
@@ -2271,6 +2330,23 @@ function mountTimeline(host, opts) {  const m = opts.model;
         showTip(from);
       }
       st.dirty.add("video");
+      return;
+    }
+    if (d.type === "piece-end") {
+      // A piece's end (0.1.37): inward it trims, outward it brings back footage, up to the source clip's limit.
+      // Live, from the state the drag began in.
+      if (!d.snapped) { emSnapshot(m); d.snapped = true; }
+      emRestore(m, d.base);
+      if (m.marks) m.marks = d.marks0.slice();
+      const L = emPieceList(m), cands = [st.shownT, ...shownMarks(), ...L.filter((p) => p.i !== d.i && !p.gap).flatMap((p) => [p.at, p.at + p.len])];
+      const want = free ? raw : snapAt(raw, cands).at;
+      const r = emTrimPiece(m, d.i, d.side, want);
+      if (!r) return;
+      const limit = d.side === "end" ? r.src + r.len >= d.hi - 1e-6 && want > r.at + r.len + 0.02 : r.src <= d.lo + 1e-6 && want < d.at0 - (d.src0 - d.lo) - 0.02;
+      host.classList.toggle("tl-limit", limit);
+      const edgeT = d.side === "end" ? r.at + r.len : r.at;
+      showTip(edgeT, limit ? t("No more footage") : `${tlFmtPrecise(toV(edgeT))} · ${tlFmtLen(r.len)} s`);
+      changed("trim");
       return;
     }
     if (d.type === "gap-edge") {
@@ -2409,7 +2485,11 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (!d) return;
     if (d.type === "seek" && d.at !== undefined) st.hold = { at: d.at, until: performance.now() + 500 };
     if (d.type === "part") { if (d.moved) doMovePart(d.from, d.to); else partClick(d.from); }
-    if (d.type === "clip" && d.ghost) doPlaceClip(d.clip, d.ghost);
+    if (d.type === "clip" && d.ghost) { if (d.ghost.mode === "up") doPieceUp(d.clip.i, d.ghost.from); else doPlaceClip(d.clip, d.ghost); }
+    if (d.type === "piece-end" && d.snapped) {
+      if (m.undo[m.undo.length - 1] === emState(m)) m.undo.pop(); // dragged out and back: no empty undo step
+      else relaid("trim");
+    }
     if (d.type === "gap-edge" && d.snapped) {
       if (m.undo[m.undo.length - 1] === emState(m)) m.undo.pop(); // dragged out and back: no empty undo step
       else relaid("gap");
@@ -2479,7 +2559,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       }
       updateBar();
     }
-    host.classList.remove("tl-dragging");
+    host.classList.remove("tl-dragging", "tl-limit");
     delete host.dataset.tlDrag;
     el.tip.hidden = true;
     el.pdrop.hidden = true;
@@ -2506,9 +2586,12 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (st.tool === "blade") cur = "";
     else if (lane && lane.dataset.tlKind === "video") {
       // A clip can be dragged (0.1.36), a gap's right edge makes it longer or shorter.
-      const x = e.clientX - el.lanes.getBoundingClientRect().left, p = pieceAtX("video", x);
-      cur = gapHitRight(x) >= 0 ? "resize" : p && !segGap(p.seg) ? "grab" : "";
-      tip = gapHitRight(x) >= 0 ? t("Drag to make the gap longer or shorter") : p && segGap(p.seg) ? t("A gap: black and silent. Click it, then Delete closes it.") : p ? t("Drag to move the clip. Over another clip it goes before or after it; anywhere else it sits where you drop it.") : "";
+      const x = e.clientX - el.lanes.getBoundingClientRect().left, p = pieceAtX("video", x), pe = pieceEndHit(x);
+      cur = pe || gapHitRight(x) >= 0 ? "resize" : p && !segGap(p.seg) ? "grab" : "";
+      // A piece's end (0.1.37): trim it, or pull back the footage that was cut away, while the source has any.
+      const q = pe ? emPieceList(m)[pe.i] : null, none = q && (pe.side === "start" ? q.src <= q.lo + 1e-6 : q.src + q.len >= q.hi - 1e-6);
+      tip = pe ? `${pe.side === "start" ? t("Drag to trim the start, or out to bring back what was cut") : t("Drag to trim the end, or out to bring back what was cut")}${none ? "\n" + t("No more footage on this side") : ""}`
+        : gapHitRight(x) >= 0 ? t("Drag to make the gap longer or shorter") : p && segGap(p.seg) ? t("A gap: black and silent. Click it, then Delete closes it.") : p ? t("Drag to move the clip. Over another clip it goes before or after it; anywhere else it sits where you drop it.") : "";
     } else if (lane && lane.dataset.tlKind === "parts") cur = "grab";
     else if (lane && lane.dataset.tlKind === "file") {
       const row = emRow(m, lane.dataset.tlLane);
@@ -2666,7 +2749,8 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (c.video && typeof cvApi()?.crop === "function") top.push(item("cv-crop", tlPaths.crop, t("Crop to a part of the picture")));
     out.push(...top);
     if (top.length) out.push("<hr>");
-    out.push(item("hide-cuts", tlPaths.hideCuts, t("Hide cut parts"), { on: st.hideCuts }));
++
+
     out.push(item("names", tlPaths.names, t("Names on the audio"), { on: st.names }));
     out.push(item("select-all", tlPaths.selAll, t("Select all pieces")), item("fit", tlPaths.fit, t("Fit the whole clip")));
     if (typeof opts.onCommand === "function") out.push("<hr>", item("shortcuts", tlPaths.keys, t("Shortcuts…")), item("fullscreen", tlPaths.full, t("Fullscreen")));

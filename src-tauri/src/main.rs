@@ -12,6 +12,7 @@ mod compress;
 mod core;
 mod denoise;
 mod deps;
+mod e2e;
 mod editor;
 mod games;
 mod gif;
@@ -93,6 +94,11 @@ fn main() {
     }
     if let Some(i) = args.iter().position(|a| a == "--import-test") {
         import::self_test(args.get(i + 1).map(String::as_str).unwrap_or("import.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--e2e-test") {
+        // glint.exe --e2e-test <report.txt> with GLINT_E2E_DIR: the scenarios tools/e2e-scenarios.js wrote, exported and checked.
+        e2e::self_test(args.get(i + 1).map(String::as_str).unwrap_or("e2e.txt"));
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--editor-test") {

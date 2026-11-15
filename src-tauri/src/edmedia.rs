@@ -504,6 +504,38 @@ pub(super) fn media_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &Cl
         Err(e) => r.check("media: a clip item shows the frame of its own time (seeked by off), without its sound", false, &e),
     }
 
+    // 4b (0.1.37). A piece of a clip dragged up onto an overlay row: a clip item over the WHOLE picture.
+    //     Over footage, from 1 to 3 s, 1.5 s into the clip: all black at 1.3 s (clip 1.8 s), all white at 2.0 s (clip 2.5 s), the source after it.
+    let whole = |from: f64, to: f64, off: f64| item(&clip, "video", (0.0, 0.0, 1.0, 1.0), (from, to), off, MediaSrc { mlen: 4.0, ..plain() });
+    let everywhere = |f: &Option<Vec<u8>>| [(2, 2, 30, 16), (34, 2, 62, 16), (2, 20, 30, 34), (34, 20, 62, 34)].map(|b| mean_in(f, b));
+    match ex(&ExportOpts { overlays: vec![whole(1.0, 3.0, 1.5)], ..Default::default() }) {
+        Ok(m) => {
+            let out = Path::new(&m.path);
+            let (a, b) = (everywhere(&at(out, 1.3)), everywhere(&at(out, 2.0)));
+            let after = box_diff(&at(out, 3.5), &at(src_file, 3.5), W, (2, 2, 62, 34));
+            let ok = a.iter().all(|v| (0.0..30.0).contains(v)) && b.iter().all(|v| *v > 215.0) && after < 8.0;
+            r.check("media: a full-picture clip item over footage covers all of it at its own time, the footage after it", ok, &format!("quarters at 1.3 s {a:.0?}, at 2.0 s {b:.0?}; after it off the source by {after:.1}"));
+        }
+        Err(e) => r.check("media: a full-picture clip item over footage covers all of it at its own time, the footage after it", false, &e),
+    }
+    //     Over a gap of V1 (0..2 s footage, 2 s gap, 2..4 s footage): from 2 to 4 s, 2 s into the clip: all white in the gap, the footage after it.
+    let seg = |a: f64, b: f64| Range { start: a, end: b, ..Default::default() };
+    let gapped = ExportOpts { segments: vec![seg(0.0, 2.0), Range { gap: 2.0, ..Default::default() }, seg(2.0, 4.0)], ordered: true, overlays: vec![whole(2.0, 4.0, 2.0)], ..Default::default() };
+    // (After the item the result must be the same edit without it: compared with that export.)
+    match (ex(&gapped), ex(&ExportOpts { overlays: vec![], ..gapped.clone() })) {
+        (Ok(m), Ok(plain_gap)) => {
+            let out = Path::new(&m.path);
+            let len = library::probe(ffmpeg, out, false).map(|p| p.duration).unwrap_or(0.0);
+            let (a, b) = (everywhere(&at(out, 2.3)), everywhere(&at(out, 3.8)));
+            let without = at(Path::new(&plain_gap.path), 2.3);
+            let gap_black = everywhere(&without).iter().all(|v| (0.0..30.0).contains(v));
+            let after = box_diff(&at(out, 4.5), &at(Path::new(&plain_gap.path), 4.5), W, (2, 2, 62, 34));
+            let ok = near(len, 6.0, 0.25) && a.iter().all(|v| *v > 215.0) && b.iter().all(|v| *v > 215.0) && gap_black && after < 6.0;
+            r.check("media: a full-picture clip item over a gap fills the gap with its own frames", ok, &format!("length {len:.2}; quarters at 2.3 s {a:.0?} (black without it: {gap_black}), at 3.8 s {b:.0?}; at 4.5 s off the edit without it by {after:.1}"));
+        }
+        (a, b) => r.check("media: a full-picture clip item over a gap fills the gap with its own frames", false, &format!("{:?} / {:?}", a.err(), b.err())),
+    }
+
     // 5. A still with keyframes: at the top left at first, moved half the picture right by 2 s.
     let mv = |t: f64, dx: f64| MovePoint { t, dx, dy: 0.0, sx: 1.0, sy: 1.0, e: false };
     let moving = Overlay { track: vec![mv(0.0, 0.0), mv(2.0, 0.5)], ..item(&white, "image", (0.0, 0.0, 0.25, 0.25), (0.0, 3.0), 0.0, plain()) };

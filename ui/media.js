@@ -330,21 +330,37 @@ function medVideoSet(onFrame) {
   };
   const kill = (e) => { try { e.el.pause(); e.el.removeAttribute("src"); e.el.load(); } catch { /* gone */ } };
   return {
-    /** Keeps each shown clip item at its time: played along while `playing`, else seeked exactly. */
-    sync(items, tm, playing) {
-      const live = new Set();
+    /** Keeps each shown clip item at its time: played along while `playing` at `rate` (timeline seconds per
+     *  second: the edit's speed times the player's own), else seeked exactly. */
+    sync(items, tm, playing, rate = 1, soon = []) {
+      const live = new Set(), r = medClamp(+rate || 1, 0.0625, 16);
       for (const o of items) {
         const e = get(o), el = e.el, want = medTimeAt(o, tm);
         live.add(o.id);
         e.want = want;
         el.muted = true;
         if (playing) {
-          if (el.paused) { try { el.currentTime = want; } catch { /* not ready */ } el.play().catch(() => {}); }
-          else if (Math.abs(el.currentTime - want) > 0.25) { try { el.currentTime = want; } catch { /* not ready */ } }
+          const drift = el.currentTime - want;
+          if (el.paused) { try { el.currentTime = want + 0.04 * r; } catch { /* not ready */ } el.playbackRate = r; el.play().catch(() => {}); }
+          else if (!el.seeking && Math.abs(drift) > 0.15 * Math.max(1, r)) { try { el.currentTime = want + 0.04 * r; } catch { /* not ready */ } }
+          else {
+            // A small drift is taken up by playing up to 25 % faster or slower for a moment (a seek would stutter).
+            const nudge = Math.abs(drift) > 0.015 ? medClamp((-drift * 1.5) / r, -0.25, 0.25) : 0, want2 = r * (1 + nudge);
+            if (Math.abs(el.playbackRate - want2) > 1e-3) el.playbackRate = want2;
+          }
         } else {
+          if (Math.abs(el.playbackRate - r) > 1e-3) el.playbackRate = r;
           if (!el.paused) el.pause();
           if (!el.seeking && Math.abs(el.currentTime - want) > 0.02 && el.readyState >= 1) { try { el.currentTime = want; } catch { /* not ready */ } }
         }
+      }
+      // Items about to start: their element made and waiting at its first frame, so it starts on time.
+      for (const o of soon) {
+        if (live.has(o.id)) continue;
+        const e = get(o), el = e.el, first = medTimeAt(o, o.from);
+        live.add(o.id);
+        if (!el.paused) el.pause();
+        if (!el.seeking && el.readyState >= 1 && Math.abs(el.currentTime - first) > 0.02) { try { el.currentTime = first; } catch { /* not ready */ } }
       }
       for (const [id, e] of els) if (!live.has(id)) { if (!e.el.paused) e.el.pause(); }
     },
@@ -396,6 +412,59 @@ function medDrawCropped(ctx, o, W, H, tm, videos) {
   ctx.globalAlpha = 0.35;
   medDraw(ctx, { ...o, ...F, crop: { l: 0, t: 0, r: 0, b: 0 }, opacity: 1 }, W, H, tm, videos);
   ctx.restore();
+}
+
+/* ---------- a piece of the main clip dragged up onto an overlay row (0.1.37) ---------- */
+
+/**
+ * The pure part of medFromPiece: puts into model `m` (no snapshot, no DOM) a clip item covering the
+ * whole picture that shows `len` seconds of file `path` from second `off`, at timeline second `at`,
+ * and the same stretch of the file as a file audio row that plays through cuts (emAddFile), at the
+ * same place. `clip` = { path, title, duration, width, height }: the file it comes from (a single
+ * clip's own file, or a project's working file) and its own length (the item's `mlen`, which with
+ * `off` limits how far its ends can be pulled). Returns { item, row }.
+ */
+function medPieceInto(m, piece, clip) {
+  const path = String(piece.path || clip.path || ""), off = Math.max(0, +piece.off || 0), len = Math.max(0.1, +piece.len || 0), at = Math.max(0, +piece.at || 0);
+  const mlen = Math.max(off + len, +clip.duration || 0);
+  const title = String(clip.title || medBaseName(path));
+  const item = {
+    id: typeof ovNewId === "function" ? ovNewId() : "o" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+    kind: "video", from: medR(at), to: medR(at + len), path, title,
+    mw: Math.max(1, Math.round(+clip.width || 16)), mh: Math.max(1, Math.round(+clip.height || 9)),
+    x: 0, y: 0, w: 1, h: 1, crop: { l: 0, t: 0, r: 0, b: 0 }, opacity: 1,
+    off: medR(off), mlen: medR(mlen), loop: false,
+  };
+  m.overlays = m.overlays || [];
+  m.overlays.push(item);
+  const row = emAddFile(m, { path, title, duration: mlen }, at);
+  row.through = true;
+  row.trimStart = medR(off);
+  row.length = medR(len);
+  return { item, row };
+}
+
+/**
+ * A stretch of the main clip put on the picture (CONTRACT_0137 point 5): a clip item over the whole
+ * picture plus its sound as an audio row, from `{ path?, off, len, at }` (emPieceToItem: source
+ * seconds `off`, length `len`, timeline second `at`; `path` defaults to the open clip's file, which
+ * for a project is its working file).
+ *
+ * CALLING CONVENTION with ui/timeline.js (B): ONE undo step for the whole drop. B calls this INSIDE
+ * its own change, passing the model it is changing as `m`:
+ *     P.edit("overlay", (m) => { const it = emPieceToItem(m, i); medFromPiece(P, it, m); emRemovePiece(m, i, true); });
+ * With `m` given this function only changes `m` (no emSnapshot, no sync: P.edit does both). Without
+ * `m` it makes its own undo step through P.edit. Returns the new item's id (null if nothing was made).
+ */
+function medFromPiece(P, piece, m) {
+  const c = P?.clipMeta || {}, v = P?.v;
+  const clip = { path: c.path, title: c.title, duration: +c.duration || (typeof P?.duration === "function" ? P.duration() : 0), width: c.width || v?.videoWidth, height: c.height || v?.videoHeight };
+  if (!piece || !(+piece.len > 0) || !(piece.path || clip.path)) return null;
+  let id = null;
+  if (m) id = medPieceInto(m, piece, clip).item.id;
+  else if (typeof P.edit === "function") P.edit("overlay", (mm) => { id = medPieceInto(mm, piece, clip).item.id; });
+  if (id) setTimeout(() => { try { P.ov?.select?.(id); } catch { /* the player is gone */ } }, 0);
+  return id;
 }
 
 /* ---------- adding media: the file dialog, drops, the Library list ---------- */
@@ -486,5 +555,5 @@ if (typeof document !== "undefined") {
 
 // Lets the pure functions be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { MED_KINDS, medIs, medKindOfPath, medBaseName, medMake, medNorm, medTimeAt, medFullBox, medCropHandles, medCropDrag, medCropReset, medCropKeys, medUnmove, medResized, medRanges, medOutPieces, medExportEntries, medMaskAlpha, medWantsMask, medFrameIndex };
+  module.exports = { medPieceInto, medFromPiece, MED_KINDS, medIs, medKindOfPath, medBaseName, medMake, medNorm, medTimeAt, medFullBox, medCropHandles, medCropDrag, medCropReset, medCropKeys, medUnmove, medResized, medRanges, medOutPieces, medExportEntries, medMaskAlpha, medWantsMask, medFrameIndex };
 }

@@ -184,7 +184,6 @@ const ED_KEYS = [
   { group: "Timeline", what: "Zoom in", cmd: "zoomIn", keys: [edCombo("Equal NumpadAdd", { shift: null })] },
   { group: "Timeline", what: "Zoom out", cmd: "zoomOut", keys: [edCombo("Minus NumpadSubtract", { shift: null })] },
   { group: "Timeline", what: "Fit the whole clip", cmd: "fit", once: true, keys: [edCombo("KeyF", { shift: true })] },
-  { group: "Timeline", what: "Hide or show the cut parts in the timeline", cmd: "hideCuts", once: true, keys: [edCombo("KeyH")] },
   { group: "Timeline", what: "Add or remove a bookmark at the playhead", cmd: "mark", once: true, keys: [edCombo("KeyN")] },
   { group: "Timeline", what: "Go to the next bookmark", cmd: "markNext", keys: [edCombo("KeyN", { shift: true }), edCombo("BracketRight", { shift: true })] },
   { group: "Timeline", what: "Go to the previous bookmark", cmd: "markPrev", keys: [edCombo("KeyP", { shift: true }), edCombo("BracketLeft", { shift: true })] },
@@ -799,12 +798,13 @@ function mountPlayer(root, c) {
   /* ----- timeline time and the video's time ----- */
   // With parts ("Edit together", m.parts) the model, the seek bar, the timeline and added files count
   // TIMELINE seconds while the <video> and the clip's own tracks play the SOURCE. Without parts (and
-  // outside edit mode) the two are the same. playSrc is the source start of the part being played:
+  // outside edit mode) the two are the same. playSrc is the index of the part (piece) being played (0.1.37: an index,
+  // since the same footage may lie on the timeline twice):
   // set on every seek, moved on at every jump, so the playhead stays inside that part while the video
   // runs past its end until the jump to the next part has landed (it never flashes elsewhere).
   let playSrc = null;
   const pm = () => { const m = ed(); return m && m.parts ? m : null; };
-  const playPart = (m) => emParts(m).find((p) => p.src === playSrc) || null;
+  const playPart = (m) => { const p = playSrc === null ? null : emParts(m)[playSrc]; return p && !p.gap ? p : null; };
   /* After the video (0.1.35): from m.duration on (up to emEnd, where the result ends, and the free space after it)
    * the <video> cannot be the clock, it stops at its end. There the player keeps its own: `aft` is the playhead
    * then ({ at, run, t0 }: timeline second `at` at performance time `t0`, moving at the preview's rate while `run`),
@@ -841,7 +841,7 @@ function mountPlayer(root, c) {
     const p = playPart(m);
     if (p && src >= p.src - 0.25 && src <= p.src + p.len + 1) return p.at + clamp(src - p.src, 0, p.len);
     const at = emFromSrc(m, src); // the video was put somewhere else: find its part again
-    playSrc = emParts(m)[emPartAt(m, at)]?.src ?? null;
+    playSrc = emPartAt(m, at) >= 0 ? emPartAt(m, at) : null;
     return at;
   }
   /** Put the video at timeline second `sec`. */
@@ -852,7 +852,7 @@ function mountPlayer(root, c) {
     aft = null; // the video is the clock again
     if (!m) { v.currentTime = sec; return; }
     const p = emParts(m)[emPartAt(m, sec)];
-    playSrc = p ? p.src : null;
+    playSrc = p ? p.i : null;
     v.currentTime = emToSrc(m, sec);
   }
   /** Put the playhead at timeline second `sec` and play from there (`run`) or stand: the video, or the player's
@@ -878,7 +878,7 @@ function mountPlayer(root, c) {
   /** Go on at timeline second `at`; no seek when it simply follows in the source (the next part starts where the video is). */
   function jumpTo(at) {
     const m = pm();
-    if (m && emGapAt(m, at) < 0 && Math.abs(emToSrc(m, at) - v.currentTime) < 0.05) { playSrc = emParts(m)[emPartAt(m, at)]?.src ?? null; return; }
+    if (m && emGapAt(m, at) < 0 && Math.abs(emToSrc(m, at) - v.currentTime) < 0.05) { playSrc = emPartAt(m, at) >= 0 ? emPartAt(m, at) : null; return; }
     setTl(at);
   }
 
@@ -1285,6 +1285,7 @@ function mountPlayer(root, c) {
       }
       if (dead) return null;
       const m = emNew(dur(), tracks);
+      m.clipTitle = c.title || ""; // a piece of a single clip is named after it (0.1.37)
       // A project's draft: its saved edit comes back (projects.js); false = nothing usable saved.
       let restored = false;
       if (P.draft && typeof projRestore === "function") {
@@ -1351,6 +1352,10 @@ function mountPlayer(root, c) {
         // Overlay blocks (0.1.35): a click selects the item in the overlay code; its menu calls P.ov / P.cv where they have the function.
         onOverlayPick: (id) => { try { P.ov?.select?.(id); } catch (e) { console.error("Glint: ov.select failed", e); } },
         ovApi: () => P.ov || null,
+        // A piece dragged up onto the rows above the video (0.1.37): media.js makes the clip item and its sound row.
+        // Called INSIDE the timeline's own undo snapshot: medFromPiece must not snapshot itself.
+        canPieceUp: () => typeof medFromPiece === "function",
+        pieceUp: (info, m) => (typeof medFromPiece === "function" ? medFromPiece(P, info, m) : null),
         cvApi: () => P.cv || null,
       });
     } catch (e) {
