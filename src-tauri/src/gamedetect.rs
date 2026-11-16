@@ -754,8 +754,12 @@ pub fn decide(wins: &[WinInfo], lib: &Library, p: &Prefs, env: &Env, mem: &mut M
     // up and smaller than its monitor is not exclusive (any more): a game that switched back to a
     // window, or whose mode switch only flashed the shell's D3D flag (Terraria's "Fullscreen" at
     // 1280x800 on a 150 % display stays a 1280x800 window; kept as exclusive, its whole monitor,
-    // the desktop around the game included, was recorded by Desktop Duplication, 0.1.44).
-    mem.exclusive.retain(|h| wins.iter().any(|w| w.hwnd == *h && (w.fullscreen || w.minimized)));
+    // the desktop around the game included, was recorded by Desktop Duplication, 0.1.44). And one in
+    // front while the shell does not say D3D fullscreen is not either: a maximized or borderless
+    // window also covers its monitor (Terraria's "Go Windowed" after exclusive fullscreen; seen on 88
+    // of 88 looks in front while really exclusive, the shell said so). A single odd reading costs
+    // nothing: the change of source waits HOLD_SECS and the mark comes back on the next look.
+    mem.exclusive.retain(|h| wins.iter().any(|w| w.hwnd == *h && (w.fullscreen || w.minimized) && !(w.foreground && !w.minimized && !env.d3d_fullscreen)));
 
     // Score every window.
     let cur_pid = mem.target.as_ref().map(|t| t.1);
@@ -1198,14 +1202,23 @@ fn test_scenarios(check: &mut dyn FnMut(&str, bool, String)) {
     let d1 = decide(std::slice::from_ref(&ex), &terr_lib, &Prefs::none(), &Env { d3d_fullscreen: true, ..env(4.5) }, &mut m, &alive);
     let away = WinInfo { minimized: true, foreground: false, fullscreen: false, width: 0, height: 0, ..ex.clone() };
     let d2 = decide(std::slice::from_ref(&away), &terr_lib, &Prefs::none(), &env(6.0), &mut m, &alive);
-    let _ = decide(std::slice::from_ref(&ex), &terr_lib, &Prefs::none(), &env(8.0), &mut m, &alive);
-    let d3 = decide(std::slice::from_ref(&ex), &terr_lib, &Prefs::none(), &env(12.5), &mut m, &alive);
+    let _ = decide(std::slice::from_ref(&ex), &terr_lib, &Prefs::none(), &Env { d3d_fullscreen: true, ..env(8.0) }, &mut m, &alive);
+    let d3 = decide(std::slice::from_ref(&ex), &terr_lib, &Prefs::none(), &Env { d3d_fullscreen: true, ..env(12.5) }, &mut m, &alive);
     check("laptop: real exclusive fullscreen: its monitor by Desktop Duplication, paused while minimized, back on return (after the hold)", d1.source == Source::MonitorDda && d2.source == Source::Park && d2.why.code == "minimized" && m.exclusive.contains(&ex.hwnd) && d3.source == Source::MonitorDda && d3.why.code == "exclusive", format!("{:?} {:?} {:?} {:?}", d1.source, d2.why.code, d3.source, d3.why.code));
     // ... and back in a window (no longer covering its monitor): the window again, after the hold.
     let windowed = tw(1600, 900, false, true);
     let w1 = decide(std::slice::from_ref(&windowed), &terr_lib, &Prefs::none(), &env(14.0), &mut m, &alive);
     let w2 = decide(std::slice::from_ref(&windowed), &terr_lib, &Prefs::none(), &env(18.5), &mut m, &alive);
     check("laptop: an exclusive game switched back to a window is recorded by its window again", m.exclusive.is_empty() && w2.source == Source::Window && w2.why.code == "window", format!("{:?} {:?}", w1.source, w2.source));
+    // Run 2: exclusive at 1920x1200, then "Go Windowed": a captioned window maximized to 1920x1170,
+    // which still covers the monitor (its frame reaches past the edges), in front, no D3D flag.
+    let mut m = Memory::default();
+    let _ = decide(std::slice::from_ref(&ex), &terr_lib, &Prefs::none(), &Env { d3d_fullscreen: true, ..env(0.0) }, &mut m, &alive);
+    let _ = decide(std::slice::from_ref(&ex), &terr_lib, &Prefs::none(), &Env { d3d_fullscreen: true, ..env(4.5) }, &mut m, &alive);
+    let maxed = WinInfo { caption: true, ..tw(1920, 1170, true, true) };
+    let g1 = decide(std::slice::from_ref(&maxed), &terr_lib, &Prefs::none(), &env(6.5), &mut m, &alive);
+    let g2 = decide(std::slice::from_ref(&maxed), &terr_lib, &Prefs::none(), &env(11.0), &mut m, &alive);
+    check("laptop: exclusive, then \"Go Windowed\" to a maximized window: no longer exclusive, its window recorded (after the hold)", g1.source == Source::MonitorDda && g2.source == Source::Window && g2.why.code == "window" && m.exclusive.is_empty(), format!("{:?} {:?}", g1.source, g2.source));
 
     // 19. Candidates for the menu.
     let d = run(&[chrome.clone(), indie.clone(), fs.clone()], &Prefs::none(), &env(0.0), &mut Memory::default());
