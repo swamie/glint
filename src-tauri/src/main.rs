@@ -30,6 +30,7 @@ mod livecheck;
 mod monprev;
 mod naming;
 mod polish;
+mod polls; // polls from the developer
 mod procaudio;
 mod projects;
 mod projexport;
@@ -92,6 +93,11 @@ fn main() {
     }
     if let Some(i) = args.iter().position(|a| a == "--update-test") {
         update::self_test(args.get(i + 1).map(String::as_str).unwrap_or("update.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--polls-test") {
+        // polls: glint.exe --polls-test <report.txt>: polls against a test server on 127.0.0.1 only.
+        polls::self_test(args.get(i + 1).map(String::as_str).unwrap_or("polls.txt"));
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--jobs-test") {

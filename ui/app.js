@@ -1443,6 +1443,7 @@ function renderSettings() {
       ${row(t("Version"), "", `<span class="path">Glint ${esc(S.version || "")}</span><button class="btn sm" data-act="whats-new" data-sfx="open">${t("What's new")}</button>`)}
       ${row(t("Check for updates daily"), t("Asks GitHub once a day whether a newer Glint has been released. Nothing about you or this PC is sent"), toggle("update_check"))}
       ${row(t("Install updates automatically"), t("Installs a new version by itself and restarts Glint in the tray, with clipping on or off as it was. Only while Glint's window is closed and nothing is being rendered, exported or imported, and never while a game is running. Otherwise the update button in the top bar waits for your click"), toggle("update_auto"))}
+      ${typeof pollsSettingRow === "function" ? pollsSettingRow() : "" /* polls (polls.js) */}
     </div>
     <div class="section" data-cat="program"><h2>${t("Program")}</h2>
       ${row(t("ffmpeg.exe path"), S.ffmpeg ? t("Using {path}", { path: `<span class="path" title="${esc(S.ffmpeg)}">${esc(S.ffmpeg)}</span>` }) : t("Not found"), `<input class="field" type="text" data-set="ffmpeg_path" value="${esc(S.settings.ffmpeg_path)}" placeholder="${esc(S.ffmpeg ? t("Auto ({name})", { name: S.ffmpeg }) : t("Auto"))}" style="width:340px">`)}

@@ -1063,7 +1063,9 @@ pub fn run(minimized: bool) {
             crate::capmode::game_menu,
             crate::capmode::game_pick_exe,
             crate::monprev::monitor_preview,
-            crate::capmode::game_mark
+            crate::capmode::game_mark,
+            crate::polls::polls_list, // polls
+            crate::polls::polls_vote  // polls
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -1112,6 +1114,8 @@ pub fn run(minimized: bool) {
                     }
                 }
             });
+
+            crate::polls::spawn(core.clone()); // polls: 30 s after start, then every 6 hours, only with the setting on
 
             let (tx, rx) = std::sync::mpsc::channel::<String>();
             hotkeys::start(tx);

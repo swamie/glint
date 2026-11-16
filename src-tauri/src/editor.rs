@@ -52,11 +52,17 @@ pub struct Color {
     pub gamma: f32,
     /// 0.1.41: sharpening, 0 = off .. 1: `unsharp` with a 5x5 luma matrix, amount 1.5 x this (chroma untouched).
     pub sharpness: f32,
+    /// 0.1.45: -1 (cool) .. +1 (warm), 0 = off: R x (1 + 0.20 T), G x (1 + 0.02 T), B x (1 - 0.20 T), after the
+    /// brightness / contrast / saturation / gamma step (the preview uses the same matrix).
+    pub temperature: f32,
+    /// 0.1.45: 0 .. 1, 0 = off: a bloom: the highlights (each channel through max(0, (x - 0.55) / 0.45)), blurred
+    /// (Gaussian, sigma 1.6 % of the picture's height), screened back over the picture at opacity 0.9 x glow.
+    pub glow: f32,
 }
 
 impl Default for Color {
     fn default() -> Self {
-        Color { brightness: 1.0, contrast: 1.0, saturation: 1.0, gamma: 1.0, sharpness: 0.0 }
+        Color { brightness: 1.0, contrast: 1.0, saturation: 1.0, gamma: 1.0, sharpness: 0.0, temperature: 0.0, glow: 0.0 }
     }
 }
 
@@ -196,11 +202,83 @@ pub struct ExportOpts {
     /// one per title across the sources; a track row's `index` is its place in this list. Empty = a clip's own
     /// stream index, as before. `editor::export` itself never reads it.
     pub track_titles: Vec<String>,
+    /// 0.1.44, audio rows by role (CONTRACT_0144R): per source, the audio stream each track row plays
+    /// (`streams[k]` for the row whose `index` is k; -1 = none). Present = it decides, not the titles.
+    pub track_map: Vec<TrackMap>,
+    /// 0.1.44: a piece whose row plays another stream of its source than `track_map` says (the "only the mix
+    /// was audible" case of the conversion): row `row`, from `start` to `end` (source seconds, as `segments`).
+    pub track_over: Vec<TrackOver>,
+}
+
+/// One source's streams per track row (`ExportOpts::track_map`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct TrackMap {
+    pub clip: String,
+    pub streams: Vec<i64>,
+}
+
+/// A stretch of a track row that plays `stream` instead (`ExportOpts::track_over`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct TrackOver {
+    pub row: u32,
+    pub start: f64,
+    pub end: f64,
+    pub stream: u32,
+}
+
+/// Audio rows by role for ONE file (0.1.44): `map` = that file's entry of `track_map` (track row k -> stream,
+/// -1 none) and the overrides, as plain stream rows: each track row then names the stream it plays, a row with
+/// none is dropped, and an override is the row's level on the other stream for that stretch (and silence on its
+/// own stream there). Without a map and overrides the options are returned as they are.
+pub fn rows_by_stream(opts: &ExportOpts, map: Option<&TrackMap>) -> ExportOpts {
+    let mut o = opts.clone();
+    o.track_map = Vec::new();
+    o.track_over = Vec::new();
+    if map.is_none() && opts.track_over.is_empty() {
+        return o;
+    }
+    let stream_of = |k: u32| -> Option<u32> {
+        match map {
+            Some(m) => m.streams.get(k as usize).copied().filter(|s| *s >= 0).map(|s| s as u32),
+            None => Some(k),
+        }
+    };
+    let mut audio = Vec::new();
+    for e in &opts.audio {
+        if e.source != "track" {
+            audio.push(e.clone());
+            continue;
+        }
+        let overs: Vec<&TrackOver> = opts.track_over.iter().filter(|v| v.row == e.index && v.end > v.start).collect();
+        if let Some(s) = stream_of(e.index) {
+            // Silent where an override plays another stream (first listed wins).
+            let mut rs: Vec<GainRegion> = overs.iter().map(|v| GainRegion { start: v.start, end: v.end, gain: 0.0 }).collect();
+            rs.extend(e.regions.iter().cloned());
+            audio.push(AudioEdit { index: s, regions: rs, ..e.clone() });
+        }
+        for v in overs {
+            // The other stream, heard only from start to end, at the row's level.
+            let mut rs = vec![GainRegion { start: -1.0e6, end: v.start, gain: 0.0 }, GainRegion { start: v.end, end: 1.0e6, gain: 0.0 }];
+            rs.extend(e.regions.iter().cloned());
+            audio.push(AudioEdit { index: v.stream, regions: rs, ..e.clone() });
+        }
+    }
+    if audio.is_empty() && !opts.audio.is_empty() {
+        // Every row had nothing to play: nothing heard (not "the clip as recorded").
+        o.tracks = vec![TrackVolume { index: 0, volume: 0.0 }];
+    }
+    o.audio = audio;
+    if map.is_some() {
+        o.tracks = o.tracks.iter().filter_map(|t| Some(TrackVolume { index: if t.volume <= 0.0 { t.index } else { stream_of(t.index)? }, volume: t.volume })).collect();
+    }
+    o
 }
 
 impl Default for ExportOpts {
     fn default() -> Self {
-        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new(), ordered: false, overlays: Vec::new(), blurs: Vec::new(), fade_in: 0.0, fade_out: 0.0, canvas: None, canvas_tracks: Vec::new(), tail: 0.0, track_titles: Vec::new() }
+        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new(), ordered: false, overlays: Vec::new(), blurs: Vec::new(), fade_in: 0.0, fade_out: 0.0, canvas: None, canvas_tracks: Vec::new(), tail: 0.0, track_titles: Vec::new(), track_map: Vec::new(), track_over: Vec::new() }
     }
 }
 
@@ -417,8 +495,28 @@ fn same(a: f64, b: f64) -> bool {
 }
 
 fn is_neutral(c: &Color) -> bool {
-    [c.brightness, c.contrast, c.saturation, c.gamma].iter().all(|v| !v.is_finite() || same(*v as f64, 1.0)) && sharp_amount(c) == 0.0
+    [c.brightness, c.contrast, c.saturation, c.gamma].iter().all(|v| !v.is_finite() || same(*v as f64, 1.0)) && sharp_amount(c) == 0.0 && temp_amount(c) == 0.0 && glow_amount(c) == 0.0
 }
+
+/// `Color::temperature` kept to -1..1 (0 = off).
+fn temp_amount(c: &Color) -> f64 {
+    if c.temperature.is_finite() && (c.temperature as f64).abs() > 0.001 { (c.temperature as f64).clamp(-1.0, 1.0) } else { 0.0 }
+}
+
+/// `Color::glow` kept to 0..1 (0 = off).
+fn glow_amount(c: &Color) -> f64 {
+    if c.glow.is_finite() && c.glow > 0.001 { (c.glow as f64).min(1.0) } else { 0.0 }
+}
+
+/// The glow's highlight knee, blur (a fraction of the picture's height) and strength (opacity per unit of glow).
+const GLOW_KNEE: f64 = 0.55;
+const GLOW_SIGMA: f64 = 0.016;
+const GLOW_OPACITY: f64 = 0.9;
+/// The highlights are blurred on a copy this many pixels high (sigma scaled with it) and scaled back: the same
+/// light as at full size, a fraction of the work on 1440p.
+const GLOW_WORK_H: u32 = 360;
+/// Labels of the glow's branches: one set per use in a graph.
+static GLOW_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// The `unsharp` luma amount of `c` (0 = none): 1.5 x sharpness, sharpness kept to 0..1.
 fn sharp_amount(c: &Color) -> f64 {
@@ -428,7 +526,7 @@ fn sharp_amount(c: &Color) -> f64 {
 /// True if `a` and `b` give the same picture (a non-finite field counts as 1, as in `is_neutral`).
 fn same_color(a: &Color, b: &Color) -> bool {
     let f = |v: f32| if v.is_finite() { v as f64 } else { 1.0 };
-    [(a.brightness, b.brightness), (a.contrast, b.contrast), (a.saturation, b.saturation), (a.gamma, b.gamma)].iter().all(|&(x, y)| same(f(x), f(y))) && same(sharp_amount(a), sharp_amount(b))
+    [(a.brightness, b.brightness), (a.contrast, b.contrast), (a.saturation, b.saturation), (a.gamma, b.gamma)].iter().all(|&(x, y)| same(f(x), f(y))) && same(sharp_amount(a), sharp_amount(b)) && same(temp_amount(a), temp_amount(b)) && same(glow_amount(a), glow_amount(b))
 }
 
 fn clamped(v: f32, lo: f64, hi: f64) -> f64 {
@@ -585,7 +683,25 @@ fn color_filter(c: &Color, matrix: &str, range: &str) -> Option<String> {
     // Sharpness alone (0.1.41): only the unsharp, no trip through RGB.
     let sharp = sharp_amount(c);
     let unsharp = format!("unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount={sharp:.4}:chroma_msize_x=5:chroma_msize_y=5:chroma_amount=0");
-    if [c.brightness, c.contrast, c.saturation, c.gamma].iter().all(|v| !v.is_finite() || same(*v as f64, 1.0)) {
+    let (temp, glow) = (temp_amount(c), glow_amount(c));
+    if glow > 0.0 {
+        // 0.1.45: the look without its glow, then the glow (order: eq, temperature, sharpness, glow).
+        let before = color_filter(&Color { glow: 0.0, ..c.clone() }, matrix, range);
+        let n = GLOW_N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (a, b, h, s, o) = (format!("gwa{n}"), format!("gwb{n}"), format!("gwh{n}"), format!("gws{n}"), format!("gwo{n}"));
+        let k = 255.0 * GLOW_KNEE;
+        let hi = format!("max(0,(val-{k:.3})/{:.4})", 1.0 - GLOW_KNEE);
+        let sigma = GLOW_SIGMA * GLOW_WORK_H as f64;
+        let glow_part = format!(
+            "scale=in_color_matrix={matrix}:in_range={range}:flags=bicubic+accurate_rnd+full_chroma_int,format=gbrp,split=2[{a}][{b}];[{b}]lutrgb=r='{hi}':g='{hi}':b='{hi}',scale=-2:{GLOW_WORK_H},gblur=sigma={sigma:.3}[{h}];[{h}][{a}]scale2ref=flags=bicubic[{s}][{o}];[{o}][{s}]blend=all_mode=screen:all_opacity={:.4},scale=out_color_matrix={matrix}:out_range={range}:flags=bicubic+accurate_rnd",
+            GLOW_OPACITY * glow
+        );
+        return Some(match before {
+            Some(f) => format!("{f},{glow_part}"),
+            None => glow_part,
+        });
+    }
+    if [c.brightness, c.contrast, c.saturation, c.gamma].iter().all(|v| !v.is_finite() || same(*v as f64, 1.0)) && temp == 0.0 {
         return Some(unsharp);
     }
     let b = clamped(c.brightness, 0.0, BRIGHTNESS_MAX);
@@ -606,8 +722,11 @@ fn color_filter(c: &Color, matrix: &str, range: &str) -> Option<String> {
 
     let mut steps = vec![format!("scale=in_color_matrix={matrix}:in_range={range}:flags=bicubic+accurate_rnd+full_chroma_int"), "format=rgb24".to_string()];
     if same(sat, 1.0) {
-        // No channel mixing: brightness, contrast and gamma fold into one table.
-        steps.push(lut(&if same(g, 1.0) { curve } else { gamma(&curve) }));
+        // No channel mixing: brightness, contrast and gamma fold into one table (none when they change nothing:
+        // a temperature alone, 0.1.45).
+        if curve != "val" || !same(g, 1.0) {
+            steps.push(lut(&if same(g, 1.0) { curve } else { gamma(&curve) }));
+        }
     } else {
         if curve != "val" {
             steps.push(lut(&curve));
@@ -628,6 +747,10 @@ fn color_filter(c: &Color, matrix: &str, range: &str) -> Option<String> {
         if !same(g, 1.0) {
             steps.push(lut(&gamma("val")));
         }
+    }
+    if temp != 0.0 {
+        // 0.1.45: warm / cool, the same matrix as the preview's.
+        steps.push(format!("colorchannelmixer=rr={:.5}:gg={:.5}:bb={:.5}", 1.0 + 0.20 * temp, 1.0 + 0.02 * temp, 1.0 - 0.20 * temp));
     }
     steps.push(format!("scale=out_color_matrix={matrix}:out_range={range}:flags=bicubic+accurate_rnd"));
     if sharp > 0.0 {
@@ -2003,6 +2126,15 @@ pub fn with_cancel<T>(flag: &std::sync::Arc<std::sync::atomic::AtomicBool>, f: i
     out
 }
 pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dyn FnMut(f32)) -> Result<ClipMeta, String> {
+    // 0.1.44: rows by role on one clip (its own entry of `track_map`, else the first; overrides): plain stream rows.
+    let by_stream;
+    let opts = if opts.track_map.is_empty() && opts.track_over.is_empty() {
+        opts
+    } else {
+        let entry = opts.track_map.iter().find(|m| m.clip == src.id).or(opts.track_map.first());
+        by_stream = rows_by_stream(opts, entry);
+        &by_stream
+    };
     // The overlay PNGs are temp files made for this export: gone when it ends, whatever happens.
     let _pngs = OverlayFiles(opts.overlays.iter().map(|o| PathBuf::from(&o.png)).collect());
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg").ok_or("ffmpeg.exe was not found")?;
@@ -2371,6 +2503,37 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             // that starts at `base`; the mix is then cut like the video.
             let mut labels = String::new();
             let mut thru = String::new();
+            // 0.1.44: many audio clips (a montage's ungrouped pieces each name their source's file) made one input
+            // each, every one with its full path on the command line, which Windows cuts at 32767 characters. Past
+            // SHARE_FILES_FROM of them each FILE is one input, read from its start, and every clip of it takes its
+            // stretch with `atrim` (sample-exact; the decoded sound is small beside the picture's).
+            let n_files = rows.iter().filter(|r| matches!(r.source, Source::File { .. })).count();
+            let share = n_files > SHARE_FILES_FROM;
+            let mut shared: Vec<(String, usize)> = Vec::new();
+            let mut taps: Vec<((usize, u32), usize, usize)> = Vec::new(); // ((input, stream), uses, next)
+            if share {
+                for row in rows.iter() {
+                    if let Source::File { path, stream, .. } = &row.source {
+                        let input = match shared.iter().find(|(p, _)| p == path) {
+                            Some((_, i)) => *i,
+                            None => {
+                                let i = first_file + file_inputs.len();
+                                file_inputs.push((path.clone(), 0.0, -1.0));
+                                shared.push((path.clone(), i));
+                                i
+                            }
+                        };
+                        match taps.iter_mut().find(|t| t.0 == (input, *stream)) {
+                            Some(t) => t.1 += 1,
+                            None => taps.push(((input, *stream), 1, 0)),
+                        }
+                    }
+                }
+                for ((input, stream), uses, _) in &taps {
+                    let outs: String = (0..*uses).map(|u| format!("[fs{input}_{stream}_{u}]")).collect();
+                    graph.push(format!("[{input}:a:{stream}]asplit={uses}{outs}"));
+                }
+            }
             for (j, row) in rows.iter().enumerate() {
                 let to_stereo = |ch: u32| {
                     // A mono source plays on both speakers at full level (as in the
@@ -2381,6 +2544,13 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
                 let gain = gain_filter(row.volume, &row.regions);
                 let chain = match &row.source {
                     Source::Track(i, ch) => format!("[{clip_audio}:a:{i}]{},{gain}[r{j}]", to_stereo(*ch)),
+                    Source::File { path, seek, len, at, channels, stream } if share => {
+                        let input = shared.iter().find(|(p, _)| p == path).map(|x| x.1).unwrap_or(first_file);
+                        let tap = taps.iter_mut().find(|t| t.0 == (input, *stream)).map(|t| { t.2 += 1; t.2 - 1 }).unwrap_or(0);
+                        let samples = (at * MIX_RATE as f64).round() as u64;
+                        let delay = if samples > 0 { format!(",adelay=delays={samples}S:all=1") } else { String::new() };
+                        format!("[fs{input}_{stream}_{tap}]asetpts=PTS-STARTPTS,atrim=start={seek:.6}:end={:.6},asetpts=PTS-STARTPTS,{}{delay},{gain}[r{j}]", seek + len, to_stereo(*channels))
+                    }
                     Source::File { path, seek, len, at, channels, stream } => {
                         let input = first_file + file_inputs.len();
                         file_inputs.push((path.clone(), *seek, *len));
@@ -2409,6 +2579,17 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
                 let pad = if tail > 0.0 { format!("apad=whole_dur={:.6}", span + tail * speed) } else { "anull".to_string() };
                 graph.push(cut_chain_gaps("[mix]", &local, &gaps, &speeds, "m", &pad, "[mc]", (MIX_RATE, "stereo")));
                 graph.push(format!("[mc]{thru}amix=inputs={}:duration=first:normalize=0,{tempo}[a]", n_thru + 1));
+            }
+            // 0.1.45: a mix that can pass full scale (a level over 100 % anywhere, or more than one source summed) ends
+            // in a limiter, so 200 % is louder but never clipped (the owner's crackle). Sound under the ceiling passes
+            // as it is; a mix that cannot pass full scale keeps its command exactly.
+            let loud = rows.len() > 1 || rows.iter().any(|r| r.volume > 1.0 + 1e-6 || r.regions.iter().any(|g| r.volume * g.2 > 1.0 + 1e-6));
+            if loud {
+                if let Some(last) = graph.last_mut().filter(|g| g.ends_with("[a]")) {
+                    last.truncate(last.len() - 3);
+                    last.push_str("[al]");
+                    graph.push(format!("[al]{LIMITER}[a]"));
+                }
             }
             maps.extend(["-map", "[a]"].map(String::from));
             audio_args.extend(["-metadata:s:a:0".to_string(), format!("title={title}"), "-disposition:a:0".into(), "default".into()]);
@@ -2478,6 +2659,11 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             a.extend(["-i".to_string(), src_s.clone()]);
         }
         for (path, seek, len) in &file_inputs {
+            if *len < 0.0 {
+                // One input for every clip of this file (0.1.44): read from its start, each clip cut in the graph.
+                a.extend(["-i".to_string(), path.clone()]);
+                continue;
+            }
             a.extend(["-ss".to_string(), format!("{seek:.6}"), "-t".into(), format!("{len:.6}"), "-i".into(), path.clone()]);
         }
         // The overlay pictures, media items and masks (edmedia::layer_input_args).
@@ -2535,7 +2721,13 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     // Windows refuses a command line over 32767 characters (R3-2): say so plainly instead of "os error 206".
     let line_len: usize = build(&enc).iter().map(|a| a.len() + 3).sum::<usize>() + ffmpeg.as_os_str().len() + 3;
     if line_len > 32_000 {
-        util::log(&format!("export: the command would be {line_len} characters ({k_count} pieces): refused"));
+        // 0.1.44: pieces share inputs and so do the clips of one audio file; what is left to grow the line is the
+        // number of DIFFERENT audio files. Say which it is.
+        let files_len: usize = file_inputs.iter().map(|f| f.0.len() + 40).sum();
+        util::log(&format!("export: the command would be {line_len} characters ({k_count} pieces, {} audio file inputs, {files_len} characters of them): refused", file_inputs.len()));
+        if files_len * 2 > line_len {
+            return Err(format!("This edit uses too many different audio files ({}) to export in one go. Export it in two parts, or use fewer separate audio files.", file_inputs.len()));
+        }
         return Err(format!("This edit has too many pieces ({k_count}) to export in one go. Export it in two parts, or join some pieces first."));
     }
     let n_layers = layers.as_ref().map(|l| l.overlays.len() + l.blurs.len()).unwrap_or(0);
@@ -2720,6 +2912,16 @@ fn run_self_test(r: &mut Report) {
     s.encoder = "auto".into();
     let encoder = pick_encoder(&ffmpeg, &s.encoder);
     r.line(&format!("INFO encoder={encoder}"));
+    if std::env::var("GLINT_EDITOR_ONLY").is_ok_and(|v| v == "looks") {
+        // A quick run of only the limiter and look checks (0.1.45), while working on them.
+        let clip = dir.join("lk.mp4");
+        if flash_clip(&ffmpeg, &clip, 30, 8.0, false, 0.0) {
+            let src = ClipMeta { fps: 30, ..library::register(&ffmpeg, &clip, "Lk", "Test Game", "clip") };
+            limiter_checks(r, &ffmpeg, &s, &src, &dir);
+        }
+        look_tg_checks(r, &ffmpeg, &s, &dir);
+        return;
+    }
     if std::env::var("GLINT_EDITOR_ONLY").is_ok_and(|v| v == "groups") {
         // A quick run of only the shared-input checks (0.1.42), while working on them.
         group_checks(r, &ffmpeg, &s, &dir);
@@ -3675,13 +3877,14 @@ fn song_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, dir:
 /// The commands for options without gaps (hashes of `export_args`). Recorded with 0.1.35; 0.1.41 changed every one on
 /// purpose (`-reinit_filter 0` on the range inputs: the hang) and they were recorded again; 0.1.44 changed every one on
 /// purpose too (frame-exact cuts: the repeat that holds the end of a joined picture, `end_cut` / `END_PAD`, a key
-/// frame on it, 0.2 ms of slack in the speed cap) and they were recorded again: later work must keep them.
+/// frame on it, 0.2 ms of slack in the speed cap) and they were recorded again; 0.1.45 changed the three that mix more
+/// than one source into one track on purpose (the limiter, `LIMITER`, at the end of such a mix): recorded again.
 const COMMANDS_0135: [(&str, &str); 5] = [
     ("two ranges, the clip's tracks", "174f7bbc937ec0e7"),
-    ("moved parts at 2x, a track and a through file", "9b814e463bb955b4"),
-    ("one range, a file cut with the video, fades, tail 1.5 s", "0a5bd6d2fcbe867c"),
+    ("moved parts at 2x, a track and a through file", "0ee1bf3633e53e1e"),
+    ("one range, a file cut with the video, fades, tail 1.5 s", "94b23f2d014d29f2"),
     ("whole clip, an overlay picture, tail 2 s", "44c129f68883afe7"),
-    ("three ranges, a blank one and a colored one, levels", "a8e1873e53c16bea"),
+    ("three ranges, a blank one and a colored one, levels", "14f808d9c7336776"),
 ];
 
 /// The option sets of `COMMANDS_0135`, in that order.
@@ -4364,6 +4567,16 @@ fn group_checks_as_asked(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path
     }
 }
 
+/// The limiter at the end of a mix that can pass full scale (0.1.45): ceiling -1 dBFS in the FILE. The AAC encoder
+/// rebuilds a limited tone up to 0.5 dB over the limiter's level (0.891 gave -0.6 dBFS peaks), so the limiter holds
+/// 0.85 (-1.4 dBFS) and the encoded file peaks at -1.1. 5 ms lookahead /
+/// attack, 50 ms release, no make-up gain (`level=disabled`): sound under the ceiling is untouched. `latency=1`
+/// takes the lookahead's 5 ms back out (without it every sound came 5 ms late against the picture).
+const LIMITER: &str = "alimiter=limit=0.85:attack=5:release=50:level=disabled:latency=1";
+
+/// Past this many audio clips from files, each file is one input shared by its clips (0.1.44).
+const SHARE_FILES_FROM: usize = 12;
+
 /// The most range inputs one export opens (0.1.42): past it, neighbouring ranges share inputs.
 const MAX_RANGE_INPUTS: usize = 40;
 /// After the last range's picture (0.1.44): its last frame repeated for a moment, so `end_cut` has a repeat to keep.
@@ -4418,6 +4631,179 @@ fn sharp_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta) {
             let _ = fs::remove_file(&m.path);
         }
         Err(e) => r.check("sharpness: the sharpened range", false, &e),
+    }
+}
+
+/// (peak dB, RMS dB) of the first audio track of `file` (`volumedetect`).
+fn peak_rms(ffmpeg: &Path, file: &Path) -> Option<(f64, f64)> {
+    let out = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-nostats", "-nostdin", "-i"]).arg(file).args(["-map", "0:a:0", "-af", "volumedetect", "-f", "null", "-"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().ok()?;
+    let t = String::from_utf8_lossy(&out.stderr);
+    let num = |k: &str| t.lines().find_map(|l| l.split(k).nth(1)).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse::<f64>().ok());
+    Some((num("max_volume:")?, num("mean_volume:")?))
+}
+
+/// 0.1.45, "at 200 % it peaks and crackles": a mix that can pass full scale ends in a limiter (ceiling -1 dBFS).
+/// A full-scale tone at 200 %: its peak at most -1 dBFS (+0.1) and still a sine, not a clipped wave (crest factor
+/// about 3 dB, against about 1 dB for the clipped one); a quiet tone at 200 % exactly 6.02 dB over 100 % (the limiter
+/// idle); two full-scale tones summed under the ceiling; a single row at 100 % has no limiter in its command.
+fn limiter_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, dir: &Path) {
+    let tone = |name: &str, expr: &str| -> Option<String> {
+        let p = dir.join(name);
+        run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", &format!("aevalsrc='{expr}':s=48000:d=5"), "-c:a", "pcm_s16le", &p.to_string_lossy()]).ok().map(|_| p.to_string_lossy().into_owned())
+    };
+    let (Some(full), Some(quiet), Some(other)) = (tone("full.wav", "0.999*sin(2*PI*1000*t)"), tone("quiet.wav", "0.1*sin(2*PI*1000*t)"), tone("other.wav", "0.999*sin(2*PI*1700*t)")) else {
+        r.check("limiter: tone files made", false, "");
+        return;
+    };
+    let row = |path: &str, volume: f32| AudioEdit { source: "file".into(), path: path.into(), offset: 0.0, trim_start: 0.0, length: 4.0, volume, ..Default::default() };
+    let opts = |rows: Vec<AudioEdit>| ExportOpts { segments: vec![Range { start: 0.0, end: 4.0, ..Default::default() }], audio: rows, ..Default::default() };
+    let level = |o: &ExportOpts| -> Result<(f64, f64), String> {
+        let m = export(s, src, o, &mut |_| {})?;
+        let v = peak_rms(ffmpeg, Path::new(&m.path)).ok_or("could not measure")?;
+        let _ = fs::remove_file(&m.path);
+        Ok(v)
+    };
+    let cmd = |o: &ExportOpts| export_args(s, src, o).map(|a| a.join(" ")).unwrap_or_default();
+    r.check("limiter: a single row at 100 % has none; 200 % and two rows summed have it", !cmd(&opts(vec![row(&full, 1.0)])).contains("alimiter") && cmd(&opts(vec![row(&full, 2.0)])).contains(LIMITER) && cmd(&opts(vec![row(&full, 1.0), row(&other, 1.0)])).contains(LIMITER), "");
+    match level(&opts(vec![row(&full, 2.0)])) {
+        Ok((peak, rms)) => r.check("limiter: a full-scale tone at 200 %: peak at most -1 dBFS (+0.1), still a sine (crest over 2.5 dB)", peak <= -0.9 && peak - rms > 2.5, &format!("peak {peak:.2} dB, RMS {rms:.2} dB, crest {:.2} dB", peak - rms)),
+        Err(e) => r.check("limiter: a full-scale tone at 200 %", false, &e),
+    }
+    match (level(&opts(vec![row(&quiet, 1.0)])), level(&opts(vec![row(&quiet, 2.0)]))) {
+        (Ok(a), Ok(b)) => r.check("limiter: a quiet tone at 200 % is 6.02 dB over 100 % (untouched)", (b.1 - a.1 - 6.02).abs() <= 0.1, &format!("RMS {:.2} -> {:.2} dB ({:+.2})", a.1, b.1, b.1 - a.1)),
+        (a, b) => r.check("limiter: a quiet tone at 100 % and 200 %", false, &format!("{:?} / {:?}", a.err(), b.err())),
+    }
+    match level(&opts(vec![row(&full, 1.0), row(&other, 1.0)])) {
+        Ok((peak, rms)) => r.check("limiter: two full-scale tones summed stay under the ceiling", peak <= -0.9, &format!("peak {peak:.2} dB, RMS {rms:.2} dB")),
+        Err(e) => r.check("limiter: two full-scale tones summed", false, &e),
+    }
+}
+
+/// One frame of `file` at `t` as RGB, `w` x `h`.
+fn rgb_at(ffmpeg: &Path, file: &Path, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
+    let out = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-loglevel", "error", "-nostdin", "-ss", &format!("{t:.3}"), "-i"]).arg(file).args(["-frames:v", "1", "-vf", &format!("scale={w}:{h}:flags=neighbor"), "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    (out.stdout.len() == w * h * 3).then_some(out.stdout)
+}
+
+/// 0.1.45: `Color::temperature` and `Color::glow`. Temperature +1 on gray 128: R up 20 %, G up 2 %, B down 20 %
+/// (B's preview: 154 / 131 / 102); 0 for both: the same command as without them; glow on a white square on black (and
+/// a mid-gray block): the square's middle, far black and the gray untouched, light beside the square that falls off
+/// with distance, the next range untouched; the time of a 10 s 1440p export with and without glow; and (when
+/// GLINT_LOOK_PNG_DIR is set) one frame of the test picture with "Dark fantasy" and with glow 0.5 as PNG files.
+fn look_tg_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path) {
+    // Temperature on gray.
+    let gray = dir.join("gray.mp4");
+    if run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=0x808080:s=320x180:r=30:d=3", "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", "-pix_fmt", "yuv444p", "-color_range", "pc", &gray.to_string_lossy()]).is_ok() {
+        let src = ClipMeta { fps: 30, ..library::register(ffmpeg, &gray, "Gray", "Test Game", "clip") };
+        let warm = Color { temperature: 1.0, ..Default::default() };
+        match export(s, &src, &ExportOpts { segments: vec![Range { start: 0.0, end: 2.0, color: Some(warm), ..Default::default() }], ..Default::default() }, &mut |_| {}) {
+            Ok(m) => {
+                let px = rgb_at(ffmpeg, Path::new(&m.path), 1.0, 32, 18).unwrap_or_default();
+                let avg = |c: usize| px.iter().skip(c).step_by(3).map(|v| *v as f64).sum::<f64>() / (px.len() / 3).max(1) as f64;
+                let (rr, gg, bb) = (avg(0), avg(1), avg(2));
+                let base = rgb_at(ffmpeg, &gray, 1.0, 32, 18).unwrap_or_default();
+                let g0 = base.iter().map(|v| *v as f64).sum::<f64>() / base.len().max(1) as f64;
+                r.check("temperature +1 on gray: R up 20 %, G up 2 %, B down 20 % (within 2 %)", (rr / g0 - 1.2).abs() < 0.024 && (gg / g0 - 1.02).abs() < 0.02 && (bb / g0 - 0.8).abs() < 0.016, &format!("gray {g0:.1} -> {rr:.1} / {gg:.1} / {bb:.1} (the preview: 154 / 131 / 102 from 128)"));
+                let _ = fs::remove_file(&m.path);
+            }
+            Err(e) => r.check("temperature +1 on gray", false, &e),
+        }
+        let plain = ExportOpts { segments: vec![Range { start: 0.0, end: 1.0, color: Some(Color { brightness: 1.1, ..Default::default() }), ..Default::default() }, Range { start: 1.5, end: 2.5, ..Default::default() }], ordered: true, ..Default::default() };
+        let zero = ExportOpts { segments: vec![Range { start: 0.0, end: 1.0, color: Some(Color { brightness: 1.1, temperature: 0.0, glow: 0.0, ..Default::default() }), ..Default::default() }, Range { start: 1.5, end: 2.5, color: Some(Color { temperature: 0.0, glow: 0.0, ..Default::default() }), ..Default::default() }], ordered: true, ..Default::default() };
+        let parsed: Result<Color, _> = serde_json::from_str(r#"{"brightness":1,"contrast":1,"saturation":1,"gamma":1,"sharpness":0}"#);
+        r.check("temperature and glow: a colour without them reads as 0; 0 is the same command as without them", parsed.is_ok_and(|c| c.temperature == 0.0 && c.glow == 0.0) && matches!((export_args(s, &src, &plain), export_args(s, &src, &zero)), (Ok(a), Ok(b)) if args_hash(&a) == args_hash(&b)), "");
+    }
+    // Glow: a white square (80 px) in the middle of black, a mid-gray block (100) at the left; range 1 with glow 0.5.
+    let (w, h) = (640usize, 360usize);
+    let sq = dir.join("square.mp4");
+    let pic = "color=c=black:s=640x360:r=30:d=4,drawbox=x=280:y=140:w=80:h=80:c=white:t=fill,drawbox=x=40:y=140:w=80:h=80:c=0x646464:t=fill";
+    if run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", pic, "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", "-pix_fmt", "yuv444p", &sq.to_string_lossy()]).is_ok() {
+        let src = ClipMeta { fps: 30, ..library::register(ffmpeg, &sq, "Square", "Test Game", "clip") };
+        let glow = Color { glow: 0.5, ..Default::default() };
+        let opts = ExportOpts { segments: vec![Range { start: 0.0, end: 2.0, color: Some(glow.clone()), ..Default::default() }, Range { start: 2.0, end: 4.0, ..Default::default() }], ..Default::default() };
+        match export(s, &src, &opts, &mut |_| {}) {
+            Ok(m) => {
+                let out = Path::new(&m.path);
+                let lum = |px: &[u8], x: usize, y: usize| { let i = (y * w + x) * 3; (px[i] as f64 + px[i + 1] as f64 + px[i + 2] as f64) / 3.0 };
+                let (a, b) = (rgb_at(ffmpeg, out, 1.0, w, h).unwrap_or_default(), rgb_at(ffmpeg, out, 3.0, w, h).unwrap_or_default());
+                let orig = rgb_at(ffmpeg, &sq, 1.0, w, h).unwrap_or_default();
+                if a.len() == w * h * 3 && b.len() == a.len() && orig.len() == a.len() {
+                    // Right of the square (it ends at x = 359), along its middle row.
+                    let beside: Vec<f64> = [1usize, 3, 6, 10, 15, 25, 40].iter().map(|d| lum(&a, 359 + d, 180)).collect();
+                    let falls = beside.windows(2).all(|p| p[1] <= p[0] + 0.5) && beside[0] > 8.0 && beside[6] < 3.0;
+                    let mid = lum(&a, 320, 180);
+                    let far = lum(&a, 600, 30);
+                    let grayv = (lum(&a, 80, 180), lum(&orig, 80, 180));
+                    let next_same = (0..w * h * 3).step_by(97).all(|i| (b[i] as i32 - orig[i] as i32).abs() <= 2);
+                    r.check("glow 0.5 on a white square: its middle and far black untouched, light beside it falling off, the gray untouched", falls && mid >= 253.0 && far <= 2.0 && (grayv.0 - grayv.1).abs() <= 2.0, &format!("beside at 1/3/6/10/15/25/40 px {beside:.0?}; middle {mid:.0}, far {far:.0}, gray {:.0} (was {:.0}) (the preview: 42 at 1 px, 13 at 6 px, 0 by 15 px)", grayv.0, grayv.1));
+                    r.check("glow on range 1 leaves range 2 untouched", next_same, "");
+                } else {
+                    r.check("glow: frames read", false, "");
+                }
+                let _ = fs::remove_file(out);
+            }
+            Err(e) => r.check("glow on a white square", false, &e),
+        }
+        // The two PNG frames for B's preview (the test picture as a still).
+        if let Some(png_dir) = std::env::var_os("GLINT_LOOK_PNG_DIR").map(PathBuf::from) {
+            let _ = fs::create_dir_all(&png_dir);
+            let still = dir.join("look-test.png");
+            let test_pic = "color=c=black:s=640x360:d=1,drawbox=x=280:y=140:w=80:h=80:c=white:t=fill,drawbox=x=40:y=140:w=80:h=80:c=0x646464:t=fill,drawbox=x=440:y=60:w=160:h=60:c=0xd04030:t=fill,drawbox=x=440:y=240:w=160:h=60:c=0x30a0e0:t=fill";
+            let _ = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", test_pic, "-frames:v", "1", &still.to_string_lossy()]);
+            let mut made = Vec::new();
+            for (name, c) in [("dark-fantasy", crate::rules::look_color(s, "Dark fantasy")), ("glow-0.5", Some(Color { glow: 0.5, ..Default::default() }))] {
+                let (Some(c), true) = (c, still.is_file()) else { continue };
+                let f = look_filter(ffmpeg, &still, &c).unwrap_or_else(|| "null".into());
+                let outp = png_dir.join(format!("{name}.png"));
+                if run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-i", &still.to_string_lossy(), "-vf", &f, "-frames:v", "1", &outp.to_string_lossy()]).is_ok() {
+                    made.push(outp.to_string_lossy().into_owned());
+                }
+            }
+            let _ = fs::copy(&still, png_dir.join("test-picture.png"));
+            r.check("look frames written as PNG for the preview comparison", made.len() == 2, &format!("{} made", made.len()));
+        }
+    }
+    // Time: 10 s of 1440p60 with and without glow.
+    let big = dir.join("big.mp4");
+    if run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=2560x1440:r=60:d=10", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", &big.to_string_lossy()]).is_ok() {
+        let src = ClipMeta { fps: 60, ..library::register(ffmpeg, &big, "Big", "Test Game", "clip") };
+        let time = |c: Color| -> Option<f64> {
+            let t0 = std::time::Instant::now();
+            let m = export(s, &src, &ExportOpts { segments: vec![Range { start: 0.0, end: 10.0, color: Some(c), ..Default::default() }], ..Default::default() }, &mut |_| {}).ok()?;
+            let secs = t0.elapsed().as_secs_f64();
+            let _ = fs::remove_file(&m.path);
+            Some(secs)
+        };
+        let (a, b) = (time(Color { brightness: 1.05, ..Default::default() }), time(Color { brightness: 1.05, glow: 0.5, ..Default::default() }));
+        r.line(&format!("INFO glow cost on 10 s of 1440p60: {a:?} s without, {b:?} s with"));
+        r.check("glow: a 10 s 1440p export with glow works", b.is_some(), &format!("{a:?} / {b:?} s"));
+    }
+}
+
+/// 0.1.44: many audio clips of one file (past `SHARE_FILES_FROM`) share one input: the file is on the command line
+/// once, and each clip still plays exactly its own stretch at its own place (a beep a second in the file; clip j
+/// takes the beep at 2.5 s and is placed at 0.6 j s: its beep must start there, to the millisecond).
+fn shared_audio_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, dir: &Path) {
+    let beeps = dir.join("beeps.mp4");
+    if !flash_clip(ffmpeg, &beeps, 30, 6.0, false, 0.0) {
+        r.check("shared audio inputs: beep file made", false, "");
+        return;
+    }
+    let bp = beeps.to_string_lossy().into_owned();
+    let n = SHARE_FILES_FROM + 4;
+    let rows: Vec<AudioEdit> = (0..n).map(|j| AudioEdit { source: "file".into(), path: bp.clone(), offset: 0.5 + 0.4 * j as f64, trim_start: 2.45, length: 0.3, volume: 1.0, ..Default::default() }).collect();
+    let opts = ExportOpts { segments: vec![Range { start: 0.0, end: 8.0, ..Default::default() }], audio: rows, ..Default::default() };
+    let line = export_args(s, src, &opts).map(|a| a.join(" ")).unwrap_or_default();
+    let inputs = line.matches("beeps.mp4").count();
+    match export(s, src, &opts, &mut |_| {}) {
+        Ok(m) => {
+            let got = beep_times(ffmpeg, Path::new(&m.path));
+            let want: Vec<f64> = (0..n).map(|j| 0.5 + 0.4 * j as f64 + 0.05).collect();
+            let worst = want.iter().map(|w| got.iter().map(|g| (g - w).abs()).fold(f64::INFINITY, f64::min)).fold(0.0f64, f64::max);
+            r.check(&format!("{n} audio clips of one file: the file is one input, each clip's beep at its place"), inputs == 1 && got.len() == n && worst < 0.002, &format!("{inputs} inputs; {} beeps, worst {:.1} ms", got.len(), worst * 1000.0));
+            let _ = fs::remove_file(&m.path);
+        }
+        Err(e) => r.check(&format!("{n} audio clips of one file"), false, &e),
     }
 }
 
@@ -4829,6 +5215,9 @@ fn timeline_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, 
     }
     gap_checks(r, ffmpeg, s, src, (f_desk, f_mic), &tone_s);
     stream_checks(r, ffmpeg, s, src, dir, (300, f_desk, f_mic));
+    shared_audio_checks(r, ffmpeg, s, src, dir);
+    limiter_checks(r, ffmpeg, s, src, dir);
+    look_tg_checks(r, ffmpeg, s, dir);
     watchdog_checks(r, ffmpeg);
     tag_change_checks(r, ffmpeg, s, dir);
     sync_checks(r, ffmpeg, s, dir);

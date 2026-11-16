@@ -157,11 +157,15 @@ pub struct ColorPreset {
     pub gamma: f32,
     /// 0.1.41: 0 = off .. 1 (the export's unsharp, luma amount 1.5 x this).
     pub sharpness: f32,
+    /// 0.1.45: -1 (cool) .. +1 (warm), 0 = off (`editor::Color::temperature`); absent in older settings = 0.
+    pub temperature: f32,
+    /// 0.1.45: 0 = off .. 1 (`editor::Color::glow`); absent in older settings = 0.
+    pub glow: f32,
 }
 
 impl Default for ColorPreset {
     fn default() -> Self {
-        ColorPreset { name: String::new(), brightness: 1.0, contrast: 1.0, saturation: 1.0, gamma: 1.0, sharpness: 0.0 }
+        ColorPreset { name: String::new(), brightness: 1.0, contrast: 1.0, saturation: 1.0, gamma: 1.0, sharpness: 0.0, temperature: 0.0, glow: 0.0 }
     }
 }
 
@@ -316,6 +320,8 @@ pub struct Settings {
     /// Install a waiting update without being asked, while no game is running, Glint's
     /// window is closed and nothing is being rendered, exported or imported.
     pub update_auto: bool,
+    /// polls: ask the developer's server for open polls (polls.rs). Old settings load as true.
+    pub polls: bool,
     /// Interface language: "en", "ko" or "el".
     pub language: String,
     /// How many Blur renders may run at the same time; more wait in a queue.
@@ -428,6 +434,7 @@ impl Default for Settings {
             nav_opacity: 60,
             update_check: true,
             update_auto: true,
+            polls: true, // polls
             language: "en".into(),
             blur_parallel: 2,
             ui_zoom: 100,

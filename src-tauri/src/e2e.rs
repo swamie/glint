@@ -54,6 +54,12 @@ struct SourceSpec {
 struct ProjectSpec {
     sources: Vec<String>,
     missing: Vec<String>,
+    /// 0.1.44: through the REAL storage: these first sources are made an old project (its draft joined by a job, as
+    /// before 0.1.38), the rest added with `projects::add` (which turns it into one of references, the draft its
+    /// source 0), and the export reads the sources with `projexport::sources_of`, as the app does.
+    legacy: Vec<String>,
+    /// 0.1.44: the one source exported as a single clip is (`editor::export`, the `export_clip` path).
+    single: bool,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -496,6 +502,48 @@ fn read_project_frame(ffmpeg: &Path, file: &Path, t: f64, sources: &[SourceSpec]
     Some((Some("?".into()), 0.0))
 }
 
+/// The project of `sources` stored as the app stores it (0.1.44): `p.legacy` made an old project with a draft (a
+/// join job, as before 0.1.38), the rest added (`projects::add`: it becomes a project of references whose source 0
+/// is that draft), then read back by `projexport::sources_of`. The clips are put in a library of this run's own.
+fn through_storage(ffmpeg: &Path, sources: &[crate::projexport::Source], p: &ProjectSpec, work: &Path) -> Result<(crate::projexport::Target, Vec<crate::projexport::Source>), String> {
+    let core = crate::core::Core::new();
+    {
+        let mut st = core.settings.lock().unwrap();
+        st.clips_dir = work.to_string_lossy().into_owned();
+        st.game_folders = false;
+    }
+    core.jobs.connect(&core);
+    for x in sources {
+        let mut m = library::register(ffmpeg, Path::new(&x.path), &x.title, "Desktop", "clip");
+        m.id = x.clip.clone();
+        m.fps = x.fps;
+        core.lib.lock().unwrap().add(m);
+    }
+    let id_of = |name: &String| p.sources.iter().position(|n| n == name).map(|k| sources[k].clip.clone());
+    let first: Vec<String> = p.legacy.iter().filter_map(id_of).collect();
+    let more: Vec<String> = p.sources.iter().filter(|n| !p.legacy.contains(n)).filter_map(id_of).collect();
+    let job = crate::projects::join_clips_legacy(&core, first)?;
+    let t0 = std::time::Instant::now();
+    let done = loop {
+        let j = core.jobs.list().into_iter().find(|j| j.id == job.id).unwrap_or_default();
+        if !matches!(j.state.as_str(), "queued" | "running") {
+            break j;
+        }
+        if t0.elapsed().as_secs() > 120 {
+            return Err("the old project's join did not finish".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    if done.state != "done" {
+        return Err(format!("the old project's join: {} {}", done.state, done.message));
+    }
+    let id = done.result_id.clone();
+    if !more.is_empty() {
+        crate::projects::add(&core, &id, more)?;
+    }
+    crate::projexport::sources_of(&core, &id)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn project_scenario(r: &mut Report, ffmpeg: &Path, s: &Settings, spec: &ClipSpec, dir: &Path, work: &Path, label: &str, p: &ProjectSpec, opts: &ExportOpts, want: &Expect, ref_song: Option<f64>) {
     use crate::projexport::{self, Source, Target};
@@ -525,12 +573,39 @@ fn project_scenario(r: &mut Report, ffmpeg: &Path, s: &Settings, spec: &ClipSpec
             }
         }
     }
+    let mut target = Target { id: format!("e2e-{}", util::new_id()), title: "E2E project".into(), game: "Desktop".into(), folder: String::new() };
+    if !p.legacy.is_empty() {
+        match through_storage(ffmpeg, &sources, p, work) {
+            Ok((t, from_store)) => {
+                r.line(&format!("INFO {label}: the stored project reads as {} sources: {:?}", from_store.len(), from_store.iter().map(|x| (x.title.clone(), x.start, x.duration)).collect::<Vec<_>>()));
+                target = t;
+                sources = from_store;
+            }
+            Err(e) => {
+                r.check(&format!("{label}: the project is stored and read back"), false, &e);
+                return;
+            }
+        }
+    }
+    // 0.1.44: rows by role name the sources "#k" (the k-th source of the project): their real clip ids.
+    for m in &mut opts.track_map {
+        if let Some(k) = m.clip.strip_prefix('#').and_then(|x| x.parse::<usize>().ok()) {
+            if let Some(x) = sources.get(k) {
+                m.clip = x.clip.clone();
+            }
+        }
+    }
     let opts = &opts;
-    let target = Target { id: format!("e2e-{}", util::new_id()), title: "E2E project".into(), game: "Desktop".into(), folder: String::new() };
     let results = |w: &Path| std::fs::read_dir(w).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "mp4")).count()).unwrap_or(0);
     let (joins0, files0) = (projexport::JOINS_MADE.load(Ordering::SeqCst), results(work));
     let started = std::time::Instant::now();
-    let res = projexport::export(s, &target, &sources, opts, &mut |_, _| {});
+    let res = if p.single {
+        // The `export_clip` path: the clip itself, its own options.
+        let meta = library::ClipMeta { id: sources[0].clip.clone(), path: sources[0].path.clone(), title: sources[0].title.clone(), duration: sources[0].duration, fps: sources[0].fps, kind: "clip".into(), ..Default::default() };
+        editor::export(s, &meta, opts, &mut |_| {})
+    } else {
+        projexport::export(s, &target, &sources, opts, &mut |_, _| {})
+    };
     let joined = projexport::JOINS_MADE.load(Ordering::SeqCst) > joins0;
     let left = projexport::leftovers();
     r.check(&format!("{label}: no temporary working file left"), left.is_empty(), &format!("{left:?}"));

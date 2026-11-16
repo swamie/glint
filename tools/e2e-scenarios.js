@@ -40,6 +40,13 @@ const CLIP = { duration: 20, width: 640, height: 360, fps: 30, bar: 8, tone: 100
     // An old project's draft working file (F1): its picture changes colour tags half way (the owner's hang).
     { name: "D1", duration: 8, width: 640, height: 360, fps: 30, bar: 8, band: 2, tone: 1200, tags_change: true, tracks: [{ title: "Mix", tone: true }, { title: "Desktop", tone: true }, { title: "Microphone", tone: false }] },
     { name: "S4", duration: 6, width: 640, height: 360, fps: 30, bar: 8, band: 1, tone: 1800, tracks: [{ title: "Microphone", tone: true }, { title: "Desktop", tone: false }] },
+    // 0.1.44, rows by role: a Glint clip (Mix, Desktop, Microphone: each its own tone, so a doubled mix is heard), a
+    // second one, a Medal-style clip (All Audio, All PC Audio, Mic) and a recorder that names nothing (Track 1..4).
+    { name: "G1", duration: 6, width: 640, height: 360, fps: 30, bar: 8, band: 0, tone: 1100, tracks: [{ title: "Mix", tone: true, freq: 500 }, { title: "Desktop", tone: true, freq: 1100 }, { title: "Microphone", tone: true, freq: 2200 }] },
+    { name: "G2", duration: 6, width: 640, height: 360, fps: 30, bar: 8, band: 1, tone: 1400, tracks: [{ title: "Mix", tone: true, freq: 700 }, { title: "Desktop", tone: true, freq: 1400 }, { title: "Microphone", tone: true, freq: 2800 }] },
+    { name: "M1", duration: 6, width: 640, height: 360, fps: 30, bar: 8, band: 2, tone: 1700, tracks: [{ title: "All Audio", tone: true, freq: 900 }, { title: "All PC Audio", tone: true, freq: 1700 }, { title: "Mic", tone: true, freq: 3200 }] },
+    { name: "M2", duration: 6, width: 640, height: 360, fps: 30, bar: 8, band: 2, tone: 1250, tracks: [{ title: "All Audio", tone: true, freq: 450 }, { title: "All PC Audio", tone: true, freq: 1250 }, { title: "Mic", tone: true, freq: 2900 }, { title: "Track 4", tone: true, freq: 5200 }] },
+    { name: "U1", duration: 6, width: 640, height: 360, fps: 30, bar: 8, band: 1, tone: 1900, tracks: [{ title: "Track 1", tone: true, freq: 1900 }, { title: "Track 2", tone: true, freq: 600 }, { title: "Track 3", tone: true, freq: 2700 }, { title: "Track 4", tone: true, freq: 3500 }] },
   ] };
 fs.writeFileSync(path.join(dir, "clip.json"), JSON.stringify(CLIP, null, 2));
 
@@ -626,7 +633,69 @@ if (has139) {
   check("D1 3..6 last", em.emPutBeside(m, em.emPieceAt(m, 6 + 3.5), em.emPieceAt(m, 12), true));
   const layout = [{ k: 1, s: 0, len: 6 }, { k: 0, s: 0, len: 2 }, { k: 0, s: 6, len: 2 }, { k: 0, s: 3, len: 3 }];
   files.push({ name: "F1: an old project's draft (colour tags change in it) + an added clip, edited across both", checks, opts: em.emToOpts(m), expect: projectExpect(["D1", "S2"], layout, { joined: true }), project: { sources: ["D1", "S2"], missing: [] }, model: modelName() });
-}if (missing.length) console.log(`note: not in ui/editmodel.js yet: ${missing.join(", ")} (0.1.36 functions used; scenarios that need them left out)`);
+}// ---- 0.1.44, audio rows by role (CONTRACT_0144R; B's model: emRoleRows, emSimplifyRows, emNewRoles, emToOpts with
+// track_map / track_over). The sources are named "#k" (the k-th source); the Rust half puts in the real clip ids. The
+// last scenario goes through the REAL storage: an old project (a draft of G1 + G2) to which M1 is added.
+const hasRoleRows = ["emRoleRows", "emSimplifyRows", "emNewRoles", "emRowsMode"].every((n) => typeof em[n] === "function");
+if (hasRoleRows) {
+  const tracksOf = (x) => x.tracks.map((t, index) => ({ index, title: t.title }));
+  // A titles-mode project of `names` (as every edit before 0.1.44) with its sources known: `list` = the sources as the
+  // project stores them ({ duration, tracks }), by default one per name.
+  const roleProject = (names, list) => {
+    const pm = projectModel(names);
+    const L = list || names.map((n) => ({ duration: byName(n).duration, tracks: tracksOf(byName(n)) }));
+    let at = 0;
+    pm.m.sources = L.map((x, k) => { const s = { clip: `#${k}`, start: at, duration: x.duration, tracksAll: x.tracks, game: "" }; at += x.duration; return s; });
+    return pm;
+  };
+  const role = (names, label, prep, want, tonesOf, extra = {}, list = null) => {
+    const checks = [];
+    const check = (name, ok, detail = "") => checks.push({ name, ok: !!ok, detail: String(detail) });
+    const { m } = roleProject(names, list);
+    if (prep) prep(m, check);
+    const r = em.emSimplifyRows(m);
+    check("simplified to rows by role", r && em.emRowsMode(m) === "roles", JSON.stringify(r));
+    check(`rows: ${want.rows.join(", ")}`, JSON.stringify(m.trackTitles) === JSON.stringify(want.rows), JSON.stringify(m.trackTitles));
+    const opts = em.emToOpts(m);
+    check("a track_map entry per source", Array.isArray(opts.track_map) && opts.track_map.length === (list || names).length, JSON.stringify(opts.track_map));
+    if (want.over !== undefined) check(`${want.over} piece(s) keep another stream`, (opts.track_over || []).length === want.over, JSON.stringify(opts.track_over));
+    const layout = names.map((n, k) => ({ k, s: 0, len: byName(n).duration }));
+    files.push({ name: label, checks, opts, expect: projectExpect(names, layout, { joined: names.length > 1, tones: tonesOf }), project: { sources: names, missing: [], ...extra }, model: modelName() });
+  };
+  role(["G1", "M1", "U1"], "rows by role: a Glint clip, a Medal-style clip, an untitled 4-track clip (no doubling)", null,
+    { rows: ["Desktop", "Mic", "Clip audio"], over: 0 },
+    [heard(1100, 0.15, 5.85), heard(2200, 0.15, 5.85), quiet(500, 0.2, 5.8), heard(1700, 6.15, 11.85), heard(3200, 6.15, 11.85), quiet(900, 6.2, 11.8), heard(1900, 12.15, 17.85), quiet(600, 12.2, 17.8), quiet(2700, 12.2, 17.8)]);
+  role(["G1", "M1"], "rows by role: where only the mix was heard, the mix plays on the role row", (m, check) => {
+    // As the owner's projects had it: the ready-made mix as a row of its own ("All Audio"), and on M1's piece only it heard.
+    const i = em.emSegmentAt(m, 9), n = m.removed.length, k = m.trackTitles.length;
+    m.audio.splice(k, 0, { id: `t${k}`, kind: "track", index: k, title: "All Audio", path: "", volume: 1, muted: false, gains: Array(n).fill(1) });
+    m.trackTitles.push("All Audio");
+    m.tracks0 = m.trackTitles.map((title, x) => ({ index: x, title }));
+    for (const r of m.audio.filter((x) => x.kind === "track" && (x.title === "All PC Audio" || x.title === "Mic"))) r.gains[i] = 0;
+    check("M1's own tracks silenced, its mix heard", i >= 0, i);
+  }, { rows: ["Desktop", "Mic"], over: 1 },
+    [heard(1100, 0.15, 5.85), heard(2200, 0.15, 5.85), heard(900, 6.15, 11.85), quiet(1700, 6.2, 11.8), quiet(3200, 6.2, 11.8)]);
+  {
+    // A single Medal-style clip (the export_clip path): its two role rows, not its tracks as recorded.
+    const checks = [];
+    const check = (name, ok, detail = "") => checks.push({ name, ok: !!ok, detail: String(detail) });
+    const m = em.emNewRoles(6, tracksOf(byName("M2")), "");
+    const opts = em.emToOpts(m);
+    const rows = (opts.audio || []).filter((e) => e.source === "track").map((e) => e.index);
+    check("its rows play All PC Audio and Mic (streams 1 and 2), not as recorded", JSON.stringify(rows) === "[1,2]", JSON.stringify(opts.audio));
+    check("no track_map for a single clip", !opts.track_map, JSON.stringify(opts.track_map));
+    files.push({ name: "rows by role: a single Medal-style clip (4 tracks)", checks, opts, expect: projectExpect(["M2"], [{ k: 0, s: 0, len: 6 }], { tones: [heard(1250, 0.15, 5.85), heard(2900, 0.15, 5.85), quiet(450, 0.2, 5.8), quiet(5200, 0.2, 5.8)] }), project: { sources: ["M2"], missing: [], single: true }, model: modelName() });
+  }
+  // Through the real storage: an old project (a draft joined from G1 and G2), then M1 added: source 0 is the draft.
+  role(["G1", "G2", "M1"], "rows by role through the stored project: an old draft (G1 + G2), M1 added", null,
+    { rows: ["Desktop", "Mic"], over: 0 },
+    [heard(1100, 0.15, 5.85), heard(2200, 0.15, 5.85), quiet(500, 0.2, 5.8), heard(1400, 6.15, 11.85), heard(2800, 6.15, 11.85), quiet(700, 6.2, 11.8), heard(1700, 12.15, 17.85), heard(3200, 12.15, 17.85), quiet(900, 12.2, 17.8)],
+    { legacy: ["G1", "G2"] },
+    [{ duration: 12, tracks: tracksOf(byName("G1")) }, { duration: 6, tracks: tracksOf(byName("M1")) }]);
+} else {
+  files.push({ name: "0.1.44 scenarios (rows by role)", checks: [{ name: "the model has emRoleRows, emSimplifyRows, emNewRoles, emRowsMode", ok: false, detail: "missing" }], opts: null, expect: null, model: modelName() });
+}
+if (missing.length) console.log(`note: not in ui/editmodel.js yet: ${missing.join(", ")} (0.1.36 functions used; scenarios that need them left out)`);
 files.forEach((f, i) => fs.writeFileSync(path.join(dir, `s${String(i + 1).padStart(2, "0")}.json`), JSON.stringify(f, null, 2)));
 const bad = files.reduce((n, f) => n + f.checks.filter((c) => !c.ok).length, 0);
 console.log(`${files.length} scenarios written to ${dir} (model: ${modelName()}); model checks failing: ${bad}`);

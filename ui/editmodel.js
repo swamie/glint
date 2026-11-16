@@ -53,12 +53,16 @@ const EM_MARK_BACK = 0.3;  // "previous bookmark" skips one the playhead is this
 // 0.1.41 (P): `sharpness` 0..1 (0 = off; the export maps it to ffmpeg unsharp). It is kept in a color ONLY while it is
 // on (emSetColor removes it at 0): a color without it reads as 0, and an edit that does not use it is stored, saved and
 // sent (emColorOut) exactly as before.
-const EM_COLOR_KEYS = ["brightness", "contrast", "saturation", "gamma", "sharpness"];
+// 0.1.45: `temperature` -1 (cool) .. +1 (warm) and `glow` 0..1, the same way: 0 = off, kept only while on, an older
+// color reads them as 0, sent only when not 0.
+const EM_COLOR_KEYS = ["brightness", "contrast", "saturation", "gamma", "sharpness", "temperature", "glow"];
+/** The color keys whose neutral value is 0 (kept in a color only while not 0), with their range. */
+const EM_COLOR_ZERO = { sharpness: [0, 1], temperature: [-1, 1], glow: [0, 1] };
 const emNoColor = () => ({ brightness: 1, contrast: 1, saturation: 1, gamma: 1 });
-/** A color key's neutral value: 0 for sharpness, 1 for the others. */
-const emColorDef = (k) => (k === "sharpness" ? 0 : 1);
-/** A color as emToOpts sends it: `sharpness` only when it is on. */
-const emColorOut = (c) => { const o = { ...c }; if (!(+o.sharpness > 0)) delete o.sharpness; return o; };
+/** A color key's neutral value: 0 for sharpness, temperature and glow, 1 for the others. */
+const emColorDef = (k) => (k in EM_COLOR_ZERO ? 0 : 1);
+/** A color as emToOpts sends it: sharpness, temperature and glow only when they are on. */
+const emColorOut = (c) => { const o = { ...c }; for (const k of Object.keys(EM_COLOR_ZERO)) if (!(Math.abs(+o[k]) > 0)) delete o[k]; return o; };
 const EM_SPEED_MIN = 0.25, EM_SPEED_MAX = 4; // a piece's own speed (0.1.41)
 /** A part's own speed (0.1.41): 1 when it has none (or for a gap). */
 const emPartSp = (p) => (p && !p.gap && Number.isFinite(p.speed) && p.speed > 0 ? p.speed : 1);
@@ -117,7 +121,8 @@ function emSegmentAt(m, t) {
 // The part order is in the snapshot only when there are parts, so a normal clip's snapshots are as before.
 // Overlays and fades likewise, only when there are any.
 const emHasLayers = (m) => !!((m.overlays && m.overlays.length) || m.fadeIn > 0 || m.fadeOut > 0);
-const emState = (m) => JSON.stringify({ cuts: m.cuts, removed: m.removed, audio: m.audio, speed: m.speed, colors: m.colors, blank: m.blank, ...(m.parts ? { parts: m.parts } : {}), ...(emHasLayers(m) ? { ov: m.overlays || [], fi: m.fadeIn || 0, fo: m.fadeOut || 0 } : {}), ...(m.canvas ? { cv: m.canvas } : {}), ...(m.lanes && m.lanes.length ? { lanes: m.lanes } : {}) });
+const emState = (m) => JSON.stringify({ cuts: m.cuts, removed: m.removed, audio: m.audio, speed: m.speed, colors: m.colors, blank: m.blank, ...(m.parts ? { parts: m.parts } : {}), ...(emHasLayers(m) ? { ov: m.overlays || [], fi: m.fadeIn || 0, fo: m.fadeOut || 0 } : {}), ...(m.canvas ? { cv: m.canvas } : {}), ...(m.lanes && m.lanes.length ? { lanes: m.lanes } : {}),
+  ...(m.rowsMode ? { rm: m.rowsMode, t0: m.tracks0 || [] } : {}), ...(Array.isArray(m.trackTitles) ? { tt: m.trackTitles } : {}) }); // rows by role (0.1.44); a project's row names
 function emRestore(m, json) {
   const s = JSON.parse(json);
   m.overlays = Array.isArray(s.ov) ? s.ov : [];
@@ -141,6 +146,11 @@ function emRestore(m, json) {
   m.colors = s.colors;
   m.blank = s.blank;
   m.lanes = Array.isArray(s.lanes) ? s.lanes : []; // the added audio rows (0.1.39)
+  // Rows by role or by title (0.1.44): a snapshot taken in a mode has it; the row names of a project go with it.
+  if (s.rm === "roles" || s.rm === "titles") m.rowsMode = s.rm; else delete m.rowsMode;
+  if (Array.isArray(s.tt)) m.trackTitles = s.tt.slice();
+  // The rows the clip first had (emTracksGone) go with the mode: a step from before a mode change has the old ones.
+  if (Array.isArray(s.t0)) m.tracks0 = s.t0; else if (Array.isArray(m.tracks0Base)) m.tracks0 = m.tracks0Base;
   emPiecify(m, true); // an undo step from before 0.1.37 (its bookmarks were already moved with the parts above)
   emRowsThrough(m);   // ... or with a row cut with the video (0.1.38: every file row plays through)
   emNormLanes(m);     // ... or with file rows that were their own rows (0.1.39: audio clips on rows)
@@ -1128,6 +1138,7 @@ function emStateSave(m, joins, undo) {
     overlays: m.overlays || [], fadeIn: m.fadeIn || 0, fadeOut: m.fadeOut || 0,
     canvas: m.canvas || null,
     gone: emTracksGone(m).map((x) => x.title), // the clip's own tracks that were deleted, by title
+    ...(m.rowsMode ? { rows_mode: m.rowsMode } : {}), // rows by role or by title (0.1.44); absent: an edit from before, by title
     ...(m.lanes && m.lanes.length ? { lanes: m.lanes } : {}), // the added audio rows (0.1.39)
   };
   if (undo) { s.undo = m.undo.slice(); s.redo = m.redo.slice(); }
@@ -1145,7 +1156,7 @@ function emStateOk(s) {
   if (!Array.isArray(s.removed) || s.removed.length !== n || !s.removed.some((r) => !r)) return false;
   if (!Array.isArray(s.blank) || s.blank.length !== n) return false;
   // `sharpness` (0.1.41) may be absent: a color saved before it reads as 0 (emStateLoad fills it in).
-  if (!Array.isArray(s.colors) || s.colors.length !== n || !s.colors.every((c) => c && typeof c === "object" && EM_COLOR_KEYS.every((k) => num(c[k]) || (k === "sharpness" && c[k] == null)))) return false;
+  if (!Array.isArray(s.colors) || s.colors.length !== n || !s.colors.every((c) => c && typeof c === "object" && EM_COLOR_KEYS.every((k) => num(c[k]) || (k in EM_COLOR_ZERO && c[k] == null)))) return false; // temperature, glow (0.1.45) too
   if (!num(s.speed) || s.speed < 0.25 || s.speed > 4) return false;
   if (!Array.isArray(s.joins) || !s.joins.every(num)) return false;
   if (!Array.isArray(s.audio) || !s.audio.every((r) => r && (r.kind === "track" || r.kind === "file") && Array.isArray(r.gains) && r.gains.length === n && r.gains.every(num) && num(r.volume)
@@ -1236,7 +1247,7 @@ function emStateLoad(m, s) {
   const files = s.audio.filter((r) => r.kind === "file").map((r) => ({ ...r, gains: r.gains.slice(), ...(laneIds.has(r.lane) ? { lane: laneIds.get(r.lane) } : {}) }));
   // With gaps or a lifted piece (0.1.36) the parts say how long the row is; `duration` stays the source's.
   const whole = Array.isArray(s.parts) && s.parts.length === 1 && !s.parts[0].gap && !s.parts[0].noSound && !s.parts[0].group && emPartSp(s.parts[0]) === 1 && Math.abs(s.parts[0].src) < 1e-6 && Math.abs(s.parts[0].len - s.duration) < 1e-3;
-  m.parts = Array.isArray(s.parts) && s.parts.length >= 1 && !whole ? s.parts.map((p) => (p.gap ? { src: -1, len: p.len, title: "", gap: true } : { src: p.src, len: p.len, title: p.title, ...(p.noSound ? { noSound: true } : {}), ...(typeof p.group === "string" ? { group: p.group } : {}), ...(emPartSp(p) !== 1 ? { speed: p.speed } : {}) })) : null;
+  m.parts = Array.isArray(s.parts) && s.parts.length >= 1 && !whole ? s.parts.map((p) => (p.gap ? { src: -1, len: p.len, title: "", gap: true } : { src: p.src, len: p.len, title: p.title, ...(p.noSound ? { noSound: true } : {}), ...(typeof p.group === "string" ? { group: p.group } : {}), ...(emPartSp(p) !== 1 ? { speed: p.speed } : {}), ...(emOverOk(p.over) ? { over: { ...p.over } } : {}) })) : null;
   m.duration = m.parts ? m.parts.reduce((a, p) => a + p.len, 0) : s.duration;
   // R1: with parts the source's length is always kept (it used to be dropped when the parts added up to it, and then
   // lost for good when the I / O keys dropped a piece: footage limits, emStateSave's `duration`).
@@ -1254,6 +1265,8 @@ function emStateLoad(m, s) {
   m.canvas = s.canvas ? JSON.parse(JSON.stringify(s.canvas)) : null;
   m.lanes = Array.isArray(s.lanes) ? JSON.parse(JSON.stringify(s.lanes)).filter((L) => L && typeof L.id === "string") : [];
   emSetMarks(m, s.marks);
+  // 0.1.44: rows by role ("roles") or by title (an edit from before has none: by title, exactly as it was).
+  if (s.rows_mode === "roles" || s.rows_mode === "titles") m.rowsMode = s.rows_mode; else delete m.rowsMode;
   // The undo history only when the rows are the same ones (their paths are refreshed).
   const keep = (list) => (sameTracks && Array.isArray(list) ? list.filter((x) => typeof x === "string").map((json) => {
     try {
@@ -1351,7 +1364,8 @@ function emSetColor(m, segs, change) {
     for (const k of EM_COLOR_KEYS) {
       if (!(k in change) || !Number.isFinite(+change[k])) continue;
       // Sharpness (0.1.41): 0..1, kept only while it is on (0 removes it: the color is then as it was before it existed).
-      if (k === "sharpness") { const x = Math.min(1, Math.max(0, +change[k])); if (x > 0) m.colors[i].sharpness = x; else delete m.colors[i].sharpness; }
+      // Temperature and glow (0.1.45) the same way, in their own ranges.
+      if (k in EM_COLOR_ZERO) { const [lo, hi] = EM_COLOR_ZERO[k], x = Math.min(hi, Math.max(lo, +change[k])); if (Math.abs(x) > 1e-9) m.colors[i][k] = x; else delete m.colors[i][k]; }
       else m.colors[i][k] = +change[k];
     }
     any = true;
@@ -1816,10 +1830,13 @@ function emUngroup(m, sels) {
     const lim = emLimits(m, P.src, P.len);
     for (const row of m.audio.filter((r) => r.kind === "track")) {
       if (row.muted || !(row.volume > 0.005) || !((row.gains[i] ?? 1) > 0.005) || emGameHidden(m, row, i)) continue;
-      let path = m.clipPath || "", stream = row.index, trim = P.src, fileDur = emKeepSource(m), flo = lim.lo, fhi = lim.hi, clip = "";
+      // A role row (0.1.44): the stream it plays in this piece (its own choice there, else its role's in that clip).
+      const own = emOverOk(part.over) && Number.isInteger(part.over[row.title]) ? part.over[row.title] : null;
+      let path = m.clipPath || "", stream = own ?? row.index, trim = P.src, fileDur = emKeepSource(m), flo = lim.lo, fhi = lim.hi, clip = "";
       if (Array.isArray(m.sources) && m.sources.length) {
         const k = emSourceAt(m.sources, P.src + P.len / 2), src = m.sources[k];
-        const tr = (src?.tracks || []).find((x) => (x.title || `Track ${x.index + 1}`) === row.title);
+        const st = own ?? (row.role ? emRowStream(src, row) : -1);
+        const tr = row.role ? (st >= 0 ? { index: st } : null) : (src?.tracks || []).find((x) => (x.title || `Track ${x.index + 1}`) === row.title);
         if (!src || src.missing || !tr) continue; // that clip has no such track
         path = src.path; stream = tr.index; trim = P.src - src.start; fileDur = src.duration; flo = 0; fhi = src.duration; clip = src.clip || "";
       }
@@ -1898,6 +1915,307 @@ const emIsPlainCut = (m) => !emHasLayers(m) && !m.canvas && emKept(m).length ===
 const emChanged = (m) => !(emIsPlainCut(m) && m.removed.every((r) => !r));
 
 const emRound = (x) => Math.round(x * 1000) / 1000;
+
+/* ---------- audio rows by role (0.1.44) ----------
+ * A clip's own sound is shown as at most four rows, by what it is, not by the track's name (recorders name them
+ * differently): Desktop, Mic, Game, and "Clip audio" for a clip that has none of those three (its ready-made mix, else
+ * its first track). A ready-made mix of a clip that also has role tracks is not shown (it would double them). The
+ * mode is m.rowsMode: "roles", or "titles" (one row per track title, as before 0.1.44; also an edit saved before,
+ * which has no mode: emRowsMode says "titles"). A role row is a track row with `role`; in a project its `index` is its
+ * place in m.trackTitles (the row names), in a single clip the stream it plays. A piece may play another stream on a
+ * role row: part.over = { <row title>: stream } (emSimplifyRows: "only the mix was audible there"). */
+/** The titles of each role, compared without case, spaces, "-" and "_". One place: add a recorder's names here. */
+const EM_ROLE_TITLES = {
+  desktop: ["Desktop", "Desktop audio", "All PC Audio", "PC Audio", "System", "System Audio", "Computer", "Game + Desktop"],
+  mic: ["Microphone", "Mic", "Mic audio", "Voice", "Input"],
+  game: ["Game", "Game audio"],
+  mix: ["Mix", "All Audio", "Master", "Full Mix"],
+};
+/** The rows by role, in their order, with their names. */
+const EM_ROLES = [["desktop", "Desktop"], ["mic", "Mic"], ["game", "Game"], ["clip", "Clip audio"]];
+const emRoleKey = (title) => String(title ?? "").toLowerCase().replace(/[\s_\-]+/g, "");
+const EM_ROLE_KEYS = Object.entries(EM_ROLE_TITLES).map(([role, list]) => [role, new Set(list.map(emRoleKey))]);
+/** What a track titled `title` is: "desktop" | "mic" | "game" | "mix" | "". */
+function emTrackRole(title) {
+  const k = emRoleKey(title);
+  for (const [role, keys] of EM_ROLE_KEYS) if (keys.has(k)) return role;
+  return "";
+}
+/** The role of a row by its name in role mode ("Clip audio" -> "clip"), or "" (a named track's own row: "other"). */
+const emRoleOfName = (title) => (EM_ROLES.find((r) => r[1] === title) || [""])[0];
+/* A track named after the game (Medal names one after it: "Overwatch") is that clip's Game track: the clip's own game
+ * (`game` of the source), else any game Glint knows (emSetKnownGames, from the library), compared without case and a
+ * trailing " audio". */
+let emKnownGames = new Set();
+const emGameKey = (s) => String(s ?? "").toLowerCase().replace(/\s+audio\s*$/, "").replace(/\s+/g, " ").trim();
+/** The games Glint knows (their names), for emTrackRoleIn. */
+function emSetKnownGames(list) { emKnownGames = new Set((Array.isArray(list) ? list : []).map(emGameKey).filter((x) => x && x !== "desktop")); }
+/** True for a track with no real name: empty, or "Track N" (a recorder that names none). */
+const emUntitled = (title) => { const s = String(title ?? "").trim(); return !s || /^track\s*\d+$/i.test(s); };
+/** What track `x` of a clip whose game is `game` is: emTrackRole, or "game" for a track named after the game. */
+function emTrackRoleIn(x, game) {
+  const r = emTrackRole(x?.title);
+  if (r) return r;
+  const k = emGameKey(x?.title);
+  return k && ((game && k === emGameKey(game)) || emKnownGames.has(k)) ? "game" : "";
+}
+/**
+ * The stream of `tracks` ([{ index, title }]: ALL of a clip's audio tracks, the mix included) that row role `role`
+ * plays, or -1. `opt`: { game: the clip's game, title: the row's title (for "other") }.
+ *   desktop / mic / game  the first track of that role (a track named after the game is its Game track when it has
+ *                         no Game track of its own: the real one comes first);
+ *   clip                  only for a clip with no desktop / mic / game track: its ready-made mix, else its first track;
+ *   other                 a NAMED track that no row above plays (not a mix, not "Track N"), the one titled `opt.title`.
+ */
+function emRoleStream(tracks, role, opt) {
+  const game = opt?.game || "";
+  const L = (Array.isArray(tracks) ? tracks : []).filter((x) => x && Number.isFinite(+x.index)).slice().sort((a, b) => a.index - b.index);
+  if (role === "game") { const real = L.find((x) => emTrackRole(x.title) === "game") || L.find((x) => emTrackRoleIn(x, game) === "game"); return real ? +real.index : -1; }
+  const find = (r) => L.find((x) => emTrackRoleIn(x, game) === r);
+  if (role === "desktop" || role === "mic") { const x = find(role); return x ? +x.index : -1; }
+  const hasRoles = !!(find("desktop") || find("mic") || find("game"));
+  const clipSt = hasRoles ? -1 : (find("mix") ? +find("mix").index : L.length ? +L[0].index : -1);
+  if (role === "clip") return clipSt;
+  if (role === "other") {
+    const used = new Set(["desktop", "mic", "game"].map((r) => emRoleStream(L, r, opt)).concat([clipSt]));
+    const x = L.find((y) => !used.has(+y.index) && !emUntitled(y.title) && emTrackRoleIn(y, game) !== "mix" && emRoleKey(y.title) === emRoleKey(opt?.title));
+    return x ? +x.index : -1;
+  }
+  return -1;
+}
+/** The named tracks of a clip that keep a row of their own (role "other"): not played by a role row, not a mix, not
+ *  untitled. Their titles, in the clip's order. */
+function emOtherTitles(tracks, game) {
+  const L = (Array.isArray(tracks) ? tracks : []).filter((x) => x && Number.isFinite(+x.index));
+  return L.filter((x) => emRoleStream(L, "other", { game, title: x.title }) === +x.index).sort((a, b) => a.index - b.index).map((x) => x.title);
+}
+/** The stream source `s` plays on row `row` (its role, its own title for "other"). */
+const emRowStream = (s, row) => emRoleStream(s?.tracksAll || s?.tracks || [], row?.role || emRoleOfName(row?.title) || "other", { game: s?.game || "", title: row?.title });
+/** The rows by role of these sources ([{ clip, tracks, game }], `tracksAll` preferred when given) and each source's
+ *  stream per row: { rows: [{ role, title }], map: [{ clip, streams }] } (-1: that source has nothing for the row).
+ *  After Desktop, Mic, Game, Clip audio: one row per other NAMED track (role "other", under its own title). */
+function emRoleRows(sources) {
+  const S = (Array.isArray(sources) ? sources : []).map((s) => ({ clip: String(s?.clip ?? s?.id ?? ""), tracks: s?.tracksAll || s?.tracks || [], game: s?.game || "" }));
+  const rows = EM_ROLES.filter(([role]) => S.some((s) => emRoleStream(s.tracks, role, s) >= 0)).map(([role, title]) => ({ role, title }));
+  const taken = new Set(rows.map((r) => emRoleKey(r.title)));
+  for (const s of S) for (const title of emOtherTitles(s.tracks, s.game)) { const k = emRoleKey(title); if (!taken.has(k)) { taken.add(k); rows.push({ role: "other", title }); } }
+  return { rows, map: S.map((s) => ({ clip: s.clip, streams: rows.map((r) => emRoleStream(s.tracks, r.role, { game: s.game, title: r.title })) })) };
+}
+/** "roles" or "titles" (an edit from before 0.1.44 has no mode: "titles"). */
+const emRowsMode = (m) => (m && m.rowsMode === "roles" ? "roles" : "titles");
+/** A part's per-row stream choice as saved: { <row title>: stream }. */
+const emOverOk = (o) => !!o && typeof o === "object" && !Array.isArray(o) && Object.values(o).every((x) => Number.isInteger(x) && x >= 0);
+/** A single clip's own track rows by role (0.1.44): the rows emNew would make from `tracks`, chosen by role. */
+function emRoleTrackRows(tracks, n, game) {
+  const L = Array.isArray(tracks) ? tracks : [];
+  const out = [];
+  const roles = [...EM_ROLES.map((r) => [r[0], ""]), ...emOtherTitles(L, game).map((title) => ["other", title])];
+  for (const [role, title] of roles) {
+    const s = emRoleStream(L, role, { game, title });
+    const x = s >= 0 ? L.find((y) => +y.index === s) : null;
+    if (x) out.push({ id: `t${x.index}`, kind: "track", index: x.index, title: x.title || `Track ${x.index + 1}`, path: x.path || "", volume: 1, muted: false, gains: Array(n).fill(1), role });
+  }
+  return out;
+}
+/** A fresh model of a single clip with its rows by role (0.1.44). For a Glint clip (Mix, Desktop, Microphone[, Game])
+ *  the rows are emNew's: the same ids, titles, streams and levels, so its export is byte for byte the same.
+ *  `game`: the clip's game (a track named after it is its Game track). */
+function emNewRoles(duration, tracks, game) {
+  const m = emNew(duration, []);
+  m.clipGame = game || "";
+  m.audio = emRoleTrackRows(tracks, m.removed.length, m.clipGame);
+  m.tracks0 = m.audio.map((r) => ({ index: r.index, title: r.title }));
+  m.tracksAll = (Array.isArray(tracks) ? tracks : []).map((x) => ({ index: x.index, title: x.title, path: x.path || "" }));
+  m.rowsMode = "roles";
+  return m;
+}
+/** The sources the rows come from: a project's (m.sources), or the single clip itself (m.tracksAll). */
+const emRowSources = (m) => (Array.isArray(m.sources) && m.sources.length ? m.sources : [{ clip: m.clipId || "", start: 0, duration: Number.isFinite(m.source) ? m.source : m.duration, tracksAll: m.tracksAll || [], game: m.clipGame || "" }]);
+const emIsProject = (m) => Array.isArray(m.sources) && m.sources.length > 0;
+/** The source (index into emRowSources) piece `i` of V1 shows, or -1 for a gap. */
+function emSegSource(m, i) {
+  const s = emSegments(m)[i];
+  if (!s || emSegIsGap(m, i)) return -1;
+  if (!emIsProject(m)) return 0;
+  return emSourceAt(m.sources, emToSrc(m, (s.start + s.end) / 2));
+}
+/** How loud row `r` (or none) is in segment `i`, as it stands: muted or deleted = 0. */
+const emRowLevel = (r, i) => (!r || r.muted ? 0 : r.volume * (r.gains[i] ?? 1));
+/** The track row that plays stream `stream` of source `S` in titles mode (by its title in a project, by its stream in
+ *  a single clip), or null. */
+function emTitleRowOf(m, S, stream) {
+  if (!emIsProject(m)) return m.audio.find((r) => r.kind === "track" && r.index === stream) || null;
+  const tr = (S.tracksAll || S.tracks || []).find((x) => +x.index === stream);
+  const title = tr ? tr.title || `Track ${tr.index + 1}` : null;
+  return title ? m.audio.find((r) => r.kind === "track" && r.title === title) || null : null;
+}
+/** The part (object) under segment `i`, giving a single clip parts when it needs one (a per-piece stream choice). */
+function emPartOfSeg(m, i) {
+  const s = emSegments(m)[i];
+  if (!s) return null;
+  emEnsureParts(m);
+  return m.parts[emPartAt(m, (s.start + s.end) / 2)] || null;
+}
+/** Re-point the audio clips that lay on an old track row onto the new rows (by the role of the old row's title). */
+function emRelane(m, oldRows, newRows) {
+  for (const r of m.audio) {
+    if (r.kind !== "file") continue;
+    const old = oldRows.find((x) => x.id === r.lane);
+    if (!old) continue;
+    const role = old.role || emTrackRole(old.title) || "";
+    const to = newRows.find((x) => emRoleKey(x.title) === emRoleKey(old.title)) || (role ? newRows.find((x) => (x.role || emTrackRole(x.title)) === role) : null) || newRows.find((x) => x.role === "clip") || newRows[0];
+    if (to) r.lane = to.id;
+  }
+}
+/**
+ * "Simplify the audio rows" (0.1.44): from rows by title to rows by role, keeping what is heard as close as can be.
+ * For every piece and role row: its level is the old level of the row that carried that clip's role track (row
+ * volume x piece level, 0 where it was muted or deleted, at most EM_MAX_GAIN). A ready-made mix that was heard beside
+ * its own role tracks is left out (`mixesDropped`); where the mix was the ONLY thing heard of a clip that has role
+ * tracks, that piece keeps it: the first role row the clip has plays the mix there (part.over) at its level. A clip
+ * without role tracks: "Clip audio" plays its mix (else its first track); where that was silent and another of its
+ * tracks was heard, that one (part.over). Audio clips on the old rows move to the row of their role. Every source's
+ * tracks must be known. Does not snapshot. Returns { before, after, mixesDropped, kept } (rows before and after, how
+ * many pieces keep another stream), or null when it is in role mode already or the tracks are not known.
+ */
+function emSimplifyRows(m) {
+  if (emRowsMode(m) === "roles") return null;
+  const S = emRowSources(m);
+  if (S.some((s) => !s.missing && !Array.isArray(s.tracksAll || s.tracks))) return null;
+  emPiecify(m);
+  if (!m.rowsMode && !Array.isArray(m.tracks0Base)) m.tracks0Base = m.tracks0; // an undo back to before (emRestore)
+  const oldRows = m.audio.filter((r) => r.kind === "track");
+  const { rows } = emRoleRows(S.map((s) => (s.missing ? { ...s, tracksAll: [] } : s)));
+  const n = m.removed.length, project = emIsProject(m);
+  const made = rows.map((x, k) => {
+    // A single clip: the row of that role plays its stream (the same ids as emNewRoles); a project: by place.
+    const st = project ? -1 : emRowStream(S[0], x);
+    const tr = project ? null : (S[0].tracksAll || []).find((y) => +y.index === st);
+    return project ? { id: `t${k}`, kind: "track", index: k, title: x.title, path: "", volume: 1, muted: false, gains: Array(n).fill(1), role: x.role }
+      : { id: `t${st}`, kind: "track", index: st, title: tr?.title || x.title, path: tr?.path || oldRows.find((r) => r.index === st)?.path || "", volume: 1, muted: false, gains: Array(n).fill(1), role: x.role };
+  });
+  // Ids not taken by an audio clip's lane or another row.
+  const used = new Set(m.audio.filter((r) => r.kind !== "track").map((r) => r.id));
+  for (const r of made) { let id = r.id, j = 1; while (used.has(id)) id = `${r.id}_${j++}`; r.id = id; used.add(id); }
+  let mixesDropped = false, kept = 0;
+  const over = []; // [seg, row title, stream] to set once the parts exist
+  for (let i = 0; i < n; i++) {
+    const k = emSegSource(m, i);
+    if (k < 0) continue; // a gap: nothing plays
+    const src = S[k], tracks = src.tracksAll || src.tracks || [];
+    const lvl = (stream) => (stream >= 0 ? Math.min(EM_MAX_GAIN, emRowLevel(emTitleRowOf(m, src, stream), i)) : 0);
+    // A named track of its own (role "other", 0.1.44): its level as it was.
+    for (const r of made.filter((x) => x.role === "other")) { const st = emRowStream(src, r); if (st >= 0) r.gains[i] = lvl(st); }
+    const own = made.filter((r) => r.role !== "clip" && r.role !== "other").map((r) => ({ r, st: emRowStream(src, r) })).filter((x) => x.st >= 0);
+    for (const x of own) x.r.gains[i] = lvl(x.st);
+    if (own.length) {
+      const mix = tracks.find((t) => emTrackRole(t.title) === "mix"), ml = mix ? lvl(+mix.index) : 0;
+      const heard = own.some((x) => x.r.gains[i] > 0.005);
+      if (ml > 0.005 && heard) mixesDropped = true;
+      if (ml > 0.005 && !heard) { own[0].r.gains[i] = ml; over.push([i, own[0].r.title, +mix.index]); kept++; }
+    } else {
+      const row = made.find((r) => r.role === "clip"), st = emRowStream(src, { role: "clip" });
+      if (!row || st < 0) continue;
+      row.gains[i] = lvl(st);
+      if (row.gains[i] <= 0.005) {
+        const mine = new Set(made.filter((x) => x.role === "other").map((x) => emRowStream(src, x))); // those have rows of their own
+        const other = tracks.slice().sort((a, b) => a.index - b.index).find((t) => +t.index !== st && !mine.has(+t.index) && lvl(+t.index) > 0.005);
+        if (other) { row.gains[i] = lvl(+other.index); over.push([i, row.title, +other.index]); kept++; }
+      }
+    }
+  }
+  const before = oldRows.length;
+  emRelane(m, oldRows, made);
+  m.audio = [...made, ...m.audio.filter((r) => r.kind !== "track")];
+  m.tracks0 = made.map((r) => ({ index: r.index, title: r.title }));
+  if (project) m.trackTitles = made.map((r) => r.title);
+  m.rowsMode = "roles";
+  for (const [i, title, stream] of over) { const p = emPartOfSeg(m, i); if (p) p.over = { ...(p.over || {}), [title]: stream }; }
+  return { before, after: made.length, mixesDropped, kept };
+}
+/**
+ * "Show every track" (0.1.44): from rows by role back to one row per track title (as before 0.1.44), without losing a
+ * level: a title row takes, piece by piece, the level of the role row that played that track there (or of the
+ * piece's stream choice); a track no role row played there (a mix beside its tracks, a further untitled track) is
+ * silent there, as it was. `titles`: the rows' titles in order (a project: emTrackTitles of its sources' shown
+ * tracks); a single clip: emShownTracks of its tracks. Does not snapshot. Returns { before, after } or null.
+ */
+function emEveryTrack(m) {
+  if (emRowsMode(m) !== "roles") return null;
+  const S = emRowSources(m);
+  if (S.some((s) => !s.missing && !Array.isArray(s.tracksAll || s.tracks))) return null;
+  emPiecify(m);
+  const oldRows = m.audio.filter((r) => r.kind === "track"), n = m.removed.length, project = emIsProject(m);
+  let made;
+  if (project) {
+    const titles = emTrackTitles(S.map((s) => emShownTracks(s.tracksAll || s.tracks || [])));
+    made = titles.map((title, k) => ({ id: `t${k}`, kind: "track", index: k, title, path: "", volume: 1, muted: false, gains: Array(n).fill(0) }));
+  } else {
+    made = emShownTracks(S[0].tracksAll || []).map((x) => ({ id: `t${x.index}`, kind: "track", index: x.index, title: x.title || `Track ${x.index + 1}`, path: x.path || "", volume: 1, muted: false, gains: Array(n).fill(0) }));
+  }
+  const used = new Set(m.audio.filter((r) => r.kind !== "track").map((r) => r.id));
+  for (const r of made) { let id = r.id, j = 1; while (used.has(id)) id = `${r.id}_${j++}`; r.id = id; used.add(id); }
+  const titleOf = (tracks, st) => { const x = tracks.find((y) => +y.index === st); return x ? x.title || `Track ${x.index + 1}` : null; };
+  for (let i = 0; i < n; i++) {
+    const k = emSegSource(m, i);
+    if (k < 0) { for (const r of made) r.gains[i] = 1; continue; }
+    const tracks = S[k].tracksAll || S[k].tracks || [], part = emPartOfSegNoMake(m, i);
+    for (const r of oldRows) {
+      if (!r.role) continue;
+      const st = part?.over && Number.isInteger(part.over[r.title]) ? part.over[r.title] : project ? emRowStream(S[k], r) : r.index;
+      if (st < 0) continue;
+      const to = project ? made.find((x) => x.title === titleOf(tracks, st)) : made.find((x) => x.index === st);
+      if (to) to.gains[i] = Math.min(EM_MAX_GAIN, emRowLevel(r, i));
+    }
+  }
+  emRelane(m, oldRows, made);
+  m.audio = [...made, ...m.audio.filter((r) => r.kind !== "track")];
+  m.tracks0 = made.map((r) => ({ index: r.index, title: r.title }));
+  if (project) m.trackTitles = made.map((r) => r.title);
+  for (const p of m.parts || []) delete p.over;
+  m.rowsMode = "titles";
+  return { before: oldRows.length, after: made.length };
+}
+/** A single clip's role rows are exactly the tracks emNew shows (a Glint clip): "as recorded" is what they play. */
+function emRowsAreShown(m) {
+  if (!Array.isArray(m.tracksAll) || !m.tracksAll.length) return true; // tracks not known: as before
+  const shown = emShownTracks(m.tracksAll).map((x) => +x.index).sort((a, b) => a - b).join(",");
+  const rows = m.audio.filter((r) => r.kind === "track").map((r) => +r.index).sort((a, b) => a - b).join(",");
+  return shown === rows && !(m.parts || []).some((p) => emOverOk(p.over));
+}
+const emPartOfSegNoMake =(m, i) => { const s = emSegments(m)[i]; return s && m.parts ? m.parts[emPartAt(m, (s.start + s.end) / 2)] || null : null; };
+/**
+ * What emToOpts adds for rows by role (0.1.44), {} otherwise:
+ *   track_map   a project in role mode: one entry per source { clip, streams } with streams[k] = the stream of that
+ *               source's file that row k (track_titles[k], an audio entry with index k) plays, -1 for none.
+ *   track_over  pieces that play another stream on a row: { row, start, end, stream }: `row` is the audio entry's
+ *               `index` (a project: its place in track_titles; a single clip: its own stream), start / end SOURCE
+ *               seconds as segments are (a piece with its own speed: its footage).
+ * A single clip in role mode needs no map: its rows' `index` is the stream they play (as before 0.1.44).
+ */
+function emRowOpts(m) {
+  if (emRowsMode(m) !== "roles") return {};
+  const out = {}, project = emIsProject(m);
+  if (project) {
+    const titles = Array.isArray(m.trackTitles) ? m.trackTitles : [];
+    out.track_map = m.sources.map((s) => ({ clip: String(s.clip ?? ""), streams: titles.map((title) => {
+      const row = m.audio.find((r) => r.kind === "track" && r.title === title);
+      return s.missing ? -1 : emRowStream(s, row || { title, role: emRoleOfName(title) || "other" });
+    }) }));
+  }
+  const over = [];
+  for (const p of emParts(m)) {
+    const part = m.parts[p.i];
+    if (p.gap || !emOverOk(part?.over)) continue;
+    for (const [title, stream] of Object.entries(part.over)) {
+      const row = m.audio.find((r) => r.kind === "track" && r.title === title);
+      if (!row) continue;
+      for (const x of emSrcSpans(m, p.at, p.end)) if (!x.gap) over.push({ row: row.index, start: emRound(x.src), end: emRound(x.src + x.len * (x.speed || 1)), stream });
+    }
+  }
+  if (over.length) out.track_over = over;
+  return out;
+}
 
 /**
  * The `opts` for the `export_clip` command.
@@ -1983,7 +2301,10 @@ function emToOpts(m) {
         .map((g) => ({ ...g, start: emRound(Math.max(g.start, sp.src)), end: emRound(Math.min(g.end, sp.src + sp.len)) })),
     }));
   };
-  const audio = emAudioUntouched(m)
+  // Rows by role (0.1.44): "as recorded" ([]) only where it is what the rows play: never for a project, and for a
+  // single clip only when its role rows are the tracks emNew shows (a Glint clip); else every row is sent.
+  const asRecorded = emAudioUntouched(m) && (emRowsMode(m) !== "roles" || (!emIsProject(m) && emRowsAreShown(m)));
+  const audio = asRecorded
     ? []
     : m.audio.filter((r) => !r.muted && !laneMuted(r) && r.volume * laneVol(r) > 0.005 && segs.some((s) => !s.removed && gainOf(r, s.i) > 0.005)).flatMap(entries);
   const segments = [];
@@ -2015,11 +2336,12 @@ function emToOpts(m) {
     color: emColorOut(uniform && pics.length ? pics[0].color : emNoColor()), // `sharpness` only when on (0.1.41)
     // Nothing is heard (every row muted or deleted): the older per-track list with one silent track says "no sound"
     // (an empty `audio` alone would mean "keep the clip's tracks as recorded").
-    tracks: !audio.length && !emAudioUntouched(m) ? [{ index: 0, volume: 0 }] : [],
+    tracks: !audio.length && !asRecorded ? [{ index: 0, volume: 0 }] : [],
     segments,
     ...(ordered ? { ordered: true } : {}),
     audio,
     ...emLayerOpts(m),
+    ...emRowOpts(m), // rows by role (0.1.44): track_map, track_over
     ...(m.canvas ? { canvas: emCanvasOpts(m.canvas) } : {}),
     // Pieces with keyframes: one track per piece, [] for one that stands still (keyframes.js).
     ...(m.canvas && m.canvas.pieces.some((p) => Array.isArray(p.keys) && p.keys.length) && typeof kfPieceTrack === "function"
@@ -2064,6 +2386,7 @@ if (typeof module !== "undefined" && module.exports) {
     emHasGaps, emGapAt, emSegIsGap, emKeepSource, emEnsureParts, emSplitPartAt, emPlacePart, emPutBeside, emCloseGap, emCloseGaps, emSetGapLen, emInsertGap, emLiftSeg, emSplitOverlay, emKeyAt, emGroups, emNormGroups, emLayGroups,
     emGapStats, emPlaceNew,
     EM_SPEED_MIN, EM_SPEED_MAX, emPartSp, emFootLen, emSetPieceSpeed, emPieceSpeed, emClipLevels,
+    EM_ROLE_TITLES, EM_ROLES, emTrackRole, emRoleOfName, emTrackRoleIn, emSetKnownGames, emUntitled, emOtherTitles, emRowStream, emRoleStream, emRoleRows, emRowsMode, emNewRoles, emRoleTrackRows, emSimplifyRows, emEveryTrack, emRowOpts, emRowsAreShown, emOverOk,
     emUngroup, emGroup, emGroupOf, emClipList, emMoveClip, emTrimClip, emSplitClip, emRemoveClip, emLanes, emLaneOf, emNewLane, emNormLanes, emDropEmptyLanes, emSegNoSound, emTidyGroups,
     emRowEnd, emRowFileAt, emEnd, emTail, emResultDuration, emRowsThrough, emSlipFile, emMoveOverlay, emTrimOverlay, emOvMaxLen, EM_OV_MIN, emSetThrough, emTracksGone, emRemoveRow, emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS, emCanvasOk, emCanvasOpts };
 }

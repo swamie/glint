@@ -89,25 +89,33 @@ pub struct Rule {
     pub steps: Vec<Step>,
 }
 
-/// The editor's built-in looks (ui/editor.js `ED_PRESETS`, same names and numbers; the self-test compares them).
-pub const BUILTIN_LOOKS: &[(&str, [f32; 4])] = &[
-    ("None", [1.0, 1.0, 1.0, 1.0]),
-    ("Vivid", [1.0, 1.08, 1.35, 1.0]),
-    ("Punchy", [1.0, 1.25, 1.15, 0.95]),
-    ("Soft", [1.02, 0.88, 0.9, 1.08]),
-    ("Bright", [1.1, 1.0, 1.05, 1.15]),
-    ("Moody", [0.94, 1.15, 0.8, 0.9]),
-    ("Black and white", [1.0, 1.12, 0.0, 1.0]),
+/// The editor's built-in looks (ui/editor.js `ED_PRESETS`, same names and numbers; the self-test compares them):
+/// brightness, contrast, saturation, gamma, and (0.1.45) temperature and glow.
+pub const BUILTIN_LOOKS: &[(&str, [f32; 6])] = &[
+    ("None", [1.0, 1.0, 1.0, 1.0, 0.0, 0.0]),
+    ("Vivid", [1.0, 1.08, 1.35, 1.0, 0.0, 0.0]),
+    ("Punchy", [1.0, 1.25, 1.15, 0.95, 0.0, 0.0]),
+    ("Soft", [1.02, 0.88, 0.9, 1.08, 0.0, 0.0]),
+    ("Bright", [1.1, 1.0, 1.05, 1.15, 0.0, 0.0]),
+    ("Moody", [0.94, 1.15, 0.8, 0.9, 0.0, 0.0]),
+    ("Black and white", [1.0, 1.12, 0.0, 1.0, 0.0, 0.0]),
+    // 0.1.45 (CONTRACT_0145, the owner's "dark fantasy" and looks popular on TikTok).
+    ("Dark fantasy", [0.92, 1.2, 0.85, 0.88, -0.35, 0.45]),
+    ("Dreamy", [1.03, 0.94, 1.05, 1.06, 0.1, 0.6]),
+    ("Neon night", [0.97, 1.2, 1.4, 0.92, -0.15, 0.35]),
+    ("Cold", [1.0, 1.1, 0.9, 1.0, -0.4, 0.0]),
+    ("Golden hour", [1.03, 1.05, 1.12, 1.03, 0.4, 0.15]),
+    ("Faded film", [1.02, 0.86, 0.8, 1.1, 0.15, 0.0]),
 ];
 
 /// The color of look `name`: a built-in look first, then the user's own presets.
 pub fn look_color(s: &Settings, name: &str) -> Option<Color> {
-    let mk = |v: [f32; 4], sharpness: f32| Color { brightness: v[0], contrast: v[1], saturation: v[2], gamma: v[3], sharpness };
+    let mk = |v: [f32; 6], sharpness: f32| Color { brightness: v[0], contrast: v[1], saturation: v[2], gamma: v[3], sharpness, temperature: v[4], glow: v[5] };
     if let Some((_, v)) = BUILTIN_LOOKS.iter().find(|(n, _)| *n == name) {
         return Some(mk(*v, 0.0));
     }
-    // A preset's sharpness too (0.1.41).
-    s.color_presets.iter().find(|p| p.name == name).map(|p| mk([p.brightness, p.contrast, p.saturation, p.gamma], p.sharpness))
+    // A preset's sharpness too (0.1.41), and its temperature and glow (0.1.45).
+    s.color_presets.iter().find(|p| p.name == name).map(|p| mk([p.brightness, p.contrast, p.saturation, p.gamma, p.temperature, p.glow], p.sharpness))
 }
 
 /// The saved layout a Canvas block names: by id, else by name (see `Step::layout`).
@@ -976,9 +984,12 @@ fn pure_checks(r: &mut Report) {
     let tiny = Rule { steps: vec![Step { kind: "compress".into(), mb: 2, ..Default::default() }], ..Default::default() };
     r.check("check: a size under 5 MB is refused", check(&s, &tiny).is_err(), "");
     let mut s2 = Settings::default();
-    s2.color_presets.push(crate::settings::ColorPreset { name: "Mine".into(), brightness: 1.2, contrast: 1.0, saturation: 1.0, gamma: 1.0, sharpness: 0.0 });
+    s2.color_presets.push(crate::settings::ColorPreset { name: "Mine".into(), brightness: 1.2, contrast: 1.0, saturation: 1.0, gamma: 1.0, sharpness: 0.0, temperature: -0.3, glow: 0.4 });
     let mine = look_color(&s2, "Mine");
-    r.check("looks: the user's own preset is found by name", mine.as_ref().is_some_and(|c| (c.brightness - 1.2).abs() < 1e-6), "");
+    r.check("looks: the user's own preset is found by name, with its temperature and glow (0.1.45)", mine.as_ref().is_some_and(|c| (c.brightness - 1.2).abs() < 1e-6 && (c.temperature + 0.3).abs() < 1e-6 && (c.glow - 0.4).abs() < 1e-6), &format!("{mine:?}"));
+    let old_preset: Result<crate::settings::ColorPreset, _> = serde_json::from_str(r#"{"name":"Old","brightness":1.1,"contrast":1,"saturation":1,"gamma":1,"sharpness":0.2}"#);
+    r.check("looks: a preset saved before 0.1.45 loads with temperature and glow 0", old_preset.as_ref().is_ok_and(|p| p.temperature == 0.0 && p.glow == 0.0 && (p.sharpness - 0.2).abs() < 1e-6), &format!("{old_preset:?}"));
+    r.check("looks: Dark fantasy is darker, cool and glows", look_color(&s, "Dark fantasy").is_some_and(|c| c.brightness < 1.0 && c.temperature < 0.0 && c.glow > 0.0), "");
     r.check("looks: a built-in look is found by name", look_color(&s, "Black and white").is_some_and(|c| c.saturation == 0.0 && (c.contrast - 1.12).abs() < 1e-6), "");
 
     canvas_pure_checks(r, &s);
@@ -993,7 +1004,12 @@ fn pure_checks(r: &mut Report) {
         for line in js.lines().filter(|l| l.trim_start().starts_with("{ name: \"")) {
             let name = line.split('"').nth(1).unwrap_or("");
             let num = |key: &str| -> f32 {
-                if line.contains("...ED_NO_COLOR") {
+                if key == "temperature" || key == "glow" {
+                    // 0.1.45: absent (`...ED_LOOK_ZERO`) = 0.
+                    if !line.contains(&format!("{key}: ")) {
+                        return 0.0;
+                    }
+                } else if line.contains("...ED_NO_COLOR") {
                     return 1.0;
                 }
                 line.split(&format!("{key}: ")).nth(1).and_then(|v| v.split([',', ' ', '}']).next()).and_then(|v| v.parse().ok()).unwrap_or(f32::NAN)
@@ -1003,7 +1019,7 @@ fn pure_checks(r: &mut Report) {
                 continue;
             };
             seen += 1;
-            let js_v = [num("brightness"), num("contrast"), num("saturation"), num("gamma")];
+            let js_v = [num("brightness"), num("contrast"), num("saturation"), num("gamma"), num("temperature"), num("glow")];
             if js_v.iter().zip(v).any(|(a, b)| (a - b).abs() > 1e-6) {
                 same = false;
             }

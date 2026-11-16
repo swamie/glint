@@ -14,6 +14,19 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.45", date: "2026-11-17",
+    new: [
+      t("Fewer audio rows. A project now shows its sound by what it is: Desktop, Mic, Game and Clip audio, whatever each recorder named its tracks, and a ready-made mix is no longer played on top of its own tracks. An edit you already made opens as it was, with an offer to simplify its rows; “Every track” brings all rows back."),
+      t("Temperature and Glow in Color. Temperature goes from cool to warm; Glow lets the bright parts of the picture bleed light. Glow makes an export take longer."),
+      t("Six new looks: Dark fantasy (darker, cool, with glowing lights), Dreamy, Neon night, Cold, Golden hour and Faded film."),
+      t("Polls from the developer. Now and then a small card asks a short question about where Glint should go next. Answering sends only your answer and a random number made for this install. Turn it off under Settings, Updates."),
+    ],
+    improved: [
+      t("Volume over 100 percent no longer distorts. A limiter in the preview and in the export holds loud sound just under the maximum instead of cutting it flat, so 200 percent is louder without the crackle."),
+      t("Many audio clips cut from the same file no longer make an export too long to start."),
+    ],
+  },
+  {
     version: "0.1.44", date: "2026-11-16",
     improved: [
       t("Cuts in an export land exactly on a frame. Every cut, for picture and sound together, moves to the nearest frame of the clip, by half a frame at most, so no frame is shown short and none is skipped at a cut."),

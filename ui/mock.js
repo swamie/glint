@@ -9,12 +9,47 @@ if (!window.__TAURI__) {
   const games = [{ name: "Overwatch", exe: "", icon: "" }];
   const listeners = {};
   window.__mockCalls = [];
+  // polls: the developer's polls as the server would answer them (results only once voted, or ended).
+  const mockPolls = (() => {
+    const sec = Math.floor(now / 1000);
+    const polls = [
+      { id: 101, question: "Which feature should come next?", options: [{ id: 1, text: "Trim clips right in the overlay" }, { id: 2, text: "Backups to my own cloud drive" }, { id: 3, text: "More editor effects" }, { id: 4, text: "Better GIF export" }],
+        multiple: false, allow_comment: false, opens: sec - 3600, closes: sec + 86400 + 4 * 3600 + 120, closed: false, voted: null, base: { 1: 41, 2: 27, 3: 33, 4: 12 } },
+      { id: 102, question: "Which games do you clip the most?", options: [{ id: 5, text: "Valorant" }, { id: 6, text: "Counter-Strike 2" }, { id: 7, text: "Overwatch 2" }, { id: 8, text: "Minecraft" }, { id: 9, text: "Something else" }],
+        multiple: true, allow_comment: true, opens: sec - 7200, closes: sec + 2 * 86400 - 600, closed: false, voted: null, base: { 5: 58, 6: 44, 7: 39, 8: 21, 9: 30 }, totalBase: 117 },
+      { id: 103, question: "Should clips be saved as HEVC by default?", options: [{ id: 10, text: "Yes, smaller files" }, { id: 11, text: "No, keep H.264" }, { id: 12, text: "I don't mind" }],
+        multiple: false, allow_comment: false, opens: sec - 5 * 86400, closes: sec - 86400, closed: true, voted: null, base: { 10: 96, 11: 61, 12: 43 } },
+    ];
+    const view = (p) => {
+      const show = p.voted || p.closed;
+      const counts = Object.fromEntries(p.options.map((o) => [String(o.id), (p.base[o.id] || 0) + (p.voted?.includes(o.id) ? 1 : 0)]));
+      const total = (p.totalBase ?? Object.values(p.base).reduce((a, b) => a + b, 0)) + (p.voted ? 1 : 0);
+      const { base, totalBase, ...rest } = p;
+      return { ...rest, options: p.options.map((o) => ({ ...o })), voted: p.voted ? [...p.voted] : null, results: show ? { total, counts } : null };
+    };
+    const api = {
+      polls,
+      list: () => polls.map(view),
+      vote: async ({ poll, options, comment }) => {
+        await new Promise((r) => setTimeout(r, 500));
+        if (/fail/i.test(comment || "")) throw "Could not reach the polls server. Try again later.";
+        const p = polls.find((x) => x.id === poll);
+        if (!p || p.closed) throw "This poll has ended.";
+        p.voted = [...options];
+        const out = view(p);
+        window.__mockEmit("polls-changed", polls.map(view));
+        return out;
+      },
+    };
+    window.__mockPolls = api;
+    return api;
+  })();
   const state = {
     settings: {
       clips_dir: "C:\\Users\\you\\Videos\\Glint", game_folders: false, clip_name: [{ kind: "game" }, { kind: "date" }, { kind: "time" }], monitor: 0, height: 0, fps: 60, quality: "high", bitrate: 0, encoder: "auto", method: "auto", buffer: "mixed", buffer_ram_secs: 30, buffer_dir: "",
       cursor: true, desktop_audio: true, mic: true, mic_denoise: false, game_audio: false, desktop_device: "", game_desktop_audio: false, desktop_gain_db: -3, mic_gain_db: 0, game_gain_db: 0, mic_device: "Microphone (Old Webcam)", capture_mode: "desktop", game_auto: true, game_pick: "", game_pick_path: "", game_exes: [], not_game_exes: [], record_on_start: true, sound: true, sound_name: "chirp", sound_volume: 40, sound_file: "",
       toast: true, toast_pos: "tr", toast_opacity: 96, toast_scale: 100, toast_secs: 3.5, toast_length: true, toast_game: true, toast_mic: true,
-      ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", icon_theme: false, icon_accent: "", icon_accent_2: "", card_tags: [], nav_opacity: 60, theme_order: [], gif: { width: 480, fps: 20, max_mb: 0, copy: false }, upscale: { height: 2160, filter: "sharp", quality: "high", encoder: "auto" }, rules: [], rules_after_export: "", canvas_presets: [], discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true, update_check: true, update_auto: true,
+      ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", icon_theme: false, icon_accent: "", icon_accent_2: "", card_tags: [], nav_opacity: 60, theme_order: [], gif: { width: 480, fps: 20, max_mb: 0, copy: false }, upscale: { height: 2160, filter: "sharp", quality: "high", encoder: "auto" }, rules: [], rules_after_export: "", canvas_presets: [], discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true, update_check: true, polls: true /* polls */, update_auto: true,
       compress_mb: 10, ui_sounds: false, ui_sounds_hover: false, ui_sounds_volume: 50,
       compress: { sizes: [10, 20, 50, 500], preset: "veryfast", audio_kbps: 0, max_height: 0, max_fps: 0, audio: "first", dest: "beside", dest_dir: "", copy: true }, theme_colors: {}, theme_presets: [{ id: "tp-mock1", name: "Night pink", base: "midnight", colors: { accent: "#ff7ab8" }, css: "" }], theme_preset: "", folder_colors: { "Best of": "#e5484d" },
       ffmpeg_path: "", blur_path: "",
@@ -954,6 +989,10 @@ if (!window.__TAURI__) {
           case "check_deps": await new Promise((r) => setTimeout(r, 400)); mockDeps.sync(); return { items: mockDeps.items(), installing: mockDeps.busy };
           case "install_dep": return mockDeps.install(args.id);
           case "cancel_dep_install": mockDeps.cancel = true; return !!mockDeps.busy;
+          // polls (polls.js): one unanswered single choice, one with several answers and a comment, one ended.
+          // A comment with "fail" shows the "could not reach" error. window.__mockPolls holds the state.
+          case "polls_list": return state.settings.polls === false ? [] : mockPolls.list();
+          case "polls_vote": return mockPolls.vote(args);
           default: return null;
         }
       },
