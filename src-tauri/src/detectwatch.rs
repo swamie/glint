@@ -191,6 +191,8 @@ pub fn run(args: &[String]) {
 
     core.start_recording();
     core.sync_game_audio();
+    // The app's own upkeep thread: the look every two seconds and the restart on a display-mode change.
+    core.watch();
     let t0 = Instant::now();
     let mut last_key = String::new();
     let mut due: Option<(Instant, String)> = None;
@@ -198,7 +200,6 @@ pub fn run(args: &[String]) {
     let mut n_clip = 0u32;
     while t0.elapsed() < Duration::from_secs(secs) {
         std::thread::sleep(Duration::from_secs(2));
-        core.track_game();
         let v = capmode::watch_view();
         let st = core.rec.stats();
         let wins = win::windows();
@@ -247,6 +248,11 @@ pub fn run(args: &[String]) {
         }
         let Some((at, why)) = due.clone() else { continue };
         if Instant::now() < at {
+            continue;
+        }
+        // Nothing is recorded now (paused, or no game): nothing to clip.
+        if st.captures.is_empty() {
+            due = None;
             continue;
         }
         due = None;

@@ -749,7 +749,13 @@ pub fn decide(wins: &[WinInfo], lib: &Library, p: &Prefs, env: &Env, mem: &mut M
     };
     let front_long = |w: &WinInfo| w.foreground && mem.front.is_some_and(|(pid, since)| pid == w.pid && now - since >= FRONT_SECS);
     mem.failed.retain(|h| wins.iter().any(|w| w.hwnd == *h));
-    mem.exclusive.retain(|h| wins.iter().any(|w| w.hwnd == *h));
+    // Exclusive fullscreen is how a window is now, not a mark for its whole life: a window in
+    // exclusive fullscreen covers its monitor (or is minimized while the player is away). One seen
+    // up and smaller than its monitor is not exclusive (any more): a game that switched back to a
+    // window, or whose mode switch only flashed the shell's D3D flag (Terraria's "Fullscreen" at
+    // 1280x800 on a 150 % display stays a 1280x800 window; kept as exclusive, its whole monitor,
+    // the desktop around the game included, was recorded by Desktop Duplication, 0.1.44).
+    mem.exclusive.retain(|h| wins.iter().any(|w| w.hwnd == *h && (w.fullscreen || w.minimized)));
 
     // Score every window.
     let cur_pid = mem.target.as_ref().map(|t| t.1);
@@ -1162,6 +1168,45 @@ fn test_scenarios(check: &mut dyn FnMut(&str, bool, String)) {
     let _ = run(&[splash.clone()], &pick_emu, &env(0.0), &mut m);
     let d = run(&[main.clone()], &pick_emu, &env(2.0), &mut m);
     check("scenario: the picked program's splash, then its real window: the capture moves to the real window", d.window == Some(0) && m.target.as_ref().is_some_and(|t| t.0 == 61), String::new());
+    // 20. Recorded on a laptop at 150 % scaling (0.1.44, --detect-watch): Terraria switched to its
+    // "Fullscreen" at 1280x800. The shell flagged D3D fullscreen for two looks while the window still
+    // covered the monitor, then the game stayed a 1280x800 window in the middle of the desktop. The
+    // window was kept "exclusive" for its life and the whole monitor was recorded by Desktop
+    // Duplication: the desktop around the game (a browser) and, while the browser was in front, nothing.
+    let terr_lib = Library { installs: vec![Install { store: "steam", name: "Terraria".into(), dir: r"c:\program files (x86)\steam\steamapps\common\terraria\".into() }] };
+    let tw = |wd: u32, ht: u32, full: bool, fg: bool| WinInfo { hwnd: 0x20b24, pid: 18516, exe: r"C:\Program Files (x86)\Steam\steamapps\common\Terraria\Terraria.exe".into(), class: "WindowsForms10.Window.8.app.0.141b42a_r6_ad1".into(), width: wd, height: ht, fullscreen: full, foreground: fg, caption: false, popup: false, ..Default::default() };
+    let looks: [(f64, WinInfo, bool); 7] = [
+        (799.0, tw(1920, 1200, true, true), false),
+        (803.2, tw(1920, 1200, true, true), true),
+        (805.3, tw(1280, 800, true, true), true),
+        (807.4, tw(1280, 800, false, true), false),
+        (809.5, tw(1280, 800, false, true), false),
+        (811.5, tw(1280, 800, false, true), false),
+        (825.7, tw(1280, 800, false, false), false),
+    ];
+    let mut m = Memory::default();
+    let mut seen = Vec::new();
+    for (t, win, d3d) in &looks {
+        let d = decide(std::slice::from_ref(win), &terr_lib, &Prefs::none(), &Env { d3d_fullscreen: *d3d, ..env(*t) }, &mut m, &alive);
+        seen.push((d.source, d.why.code.clone()));
+    }
+    check("laptop: a mode switch that only flashed D3D fullscreen leaves the game's window recorded, never its monitor", seen.iter().all(|(s, c)| *s == Source::Window && c == "window") && m.exclusive.is_empty(), format!("{seen:?}"));
+    // ... and a real exclusive game is still recorded by Desktop Duplication, kept while minimized away.
+    let mut m = Memory::default();
+    let ex = tw(1920, 1200, true, true);
+    let _ = decide(std::slice::from_ref(&ex), &terr_lib, &Prefs::none(), &Env { d3d_fullscreen: true, ..env(0.0) }, &mut m, &alive);
+    let d1 = decide(std::slice::from_ref(&ex), &terr_lib, &Prefs::none(), &Env { d3d_fullscreen: true, ..env(4.5) }, &mut m, &alive);
+    let away = WinInfo { minimized: true, foreground: false, fullscreen: false, width: 0, height: 0, ..ex.clone() };
+    let d2 = decide(std::slice::from_ref(&away), &terr_lib, &Prefs::none(), &env(6.0), &mut m, &alive);
+    let _ = decide(std::slice::from_ref(&ex), &terr_lib, &Prefs::none(), &env(8.0), &mut m, &alive);
+    let d3 = decide(std::slice::from_ref(&ex), &terr_lib, &Prefs::none(), &env(12.5), &mut m, &alive);
+    check("laptop: real exclusive fullscreen: its monitor by Desktop Duplication, paused while minimized, back on return (after the hold)", d1.source == Source::MonitorDda && d2.source == Source::Park && d2.why.code == "minimized" && m.exclusive.contains(&ex.hwnd) && d3.source == Source::MonitorDda && d3.why.code == "exclusive", format!("{:?} {:?} {:?} {:?}", d1.source, d2.why.code, d3.source, d3.why.code));
+    // ... and back in a window (no longer covering its monitor): the window again, after the hold.
+    let windowed = tw(1600, 900, false, true);
+    let w1 = decide(std::slice::from_ref(&windowed), &terr_lib, &Prefs::none(), &env(14.0), &mut m, &alive);
+    let w2 = decide(std::slice::from_ref(&windowed), &terr_lib, &Prefs::none(), &env(18.5), &mut m, &alive);
+    check("laptop: an exclusive game switched back to a window is recorded by its window again", m.exclusive.is_empty() && w2.source == Source::Window && w2.why.code == "window", format!("{:?} {:?}", w1.source, w2.source));
+
     // 19. Candidates for the menu.
     let d = run(&[chrome.clone(), indie.clone(), fs.clone()], &Prefs::none(), &env(0.0), &mut Memory::default());
     check("scenario: the menu's candidates are the games with their evidence, best first, the browser left out", d.candidates.len() == 2 && d.candidates[0].exe == "valorant.exe" && d.candidates[0].evidence.contains(&"known".to_string()) && d.candidates.iter().all(|c| c.exe != "chrome.exe"), format!("{:?}", d.candidates.iter().map(|c| (&c.exe, &c.evidence)).collect::<Vec<_>>()));
