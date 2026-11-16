@@ -14,7 +14,9 @@
 //! Options: `--secs N` (how long to watch, default 900), `--pick <exe or path>` (a hand pick, through
 //! the menu's own `apply_mark`), `--method auto|wgc|dda`, `--encoder <e>`, `--clip-secs N` (default 5),
 //! `--every N` (also clip every N seconds), `--settle N` (seconds after a change before the clip,
-//! default 7). Refuses to run without `GLINT_DATA_DIR`. Reads only window facts, as the app does; it
+//! default 7), `--desktop-audio` (also a Desktop track, as a reference for the Game track).
+//! Each sound track's level is also measured in a narrow band at 1 kHz: play a 1 kHz tone from
+//! another program and it must show in Desktop, never in Game. Refuses to run without `GLINT_DATA_DIR`. Reads only window facts, as the app does; it
 //! never opens, reads or touches a game's process. Window titles and paths stay in `<dir>`: keep that
 //! folder out of the repository.
 use crate::core::Core;
@@ -125,8 +127,9 @@ fn inspect_clip(ffmpeg: &Path, clip: &Path, out_dir: &Path, tag: &str) -> serde_
     for n in 0..tracks {
         let map = format!("0:a:{n}");
         let (_, e) = ff(ffmpeg, &["-hide_banner", "-i", &c, "-map", &map, "-af", "volumedetect", "-f", "null", "-"]);
-        let grab = |key: &str| e.lines().find_map(|l| l.split(key).nth(1)).and_then(|v| v.trim().trim_end_matches(" dB").parse::<f64>().ok());
-        levels.push(json!({ "track": n, "title": titles.get(n + 1).or(titles.get(n)).cloned().unwrap_or_default(), "mean_db": grab("mean_volume:"), "max_db": grab("max_volume:") }));
+        let grab = |e: &str, key: &str| e.lines().find_map(|l| l.split(key).nth(1)).and_then(|v| v.trim().trim_end_matches(" dB").parse::<f64>().ok());
+        let (_, tone) = ff(ffmpeg, &["-hide_banner", "-i", &c, "-map", &map, "-af", "bandpass=f=1000:width_type=q:w=30,volumedetect", "-f", "null", "-"]);
+        levels.push(json!({ "track": n, "title": titles.get(n + 1).or(titles.get(n)).cloned().unwrap_or_default(), "mean_db": grab(&e, "mean_volume:"), "max_db": grab(&e, "max_volume:"), "tone_1khz_db": grab(&tone, "mean_volume:") }));
     }
     json!({ "frames": hashes.len(), "distinct": distinct.len(), "duration": duration, "video": video_line, "pictures": pics, "audio": levels })
 }
@@ -160,6 +163,13 @@ pub fn run(args: &[String]) {
         }
         if let Some(e) = opt::<String>(args, "--encoder") {
             s.encoder = e;
+        }
+        // `--desktop-audio`: GAME mode's "desktop sound too": the clip gets a Desktop track beside
+        // Game, the reference that shows a sound of another program was playing (it must be in
+        // Desktop and not in Game).
+        if args.iter().any(|a| a == "--desktop-audio") {
+            s.game_desktop_audio = true;
+            s.desktop_audio = true;
         }
         if let Some(p) = &pick {
             if let Err(e) = capmode::apply_mark(&mut s, "pick", p) {
