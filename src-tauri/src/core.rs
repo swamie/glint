@@ -51,6 +51,8 @@ pub struct Status {
     /// "screen" (its monitor: window capture is not available) or "screen_failed" (its
     /// window could not be captured). "" otherwise.
     pub capture_target: String,
+    /// 0.1.41: what game mode decided and why (gamedetect::Why); code "" outside it.
+    pub capture_why: crate::gamedetect::Why,
 }
 
 /// One monitor's replay buffer.
@@ -231,6 +233,8 @@ fn set_autostart(on: bool) {
 impl Core {
     pub fn new() -> Arc<Self> {
         let settings = Settings::load();
+        // Temporary export files a killed or crashed run left behind (0.1.41).
+        std::thread::spawn(crate::projexport::sweep_tmp);
         hotkeys::set_binds(&settings.keybinds);
         crate::audio::set_devices(&settings.desktop_device, &settings.mic_device);
         crate::audio::set_gains(settings.desktop_gain_db, settings.mic_gain_db, settings.game_gain_db);
@@ -491,6 +495,7 @@ impl Core {
             captures,
             capture_mode,
             capture_target,
+            capture_why: crate::capmode::why_of(&self.settings(), st.running),
         }
     }
 

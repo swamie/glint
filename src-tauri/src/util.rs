@@ -175,3 +175,45 @@ pub fn last_lines(bytes: &[u8], n: usize) -> String {
     let lines: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
     lines[lines.len().saturating_sub(n)..].join(" | ")
 }
+
+/* ---------- children that end with Glint (0.1.41) ---------- */
+
+/// A job object that ends every process in it when its last handle closes: when Glint exits, crashes or is
+/// killed, Windows ends the export / join / render ffmpegs it started (0.1.41: two frozen export ffmpegs had
+/// outlived the app). Made once; never shared with another process.
+fn kill_on_close_job() -> Option<isize> {
+    use windows::Win32::System::JobObjects::{CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE};
+    static JOB: OnceLock<Option<isize>> = OnceLock::new();
+    *JOB.get_or_init(|| unsafe {
+        let job = CreateJobObjectW(None, None).ok()?;
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info as *const _ as *const std::ffi::c_void, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32).ok()?;
+        // The handle stays open for the life of the process (closing it would end the children).
+        Some(job.0 as isize)
+    })
+}
+
+/// Put a child Glint just started into the kill-on-close job (see `kill_on_close_job`). Only Glint's own
+/// children are touched (by the handle `spawn` returned); a failure leaves the child as it was.
+pub fn track_child(child: &std::process::Child) {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::AssignProcessToJobObject;
+    if let Some(job) = kill_on_close_job() {
+        let ok = unsafe { AssignProcessToJobObject(HANDLE(job as *mut std::ffi::c_void), HANDLE(child.as_raw_handle())) };
+        if let Err(e) = ok {
+            log(&format!("child {}: not tied to Glint's life ({e})", child.id()));
+        }
+    }
+}
+
+/// Whether `pid` (a child of this process) is in the kill-on-close job (tests).
+pub fn child_is_tracked(child: &std::process::Child) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::{BOOL, HANDLE};
+    use windows::Win32::System::JobObjects::IsProcessInJob;
+    let Some(job) = kill_on_close_job() else { return false };
+    let mut inside = BOOL(0);
+    unsafe { IsProcessInJob(HANDLE(child.as_raw_handle()), HANDLE(job as *mut std::ffi::c_void), &mut inside) }.is_ok() && inside.as_bool()
+}

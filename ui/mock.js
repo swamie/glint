@@ -12,7 +12,7 @@ if (!window.__TAURI__) {
   const state = {
     settings: {
       clips_dir: "C:\\Users\\you\\Videos\\Glint", game_folders: false, clip_name: [{ kind: "game" }, { kind: "date" }, { kind: "time" }], monitor: 0, height: 0, fps: 60, quality: "high", bitrate: 0, encoder: "auto", method: "auto", buffer: "mixed", buffer_ram_secs: 30, buffer_dir: "",
-      cursor: true, desktop_audio: true, mic: true, mic_denoise: false, game_audio: false, desktop_device: "", game_desktop_audio: false, desktop_gain_db: -3, mic_gain_db: 0, game_gain_db: 0, mic_device: "Microphone (Old Webcam)", capture_mode: "desktop", game_auto: true, game_pick: "", game_exes: [], not_game_exes: [], record_on_start: true, sound: true, sound_name: "chirp", sound_volume: 40, sound_file: "",
+      cursor: true, desktop_audio: true, mic: true, mic_denoise: false, game_audio: false, desktop_device: "", game_desktop_audio: false, desktop_gain_db: -3, mic_gain_db: 0, game_gain_db: 0, mic_device: "Microphone (Old Webcam)", capture_mode: "desktop", game_auto: true, game_pick: "", game_pick_path: "", game_exes: [], not_game_exes: [], record_on_start: true, sound: true, sound_name: "chirp", sound_volume: 40, sound_file: "",
       toast: true, toast_pos: "tr", toast_opacity: 96, toast_scale: 100, toast_secs: 3.5, toast_length: true, toast_game: true, toast_mic: true,
       ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", icon_theme: false, icon_accent: "", icon_accent_2: "", card_tags: [], nav_opacity: 60, theme_order: [], gif: { width: 480, fps: 20, max_mb: 0, copy: false }, upscale: { height: 2160, filter: "sharp", quality: "high", encoder: "auto" }, rules: [], rules_after_export: "", canvas_presets: [], discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true, update_check: true, update_auto: true,
       compress_mb: 10, ui_sounds: false, ui_sounds_hover: false, ui_sounds_volume: 50,
@@ -42,6 +42,36 @@ if (!window.__TAURI__) {
     ffmpeg: "C:\\tools\\ffmpeg\\bin\\ffmpeg.exe", blur: "C:\\tools\\blur\\blur-cli.exe", version: "0.1.8",
     hardware: { gpus: [{ name: "NVIDIA GeForce RTX 5060 Ti", vendor: "nvidia" }], cpu: "11th Gen Intel(R) Core(TM) i5-11600", gpu: { name: "NVIDIA GeForce RTX 5060 Ti", vendor: "nvidia" }, encoder: "nvenc" },
   };
+  const mockWhy = (st, set) => {
+    if (st.capture_mode !== "game" || !st.recording) return { code: "", game: "", monitor: 0, evidence: [] };
+    const pick = set.game_pick || "";
+    const ev = pick ? ["pick"] : ["known", "library:blizzard", "fullscreen"];
+    const game = pick ? pick.replace(/\.exe$/i, "") : "Overwatch";
+    const implied = { window: "window", screen: "no_window_capture", screen_failed: "exclusive" }[st.capture_target]
+      || (pick ? "waiting_pick" : set.game_auto === false ? "auto_off" : "waiting");
+    const code = window.__mockCapWhy || implied;
+    const waiting = ["waiting", "waiting_pick", "auto_off"].includes(code);
+    return { code, game: waiting && code !== "waiting_pick" ? "" : game, monitor: window.__mockCapWhy ? 1 : 0, evidence: waiting ? [] : ev };
+  };
+  // The monitor picker (monpick.js): window.__mockMonitors = 1 | 2 | 3 sets how many monitors there are (reload),
+  // the second smaller and to the left and above the main one, the third portrait on the right.
+  const MOCK_MONS = [
+    { index: 0, name: "DISPLAY1", width: 2560, height: 1440, hz: 280, primary: true, x: 0, y: 0, native_width: 2560, native_height: 1440 },
+    { index: 1, name: "DISPLAY2", width: 1680, height: 1050, hz: 60, primary: false, x: -1680, y: -620, native_width: 1680, native_height: 1050 },
+    { index: 2, name: "DISPLAY3", width: 1080, height: 1920, hz: 75, primary: false, x: 2560, y: -240, native_width: 1080, native_height: 1920 },
+  ];
+  const mockMons = () => MOCK_MONS.slice(0, Math.max(1, Math.min(3, +(window.__mockMonitors || 2))));
+  /** A colored test picture of monitor `i` (SVG data URL): its number, a moving bar, so a refresh shows. */
+  const mockPreview = (i, width) => {
+    const m = mockMons()[i];
+    if (!m) throw "No such monitor";
+    if (window.__mockPreviewFails) throw "The monitor's picture could not be copied";
+    const w = Math.max(64, Math.min(640, width || 320)), h = Math.round((w * m.height) / m.width);
+    const hue = [210, 140, 25][i] ?? 300, sec = new Date().getSeconds();
+    const bar = ((sec % 10) / 10) * w;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${hue},70%,38%)"/><stop offset="1" stop-color="hsl(${hue + 40},60%,18%)"/></linearGradient></defs><rect width="${w}" height="${h}" fill="url(#g)"/><rect x="${bar}" y="${h * 0.78}" width="${w * 0.12}" height="${h * 0.06}" rx="3" fill="#fff" opacity=".8"/><rect x="${w * 0.06}" y="${h * 0.08}" width="${w * 0.5}" height="${h * 0.06}" rx="3" fill="#fff" opacity=".35"/><text x="50%" y="56%" font-family="sans-serif" font-weight="700" font-size="${Math.round(h * 0.32)}" fill="#fff" opacity=".9" text-anchor="middle">${i + 1}</text></svg>`;
+    return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  };
   // status.captures: one entry per monitor buffered, the capture monitor first (primary), then every
   // other monitor a clip keybind names, as the backend does. window.__mockCapError = "text": the
   // other monitors' captures fail with it (the status bar's warning mark).
@@ -51,6 +81,9 @@ if (!window.__TAURI__) {
     // shows the other states of game mode ("window" when unset).
     st.capture_mode = set.capture_mode === "game" ? "game" : "desktop";
     st.capture_target = st.capture_mode === "game" && st.recording ? window.__mockCapTarget || "window" : "";
+    // 0.1.41 (gamedetect.rs Why): what game mode decided and why. window.__mockCapWhy = "exclusive" | "window_failed" |
+    // "paused_away" | "waiting_pick" | ... overrides the reason the target above implies.
+    st.capture_why = mockWhy(st, set);
     if (st.capture_target === "waiting") { st.captures = []; return st; }
     const cap = state.monitors.find((m) => m.index === set.monitor) || state.monitors[0];
     const named = set.keybinds.filter((k) => k.action === "clip" && k.monitor >= 0 && k.monitor !== cap.index).map((k) => k.monitor);
@@ -98,36 +131,51 @@ if (!window.__TAURI__) {
     // what project_open returns, as projects.rs virtual_clip: the clips end to end, each a source. Every source
     // plays the real test video ("/__test.mp4?src=<clip id>"), so a source is at most MOCK_VIDEO_SECS long.
     // window.__mockMissing = "<clip id>": that clip counts as gone (as one deleted from the library).
+    // 0.1.41 (F1): an old project (with a draft) that got clips since has `p.base` (its draft as it was) and
+    // `p.baseClips` (how many of p.clips are inside it): source 0 is the draft file, with `inner` = its clips
+    // ({ at, title }: seconds in that file), and joins / join_names list every border, the leading 0 included.
     virtual: (p) => {
-      if (!p.clips.length) return null;
+      if (!p.clips.length && !p.base) return null;
       let at = 0;
-      const sources = p.clips.map((pc) => {
+      const sources = [], joins = [], names = [];
+      if (p.base) {
+        const b = p.base, nm = (i) => b.join_names[i] || `Clip ${i + 1}`;
+        const inner = [{ at: 0, title: nm(0) }, ...b.joins.map((j, i) => ({ at: j, title: nm(i + 1) }))];
+        for (const x of inner) { joins.push(x.at); names.push(x.title); }
+        sources.push({ clip: p.id, path: b.path, title: p.name, duration: b.duration, start: 0, width: b.width, height: b.height, fps: b.fps, audio_tracks: b.audio_tracks, thumb: "", missing: false, draft: true, inner });
+        at = b.duration;
+      }
+      for (const pc of p.clips.slice(p.base ? p.baseClips || 0 : 0)) {
         const c = window.__mockMissing === pc.id ? null : clips.find((x) => x.id === pc.id);
         const s = c
           ? { clip: pc.id, path: `/__test.mp4?src=${pc.id}`, title: c.title, duration: pc.duration, start: at, width: c.width, height: c.height, fps: c.fps, audio_tracks: c.audio_tracks, thumb: c.thumb || "", missing: false }
           : { clip: pc.id, path: "", title: pc.title, duration: pc.duration, start: at, width: pc.width, height: pc.height, fps: pc.fps, audio_tracks: pc.audio_tracks, thumb: "", missing: true };
+        joins.push(at);
+        names.push(s.title);
         at += pc.duration;
-        return s;
-      });
+        sources.push(s);
+      }
       const f = sources[0];
       return {
-        id: p.id, draft: true, virtual: true, kind: "joined", title: p.name, game: p.clips[0].game || "", created: p.created, duration: at,
-        width: f.width, height: f.height, fps: f.fps, path: "", joins: sources.map((s) => s.start), join_names: sources.map((s) => s.title),
+        id: p.id, draft: true, virtual: true, kind: "joined", title: p.name, game: (p.clips[0] || {}).game || "", created: p.created, duration: at,
+        width: f.width, height: f.height, fps: f.fps, path: "", joins, join_names: names,
         audio_tracks: f.audio_tracks, sources, thumb: (sources.find((s) => s.thumb) || {}).thumb || "", size: p.clips.reduce((n, c) => n + (c.size || 0), 0), folder: "", favorite: false,
       };
     },
+    /** Project time of a virtual project: the draft source (F1), then the later clips. */
+    len: (p) => (p.base ? p.base.duration + p.clips.slice(p.baseClips || 0).reduce((s, c) => s + c.duration, 0) : p.clips.reduce((s, c) => s + c.duration, 0)),
     /** What a project keeps of a library clip (projects.rs ProjectClip). */
     keep: (c) => ({ id: c.id, title: c.title, duration: Math.min(c.duration, MOCK_VIDEO_SECS), size: c.size, width: c.width, height: c.height, fps: c.fps, audio_tracks: c.audio_tracks, game: c.game }),
     /** project_add_clips on a virtual project: at once, no job (projects.rs add_now). */
     addNow: (p, ids) => {
       const uniq = [...new Set(ids)];
       if (!uniq.length) throw "Pick at least one clip to add";
-      if (p.clips.length + uniq.length > 20) throw "A project takes at most 20 clips";
+      if (p.clips.length + uniq.length > 500) throw "A project takes at most 500 clips";
       const picked = uniq.map((id) => clips.find((c) => c.id === id));
       if (picked.some((c) => !c)) throw "Clip not found";
       const added = picked.map(mockProj.keep);
-      let at = p.clips.reduce((s, c) => s + c.duration, 0);
-      if (at + added.reduce((s, c) => s + c.duration, 0) > 1800) throw "A project takes at most 30 minutes of clips";
+      let at = mockProj.len(p);
+      if (at + added.reduce((s, c) => s + c.duration, 0) > 14400) throw "A project takes at most 4 hours of clips";
       const starts = added.map((c) => { const s = at; at += c.duration; return s; });
       p.virt = true;
       p.clips.push(...added);
@@ -149,11 +197,11 @@ if (!window.__TAURI__) {
       const hasDraft = drafts.some((d) => d.id === p.id);
       const pending = jobs.filter((j) => j.kind === "join" && j.project === p.id && mockProj.active(j));
       const have = (hasDraft ? p.clips.length : 0) + pending.reduce((s, j) => s + j.picked.length, 0);
-      if (have + uniq.length > 20) throw "A project takes at most 20 clips";
+      if (have + uniq.length > 500) throw "A project takes at most 500 clips";
       const picked = uniq.map((id) => clips.find((c) => c.id === id));
       if (picked.some((c) => !c)) throw "Clip not found";
       const secs = (hasDraft ? p.clips.reduce((s, c) => s + c.duration, 0) : 0) + pending.reduce((s, j) => s + j.picked.reduce((a, c) => a + c.duration, 0), 0);
-      if (secs + picked.reduce((s, c) => s + c.duration, 0) > 1800) throw "A project takes at most 30 minutes of clips";
+      if (secs + picked.reduce((s, c) => s + c.duration, 0) > 14400) throw "A project takes at most 4 hours of clips";
       const key = "join:" + (hasDraft ? [p.id, ...uniq] : uniq).join(",");
       if (jobs.some((j) => j.clip_id === key && mockProj.active(j))) throw "Those clips are already being joined";
       const job = { id: "j" + Date.now() + jobs.length, clip_id: key, title: p.name, kind: "join", state: "queued", pct: 0, message: "", result_id: "", queued: Date.now(), project: p.id, picked, fromJoin };
@@ -228,11 +276,48 @@ if (!window.__TAURI__) {
     },
   };
   window.__mockProjects = mockProj; // for checks in the console
+  // 0.1.41: an export's run, as editor.rs / projexport.rs report it: "export-progress" { id, pct, stage, stage_pct }
+  // (stage "join" while a project's clips are joined, 0..40 %, then "export"), about 2 s. cancel_export ends it
+  // (it then fails). window.__mockExport = "stall": it stops at 47.9 % and fails after 9 s with the stall message;
+  // "fail": it fails at 60 % with an ffmpeg error; undefined: it finishes.
+  const mockExportCancel = new Set();
+  async function mockExportRun(id, join) {
+    mockExportCancel.delete(id);
+    const mode = window.__mockExport;
+    const step = (pct, stage, stagePct) => window.__mockEmit("export-progress", { id, pct, stage, ...(stagePct != null ? { stage_pct: stagePct } : {}) });
+    const wait = async (ms) => {
+      await new Promise((r) => setTimeout(r, ms));
+      if (mockExportCancel.has(id)) { mockExportCancel.delete(id); throw "The export was cancelled"; }
+    };
+    if (join) for (const sp of [0, 35, 70, 100]) { await wait(250); step(sp * 0.4, "join", sp); }
+    const from = join ? 40 : 0;
+    for (let k = 1; k <= 10; k++) {
+      await wait(200);
+      const pct = from + ((100 - from) * k) / 10;
+      if (mode === "fail" && pct >= 60) throw "ffmpeg stopped with exit code 1: Error while filtering: Invalid argument";
+      if (mode === "stall" && pct >= 47) {
+        step(47.9, "export");
+        for (let i = 0; i < 60; i++) await wait(150);
+        throw "The export stopped making progress at 47 %. ffmpeg was ended and nothing was saved. What ffmpeg said last is in the log.";
+      }
+      step(pct, "export");
+    }
+  }
   // A project of three sources (20 s, 14 s, 20 s) to open from the Editor page (0.1.38).
   {
     const p = mockProj.make("Three sources (mock)");
     p.clips = ["c2", "c7", "c9"].map((id) => mockProj.keep(clips.find((c) => c.id === id)));
     p.created = p.modified = now - 3600000;
+  }
+  // 0.1.41 (F1): a project made before 0.1.38 that got a clip since: its draft (the 20 s test video, two clips inside
+  // it, the second at 8 s) is source 0 with `inner`, then one added clip (B: `inner` pieces and their limits).
+  {
+    const p = mockProj.make("Old draft project (mock)");
+    const k = (id) => mockProj.keep(clips.find((c) => c.id === id));
+    p.clips = [k("c4"), k("c8"), k("c9")];
+    p.base = { path: "/__test.mp4?draft=old", duration: MOCK_VIDEO_SECS, joins: [8], join_names: [p.clips[0].title, p.clips[1].title], width: 2160, height: 1440, fps: 60, audio_tracks: 3 };
+    p.baseClips = 2;
+    p.created = p.modified = now - 7200000;
   }
   // A pretend render queue: each job takes about 4 s. Blur jobs run at most settings.blur_parallel
   // at once; compress jobs ("Compress for Discord") one at a time in their own lane, as in jobs.rs.
@@ -356,9 +441,19 @@ if (!window.__TAURI__) {
           case "feedback_info": return { configured: true, version: "0.1.35", language: state.settings.language || "en" };
           // feedback.js: a text with "offline" / "busy" / "fail" shows those errors.
           case "send_feedback": await new Promise((r) => setTimeout(r, 600)); if (/offline/i.test(args.text)) throw "Could not reach Discord. Check the internet connection and try again. (no answer)"; if (/busy/i.test(args.text)) throw "Discord is busy right now (HTTP 429). Try again in a minute."; if (/fail/i.test(args.text)) throw "Discord did not accept the feedback (HTTP 400)."; return null;
-          case "editor_audio_tracks": return [{ index: 0, title: "Mix", path: "/__test.mp4" }, { index: 1, title: "Desktop", path: "/__test.mp4" }, { index: 2, title: "Microphone", path: "/__test.mp4" }];
-          case "editor_waveforms": return [0, 1, 2].map((index) => ({ index, per_second: 50, peaks: Array.from({ length: 1000 }, (_, i) => Math.abs(Math.sin(i / (7 + index * 3))) * (0.25 + 0.75 * Math.abs(Math.sin(i / 90 + index)))) }));
-          case "editor_thumbs": return Array.from({ length: args.count }, (_, i) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="128" height="72"><rect width="128" height="72" fill="hsl(${(i * 37) % 360} 45% 30%)"/><text x="64" y="44" font-size="24" fill="white" text-anchor="middle">${i + 1}</text></svg>`)}`);
+          // 0.1.41 (F2/F3): window.__mockSlow = ms makes each source's tracks, waveforms and film strip take that long.
+          case "editor_prep_cancel": return null;
+          // 0.1.41 (item T): the mock's clips have no thumbnail files; window.__mockThumbArrives = true: one appears.
+          case "thumb_retry": {
+            const c = clips.find((x) => x.id === args.id);
+            if (c && window.__mockThumbArrives && !c.thumb) {
+              setTimeout(() => { c.thumb = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="160" height="90"><rect width="160" height="90" fill="#2a6"/></svg>')}`; window.__mockEmit("clips-changed", c.id); }, 400);
+            }
+            return true;
+          }
+          case "editor_audio_tracks": if (window.__mockSlow) await new Promise((r) => setTimeout(r, +window.__mockSlow)); return [{ index: 0, title: "Mix", path: "/__test.mp4" }, { index: 1, title: "Desktop", path: "/__test.mp4" }, { index: 2, title: "Microphone", path: "/__test.mp4" }];
+          case "editor_waveforms": if (window.__mockSlow) await new Promise((r) => setTimeout(r, +window.__mockSlow)); return [0, 1, 2].map((index) => ({ index, per_second: 50, peaks: Array.from({ length: 1000 }, (_, i) => Math.abs(Math.sin(i / (7 + index * 3))) * (0.25 + 0.75 * Math.abs(Math.sin(i / 90 + index)))) }));
+          case "editor_thumbs": if (window.__mockSlow) await new Promise((r) => setTimeout(r, +window.__mockSlow)); return Array.from({ length: args.count }, (_, i) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="128" height="72"><rect width="128" height="72" fill="hsl(${(i * 37) % 360} 45% 30%)"/><text x="64" y="44" font-size="24" fill="white" text-anchor="middle">${i + 1}</text></svg>`)}`);
           case "editor_audio_info":
             if (/noaudio/.test(args.path)) throw "That file has no audio in it";
             return { path: "/__test.mp4", title: args.path.split(/[\\/]/).pop().replace(/\.[^.]+$/, ""), duration: 8, per_second: 50, peaks: Array.from({ length: 400 }, (_, i) => Math.abs(Math.sin(i / 5)) * 0.8) };
@@ -486,7 +581,7 @@ if (!window.__TAURI__) {
           case "export_clip": {
             const src = clips.find((x) => x.id === args.id) || drafts.find((x) => x.id === args.id);
             if (!src) throw "Clip not found";
-            for (const pct of [20, 60, 100]) { await new Promise((r) => setTimeout(r, 150)); window.__mockEmit("export-progress", { id: args.id, pct }); }
+            await mockExportRun(args.id, false);
             const made = { ...src, id: "e" + Date.now(), title: src.title + " (edit)", kind: "edit", created: Date.now(), draft: false, joins: [], join_names: [] };
             clips.push(made);
             const proj = src.draft && mockProj.list.find((p) => p.id === src.id);
@@ -618,8 +713,8 @@ if (!window.__TAURI__) {
             // Refused like join.rs; window.__mockJoinMissing = true: a clip's file is gone.
             const picked = [...new Set(args.ids)].map((id) => clips.find((c) => c.id === id)).filter(Boolean);
             if (picked.length < 2) throw "Pick at least two clips to edit together";
-            if (picked.length > 20) throw "Edit together takes at most 20 clips";
-            if (picked.reduce((s, c) => s + c.duration, 0) > 1800) throw "Edit together takes at most 30 minutes of clips";
+            if (picked.length > 500) throw "A project takes at most 500 clips";
+            if (picked.reduce((s, c) => s + c.duration, 0) > 14400) throw "A project takes at most 4 hours of clips";
             if (window.__mockJoinMissing) throw `The video file of "${picked[picked.length - 1].title}" is missing`;
             // 0.1.38: a project of references, made at once and returned (the UI opens it).
             const p = mockProj.make(`${picked[0].title} + ${picked.length - 1} more`);
@@ -635,6 +730,8 @@ if (!window.__TAURI__) {
             if (!d) throw p.clips.length ? "The working copy of this project is missing" : "This project has no clips yet";
             return { ...d, joins: [...d.joins], join_names: [...d.join_names] };
           }
+          // Agent A's command (0.1.41): end the running export of clip or project `id` (mockExportRun).
+          case "cancel_export": mockExportCancel.add(args.id); return true;
           case "export_project": {
             // Agent A's command (projects.rs): as export_clip, from the project's sources. A missing source the
             // ranges use is an error that names it, before anything is made (here: any missing source).
@@ -644,7 +741,7 @@ if (!window.__TAURI__) {
             if (!v) throw "This project has no clips yet";
             const lost = v.sources.find((s) => s.missing);
             if (lost) throw `The clip "${lost.title}" is missing, so the project cannot be exported`;
-            for (const pct of [10, 40, 70, 100]) { await new Promise((r) => setTimeout(r, 150)); window.__mockEmit("export-progress", { id: args.id, pct }); }
+            await mockExportRun(args.id, v.sources.length > 1); // several sources: the join first (0.1.41: stage "join")
             const first = clips.find((x) => x.id === v.sources[0].clip) || {};
             const made = { ...first, id: "e" + Date.now(), title: p.name + " (edit)", kind: "edit", created: Date.now(), draft: false, duration: v.duration, path: "/__test.mp4", joins: [], join_names: [] };
             clips.push(made);
@@ -677,6 +774,13 @@ if (!window.__TAURI__) {
             // A virtual project (or an empty old one) takes the clips at once; one with a draft queues the old job.
             const hasDraft = drafts.some((d) => d.id === p.id);
             if (p.virt || (!hasDraft && !p.clips.length && !mockProj.busy(p.id))) return mockProj.addNow(p, args.ids || []);
+            // 0.1.41 (F1): an old project with a draft becomes one of references: its draft is source 0, no job.
+            if (hasDraft && !mockProj.busy(p.id)) {
+              const d = drafts.find((x) => x.id === p.id);
+              p.base = { path: d.path, duration: d.duration, joins: d.joins.slice(), join_names: d.join_names.slice(), width: d.width, height: d.height, fps: d.fps, audio_tracks: d.audio_tracks };
+              p.baseClips = p.clips.length;
+              return mockProj.addNow(p, args.ids || []);
+            }
             return mockProj.add(p, args.ids || [], false);
           }
           case "project_save_state": {
@@ -740,7 +844,9 @@ if (!window.__TAURI__) {
           case "delete_clips": { const n = clips.length; clips = clips.filter((c) => !args.ids.includes(c.id)); return n - clips.length; }
           case "copy_clips": return args.ids.length;
           case "set_favorites": clips.forEach((c) => { if (args.ids.includes(c.id)) c.favorite = args.favorite; }); return null;
-          case "get_state": mockDeps.sync(); syncCaptures(); return state;
+          case "get_state": mockDeps.sync(); state.monitors = mockMons(); syncCaptures(); return state;
+          // The monitor picker's live picture (monprev.rs): a colored test picture per monitor.
+          case "monitor_preview": return mockPreview(args.index, args.width);
           case "auto_info": return state.auto;
           case "recommended_settings": return {
             input: { gpu: "NVIDIA GeForce RTX 5060 Ti", encoder: "nvenc", width: 2160, height: 1440, hz: 280, ram_gb: 31.9, threads: 12, build: 26300, has_wgc: true, border_ok: true, longest_secs: 120 },
@@ -760,27 +866,47 @@ if (!window.__TAURI__) {
           // The GAME / DESKTOP switch's right-click menu (capmode.rs game_menu / game_mark).
           case "game_menu": {
             const set = state.settings;
+            // 0.1.41: each row's full path and why it counts (gamedetect.rs Ev codes), and the last decision.
             const rows = [
-              { exe: "overwatch.exe", name: "Overwatch", title: "Overwatch", game: true },
-              { exe: "hades.exe", name: "Hades", title: "Hades", game: true },
-              { exe: "chrome.exe", name: "chrome", title: "YouTube - Google Chrome", game: false },
-              { exe: "discord.exe", name: "Discord", title: "#general | Friends - Discord", game: false },
-              { exe: "emu.exe", name: "emu", title: "My Emulator 2.1", game: false },
+              { exe: "overwatch.exe", name: "Overwatch", title: "Overwatch", game: true, path: "C:\\Program Files (x86)\\Overwatch\\_retail_\\Overwatch.exe", why: ["known", "library:blizzard", "fullscreen"] },
+              { exe: "hades.exe", name: "Hades", title: "Hades", game: true, path: "D:\\SteamLibrary\\steamapps\\common\\Hades\\x64\\Hades.exe", why: ["library:steam", "seen"] },
+              { exe: "chrome.exe", name: "chrome", title: "YouTube - Google Chrome", game: false, path: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", why: [] },
+              { exe: "discord.exe", name: "Discord", title: "#general | Friends - Discord", game: false, path: "C:\\Users\\you\\AppData\\Local\\Discord\\app-1.0.9\\Discord.exe", why: [] },
+              { exe: "emu.exe", name: "emu", title: "My Emulator 2.1", game: false, path: "C:\\Tools\\MyEmu\\emu.exe", why: [] },
             ];
             const auto = set.game_auto !== false;
-            const current = set.game_pick || (auto ? rows.find((r) => r.game && !(set.not_game_exes || []).includes(r.exe))?.exe || "" : "");
-            const out = rows.map((r) => ({ ...r, game: r.exe === set.game_pick || (auto && (r.game || (set.game_exes || []).includes(r.exe)) && !(set.not_game_exes || []).includes(r.exe)), current: r.exe === current, picked: r.exe === set.game_pick, not_game: (set.not_game_exes || []).includes(r.exe) }));
+            const never = (r) => (set.not_game_exes || []).includes(r.exe);
+            const current = set.game_pick || (auto ? rows.find((r) => r.game && !never(r))?.exe || "" : "");
+            const out = rows.map((r) => {
+              const picked = r.exe === set.game_pick, marked = (set.game_exes || []).includes(r.exe);
+              const game = picked || (auto && (r.game || marked) && !never(r));
+              const why = picked ? ["pick"] : !game ? [] : r.why.length ? r.why : ["marked"];
+              return { ...r, game, why, current: r.exe === current, picked, not_game: never(r) };
+            });
             out.sort((a, b) => b.current - a.current || b.picked - a.picked || b.game - a.game || a.name.localeCompare(b.name));
-            return { mode: set.capture_mode || "desktop", auto, pick: set.game_pick || "", current: out.find((r) => r.current) || null, programs: out };
+            const st = syncCaptures();
+            const decision = set.capture_mode === "game" ? st.capture_why : { code: "desktop", game: "", monitor: 0, evidence: [] };
+            return { mode: set.capture_mode || "desktop", auto, pick: set.game_pick || "", decision, current: out.find((r) => r.current) || null, programs: out };
+          }
+          // "Choose a program…" (capmode.rs game_pick_exe): the mock "picks" a made-up exe; window.__mockPickCancel = true: cancelled.
+          case "game_pick_exe": {
+            if (window.__mockPickCancel) return null;
+            const set = state.settings;
+            set.game_pick = "mygame.exe"; set.game_pick_path = "d:\\games\\mygame\\mygame.exe";
+            set.not_game_exes = (set.not_game_exes || []).filter((e) => e !== "mygame.exe");
+            set.game_exes = [...(set.game_exes || []).filter((e) => e !== "mygame.exe"), "mygame.exe"];
+            return JSON.parse(JSON.stringify(set));
           }
           case "game_mark": {
-            const set = state.settings, exe = String(args.exe || "").toLowerCase();
+            // 0.1.41: a pick may name the full path; marks are kept by file name, the pick keeps the path too.
+            const raw = String(args.exe || "").toLowerCase(), path = /[\\/]/.test(raw) ? raw.replace(/\//g, "\\") : "";
+            const set = state.settings, exe = path ? path.split("\\").pop() : raw;
             const drop = (list) => (list || []).filter((e) => e !== exe);
             if (args.action === "auto-on") set.game_auto = true;
             else if (args.action === "auto-off") set.game_auto = false;
-            else if (args.action === "unpick") set.game_pick = "";
-            else if (args.action === "pick") { set.game_pick = exe; set.not_game_exes = drop(set.not_game_exes); set.game_exes = [...drop(set.game_exes), exe]; }
-            else if (args.action === "not-game") { set.game_exes = drop(set.game_exes); if (set.game_pick === exe) set.game_pick = ""; set.not_game_exes = [...drop(set.not_game_exes), exe]; }
+            else if (args.action === "unpick") { set.game_pick = ""; set.game_pick_path = ""; }
+            else if (args.action === "pick") { if (path || set.game_pick !== exe) set.game_pick_path = path; set.game_pick = exe; set.not_game_exes = drop(set.not_game_exes); set.game_exes = [...drop(set.game_exes), exe]; }
+            else if (args.action === "not-game") { set.game_exes = drop(set.game_exes); if (set.game_pick === exe) { set.game_pick = ""; set.game_pick_path = ""; } set.not_game_exes = [...drop(set.not_game_exes), exe]; }
             else throw `Unknown choice "${args.action}"`;
             return JSON.parse(JSON.stringify(set));
           }

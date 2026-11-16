@@ -14,17 +14,20 @@ const ED_SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
 const ED_SEEK_STEPS = [1, 2, 3, 5, 10, 15, 30];
 const edSeekStep = () => { try { const n = +localStorage.getItem("glint.seekStep"); return ED_SEEK_STEPS.includes(n) ? n : 5; } catch { return 5; } };
 const edSetSeekStep = (n) => { try { localStorage.setItem("glint.seekStep", String(n)); } catch {} };
-const ED_COLOR_KEYS = ["brightness", "contrast", "saturation", "gamma"];
+// 0.1.41 (P): Sharpness, 0..1 (0 = off). A color or preset without it reads as 0 (edCol).
+const ED_COLOR_KEYS = ["brightness", "contrast", "saturation", "gamma", "sharpness"];
 const ED_NO_COLOR = { brightness: 1, contrast: 1, saturation: 1, gamma: 1 };
-// Names are English keys, shown through t().
+/** Value `k` of color `c`, its neutral value when it is not there (sharpness 0, the others 1). */
+const edCol = (c, k) => (Number.isFinite(c?.[k]) ? c[k] : k === "sharpness" ? 0 : 1);
+// Names are English keys, shown through t(). The built-in looks have no sharpening: picking one sets it to 0.
 const ED_PRESETS = [
-  { name: "None", ...ED_NO_COLOR },
-  { name: "Vivid", brightness: 1, contrast: 1.08, saturation: 1.35, gamma: 1 },
-  { name: "Punchy", brightness: 1, contrast: 1.25, saturation: 1.15, gamma: 0.95 },
-  { name: "Soft", brightness: 1.02, contrast: 0.88, saturation: 0.9, gamma: 1.08 },
-  { name: "Bright", brightness: 1.1, contrast: 1, saturation: 1.05, gamma: 1.15 },
-  { name: "Moody", brightness: 0.94, contrast: 1.15, saturation: 0.8, gamma: 0.9 },
-  { name: "Black and white", brightness: 1, contrast: 1.12, saturation: 0, gamma: 1 },
+  { name: "None", ...ED_NO_COLOR, sharpness: 0 },
+  { name: "Vivid", brightness: 1, contrast: 1.08, saturation: 1.35, gamma: 1, sharpness: 0 },
+  { name: "Punchy", brightness: 1, contrast: 1.25, saturation: 1.15, gamma: 0.95, sharpness: 0 },
+  { name: "Soft", brightness: 1.02, contrast: 0.88, saturation: 0.9, gamma: 1.08, sharpness: 0 },
+  { name: "Bright", brightness: 1.1, contrast: 1, saturation: 1.05, gamma: 1.15, sharpness: 0 },
+  { name: "Moody", brightness: 0.94, contrast: 1.15, saturation: 0.8, gamma: 0.9, sharpness: 0 },
+  { name: "Black and white", brightness: 1, contrast: 1.12, saturation: 0, gamma: 1, sharpness: 0 },
 ];
 // key, label, min, max, how the value is shown
 const ED_SLIDERS = [
@@ -32,6 +35,7 @@ const ED_SLIDERS = [
   ["contrast", "Contrast", 0.5, 1.5, "pct"],
   ["saturation", "Saturation", 0, 2, "pct"],
   ["gamma", "Gamma", 0.5, 2, "num"],
+  ["sharpness", "Sharpness", 0, 1, "pct"],
 ];
 const ED_DRIFT = 0.08;          // seconds a preview audio element may drift from the video before it is re-seeked
 const ED_GAIN_STEP = 0.1;       // Up / Down change a segment's level by this much
@@ -77,7 +81,7 @@ function edMarksSave(id, list) {
 }
 
 const edFmtVal = (key, x) => (ED_SLIDERS.find((s) => s[0] === key)[4] === "pct" ? `${Math.round(x * 100)}%` : x.toFixed(2));
-const edSameColor = (a, b) => ED_COLOR_KEYS.every((k) => Math.abs(a[k] - b[k]) < 0.005);
+const edSameColor = (a, b) => ED_COLOR_KEYS.every((k) => Math.abs(edCol(a, k) - edCol(b, k)) < 0.005);
 const edBaseName = (path) => String(path).split(/[\\/]/).pop() || String(path);
 /** Used to tell whether an edit changed the model (so a no-op leaves no undo step). */
 const edState = (m) => JSON.stringify([m.cuts, m.removed, m.audio, m.speed, m.colors, m.blank, ...(m.parts ? [m.parts] : []), ...(emHasLayers(m) ? [m.overlays, m.fadeIn, m.fadeOut] : []), ...(m.canvas ? [m.canvas] : [])]); // the part order only when there are parts; overlays and fades (overlays.js) only when there are any
@@ -107,13 +111,42 @@ function edFilterCss(col) {
   if (col.contrast !== 1) f.push(`contrast(${col.contrast})`);
   if (col.saturation !== 1) f.push(`saturate(${col.saturation})`);
   if (col.gamma !== 1) f.push("url(#e-gamma)");
+  const sharp = edCol(col, "sharpness");
+  if (sharp > 0.004) f.push(`url(#${edSharpFilter(sharp)})`); // 0.1.41: last, as the export's unsharp
   return f.join(" ") || "none";
+}
+
+/* Sharpness in the preview (0.1.41). CSS cannot sharpen: an SVG unsharp mask does it, the picture plus `a` times
+ * (picture - blurred picture), with a = 1.5 x sharpness as the export's ffmpeg `unsharp` luma amount (A: 5x5,
+ * 0..1.5). One <filter> per step of 0.05, made once in a hidden <svg> of the page (not of the viewer, so it
+ * outlives it); every element that copies the video's CSS filter (the canvas preview) gets it too. */
+const ED_SHARP_STEPS = 20;
+/** The SVG unsharp numbers for sharpness `s` (0..1): the blur's radius and the composite's k2 / k3. */
+function edSharpParams(s) {
+  const q = Math.round(Math.min(1, Math.max(0, +s || 0)) * ED_SHARP_STEPS) / ED_SHARP_STEPS, a = 1.5 * q;
+  return { q, std: 1, k2: Math.round((1 + a) * 1000) / 1000, k3: Math.round(-a * 1000) / 1000 };
+}
+/** The id of the page's sharpen filter for sharpness `s`, made on first use. */
+function edSharpFilter(s) {
+  const { q, std, k2, k3 } = edSharpParams(s), id = `e-sharp-${Math.round(q * ED_SHARP_STEPS)}`;
+  if (typeof document === "undefined" || document.getElementById(id)) return id;
+  let defs = document.getElementById("e-sharp-defs");
+  if (!defs) {
+    defs = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    defs.id = "e-sharp-defs";
+    defs.setAttribute("aria-hidden", "true");
+    defs.setAttribute("style", "position:absolute;width:0;height:0;overflow:hidden");
+    document.body.appendChild(defs);
+  }
+  defs.insertAdjacentHTML("beforeend", `<filter id="${id}" color-interpolation-filters="sRGB" x="0" y="0" width="100%" height="100%"><feGaussianBlur in="SourceGraphic" stdDeviation="${std}" edgeMode="duplicate" result="b"/><feComposite in="SourceGraphic" in2="b" operator="arithmetic" k1="0" k2="${k2}" k3="${k3}" k4="0"/></filter>`);
+  return id;
 }
 
 /** The user's saved color presets, skipping malformed entries. */
 function edUserPresets() {
   const list = S.settings?.color_presets;
-  return Array.isArray(list) ? list.filter((p) => p && typeof p.name === "string" && ED_COLOR_KEYS.every((k) => Number.isFinite(p[k]))) : [];
+  // A preset saved before Sharpness (0.1.41) has none: it reads as 0.
+  return Array.isArray(list) ? list.filter((p) => p && typeof p.name === "string" && ED_COLOR_KEYS.every((k) => Number.isFinite(p[k]) || (k === "sharpness" && p[k] == null))) : [];
 }
 
 /** The tracks to edit when editor_audio_tracks fails: same rows, no files (the preview then uses the clip's own audio). */
@@ -319,6 +352,14 @@ window.addEventListener("keydown", (e) => {
   // P-HOOK 0.1.40: Escape hides the Library list's clip preview first (projects.js), before it can close the editor.
   if (e.code === "Escape" && typeof projPvEscape === "function" && projPvEscape()) { e.preventDefault(); e.stopImmediatePropagation(); return; }
   if (typeof S === "undefined" || !S.open || !S.player) return;
+  if (e.code === "Escape" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    // R2 #5 (0.1.41): the app's right-click menu (#menu) is open: Esc closes it and nothing else.
+    const menu = document.getElementById("menu");
+    if (menu && !menu.hidden && menu.innerHTML.trim()) { e.preventDefault(); e.stopImmediatePropagation(); if (typeof closeMenu === "function") closeMenu(); else menu.hidden = true; return; }
+    // R2 #1 (0.1.41): Esc in a box of the viewer (a time, a number, a name) gives the box its value back and lets go of
+    // it; the editor stays. A search box keeps its own Esc (projects.js clears it).
+    if (edEscField(e.target)) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+  }
   // Escape while fullscreen only leaves fullscreen. The webview may leave it by
   // itself before the key arrives, so an Escape just after leaving is dropped too
   // (app.js would otherwise take it as "close the viewer").
@@ -330,6 +371,15 @@ window.addEventListener("keydown", (e) => {
   }
   S.player.resumeAudio?.();
   if (!S.player.editing || edTextTarget(e.target)) return;
+  // 0.1.41: Alt+Left / Alt+Right nudge what is selected on the timeline by one frame (Shift: ten). Alt cannot be bound
+  // to a shortcut (edKeyFind), so these never clash with one.
+  if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === "ArrowLeft" || e.code === "ArrowRight")) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const fr = 1 / (S.player.clipMeta?.fps || 60), n = e.shiftKey ? 10 : 1;
+    try { S.player.tl?.nudgeSel?.((e.code === "ArrowLeft" ? -1 : 1) * n * fr); } catch (err) { console.error("Glint: nudge failed", err); }
+    return;
+  }
   const hit = edKeyFind(e);
   // Escape rebound away from "escape": it does nothing in edit mode (rather than closing the viewer).
   if (!hit && e.code === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); return; }
@@ -339,6 +389,24 @@ window.addEventListener("keydown", (e) => {
   if (e.repeat && hit.entry.once) return;
   S.player.command(hit.entry.cmd);
 }, true);
+
+/* R2 #1 (0.1.41): Esc in a box of the viewer. A box's value when it took the focus, given back on Esc. */
+const edFieldWas = new WeakMap();
+document.addEventListener("focusin", (e) => { if (e.target?.matches?.("#modal input, #modal textarea")) edFieldWas.set(e.target, e.target.value); });
+/** True if `el` is a box of the open viewer that Esc should only leave: it gets the value it had when it took the focus
+ *  back and loses the focus. A box that applies as it is typed in (the zoom %) is told (input + change) so what it
+ *  applied goes back too; one that applies on change applies the same value again (no change). Not a search box (its
+ *  own Esc clears it). */
+function edEscField(el) {
+  if (!el?.matches?.("#modal input, #modal textarea, #modal select") || el.matches("[type=search], .pj-q")) return false;
+  if (el.matches("textarea, input:not([type=range]):not([type=checkbox]):not([type=radio]):not([type=button])") && edFieldWas.has(el) && el.value !== edFieldWas.get(el)) {
+    el.value = edFieldWas.get(el);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  el.blur();
+  return true;
+}
 
 /** Opens a speed list next to `anchor`, positioned inside `host` (which must be positioned). */
 function edOpenPop({ anchor, host, value, above = false, onPick, items = ED_SPEEDS, label = (s) => `${s}x` }) {
@@ -721,8 +789,8 @@ function openClip(id) {
             <button class="btn sm" data-v="edit-done">${draft ? L("Close") : L("Done")}</button></div>
           ${draft ? `<div class="small e-draft-note">${L("Export saves the result as a new clip. The clips themselves stay as they are.")}</div>` : ""}
           <section class="e-sec e-speed-sec">
-            <div class="e-title">${L("Speed")}</div>
-            <div class="e-line"><button type="button" class="btn sm e-speed" aria-haspopup="menu" aria-expanded="false" aria-label="${L("Clip speed")}"></button><span class="small e-speed-note"></span></div>
+            <div class="e-title e-speed-title">${L("Speed")}</div>
+            <div class="e-line"><button type="button" class="btn sm e-speed" aria-haspopup="menu" aria-expanded="false" aria-label="${L("Clip speed")}"></button><label class="e-speed-numw" hidden><input type="number" class="e-speed-num" min="0.25" max="4" step="0.05" aria-label="${L("Speed of the selected clip")}"> x</label><span class="small e-speed-note"></span></div>
           </section>
           <section class="e-sec e-color"></section>
           <section class="e-sec e-export"></section>
@@ -746,6 +814,7 @@ function openClip(id) {
   if (typeof ovMount === "function") { try { S.player.ov = ovMount(root, c, S.player); } catch (e) { console.error("Glint: the overlay tools did not load", e); } }
   // The canvas: another shape for the result (vertical for TikTok / Shorts), with pieces of the picture placed on it (canvas.js).
   if (typeof cvMount === "function") { try { S.player.cv = cvMount(root, c, S.player); } catch (e) { console.error("Glint: the canvas tools did not load", e); } }
+  if (typeof zmMount === "function") { try { S.player.zm = zmMount(root, c, S.player); } catch (e) { console.error("Glint: the zoom tools did not load", e); } } // 0.1.41: Zoom (zoom.js)
   // A project: the library's clips beside the editor, to add more (projects.js). P-HOOK 0.1.40: a single library
   // clip gets it too (shown only while editing; adding from it makes a project of the clip, projFromClip).
   if (typeof projMountPanel === "function") projMountPanel(root, id);
@@ -773,10 +842,46 @@ function openClip(id) {
   root.addEventListener("pointerdown", () => S.player?.resumeAudio?.());
 }
 
+/**
+ * Where each piece of a project that references its clips starts, in project time, and its name (0.1.41, F1): one per
+ * source, or one per clip inside a source that has `inner` ([{ at, title }], `at` in that source's own file: an old
+ * project's draft file is its source 0, and the clips it was joined from are its pieces). { starts, titles }.
+ */
+function edPieceStarts(sources) {
+  const starts = [], titles = [];
+  (Array.isArray(sources) ? sources : []).forEach((s, i) => {
+    const base = +s.start || 0, dur = +s.duration || 0;
+    const inner = Array.isArray(s.inner) ? s.inner.filter((x) => x && Number.isFinite(+x.at) && +x.at >= 0 && +x.at < dur - 1e-3).sort((a, b) => a.at - b.at) : [];
+    if (inner.length && inner[0].at > 1e-3) inner.unshift({ at: 0, title: s.title }); // footage before the first inner clip: the source's own name
+    const list = inner.length ? inner : [{ at: 0, title: s.title }];
+    for (const x of list) {
+      const at = base + +x.at;
+      if (starts.length && at < starts[starts.length - 1] + 1e-3) continue; // never twice at one place
+      starts.push(at);
+      titles.push((typeof x.title === "string" && x.title.trim()) || s.title || t("Clip {n}", { n: i + 1 }));
+    }
+  });
+  return { starts, titles };
+}
+
 /* ---------- player: Glint's own transport and the edit preview ---------- */
 // `root` is the .viewer element.
 function mountPlayer(root, c) {
-  const v = $("video", root), box = $(".player", root), bar = $(".p-bar", root);
+  const v0 = $("video", root), box = $(".player", root), bar = $(".p-bar", root);
+  // Gapless cuts (0.1.41): a second <video>, the STANDBY, waits hidden and muted at the first frame of the next piece
+  // that is not the following footage; at the cut the two swap roles. `v` is always the one shown (P.v follows, and
+  // P.onVideo(fn) tells canvas.js); every listener sits on both and acts only for the one it is about.
+  let v = v0;
+  const v1 = document.createElement("video");
+  v1.className = "e-standby";
+  v1.muted = true;
+  v1.preload = "auto";
+  v1.playsInline = true;
+  v1.tabIndex = -1;
+  v1.setAttribute("aria-hidden", "true");
+  v0.after(v1);
+  let w = v1;
+  const vids = [v0, v1];
   const el = (s) => $(s, root);
   const dur = () => (c.virtual && +c.duration > 0 ? +c.duration : Number.isFinite(v.duration) && v.duration > 0 ? v.duration : c.duration) || 1; // a project that references its clips: all of them (0.1.38)
   const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
@@ -796,7 +901,7 @@ function mountPlayer(root, c) {
     thumbs: null,             // film strip urls
     duration: dur,
   };
-  let raf = 0, idle = 0, drag = false, dead = false, driftTimer = 0, modelJob = null, extrasAsked = false;
+  let raf = 0, idle = 0, drag = false, dead = false, driftTimer = 0, modelJob = null, extrasAsked = false, trackGen = 0;
 
   try { const x = parseFloat(localStorage.getItem("glint.vol") ?? "0.6"); P.vol = Number.isFinite(x) ? clamp(x, 0, 1) : 0.6; }
   catch (e) { console.warn("Glint: could not read the saved volume", e); }
@@ -828,7 +933,10 @@ function mountPlayer(root, c) {
    * items and file rows go on (they follow tlNow()). */
   let aft = null;
   const aftRate = () => clamp(P.viewSpeed * (ed() ? P.model.speed || 1 : 1), 0.0625, 16);
-  const aftNow = () => (aft.run ? aft.at + ((performance.now() - aft.t0) / 1000) * aftRate() : aft.at);
+  // The rate is taken when the clock first runs and kept; applyRate starts the clock afresh when it changes (a speed
+  // picked while playing in a gap or after the video, 0.1.41: the time before that went at the old rate).
+  const aftNow = () => (aft.run ? aft.at + ((performance.now() - aft.t0) / 1000) * (aft.rate ??= aftRate()) : aft.at);
+  const aftRebase = () => { if (aft && aft.run && aft.rate !== undefined && aft.rate !== aftRate()) aft = { at: aftNow(), run: true, t0: performance.now(), rate: aftRate() }; };
   /** Put the playhead after the video at timeline second `sec`, running or standing; the video pauses at its end. */
   function setAft(sec, run) {
     aft = { at: sec, run: !!run, t0: performance.now() };
@@ -874,7 +982,7 @@ function mountPlayer(root, c) {
   const missTag = document.createElement("div");
   missTag.className = "e-missing-tag";
   missTag.hidden = true;
-  if (VS) { v.after(hold); box.appendChild(missTag); }
+  if (VS) { v1.after(hold); box.appendChild(missTag); } // over both videos (0.1.41)
   function holdFrame() {
     if (v.readyState < 2 || !v.videoWidth) return;
     const W = v.offsetWidth, H = v.offsetHeight;
@@ -890,7 +998,9 @@ function mountPlayer(root, c) {
   function vSet(s) {
     if (!VS) { v.currentTime = s; return; }
     const { k, local } = emProjToFile(VS, s);
-    if (vpend && vpend.k === k) { vpend.local = local; return; } // that file is still loading: it seeks there when ready
+    // That file is still loading: it seeks there when ready; once its length is known, there and then (0.1.41: a
+    // scrub went on only after the 4 s timer and then snapped back to where it entered the clip).
+    if (vpend && vpend.k === k) { vpend.local = local; if (v.readyState >= 1) v.currentTime = local; return; }
     if (k === vk && !vpend) { v.currentTime = local; return; }
     const play = !v.paused || !!vpend?.play;
     if (!vpend) holdFrame();
@@ -910,37 +1020,187 @@ function mountPlayer(root, c) {
     hold.hidden = true;
     P.lastSwitchMs = Math.round(performance.now() - p.t0);
     if (failed) console.warn("Glint: a project's clip did not load in time", VS[p.k]?.path);
+    lateSeek = failed && p.k === vk ? { k: p.k, local: p.local } : null; // its length may still come: it seeks there then
     if (p.play && !aft) v.play().catch((e) => console.warn("Glint: play() was refused", e));
     else if (!v.paused) v.pause();
     state();
-    if (P.editing) syncAudio(true);
+    if (P.editing) output(true); // this clip's own track sound, or the video's while it is not ready (0.1.41)
   }
+  let lateSeek = null;
   if (VS) {
-    v.addEventListener("loadedmetadata", () => { if (vpend) v.currentTime = vpend.local; });
-    v.addEventListener("seeked", () => { if (vpend && Math.abs(v.currentTime - vpend.local) < 0.25) vDone(false); });
-    v.addEventListener("error", () => { if (vpend) vDone(true); });
+    // Both videos carry these; each acts only for the one shown (the standby has its own, below).
+    for (const x of vids) {
+      x.addEventListener("loadedmetadata", () => {
+        if (x !== v) return;
+        if (vpend) v.currentTime = vpend.local;
+        else if (lateSeek && lateSeek.k === vk) { v.currentTime = lateSeek.local; lateSeek = null; }
+      });
+      x.addEventListener("seeked", () => { if (x === v && vpend && Math.abs(v.currentTime - vpend.local) < 0.25) vDone(false); });
+      x.addEventListener("error", () => { if (x === v && vpend) vDone(true); });
+    }
     v.muted = true;
     // The first source that has a file (the model and the timeline wait for its length; it is the project's anyway).
     const first = VS.find((s) => !s.missing);
     if (first) { vk = first.k; v.src = vUrl(first); }
   }
-  /** The project's picture: the first source's size; a source of another size is fitted inside it. */
+  /** The project's picture: the first source's size; a source of another size is fitted inside it. Both videos. */
   function fitVideo() {
-    if (!VS || !P.editing || !(c.width > 0 && c.height > 0)) { if (VS) for (const k of ["left", "top", "width", "height", "inset"]) v.style.removeProperty(k); return; }
+    if (!VS || !P.editing || !(c.width > 0 && c.height > 0)) { if (VS) for (const x of vids) for (const k of ["left", "top", "width", "height", "inset"]) x.style.removeProperty(k); return; }
     const W = box.clientWidth, H = box.clientHeight;
     if (!W || !H) return;
     const k = Math.min(W / c.width, H / c.height), w = c.width * k, h = c.height * k;
-    Object.assign(v.style, { inset: "auto", left: `${(W - w) / 2}px`, top: `${(H - h) / 2}px`, width: `${w}px`, height: `${h}px` });
+    for (const x of vids) Object.assign(x.style, { inset: "auto", left: `${(W - w) / 2}px`, top: `${(H - h) / 2}px`, width: `${w}px`, height: `${h}px` });
   }
   if (VS && typeof ResizeObserver === "function") new ResizeObserver(() => { if (!dead) fitVideo(); }).observe(box);
+
+  /* ----- gapless cuts (0.1.41): the standby video -----
+   * While a piece plays, the standby (w) is put at the first frame of the piece after it when that is a JUMP (another
+   * place in the file, another clip's file); `sb` says what it holds ({ k, local, ready }). At the cut the two swap:
+   * the standby is shown and plays on from a frame it has already decoded, the old one pauses and becomes the standby.
+   * No seek of the shown video at a cut, so no hitch. P.gapless = false cuts the old way (one video seeks), for
+   * measuring. P.cutLog: the last cuts, { how: "swap" | "seek", gapMs } (gapMs: from the last frame of the piece
+   * before to the first frame of the next one shown; one frame at 60 fps is 16.7 ms). */
+  let sb = null, sbAt = 0, cutWatch = null;
+  P.gapless = true;
+  P.cutLog = [];
+  const swapFns = [];
+  /** Be told when the shown video changes: fn(newVideo, oldVideo). Returns the unsubscribe. */
+  P.onVideo = (fn) => { swapFns.push(fn); return () => { const i = swapFns.indexOf(fn); if (i >= 0) swapFns.splice(i, 1); }; };
+  P.v = v;
+  /** The jump after the piece being played: { at, s } (timeline second, source second), or null (the footage follows on,
+   *  a gap, a missing clip, the end). */
+  function nextJump(m) {
+    const p = playPart(m);
+    if (!p) return null;
+    const at = afterPart(m, p);
+    if (at === null || noVid(m, at)) return null;
+    const s = emToSrc(m, at), end = p.src + p.len * (p.speed || 1);
+    if ((!VS || emSourceAt(VS, s) === vk) && Math.abs(s - end) < 0.05) return null;
+    return { at, s };
+  }
+  const fileOf = (s) => (VS ? emProjToFile(VS, s) : { k: -1, local: s });
+  /** Put the standby at the next jump's first frame (a few times a second while playing; it does nothing when it holds it). */
+  function prepStandby(force) {
+    const m = pm();
+    if (!P.gapless || !m || !P.editing || aft || vpend || dead) return;
+    const t0 = performance.now();
+    if (!force && t0 - sbAt < 150) return;
+    sbAt = t0;
+    const j = nextJump(m);
+    if (!j) return;
+    const { k, local } = fileOf(j.s);
+    if (VS && (!VS[k] || VS[k].missing)) return;
+    if (sb && sb.k === k && Math.abs(sb.local - local) < 1e-3) return;
+    sb = { k, local, ready: false, t0 };
+    const url = VS ? vUrl(VS[k]) : v.currentSrc || v.src;
+    if (w.dataset.url !== url) { w.dataset.url = url; w.src = url; } // it seeks once its length is known
+    else if (w.readyState >= 1) w.currentTime = local;
+  }
+  for (const x of vids) {
+    x.addEventListener("loadedmetadata", () => { if (x === w && sb) w.currentTime = sb.local; });
+    x.addEventListener("seeked", () => { if (x === w && sb && Math.abs(w.currentTime - sb.local) < 0.05) { sb.ready = true; sb.ms = Math.round(performance.now() - sb.t0); } });
+  }
+  /** At the cut to timeline second `at`: swap when the standby holds it. True if it did. */
+  function swapTo(at, m) {
+    if (!P.gapless || !sb || !sb.ready || dead || w.readyState < 2) return false;
+    const { k, local } = fileOf(emToSrc(m, at));
+    if (sb.k !== k || Math.abs(sb.local - local) > 0.02) return false;
+    const run = playing(), old = v, t0 = cutWatch?.last ?? performance.now();
+    v = w;
+    w = old;
+    P.v = v;
+    if (VS) { vk = k; lateSeek = null; }
+    aft = null;
+    const p = emParts(m)[emPartAt(m, at)];
+    playSrc = p ? p.i : null;
+    sb = null;
+    v.loop = false;
+    v.classList.remove("e-standby");
+    old.classList.add("e-standby");
+    shownCss = shownExp = "\u0000"; // the filter and the gamma go onto the video now shown
+    applyRate();
+    applyColor();
+    if (run) v.play().catch((e) => console.warn("Glint: play() was refused", e));
+    old.pause();
+    output(true); // the shown video's sound rule; the standby stays muted; the clip's tracks jump with it
+    for (const fn of swapFns.slice()) { try { fn(v, old); } catch (e) { console.error("Glint: a video swap listener failed", e); } }
+    cutWatch = { how: "swap", t0, el: v };
+    state();
+    prepStandby(true);
+    return true;
+  }
+  /* The frame shown (requestVideoFrameCallback): the picture's look follows the FRAME on screen, not the clock, which
+   * runs up to a frame ahead (the color changed a frame before the cut); a jump is taken when the piece's last frame
+   * is on screen, so the next piece's first frame is the very next one. Without the callback: the old way (paint). */
+  let shownFrame = null; // { el, src, at }: the source second of the frame on screen and when it came
+  const frameStep = () => Math.max(frame, (shownFrame?.step || 0));
+  function onShownFrame(x, meta) {
+    const now = performance.now();
+    const src = (VS && vk >= 0 ? VS[vk].start : 0) + meta.mediaTime;
+    const step = shownFrame && shownFrame.el === x && meta.mediaTime > shownFrame.media ? Math.min(0.5, meta.mediaTime - shownFrame.media) : 0;
+    shownFrame = { el: x, src, media: meta.mediaTime, at: now, step };
+    if (cutWatch && cutWatch.el === x && cutWatch.first === undefined) {
+      cutWatch.first = now;
+      P.cutLog.push({ how: cutWatch.how, gapMs: Math.round(now - cutWatch.t0) });
+      if (P.cutLog.length > 50) P.cutLog.shift();
+    }
+    if (cutWatch) cutWatch.last = now;
+    else cutWatch = { last: now, first: 0 };
+    const m = pm();
+    const p = m && P.editing && !aft && !vpend && !x.paused ? playPart(m) : null;
+    if (p) {
+      const end = p.src + p.len * (p.speed || 1), st = frameStep();
+      if (src + st * 0.5 >= end - 1e-4) cutNow(p); // the piece's footage is over (this frame is the next one's): on now
+      // Its last frame is on screen: the jump goes with the next screen refresh after it (tick checks `due`).
+      else if (src + st * 1.5 >= end - 1e-4 && nextJump(m)) pendingCut = { i: p.i, el: x, due: meta.expectedDisplayTime + (st / Math.max(0.0625, x.playbackRate)) * 1000 };
+    }
+    if (P.editing) applyColor(); // after a cut that follows on in the file, the frame belongs to the next piece
+  }
+  let pendingCut = null;
+  /** From the animation loop: take a jump that is due (see onShownFrame). */
+  function cutDue(ts) {
+    const pc = pendingCut;
+    if (!pc || ts < pc.due - 4) return;
+    pendingCut = null;
+    const m = pm();
+    if (m && v === pc.el && playSrc === pc.i && !v.paused) { const p = playPart(m); if (p) cutNow(p); }
+  }
+  function cutNow(p) {
+    const m = pm();
+    if (!m || dead || aft || vpend) return;
+    const at = afterPart(m, p);
+    if (at === null) return; // the end: guard() stops or loops
+    pendingCut = null;
+    const jump = nextJump(m);
+    if (swapTo(at, m)) return;
+    if (jump) cutWatch = { how: "seek", t0: cutWatch?.last ?? performance.now(), el: v };
+    jumpTo(at);
+  }
+  for (const x of vids) {
+    if (typeof x.requestVideoFrameCallback !== "function") continue;
+    const cb = (_, meta) => { if (dead) return; x.requestVideoFrameCallback(cb); if (x === v) onShownFrame(x, meta); };
+    x.requestVideoFrameCallback(cb);
+  }
+  /** The playhead for the picture's look: the frame on screen while playing (see above), else the clock. */
+  function lookNow() {
+    const m = pm();
+    if (!m || aft || vpend || v.paused || !shownFrame || shownFrame.el !== v || performance.now() - shownFrame.at > 200) return tlNow();
+    const p = playPart(m), src = shownFrame.src;
+    if (p) {
+      const sp = p.speed || 1, end = p.src + p.len * sp;
+      if (src >= p.src - 1e-4 && src < end - 1e-4) return p.at + (src - p.src) / sp;
+      if (src < p.src) return p.at; // the frame from before a seek or a swap: the piece's start
+    }
+    return tlNow();
+  }
 
   /** The playhead in timeline seconds. */
   function tlNow() {
     if (aft) return aftNow();
     const m = pm(), src = vNow();
     if (!m) return src;
-    const p = playPart(m);
-    if (p && src >= p.src - 0.25 && src <= p.src + p.len + 1) return p.at + clamp(src - p.src, 0, p.len);
+    const p = playPart(m), sp = p?.speed || 1; // a piece with its own speed (0.1.41): its footage is len * speed long
+    if (p && src >= p.src - 0.25 * sp && src <= p.src + p.len * sp + sp) return p.at + clamp((src - p.src) / sp, 0, p.len);
     const at = emFromSrc(m, src); // the video was put somewhere else: find its part again
     playSrc = emPartAt(m, at) >= 0 ? emPartAt(m, at) : null;
     return at;
@@ -975,7 +1235,7 @@ function mountPlayer(root, c) {
   /** The part being played, if the video has reached its end (null without parts). */
   function pastPart(m) {
     const p = m.parts ? playPart(m) : null;
-    return p && !vpend && vNow() >= p.src + p.len - EM_EPS ? p : null;
+    return p && !vpend && vNow() >= p.src + p.len * (p.speed || 1) - EM_EPS ? p : null;
   }
   /** Where playback goes on after the end of part `p`: the next playable moment after it in display order, or null after the last. */
   const afterPart = (m, p) => (p.end >= m.duration - EM_EPS ? null : emPlayable(m, p.end));
@@ -983,7 +1243,8 @@ function mountPlayer(root, c) {
   function jumpTo(at) {
     const m = pm();
     // (a project's next piece in another clip's file is never "simply following", even when project time touches)
-    if (m && !noVid(m, at) && !vpend && (!VS || emSourceAt(VS, emToSrc(m, at)) === vk) && Math.abs(emToSrc(m, at) - vNow()) < 0.05) { playSrc = emPartAt(m, at) >= 0 ? emPartAt(m, at) : null; return; }
+    if (m && !noVid(m, at) && !vpend && (!VS || emSourceAt(VS, emToSrc(m, at)) === vk) && Math.abs(emToSrc(m, at) - vNow()) < 0.05) { playSrc = emPartAt(m, at) >= 0 ? emPartAt(m, at) : null; applyRate(); return; } // its own speed at once (0.1.41)
+    if (m && !noVid(m, at) && swapTo(at, m)) return; // the standby holds it (0.1.41)
     setTl(at);
   }
 
@@ -1046,8 +1307,7 @@ function mountPlayer(root, c) {
       if (dead || s.state === "dropped") { edKillMedia(a); s.a = null; return; }
       if (cors) route(s);
       else console.warn(`Glint: ${s.title} plays without Web Audio; levels above 100% are heard at 100%.`);
-      a.defaultPlaybackRate = v.playbackRate;
-      a.playbackRate = v.playbackRate;
+      a.defaultPlaybackRate = a.playbackRate = rateOf(s);
       s.state = "on";
       return;
     }
@@ -1060,12 +1320,56 @@ function mountPlayer(root, c) {
     s.node = s.gain = null;
     if (s.a) { const a = s.a; s.a = null; edKillMedia(a); }
   }
+  /* A project that references its clips (0.1.41, F2): the preview sound of each row is made source by source, as soon
+   * as that source's tracks are known, nearest the playhead first. While a source's own elements are not all ready
+   * (or one failed), the video plays its own sound there (srcSoundOn). */
+  const srcEls = (k) => [...P.src.values()].filter((e) => e.kind === "track" && e.srcK === k);
+  const srcSoundOn = (k) => { const L = srcEls(k); return L.length > 0 && L.every((e) => e.state === "on"); };
+  P.srcSoundOn = srcSoundOn;
+  function syncTrackEls() {
+    if (!VS || !P.model || dead) return;
+    const rows = P.model.audio.filter((r) => r.kind === "track");
+    for (const s of byNearness(VS)) {
+      if (s.missing || s.trackFail || !Array.isArray(s.tracks)) continue;
+      for (const r of rows) {
+        const tr = s.tracks.find((x) => (x.title || `Track ${x.index + 1}`) === r.title), id = `${r.id}@${s.k}`;
+        if (!tr || P.src.has(id)) continue;
+        if (!tr.path) { failSource(s, new Error(`the audio tracks of ${s.title} were not extracted`)); break; }
+        const e = newSrc(id, "track", tr.path, r.title);
+        Object.assign(e, { rowId: r.id, srcK: s.k });
+        if (P.trackState === "idle" || P.trackState === "none") P.trackState = "loading";
+        e.ready.then(() => {
+          if (dead || P.src.get(id) !== e) return;
+          if (e.state !== "on") return failSource(s, e.error);
+          if ([...P.src.values()].some((x) => x.kind === "track" && x.state === "on")) P.trackState = "on";
+          applyRate();
+          output(true);
+          P.ed?.sync("audio");
+          tl((h) => h.refresh());
+        });
+      }
+    }
+  }
+  /** A source whose track sound cannot be previewed: its own elements go, the video's sound plays there. */
+  function failSource(s, err) {
+    if (s.trackFail) return;
+    s.trackFail = true;
+    console.warn("Glint: a project's clip plays the video's own sound in the preview; its separate tracks did not load.", s.title, err);
+    for (const e of srcEls(s.k)) { dropSrc(e); P.src.delete(e.id); }
+    output(true);
+  }
   /** Loads the clip's own tracks once. Falls back to the video's own audio if any of them fails. */
   function loadTracks() {
+    if (VS) return syncTrackEls(); // 0.1.41: a project's clips, source by source as their tracks come
     if (P.trackState !== "idle" || !P.model) return;
+    if (singlePending) return; // 0.1.41: once the tracks are known (singleModel); the video's sound meanwhile
     const rows = P.model.audio.filter((r) => r.kind === "track");
     if (!rows.length) { P.trackState = "none"; return; }
     P.trackState = "loading";
+    // A newer load (clips added meanwhile, P.addSources) makes this one stale: it then leaves everything alone
+    // (0.1.41: it threw over its dropped elements and removed the new ones too, for good).
+    const gen = ++trackGen;
+    const stale = () => dead || gen !== trackGen;
     (async () => {
       let list;
       if (VS) {
@@ -1088,7 +1392,7 @@ function mountPlayer(root, c) {
         list = rows.map((r) => newSrc(r.id, "track", r.path, r.title));
       }
       await Promise.all(list.map((s) => s.ready));
-      if (dead) return;
+      if (stale()) return;
       const bad = list.find((s) => s.state !== "on");
       if (bad) throw bad.error || new Error(`${bad.title} did not load`);
       P.trackState = "on";
@@ -1096,7 +1400,7 @@ function mountPlayer(root, c) {
       output(true);
       P.ed?.sync("audio");
     })().catch((e) => {
-      if (dead) return;
+      if (stale()) return;
       console.warn("Glint: separate audio track preview failed, using the clip's own audio instead.", e);
       for (const [id, s] of [...P.src]) if (s.kind === "track") { dropSrc(s); P.src.delete(id); }
       P.trackState = "failed";
@@ -1154,7 +1458,7 @@ function mountPlayer(root, c) {
   }
 
   /* ----- audio output: the video's own audio, or the preview elements while editing ----- */
-  const heard = (s) => P.editing && (s.kind === "file" || P.trackState === "on");
+  const heard = (s) => P.editing && (s.kind === "file" || P.trackState === "on" || (!!VS && s.srcK !== undefined && s.state === "on"));
   /** Sets each element's level from the model for the current moment. */
   function levels(now) {
     const m = ed(), master = (P.muted ? 0 : P.vol) * (P.ov ? P.ov.fadeGain(now) : 1); // the fade in / out is heard too
@@ -1180,7 +1484,8 @@ function mountPlayer(root, c) {
       if (row) want = s.kind === "file" ? (emRowCovers(row, now, m) ? emRowFileAt(m, row, now) : null) /* an added file is heard wherever its block lies (0.1.38) */ : aft ? null : s.srcK !== undefined ? (s.srcK === vk && !vpend ? v.currentTime : null) : src; // a file that plays through cuts keeps its place in the file across a jump
       const end = Number.isFinite(a.duration) ? a.duration : Infinity;
       if (want === null || want >= end - 0.01) { if (!a.paused) a.pause(); continue; }
-      if (a.playbackRate !== v.playbackRate) a.playbackRate = v.playbackRate;
+      const rate = rateOf(s); // 0.1.41: a track at the piece's speed, an added file at the timeline's
+      if (a.playbackRate !== rate) a.playbackRate = rate;
       if (hard || (run && a.paused) || (!a.seeking && Math.abs(a.currentTime - want) > ED_DRIFT)) a.currentTime = want;
       if (run && a.paused) a.play().catch((e) => console.warn(`Glint: could not play ${s.title} in the preview`, e));
       else if (!run && !a.paused) a.pause();
@@ -1193,26 +1498,37 @@ function mountPlayer(root, c) {
     else if (!want && driftTimer) { clearInterval(driftTimer); driftTimer = 0; }
   }
   function output(hard = false) {
-    v.muted = (P.editing && P.trackState === "on") || P.muted;
+    // A project's clip (0.1.41): the video is quiet only where that clip's own track sound is ready.
+    v.muted = (P.editing && (VS ? srcSoundOn(vk) : P.trackState === "on")) || P.muted;
     v.volume = P.vol;
+    w.muted = true; // the standby is never heard (0.1.41)
     syncAudio(hard);
     drift();
   }
   P.output = output;
 
   /* ----- speed and color preview ----- */
+  // Speed per piece (0.1.41): the timeline runs at the player's speed times the result's (tlRate); the video and the
+  // clip's own tracks run at that times the speed of the piece being played (vidRate); added audio files and songs are
+  // on timeline time (tlRate). The browser keeps the pitch (preservesPitch, on by default).
+  const tlRate = () => clamp(P.viewSpeed * (ed() ? P.model.speed || 1 : 1), 0.0625, 16);
+  const pieceSp = () => { const m = pm(); return (m && !aft && playPart(m)?.speed) || 1; };
+  const vidRate = () => clamp(tlRate() * pieceSp(), 0.0625, 16);
+  const rateOf = (s) => (s.kind === "file" ? tlRate() : vidRate());
+  P.tlRate = tlRate;
   function applyRate() {
-    const r = clamp(P.viewSpeed * (ed() ? P.model.speed : 1), 0.0625, 16);
-    v.defaultPlaybackRate = r;
-    v.playbackRate = r;
-    for (const s of P.src.values()) if (s.a) { s.a.defaultPlaybackRate = r; s.a.playbackRate = r; }
+    aftRebase();
+    const r = vidRate();
+    if (v.defaultPlaybackRate !== r) v.defaultPlaybackRate = r;
+    if (v.playbackRate !== r) v.playbackRate = r;
+    for (const s of P.src.values()) if (s.a) { const x = rateOf(s); if (s.a.playbackRate !== x) { s.a.defaultPlaybackRate = x; s.a.playbackRate = x; } }
   }
   // Color and hiding are per segment, so the preview follows the playhead:
   // paint() calls this every frame while playing and after every seek or edit.
   // The DOM is only touched when something changed.
   let shownCss = "", shownExp = "", shownBlank = false, shownSeg = -1;
   function applyColor() {
-    const m = ed(), now = tlNow();
+    const m = ed(), now = lookNow(); // the frame on screen while playing (0.1.41), else the clock
     const col = m ? emColorAt(m, now) : ED_NO_COLOR;
     const css = edFilterCss(col), exp = String(Math.round((1 / (col.gamma || 1)) * 10000) / 10000);
     if (css !== shownCss) { shownCss = css; v.style.filter = css; }
@@ -1230,6 +1546,7 @@ function mountPlayer(root, c) {
     const seg = m ? emSegmentAt(m, now) : -1;
     if (seg !== shownSeg) { shownSeg = seg; P.ed?.playheadSeg?.(); } // the Color pane may show the playhead's segment
     P.cv?.paint(now); // the canvas preview (canvas.js)
+    P.zm?.paint(now); // the Zoom section follows the playhead (zoom.js, 0.1.41)
     P.ov?.paint(now); // overlays shown at the playhead, the fade cover
   }
   P.applyColor = applyColor;
@@ -1270,14 +1587,20 @@ function mountPlayer(root, c) {
       if (emTail(m) > EM_EPS) { setAft(m.duration, true); state(); syncAudio(true); drift(); return; }
       if (P.loop) setTl(kept[0].start);
       else { v.pause(); const last = kept[kept.length - 1]; setTl(Math.max(last.start, last.end - frame)); }
-    } else if (past) jumpTo(p);
-    else if (p > now + 0.001) setTl(p);
+    } else if (past) {
+      // The frames drive the cut while they come (onShownFrame, 0.1.41): the clock runs ahead of the frame on screen,
+      // so going on here would cut the piece's last frame short. Only when they are late (a hidden window) is it ours.
+      const fresh = shownFrame && shownFrame.el === v && performance.now() - shownFrame.at < 200;
+      if (!fresh || vNow() >= past.src + past.len * (past.speed || 1) + 3 * frameStep()) jumpTo(p);
+    } else if (p > now + 0.001) setTl(p);
   }
 
   /* ----- drawing ----- */
   function paint() {
     if (dead) return;
     guard(tlNow());
+    applyRate(); // the piece being played may have another speed (0.1.41); only touches what differs
+    if (playing()) prepStandby(false); // the next jump's first frame waits in the standby (0.1.41)
     const now = tlNow(), m = ed();
     el(".p-prog").style.width = pct(toBar(now));
     el(".p-knob").style.left = pct(toBar(now));
@@ -1288,7 +1611,8 @@ function mountPlayer(root, c) {
     if (P.editing) levels(now);
     applyColor();
   }
-  const tick = () => {
+  const tick = (ts) => {
+    if (Number.isFinite(ts)) cutDue(ts); // a jump due with this screen refresh (0.1.41)
     if (P.editing) syncAudio(false);
     paint();
     raf = !playing() || dead ? 0 : requestAnimationFrame(tick);
@@ -1329,6 +1653,8 @@ function mountPlayer(root, c) {
     // After the video (0.1.35): the player's own clock pauses and plays.
     const aftGo = () => { aft = { at: aft.at, run: true, t0: performance.now() }; aftTick(); state(); syncAudio(true); drift(); };
     if (aft && aft.run) { aftStop(); state(); syncAudio(false); drift(); paint(); return; }
+    // Another clip's file is loading (0.1.41): it plays or not once it has seeked; Space just says which.
+    if (vpend) { vpend.play = !vpend.play; state(); return; }
     if (!v.paused) { v.pause(); return; }
     const m = ed();
     if (m && aft) {
@@ -1347,6 +1673,14 @@ function mountPlayer(root, c) {
       if (past || p > now + 0.001) return go(p, true);
     } else if (v.ended) v.currentTime = 0;
     v.play().catch((e) => console.warn("Glint: play() was refused", e));
+  };
+  /** Stand still wherever the playhead is: the video, a file still loading, the player's own clock (0.1.41). */
+  P.stop = () => {
+    if (aft && aft.run) { aftStop(); aftTick(); }
+    if (vpend) vpend.play = false;
+    if (!v.paused) v.pause();
+    state();
+    if (P.editing) { syncAudio(false); drift(); }
   };
   /** Seek to `sec` (timeline time while editing; source time otherwise, the same without parts). While editing it never lands inside a cut-out part (see edLand), unless `raw`. */
   P.seek = (sec, back = false, raw = false) => {
@@ -1423,6 +1757,7 @@ function mountPlayer(root, c) {
     modelJob ||= (async () => {
       await metadata();
       if (VS) return virtualModel(); // a project that references its clips (0.1.38)
+      if (!P.draft) return singleModel(); // a library clip: at once, its tracks after (0.1.41, F2)
       let tracks;
       try {
         tracks = await invoke("editor_audio_tracks", { id: c.id });
@@ -1456,6 +1791,51 @@ function mountPlayer(root, c) {
     return modelJob;
   }
   P.whenModel = ensureModel;
+  /**
+   * A library clip's model at once (0.1.41, F2): its pieces and picture first; its own track rows when
+   * editor_audio_tracks answers (the rows emNew would have made, added with full levels, into the undo history too).
+   * Meanwhile the video's own sound plays. A joined clip's parts and the bookmarks are there from the start.
+   */
+  let singlePending = false;
+  function singleModel() {
+    const m = emNew(dur(), []);
+    m.clipTitle = c.title || "";
+    m.clipPath = c.path || "";
+    emSetMarks(m, edMarksLoad(c.id));
+    if (c.kind === "joined" && Array.isArray(c.joins) && c.joins.length) {
+      const starts = [0, ...c.joins], names = Array.isArray(c.join_names) ? c.join_names : [];
+      emSetParts(m, starts, starts.map((_, i) => (typeof names[i] === "string" && names[i].trim()) || t("Clip {n}", { n: i + 1 })));
+    }
+    P.model = m;
+    singlePending = true;
+    const gen = loadGen, stale = () => dead || gen !== loadGen || P.model !== m;
+    invoke("editor_audio_tracks", { id: c.id }).then((tracks) => {
+      if (!Array.isArray(tracks)) throw new Error("editor_audio_tracks did not return a list");
+      return tracks;
+    }).catch((e) => {
+      console.warn("Glint: editor_audio_tracks failed; the rows can still be edited, the preview uses the clip's own audio.", e);
+      return edFallbackTracks(c);
+    }).then((tracks) => {
+      if (stale()) return;
+      const shape = emNew(dur(), tracks), n = m.removed.length;
+      const ids = new Set(m.audio.map((r) => r.id));
+      const rows = shape.audio.filter((r) => !ids.has(r.id)).map((r) => ({ ...r, gains: Array(n).fill(1) }));
+      m.audio = [...m.audio.filter((r) => r.kind === "track"), ...rows, ...m.audio.filter((r) => r.kind !== "track")];
+      m.tracks0 = shape.tracks0;
+      // The undo history learns the rows too (an undo must not take them away).
+      const fix = (json) => { try { const o = JSON.parse(json); if (!Array.isArray(o.audio) || !Array.isArray(o.removed)) return json; const have = new Set(o.audio.map((r) => r.id)); o.audio = [...rows.filter((r) => !have.has(r.id)).map((r) => ({ ...r, gains: Array(o.removed.length).fill(1) })), ...o.audio]; return JSON.stringify(o); } catch { return json; } };
+      m.undo = m.undo.map(fix);
+      m.redo = m.redo.map(fix);
+      singlePending = false;
+      P.trackState = "idle";
+      loadTracks();
+      tl((h) => h.refresh());
+      for (const [id, wave] of P.waves) if (rows.some((r) => r.id === id)) tl((h) => h.setWaveform(id, wave)); // waveforms that came first find their rows now
+      P.edSync("tracks");
+      checkGameApart(); // the waveforms may have come first
+    });
+    return P.model;
+  }
   /** Each source's own tracks (editor_audio_tracks of its library clip), as the editor shows them. */
   async function sourceTracks(list) {
     await Promise.all(list.map(async (s) => {
@@ -1477,39 +1857,145 @@ function mountPlayer(root, c) {
     const { k, local } = emProjToFile(VS, info.off + Math.min(info.len, 0.001)), s = VS[k];
     return { ...info, path: s.path, off: Math.max(0, local - Math.min(info.len, 0.001)), mlen: s.duration, title: s.title, width: s.width, height: s.height };
   }
-  /** A model's track rows for these titles (row k = title k; a row it had already keeps its levels). */
+  /** A model's track rows for these titles (row k = title k; a row it had already keeps its levels and its id).
+   *  Every track row's `index` is its title's place in m.trackTitles (the export finds each source's track by it). */
   function titleRows(m, titles) {
-    const n = m.removed.length;
+    const n = m.removed.length, ids = new Set(m.audio.map((r) => r.id));
+    const fresh = (k) => { let id = `t${k}`, j = 1; while (ids.has(id)) id = `t${k}_${j++}`; ids.add(id); return id; };
     m.audio = [
-      ...titles.map((title, k) => m.audio.find((r) => r.kind === "track" && r.title === title) || { id: `t${k}`, kind: "track", index: k, title, path: "", volume: 1, muted: false, gains: Array(n).fill(1) }),
+      ...titles.map((title, k) => m.audio.find((r) => r.kind === "track" && r.title === title) || { id: fresh(k), kind: "track", index: k, title, path: "", volume: 1, muted: false, gains: Array(n).fill(1) }),
       ...m.audio.filter((r) => r.kind !== "track"),
     ];
+    for (const r of m.audio) if (r.kind === "track") r.index = titles.indexOf(r.title);
     m.tracks0 = titles.map((title, k) => ({ index: k, title }));
     m.trackTitles = titles.slice();
+  }
+  /* ----- the editor is usable at once (0.1.41, F2) -----
+   * A project that references its clips gets its model, its pieces and its picture straight away; each source's own
+   * tracks (editor_audio_tracks: slow, the backend makes a file per track), then waveforms and film strips arrive
+   * after, source by source, nearest the playhead first, at most 3 asked at once. Meanwhile the video's own sound
+   * plays (the clip's mix) and a track row not known yet is simply not there (or has no waveform: drawn flat). A new
+   * title adds its row at the end (titles only grow, so every row keeps its place and index) and the undo history
+   * learns it too. Closing, or clips added meanwhile, makes a load stale: it writes nothing (`loadGen`). */
+  let loadGen = 0;
+  P.tracksPending = () => !!VS && VS.some((s) => !s.missing && !Array.isArray(s.tracks));
+  /** The saved edit's track titles, by their index (to have the rows its levels belong to before the tracks come). */
+  async function savedTitles() {
+    if (!P.draft) return [];
+    let text = null;
+    try {
+      if (typeof projCarry !== "undefined" && projCarry && projCarry.id === c.id) text = projCarry.state;
+      else if (typeof projCache !== "undefined" && projCache.has(c.id)) text = projCache.get(c.id);
+      else text = await invoke("project_state", { id: c.id });
+      const s = typeof text === "string" ? JSON.parse(text) : text;
+      const rows = (Array.isArray(s?.audio) ? s.audio : []).filter((r) => r && r.kind === "track" && typeof r.title === "string");
+      return [...new Set(rows.slice().sort((a, b) => (+a.index || 0) - (+b.index || 0)).map((r) => r.title))];
+    } catch { return []; }
+  }
+  /** Titles from every source whose tracks are known, after the ones the model has (append-only). */
+  function grownTitles(m) {
+    const have = Array.isArray(m.trackTitles) ? m.trackTitles.slice() : [];
+    for (const x of emTrackTitles(VS.map((s) => s.tracks || []))) if (!have.includes(x)) have.push(x);
+    return have;
+  }
+  /** New track rows into every undo / redo step too (an undo must not take a row away that only arrived late). */
+  function rowsIntoHistory(m) {
+    const tracks = m.audio.filter((r) => r.kind === "track");
+    const fix = (json) => {
+      try {
+        const o = JSON.parse(json);
+        if (!Array.isArray(o.audio) || !Array.isArray(o.removed)) return json;
+        const known = new Set(o.audio.filter((r) => r.kind === "track").map((r) => r.title));
+        const add = tracks.filter((r) => !known.has(r.title)).map((r) => ({ ...r, volume: 1, muted: false, gains: Array(o.removed.length).fill(1) }));
+        const tr = [...o.audio.filter((r) => r.kind === "track"), ...add];
+        for (const r of tr) { const k = m.trackTitles.indexOf(r.title); if (k >= 0) r.index = k; }
+        o.audio = [...tr, ...o.audio.filter((r) => r.kind !== "track")];
+        return JSON.stringify(o);
+      } catch { return json; }
+    };
+    m.undo = m.undo.map(fix);
+    m.redo = m.redo.map(fix);
+  }
+  /** Sources in the order they are needed: the one under the playhead first, then by distance from it. */
+  function byNearness(list) {
+    const m = P.model;
+    let at = 0;
+    try { at = m ? emToSrc(m, tlNow()) : 0; } catch { at = 0; }
+    const dist = (s) => (at < s.start ? s.start - at : at > s.start + s.duration ? at - s.start - s.duration : 0);
+    return list.slice().sort((a, b) => dist(a) - dist(b));
+  }
+  /* One background queue for a project's clips (0.1.41): at most 3 calls at once; the next is always the most needed:
+   * the clip under the playhead: its tracks, its waveform, its film strip; then every other clip's TRACKS, nearest
+   * first (so every row soon plays its own sound); then their waveforms; then their film strips. The playhead's place
+   * is read at each pick. A task whose editor was closed or replaced is dropped (`stale`). */
+  const bgQ = [];
+  let bgBusy = 0;
+  const BG_ORDER = { tracks: 0, waves: 1, thumbs: 2 };
+  function bgAdd(kind, s, fn, stale) { bgQ.push({ kind, s, fn, stale }); bgPump(); }
+  function bgPump() {
+    while (bgBusy < 3) {
+      for (let i = bgQ.length - 1; i >= 0; i--) if (bgQ[i].stale()) bgQ.splice(i, 1);
+      if (!bgQ.length) return;
+      const rank = new Map(byNearness(VS).map((s, i) => [s, i]));
+      const key = (x) => { const r = rank.get(x.s) ?? 1e6; return [r === 0 ? 0 : BG_ORDER[x.kind], r, BG_ORDER[x.kind]]; };
+      let best = 0;
+      for (let i = 1; i < bgQ.length; i++) { const a = key(bgQ[i]), b = key(bgQ[best]); if (a[0] < b[0] || (a[0] === b[0] && (a[1] < b[1] || (a[1] === b[1] && a[2] < b[2])))) best = i; }
+      const task = bgQ.splice(best, 1)[0];
+      bgBusy++;
+      Promise.resolve().then(task.fn).catch((e) => { if (!task.stale()) console.warn("Glint: a project's clip did not load its extras", task.s.title, e); })
+        .finally(() => { bgBusy--; bgPump(); });
+    }
+  }
+  /** Each source's tracks in the background; rows, history, preview sound and waveforms follow, source by source. */
+  function loadSourceTracks(list) {
+    const gen = loadGen, m = P.model, stale = () => dead || gen !== loadGen || P.model !== m;
+    for (const s of list) {
+      if (s.missing || Array.isArray(s.tracks)) continue;
+      bgAdd("tracks", s, async () => {
+        await sourceTracks([s]);
+        if (stale()) return;
+        const titles = grownTitles(m);
+        if (titles.length !== (m.trackTitles || []).length) {
+          titleRows(m, titles);
+          rowsIntoHistory(m);
+          tl((h) => h.refresh());
+          P.edSync("tracks");
+        }
+        syncTrackEls();      // this clip's own sound, now
+        waveOf(s, m, stale); // its waveforms next
+      }, stale);
+    }
+    syncTrackEls(); // the clips whose tracks are known already
   }
   /**
    * The model of a project that references its clips (0.1.38): on project time (the clips end to end), one track row
    * per title across the clips, each clip its own part with its footage limits (m.bounds), its saved edit back.
+   * 0.1.41 (F2): made at once; the track rows the saved edit has are there from the start, the sources' own tracks
+   * come in the background (loadSourceTracks). F1: a source with `inner` (an old project's draft file) is one piece
+   * per clip inside it, each with its own footage limits, all from that one file.
    */
   async function virtualModel() {
-    await sourceTracks(VS);
+    const known = VS.every((s) => s.missing || Array.isArray(s.tracks));
+    const titles = known ? emTrackTitles(VS.map((s) => s.tracks || [])) : await savedTitles();
     if (dead) return null;
     const m = emNew(dur(), []);
     // A project of one clip: its piece is named after that clip, not after the project (0.1.40).
-    m.clipTitle = (VS.length === 1 && VS[0]?.title) || c.title || "";
+    m.clipTitle = (VS.length === 1 && !VS[0]?.inner?.length && VS[0]?.title) || c.title || "";
     m.virtual = true; // its ranges never run across two clips' files (emSrcSpans)
     m.sources = VS;   // an ungrouped piece's sound comes from its own clip's file and stream (0.1.39)
-    titleRows(m, emTrackTitles(VS.map((s) => s.tracks)));
+    titleRows(m, titles);
     let restored = false;
     if (P.draft && typeof projRestore === "function") {
       try { restored = await projRestore(c, m); } catch (e) { console.warn("Glint: the project's saved edit could not be restored; it opens as it is.", e); restored = false; }
       if (dead) return null;
     }
-    if (!restored && VS.length > 1) emSetParts(m, VS.map((s) => s.start), VS.map((s, i) => s.title || t("Clip {n}", { n: i + 1 })));
-    m.bounds = VS.map((s) => s.start); // every clip's footage ends at its own end
-    m.trackTitles ||= emTrackTitles(VS.map((s) => s.tracks));
+    const cut = edPieceStarts(VS);
+    if (!restored && cut.starts.length > 1) emSetParts(m, cut.starts, cut.titles);
+    m.bounds = cut.starts; // every clip's footage ends at its own end (an inner clip of a draft too)
+    if (!Array.isArray(m.trackTitles) || !m.trackTitles.length) m.trackTitles = titles.slice();
     P.model = m;
     if (P.draft && typeof projModelReady === "function") projModelReady(P, restored);
+    queueMicrotask(() => { if (!dead && P.model === m) loadSourceTracks(VS); });
     return P.model;
   }
   /**
@@ -1520,23 +2006,22 @@ function mountPlayer(root, c) {
     const m = P.model;
     if (!VS || !m || !next || !Array.isArray(next.sources) || next.sources.length <= VS.length) return false;
     const fresh = next.sources.slice(VS.length).map((s, j) => ({ ...s, k: VS.length + j, start: +s.start || 0, duration: +s.duration || 0 }));
-    await sourceTracks(fresh);
+    // 0.1.41 (F2): on the timeline at once; their tracks, waveforms and frames come after (loadSourceTracks).
     if (dead || P.model !== m) return false;
     VS.push(...fresh);
     c.sources = next.sources;
     c.duration = +next.duration || VS.reduce((n, s) => n + s.duration, 0);
     c.joins = next.joins;
     c.join_names = next.join_names;
-    const end = VS[VS.length - 1].start + VS[VS.length - 1].duration;
-    emAddParts(m, fresh.map((s) => s.start), fresh.map((s) => s.title), end, VS[0].title);
-    m.bounds = VS.map((s) => s.start);
-    titleRows(m, emTrackTitles(VS.map((s) => s.tracks)));
-    // New tracks and the waveforms and film strip of the whole project again.
-    for (const [id, s] of [...P.src]) if (s.kind === "track") { dropSrc(s); P.src.delete(id); }
-    P.trackState = "idle";
-    loadTracks();
+    const end = VS[VS.length - 1].start + VS[VS.length - 1].duration, cut = edPieceStarts(fresh);
+    emAddParts(m, cut.starts, cut.titles, end, VS[0].title);
+    m.bounds = edPieceStarts(VS).starts;
+    titleRows(m, grownTitles(m)); // the rows it has, plus titles of sources already known
+    rowsIntoHistory(m);
+    loadSourceTracks(fresh); // the new clips' tracks, then their own preview sound (the others' stays as it is)
     extrasAsked = false;
-    fetchExtras();
+    fetchExtras(); // the film strip of the whole project again (the strip is spread over its length)
+    joinWaves(m);  // the rows' waveforms over the new length
     tl((h) => h.refresh());
     P.edSync("add");
     return true;
@@ -1592,6 +2077,8 @@ function mountPlayer(root, c) {
         pieceUp: (info, m) => (typeof medFromPiece === "function" ? medFromPiece(P, pieceFile(info), m) : null),
         // A project that references its clips (0.1.38): a piece of a missing clip is marked on the video row.
         missingAt: (src) => (VS ? (vMissing(src) ? VS[emSourceAt(VS, src)].title || "?" : null) : null),
+        // 0.1.41 (F2): a track row whose sound is still on its way says so, quietly.
+        soundLoading: () => !!VS && (P.tracksPending() || bgQ.some((x) => x.kind !== "thumbs") || bgBusy > 0),
         cvApi: () => P.cv || null,
       });
     } catch (e) {
@@ -1612,6 +2099,22 @@ function mountPlayer(root, c) {
     const host = el(".e-tl");
     if (host) host.textContent = "";
   }
+  /**
+   * A clip whose desktop sound is silent while its Game track is not: the game played on another output device than
+   * the recorded one, so it is only on the Game row. That row is then heard beside Desktop (emGameHidden), in the
+   * preview and in the export. Needs both the rows and their waveforms: called when either arrives (0.1.41: the rows
+   * may now come after the waveforms).
+   */
+  function checkGameApart() {
+    const mm = P.model, d = mm && emTrackRow(mm, "Desktop"), g = mm && emTrackRow(mm, "Game");
+    if (dead || !d || !g || mm.gameApart || !P.waves.has(d.id) || !P.waves.has(g.id)) return false;
+    const loudest = (row) => { let top = 0; for (const p of P.waves.get(row.id)?.peaks || []) if (p > top) top = p; return top; };
+    if (!(loudest(d) < 0.01 && loudest(g) > 0.03)) return false;
+    mm.gameApart = true;
+    P.edSync("volume");
+    return true;
+  }
+  P.checkGameApart = checkGameApart;
   /** Waveforms and film strip, fetched once per open clip in the background. */
   function fetchExtras() {
     if (extrasAsked) return;
@@ -1625,15 +2128,7 @@ function mountPlayer(root, c) {
         P.waves.set(id, wave);
         if (P.model?.audio.some((r) => r.id === id)) tl((h) => h.setWaveform(id, wave));
       }
-      // A clip whose desktop sound is silent while its Game track is not: the game played on another
-      // output device than the recorded one, so it is only on the Game row. That row is then heard
-      // beside Desktop (emGameHidden), in the preview and in the export.
-      const mm = P.model, d = mm && emTrackRow(mm, "Desktop"), g = mm && emTrackRow(mm, "Game");
-      const loudest = (row) => { let top = 0; for (const p of P.waves.get(row.id)?.peaks || []) if (p > top) top = p; return top; };
-      if (d && g && !mm.gameApart && P.waves.has(d.id) && P.waves.has(g.id) && loudest(d) < 0.01 && loudest(g) > 0.03) {
-        mm.gameApart = true;
-        P.edSync("volume");
-      }
+      checkGameApart();
     }).catch((e) => { if (!dead) console.warn("Glint: editor_waveforms failed; the audio rows show no waveform.", e); });
     invoke("editor_thumbs", { id: c.id, count: ED_THUMBS }).then((paths) => {
       if (dead) return;
@@ -1643,34 +2138,57 @@ function mountPlayer(root, c) {
     }).catch((e) => { if (!dead) console.warn("Glint: editor_thumbs failed; the video row shows no film strip.", e); });
   }
 
-  /** A project that references its clips (0.1.38): each clip's waveforms and film strip, laid on project time. */
-  function fetchExtrasVirtual() {
-    const list = VS.slice(), total = dur();
-    Promise.all(list.map((s) => (s.missing ? Promise.resolve([]) : invoke("editor_waveforms", { id: s.clip }).catch((e) => { console.warn("Glint: editor_waveforms failed for a project's clip", s.title, e); return []; })))).then((waves) => {
-      if (dead || !P.model) return;
-      const rates = waves.flat().map((w) => +w?.per_second || 0).filter((x) => x > 0), ps = rates.length ? Math.max(...rates) : 50;
-      for (const row of P.model.audio.filter((r) => r.kind === "track")) {
-        const parts = list.map((s, k) => {
-          const tr = (s.tracks || []).find((x) => (x.title || `Track ${x.index + 1}`) === row.title);
-          const w = tr && (waves[k] || []).find((x) => x.index === tr.index);
-          return { start: s.start, duration: s.duration, peaks: w && Array.isArray(w.peaks) ? w.peaks : null, ps: +w?.per_second || 0 };
-        });
-        const wave = { peaks: emJoinPeaks(parts, total, ps), perSecond: ps };
-        P.waves.set(row.id, wave);
-        tl((h) => h.setWaveform(row.id, wave));
-      }
-    });
-    // Film strip: frames from each clip in proportion to its length, end to end (a missing clip: none, see the timeline).
-    Promise.all(list.map((s) => {
-      const n = Math.max(1, Math.round((ED_THUMBS * s.duration) / Math.max(1e-6, total)));
-      if (s.missing) return Promise.resolve(Array(n).fill(""));
-      return invoke("editor_thumbs", { id: s.clip, count: n }).then((p) => (Array.isArray(p) ? p.map(fileSrc) : Array(n).fill(""))).catch(() => Array(n).fill(""));
-    })).then((parts) => {
-      if (dead) return;
-      P.thumbs = parts.flat();
-      tl((h) => h.setThumbs(P.thumbs));
-    });
+  /* A project that references its clips (0.1.38): each clip's waveforms and film strip, laid on project time.
+   * 0.1.41 (F2): source by source, nearest the playhead first, 3 at a time; what has come is shown at once (the rest
+   * of a row stays flat, the rest of the strip empty until its frames come). */
+  const srcWaves = new Map(); // source index -> its editor_waveforms list
+  const waveAsked = new Set();
+  /** Every track row's waveform from the sources' that have come. */
+  function joinWaves(m) {
+    if (dead || P.model !== m) return;
+    const total = dur(), lists = [...srcWaves.values()].flat();
+    const rates = lists.map((w) => +w?.per_second || 0).filter((x) => x > 0), ps = rates.length ? Math.max(...rates) : 50;
+    for (const row of m.audio.filter((r) => r.kind === "track")) {
+      const parts = VS.map((s) => {
+        const tr = (s.tracks || []).find((x) => (x.title || `Track ${x.index + 1}`) === row.title);
+        const w = tr && (srcWaves.get(s.k) || []).find((x) => x.index === tr.index);
+        return { start: s.start, duration: s.duration, peaks: w && Array.isArray(w.peaks) ? w.peaks : null, ps: +w?.per_second || 0 };
+      });
+      const wave = { peaks: emJoinPeaks(parts, total, ps), perSecond: ps };
+      P.waves.set(row.id, wave);
+      tl((h) => h.setWaveform(row.id, wave));
+    }
   }
+  /** Source `s`'s waveforms (once its tracks are known), then the rows again. */
+  function waveOf(s, m, stale) {
+    if (!extrasAsked || s.missing || !Array.isArray(s.tracks) || waveAsked.has(s.k)) return;
+    waveAsked.add(s.k);
+    bgAdd("waves", s, async () => {
+      const list = await invoke("editor_waveforms", { id: s.clip });
+      if (stale()) return;
+      srcWaves.set(s.k, Array.isArray(list) ? list : []);
+      joinWaves(m);
+    }, stale);
+  }
+  function fetchExtrasVirtual() {
+    const gen = loadGen, m = P.model, stale = () => dead || gen !== loadGen || P.model !== m;
+    for (const s of VS) waveOf(s, m, stale); // the sources whose tracks are known already; the rest as theirs come
+    // Film strip: frames from each clip in proportion to its length, end to end (a missing clip: none, see the timeline).
+    // A newer strip (clips added: it is spread over the new length) makes this one's frames stale.
+    const tg = ++thumbGen, tStale = () => stale() || tg !== thumbGen;
+    const list = VS.slice(), total = dur();
+    const counts = list.map((s) => Math.max(1, Math.round((ED_THUMBS * s.duration) / Math.max(1e-6, total))));
+    const parts = list.map((s, k) => Array(counts[k]).fill(""));
+    const show = () => { if (!tStale()) { P.thumbs = parts.flat(); tl((h) => h.setThumbs(P.thumbs)); } };
+    for (const s of list) {
+      if (s.missing) continue;
+      bgAdd("thumbs", s, async () => {
+        const k = list.indexOf(s), p = await invoke("editor_thumbs", { id: s.clip, count: counts[k] }).catch(() => null);
+        if (!tStale() && Array.isArray(p)) { parts[k] = p.map(fileSrc); show(); }
+      }, tStale);
+    }
+  }
+  let thumbGen = 0;
   /** The timeline's selection now: { sel, sels } (see onSelect). Asks the timeline when it can, else uses what onSelect last said. */
   P.selection = () => {
     let sel = P.sel, sels = P.sels;
@@ -1700,6 +2218,7 @@ function mountPlayer(root, c) {
     paint();
     P.ed?.sync(what);
     P.cv?.sync(what); // before the overlays: they are placed on the canvas
+    P.zm?.sync(what); // the Zoom section (0.1.41)
     P.ov?.sync(what);
     if (P.draft && typeof projDirty === "function") projDirty(P, what); // a project saves its edit (debounced)
   };
@@ -1746,6 +2265,9 @@ function mountPlayer(root, c) {
       if (!on && aft) { aft = null; state(); } // the time after the video is only there while editing (0.1.35)
       if (on) v.pause();
       else { edPopClose?.(); dropTimeline(); }
+      w.pause(); // the standby waits only while editing (0.1.41)
+      sb = null;
+      pendingCut = null;
       if (document.fullscreenElement) leaveFull(); // video-only or editor fullscreen does not fit the other mode
       P.cv?.setEdit(on);
       P.ov?.setEdit(on);
@@ -1783,8 +2305,9 @@ function mountPlayer(root, c) {
       case "fwd5": return P.seek(now + edSeekStep());
       case "back1": return P.seek(now - 1, true);
       case "fwd1": return P.seek(now + 1);
-      case "framePrev": v.pause(); return P.seek(now - frame, true);
-      case "frameNext": v.pause(); return P.seek(now + frame);
+      // A frame step stands still: the video, a file still loading, and the player's own clock in a gap (0.1.41).
+      case "framePrev": P.stop(); return P.seek(now - frame, true);
+      case "frameNext": P.stop(); return P.seek(now + frame);
       case "home": return P.seek(0);
       case "end": return P.seek(P.model ? Math.max(P.model.duration, emEnd(P.model)) : dur(), true); // the result's end (after the video when something goes on there)
       case "loop": return P.setLoop(!P.loop);
@@ -1815,7 +2338,9 @@ function mountPlayer(root, c) {
           if (cmd === "mark") flash((m.marks || []).length > marksBefore ? t("Bookmark added") : t("Bookmark removed"));
           if (cmd === "louder" || cmd === "quieter") {
             const sel = P.selection().sel || before, row = sel && sel.row !== "video" ? emRow(P.model, sel.row) : null;
-            if (row && Number.isInteger(sel.seg) && sel.seg < row.gains.length) flash(t("Level {pct}%", { pct: Math.round(row.gains[sel.seg] * 100) }));
+            // An audio clip's level is its own (R1 #5, 0.1.41); a track row's piece has its segment's.
+            if (row && row.kind === "file") flash(t("Level {pct}%", { pct: Math.round((row.muted ? 0 : row.volume) * 100) }));
+            else if (row && Number.isInteger(sel.seg) && sel.seg < row.gains.length) flash(t("Level {pct}%", { pct: Math.round(row.gains[sel.seg] * 100) }));
           }
           return;
         }
@@ -1885,8 +2410,20 @@ function mountPlayer(root, c) {
 
   P.destroy = () => {
     dead = true;
+    loadGen++; // what is still loading writes nothing now (0.1.41)
+    bgQ.length = 0;
+    // ... and the backend drops the track / waveform / film-strip jobs still queued for this editor (edcache.rs).
+    // Sent now, before the next editor (if one opens) asks for its own.
+    if (P.editing || VS) { try { invoke("editor_prep_cancel").catch((e) => console.warn("Glint: editor_prep_cancel failed", e)); } catch (e) { console.warn("Glint: editor_prep_cancel failed", e); } }
     edPopClose?.();
     try { P.cv?.destroy(); } catch (e) { console.error("Glint: canvas destroy failed", e); }
+    try { P.zm?.destroy(); } catch (e) { console.error("Glint: zoom destroy failed", e); }
+    // The overlays too (0.1.41: their clip items' videos, observer and timer outlived the editor).
+    try { P.ov?.destroy?.(); } catch (e) { console.error("Glint: overlays destroy failed", e); }
+    clearTimeout(vpendTimer);
+    clearInterval(aftTimer);
+    aftTimer = 0;
+    swapFns.length = 0;
     cancelAnimationFrame(raf);
     raf = 0;
     clearTimeout(idle);
@@ -1903,9 +2440,7 @@ function mountPlayer(root, c) {
     document.removeEventListener("fullscreenchange", onFullscreen);
     adoptOverlays(false); // now: the caller is about to empty #modal, and they must not go with it
     if (document.fullscreenElement && !(edKeepFull && document.fullscreenElement.id === "modal")) document.exitFullscreen().catch((e) => console.warn("Glint: exitFullscreen failed", e));
-    v.pause();
-    v.removeAttribute("src");
-    v.load();
+    for (const x of vids) { x.pause(); x.removeAttribute("src"); x.load(); } // the standby too (0.1.41)
   };
   /** Player shortcuts. Returns true when the key was used. In edit mode the keys are ED_KEYS. */
   P.key = (e) => {
@@ -1935,29 +2470,33 @@ function mountPlayer(root, c) {
     return true;
   };
 
-  for (const ev of ["play", "pause", "ended", "loadedmetadata"]) v.addEventListener(ev, state);
-  for (const ev of ["timeupdate", "progress", "seeked", "loadedmetadata"]) v.addEventListener(ev, paint);
-  // Keep the preview audio following the video.
-  for (const ev of ["play", "playing", "pause", "waiting", "seeked", "ended", "ratechange"]) {
-    v.addEventListener(ev, (e) => {
-      if (!P.editing || dead) return;
-      syncAudio(e.type === "play" || e.type === "seeked");
-      drift();
-    });
+  // On both videos (0.1.41); each acts only while its video is the one shown (the standby's own are above).
+  const onShown = (x, fn) => (e) => { if (x === v) fn(e); };
+  for (const x of vids) {
+    for (const ev of ["play", "pause", "ended", "loadedmetadata"]) x.addEventListener(ev, onShown(x, state));
+    for (const ev of ["timeupdate", "progress", "seeked", "loadedmetadata"]) x.addEventListener(ev, onShown(x, paint));
+    // Keep the preview audio following the video.
+    for (const ev of ["play", "playing", "pause", "waiting", "seeked", "ended", "ratechange"]) {
+      x.addEventListener(ev, onShown(x, (e) => {
+        if (!P.editing || dead) return;
+        syncAudio(e.type === "play" || e.type === "seeked");
+        drift();
+      }));
+    }
+    // While editing: the video's end may be the end of a part in the middle of the timeline (parts moved): go on with
+    // the next part. At the end of the timeline, loop back to the first kept part if looping.
+    x.addEventListener("ended", onShown(x, () => {
+      if (!P.editing || !P.model || dead) return;
+      const past = P.model.parts ? playPart(P.model) : null, next = past ? afterPart(P.model, past) : null;
+      if (aft) return;
+      if (next !== null) { if (!noVid(P.model, next) && swapTo(next, P.model)) return; return go(next, true); } // the next part (the standby when it holds it), or a gap (0.1.36) on the player's own clock
+      // Something goes on after the video (0.1.35): playing runs on into it on the player's own clock.
+      if (emTail(P.model) > EM_EPS) { setAft(P.model.duration, true); state(); syncAudio(true); drift(); return; }
+      if (P.loop) go(emPlayable(P.model, 0) ?? 0, true);
+    }));
+    x.addEventListener("click", P.toggle);
+    x.addEventListener("dblclick", P.fullscreen);
   }
-  // While editing: the video's end may be the end of a part in the middle of the timeline (parts moved): go on with
-  // the next part. At the end of the timeline, loop back to the first kept part if looping.
-  v.addEventListener("ended", () => {
-    if (!P.editing || !P.model || dead) return;
-    const past = P.model.parts ? playPart(P.model) : null, next = past ? afterPart(P.model, past) : null;
-    if (aft) return;
-    if (next !== null) return go(next, true); // the next part, or a gap (0.1.36) on the player's own clock
-    // Something goes on after the video (0.1.35): playing runs on into it on the player's own clock.
-    if (emTail(P.model) > EM_EPS) { setAft(P.model.duration, true); state(); syncAudio(true); drift(); return; }
-    if (P.loop) go(emPlayable(P.model, 0) ?? 0, true);
-  });
-  v.addEventListener("click", P.toggle);
-  v.addEventListener("dblclick", P.fullscreen);
   box.addEventListener("mousemove", wake);
   box.addEventListener("mousedown", (e) => { if (e.target.closest("button")) e.preventDefault(); }); // keep keyboard focus off the buttons
   el(".p-vol").addEventListener("input", (e) => setVol(+e.target.value));
@@ -2033,7 +2572,10 @@ function mountEditor(root, c, P) {
   const pane = $(".v-edit", root);
   const speedBtn = $(".e-speed", pane);
   let lastExport = "", lastTarget = "";
-  let colorDrag = null; // during a slider gesture: the segments it edits (null = every segment, see target()); false between gestures
+  // during a slider gesture: the segments it edits (null = every segment, see target()); false between gestures.
+  // R2 #2 (0.1.41): it starts as false (it was null, so the first drag after opening skipped its undo step, edited every
+  // segment whatever was selected, and the sliders did not follow the selection until then).
+  let colorDrag = false;
   const model = () => P.model;
   /** What the Color pane edits now (edColorTarget: the timeline's selection, or the whole clip). */
   const target = () => { const m = model(), s = P.selection(); return m ? edColorTarget(m, s.sels, s.sel, P.time()) : { segs: null, shown: 0 }; };
@@ -2062,12 +2604,24 @@ function mountEditor(root, c, P) {
 
   const presetList = () => [...ED_PRESETS.map((p, i) => ["b" + i, p]), ...edUserPresets().map((p, i) => ["u" + i, p])];
 
+  /** Speed per piece (0.1.41): the selected pieces on V1, { n, speed } (n 0: none, the section is the result's speed). */
+  const pieceSp = () => { try { return (model() && P.tl?.pieceSpeed?.()) || { n: 0, speed: 1 }; } catch { return { n: 0, speed: 1 }; } };
   function renderSpeed() {
-    const m = model();
+    const m = model(), ps = pieceSp(), own = ps.n > 0;
     speedBtn.disabled = !m;
-    speedBtn.innerHTML = `<span>${m ? m.speed : 1}x</span>${ED_CHEV}`;
+    speedBtn.innerHTML = `<span>${own ? +ps.speed.toFixed(2) : m ? m.speed : 1}x</span>${ED_CHEV}`;
+    speedBtn.setAttribute("aria-label", own ? t("Speed of the selected clip") : t("Clip speed"));
+    $(".e-speed-title", pane).textContent = own ? (ps.n > 1 ? t("Speed of the {n} selected clips", { n: ps.n }) : t("Speed of the selected clip")) : t("Speed");
+    const numW = $(".e-speed-numw", pane), num = $(".e-speed-num", pane);
+    numW.hidden = !own;
+    if (own && document.activeElement !== num) num.value = String(+ps.speed.toFixed(2));
     $(".e-speed-note", pane).textContent = m ? t("Length {len}", { len: fmtDurMs(emResultDuration(m)) }) : t("Loading…");
   }
+  $(".e-speed-num", pane).addEventListener("change", (e) => {
+    const v = +e.target.value;
+    if (Number.isFinite(v) && v > 0) P.tl?.setPieceSpeed?.(Math.min(EM_SPEED_MAX, Math.max(EM_SPEED_MIN, v)));
+    renderSpeed();
+  });
 
   function renderColor() {
     const user = edUserPresets(), col = color(), off = model() ? "" : "disabled";
@@ -2079,7 +2633,7 @@ function mountEditor(root, c, P) {
         ${user.map((p, i) => `<span class="e-chip e-user" data-e-chip="u${i}"><button type="button" data-e-preset="u${i}" ${off}>${esc(p.name)}</button><button type="button" class="e-x" data-e-delpreset="${esc(p.name)}" aria-label="${esc(t("Delete preset {name}", { name: p.name }))}" title="${esc(t("Delete preset"))}">${ICON.x}</button></span>`).join("")}
       </div>
       <div class="e-sliders">
-        ${ED_SLIDERS.map(([k, label, min, max]) => `<label class="e-slider"><span>${esc(t(label))}</span><input type="range" min="${min}" max="${max}" step="0.01" value="${col[k]}" data-e-color="${k}" ${off}><output data-e-val="${k}">${edFmtVal(k, col[k])}</output></label>`).join("")}
+        ${ED_SLIDERS.map(([k, label, min, max]) => `<label class="e-slider"><span>${esc(t(label))}</span><input type="range" min="${min}" max="${max}" step="0.01" value="${edCol(col, k)}" data-e-color="${k}" ${off}><output data-e-val="${k}">${edFmtVal(k, edCol(col, k))}</output></label>`).join("")}
       </div>
       <button type="button" class="btn sm e-save" data-e-act="preset-save" ${off}>${esc(t("Save as preset"))}</button>`;
     lastTarget = "";
@@ -2091,9 +2645,9 @@ function mountEditor(root, c, P) {
     for (const k of ED_COLOR_KEYS) {
       const input = $(`[data-e-color="${k}"]`, pane);
       if (!input) continue;
-      input.value = col[k];
+      input.value = edCol(col, k);
       input.disabled = !model();
-      $(`[data-e-val="${k}"]`, pane).textContent = edFmtVal(k, col[k]);
+      $(`[data-e-val="${k}"]`, pane).textContent = edFmtVal(k, edCol(col, k));
     }
   }
   function markPreset() {
@@ -2113,7 +2667,7 @@ function mountEditor(root, c, P) {
     if (ED_PRESETS.some((p) => p.name.toLowerCase() === low || t(p.name).toLowerCase() === low)) return flash(t("A built-in preset already has that name"), true);
     if (!Array.isArray(S.settings.color_presets)) S.settings.color_presets = [];
     const list = S.settings.color_presets;
-    const p = { name, ...Object.fromEntries(ED_COLOR_KEYS.map((k) => [k, Math.round(col[k] * 1000) / 1000])) };
+    const p = { name, ...Object.fromEntries(ED_COLOR_KEYS.map((k) => [k, Math.round(edCol(col, k) * 1000) / 1000])) };
     const i = list.findIndex((x) => x?.name?.toLowerCase() === low);
     if (i >= 0) list[i] = p; else list.push(p);
     saveSettings();
@@ -2165,7 +2719,9 @@ function mountEditor(root, c, P) {
       ${audioNotes().map((n) => `<div class="small e-note">${esc(n)}</div>`).join("")}
       <label class="check e-replace"><input type="checkbox" data-e-replace ${rep ? "checked" : ""} ${job ? "disabled" : ""}><span>${esc(c.draft ? t("Replace clips of the project") : t("Replace the original clip"))}</span></label>
       ${repNote ? `<div class="small e-replace-note">${esc(repNote)}</div>` : ""}
-      ${job ? `<div class="e-prog"><div class="small e-prog-txt">${esc(t("Exporting… {pct}%", { pct: job.pct.toFixed(0) }))}</div><div class="progress"><i style="width:${job.pct}%"></i></div></div>` : ""}
+      ${/* P 0.1.41 (projects.js): the bar with what it does and Cancel; after a failed or stalled export its message and "Show the log". */
+        job ? (typeof projExpProgHtml === "function" ? projExpProgHtml(job, c.id) : `<div class="e-prog"><div class="small e-prog-txt">${esc(t("Exporting… {pct}%", { pct: job.pct.toFixed(0) }))}</div><div class="progress"><i style="width:${job.pct}%"></i></div></div>`)
+          : typeof projExpFailHtml === "function" ? projExpFailHtml(c.id) : ""}
       <button class="btn primary wide" data-v="export" ${job || !changed ? "disabled" : ""}><span>${esc(rep && !c.draft ? t("Export and replace") : t("Export"))}</span></button>
       <button class="btn wide" data-v="export-blur" ${job || !S.blur || !m ? "disabled" : ""}>${ICON.blur}<span>${esc(changed ? t("Export and render with Blur") : t("Render with Blur"))}</span></button>
       ${typeof rulesExportHtml === "function" ? rulesExportHtml(c, !!job) : "" /* rules.js: "then run a render rule" */}
@@ -2179,7 +2735,7 @@ function mountEditor(root, c, P) {
     const bar = $(".e-prog i", pane), txt = $(".e-prog-txt", pane);
     if (!job || !bar || !txt) return renderExport();
     bar.style.width = `${job.pct}%`;
-    txt.textContent = t("Exporting… {pct}%", { pct: job.pct.toFixed(0) });
+    txt.textContent = typeof projExpText === "function" ? projExpText(job) : t("Exporting… {pct}%", { pct: job.pct.toFixed(0) }); // P 0.1.41
   }
 
   pane.addEventListener("change", (e) => {
@@ -2217,15 +2773,17 @@ function mountEditor(root, c, P) {
     try {
       if ("ePreset" in d) {
         const p = presetList().find(([k]) => k === d.ePreset)?.[1], segs = target().segs;
-        if (p) P.edit("color", (m) => emSetColor(m, segs, p));
+        if (p) P.edit("color", (m) => emSetColor(m, segs, { sharpness: 0, ...p })); // a preset without Sharpness (older, or a look) sets it to 0
       } else if (d.eAct === "color-all") {
-        const shown = { ...color() };
+        const shown = { sharpness: 0, ...color() }; // its Sharpness too, also when it is off (0.1.41)
         P.edit("color", (m) => emSetColor(m, null, shown));
       } else if ("eDelpreset" in d) await deletePreset(d.eDelpreset);
       else if (d.eAct === "preset-save") await savePreset();
       else if (btn === speedBtn && model()) {
         if (speedBtn.classList.contains("open")) return edPopClose?.();
-        edOpenPop({ anchor: speedBtn, host: root, value: model().speed, onPick: (s) => P.edit("speed", (m) => { m.speed = s; }) });
+        const ps = pieceSp(); // 0.1.41: with pieces selected, their own speed
+        if (ps.n > 0) edOpenPop({ anchor: speedBtn, host: root, value: ps.speed, items: TL_SPEEDS, onPick: (s) => P.tl?.setPieceSpeed?.(s) });
+        else edOpenPop({ anchor: speedBtn, host: root, value: model().speed, onPick: (s) => P.edit("speed", (m) => { m.speed = s; }) });
       }
     } catch (err) { fail(err); }
   });
@@ -2264,7 +2822,7 @@ function mountEditor(root, c, P) {
   renderHead();
   return {
     renderExport, paintProgress, sync,
-    selChanged: colorTarget,
+    selChanged: () => { colorTarget(); renderSpeed(); }, // the Speed section follows the selected pieces (0.1.41)
     // Only the whole-clip target follows the playhead.
     playheadSeg: () => { if (!target().segs) colorTarget(); },
     fullChanged: renderHead,
@@ -2415,6 +2973,9 @@ function edListen() {
     const job = S.exports?.[p?.id];
     if (!job) return;
     job.pct = clamp(+p.pct || 0, 0, 100);
+    // P 0.1.41: what it is doing ("join" while a project's clips are joined, else "export"), and that step's own percent.
+    job.stage = typeof p.stage === "string" ? p.stage : "";
+    job.stagePct = Number.isFinite(+p.stage_pct) && p.stage_pct != null ? +p.stage_pct : null;
     if (S.open === p.id && S.player?.ed) S.player.ed.paintProgress();
   });
   return edListening;
@@ -2480,7 +3041,8 @@ async function edExport(withBlur) {
   }
   try { await edListen(); }
   catch (e) { edListening = null; console.error("Glint: could not subscribe to export-progress; exporting without a progress bar.", e); }
-  S.exports[id] = { pct: 0 };
+  S.exports[id] = { pct: 0, stage: "", stagePct: null, cancelling: false };
+  if (S.exportErr) delete S.exportErr[id]; // P 0.1.41: the last failure's message goes with a new export
   P.ed?.renderExport();
   console.info("Glint: export_clip", id, opts);
   let meta;
@@ -2488,12 +3050,18 @@ async function edExport(withBlur) {
     // P-HOOK (0.1.38): a virtual project (sources, no file) is exported by agent A's export_project, its opts in project time.
     meta = await invoke(P.clipMeta?.virtual ? "export_project" : "export_clip", { id, opts });
   } catch (e) {
+    const job = S.exports[id];
     delete S.exports[id];
+    // P 0.1.41 (projects.js): cancelled = a flash; failed or stalled = the message stays in the Export section.
+    const kept = typeof projExpFailed === "function";
+    if (kept) projExpFailed(id, e, job);
     if (S.open === id) S.player?.ed?.renderExport();
+    if (job?.cancelling) return;
     console.error("Glint: export_clip failed", id, opts, e);
-    return fail(e);
+    return kept ? undefined : fail(e);
   }
   delete S.exports[id];
+  if (P.model) P.exportedState = edState(P.model); // R2 #1 (0.1.41): this edit is kept now, closing need not ask (edCloseAsk)
   const stillOpen = S.open === id;
   const fromProject = !!P.draft; // a project stays open after an export (the new clip is in the library)
   let gone = [], kept = [];
@@ -2530,6 +3098,19 @@ async function edExport(withBlur) {
   catch (e) { S.jobs[meta.id] = { pct: 0, state: "error", message: String(e) }; show(); fail(e); }
 }
 
+/**
+ * R2 #1 (0.1.41): a close the user asked for (Esc, Close, a click beside the viewer). A single library clip with an edit
+ * that was not exported asks first, because closing drops that edit (a project keeps its edit and never asks).
+ */
+async function edCloseAsk() {
+  const P = S.player, m = P?.model, id = S.open;
+  if (P && !P.draft && m && !S.exports?.[id] && emChanged(m) && P.exportedState !== edState(m)) {
+    if (!(await ask(t("Close this clip? Its edit is not saved: only an export keeps it."), t("Close and lose the edit")))) return;
+    if (S.open !== id || S.player !== P) return;
+  }
+  closeClip();
+}
+
 /** Close the viewer. Every way out (Close, Done on a draft, Esc, the backdrop, the window's close
  *  button) comes here. A project saves its edit first and stays in the Editor's list (projects.js):
  *  closing never asks and never deletes. */
@@ -2561,7 +3142,8 @@ async function viewerAction(act) {
   // A draft ("Edit together") is not a file to keep: no copy, folder, favourite, delete or Blur.
   if (c.draft && ["copy", "reveal", "fav", "delete", "blur", "blur-page"].includes(act)) return;
   try {
-    if (act === "close" || act === "blur-done") closeClip();
+    if (act === "close") edCloseAsk(); // R2 #1: an unexported edit of a single clip asks first
+    else if (act === "blur-done") closeClip();
     else if (act === "prev" || act === "next") {
       // The clip before or after this one. Not while editing: an edit is not thrown away by an arrow.
       if (c.draft || (S.player && S.player.editing) || !$("#confirm").hidden) return;

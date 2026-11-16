@@ -370,6 +370,215 @@ pub fn spawn_thumb_repair(core: Arc<Core>) {
     });
 }
 
+/* ---------- thumbnails that are missing: tried again (0.1.41, item T) ----------
+ * A clip whose thumbnail could not be made (the file not all there yet while it was copied or written, a slow or
+ * sleeping drive, a file locked for a moment) used to keep the placeholder card for good. Now: every start, a
+ * little after, in the background, the clips whose thumbnail is empty or whose thumbnail file is gone are tried
+ * again (only those, one after the other, at most THUMB_RETRY_START per start), and the UI asks for one clip
+ * (`thumb_retry`) when it draws its card without a picture. A clip is tried at most THUMB_TRIES_PER_DAY times a
+ * day (`thumb-retry.json` in the data folder); a file with no picture at all (audio only) is marked once and never
+ * tried again. A thumbnail that arrives is announced with "clips-changed" (the card swaps to it by itself). */
+
+/// Tries per clip per day.
+pub const THUMB_TRIES_PER_DAY: u32 = 3;
+/// Clips tried at most per start.
+pub const THUMB_RETRY_START: usize = 40;
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+struct Tries {
+    day: u64,
+    count: u32,
+    no_picture: bool,
+}
+
+static TRIES_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn tries_file() -> std::path::PathBuf {
+    util::data_dir().join("thumb-retry.json")
+}
+
+fn load_tries() -> std::collections::HashMap<String, Tries> {
+    std::fs::read_to_string(tries_file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn save_tries(m: &std::collections::HashMap<String, Tries>) {
+    if let Ok(t) = serde_json::to_string(m) {
+        let _ = std::fs::write(tries_file(), t);
+    }
+}
+
+/// What `retry_thumb` did.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Retried {
+    /// A thumbnail was made (and the clip's entry points at it).
+    Made,
+    /// Nothing to do: it has one, the clip is gone, its file is gone, or its thumbnail is being made right now.
+    Nothing,
+    /// The file has no picture: kept as it is, never tried again.
+    NoPicture,
+    /// Tried enough today.
+    Later,
+    /// Tried, and it failed again (counted).
+    Failed,
+}
+
+/// True if clip `c` shows no thumbnail (none, or its file is gone).
+pub fn thumb_missing(c: &library::ClipMeta) -> bool {
+    !c.draft && (c.thumb.trim().is_empty() || !Path::new(&c.thumb).is_file())
+}
+
+/// Try clip `id`'s missing thumbnail again (the rules above). `now_ms` is the clock (the self-test moves it).
+pub fn retry_thumb(core: &Core, ffmpeg: &Path, id: &str, now_ms: u64) -> Retried {
+    let Some(c) = core.lib.lock().unwrap().get(id) else { return Retried::Nothing };
+    if !thumb_missing(&c) || !Path::new(&c.path).is_file() || crate::import::thumb_pending(id) {
+        return Retried::Nothing;
+    }
+    let day = now_ms / 86_400_000;
+    {
+        let _g = TRIES_LOCK.lock().unwrap();
+        let mut m = load_tries();
+        let t = m.entry(id.to_string()).or_default();
+        if t.no_picture {
+            return Retried::NoPicture;
+        }
+        if t.day != day {
+            t.day = day;
+            t.count = 0;
+        }
+        if t.count >= THUMB_TRIES_PER_DAY {
+            return Retried::Later;
+        }
+        t.count += 1;
+        save_tries(&m);
+    }
+    let p = library::probe(ffmpeg, Path::new(&c.path), false);
+    if p.as_ref().is_some_and(|p| p.duration > 0.0 && p.video_streams == 0) {
+        let _g = TRIES_LOCK.lock().unwrap();
+        let mut m = load_tries();
+        m.entry(id.to_string()).or_default().no_picture = true;
+        save_tries(&m);
+        util::log(&format!("thumbnail: clip {id} has no picture; it keeps its card"));
+        return Retried::NoPicture;
+    }
+    let dur = p.as_ref().map(|p| p.duration).filter(|d| *d > 0.0).unwrap_or(c.duration);
+    // A new file name each time, so the window never shows a cached failure for it.
+    let (th, _) = library::make_thumb_why(ffmpeg, Path::new(&c.path), &format!("{id}-r{now_ms}"), library::thumb_at(dur));
+    if th.is_empty() {
+        return Retried::Failed;
+    }
+    let old = c.thumb.clone();
+    let probe = p.unwrap_or_default();
+    let done = core.lib.lock().unwrap().update(id, |m| {
+        m.thumb = th.clone();
+        // A clip whose probe failed when it was added gets its numbers now too.
+        if m.duration <= 0.0 && probe.duration > 0.0 {
+            m.duration = probe.duration;
+        }
+        if m.width == 0 && probe.width > 0 {
+            m.width = probe.width;
+            m.height = probe.height;
+            m.fps = probe.fps;
+        }
+    });
+    if done.is_none() {
+        let _ = std::fs::remove_file(&th);
+        return Retried::Nothing;
+    }
+    if !old.is_empty() && old != th {
+        let _ = std::fs::remove_file(&old);
+    }
+    {
+        let _g = TRIES_LOCK.lock().unwrap();
+        let mut m = load_tries();
+        m.remove(id);
+        save_tries(&m);
+    }
+    util::log(&format!("thumbnail: made again for clip {id}"));
+    core.emit("clips-changed", id.to_string());
+    Retried::Made
+}
+
+/// Every start, a little after, in the background: the clips without a thumbnail, tried again (THUMB_RETRY_START at most).
+pub fn spawn_thumb_retry(core: Arc<Core>) {
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(15));
+        let Some(ffmpeg) = util::find_exe(&core.settings().ffmpeg_path, "ffmpeg") else { return };
+        let ids: Vec<String> = core.lib.lock().unwrap().clips.iter().filter(|c| thumb_missing(c)).map(|c| c.id.clone()).take(THUMB_RETRY_START).collect();
+        if ids.is_empty() {
+            return;
+        }
+        let made = ids.iter().filter(|id| retry_thumb(&core, &ffmpeg, id, util::unix_ms()) == Retried::Made).count();
+        util::log(&format!("thumbnails: {made} of {} missing ones made at start", ids.len()));
+    });
+}
+
+/// The `--import-test` checks of the retry (item T), on synthetic files in `dir`: (name, ok, detail).
+pub fn thumb_retry_checks(core: &Core, ffmpeg: &Path, dir: &Path) -> Vec<(String, bool, String)> {
+    let mut out = Vec::new();
+    let _ = std::fs::remove_file(tries_file());
+    let make = |name: &str, args: &[&str]| -> std::path::PathBuf {
+        let p = dir.join(name);
+        let _ = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-loglevel", "error", "-y"]).args(args).arg(&p).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        p
+    };
+    let video = make("thumb video.mp4", &["-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=3", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"]);
+    let hevc10 = make("thumb hevc10 pq.mp4", &["-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=3", "-c:v", "libx265", "-preset", "ultrafast", "-pix_fmt", "yuv420p10le", "-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc"]);
+    let audio = make("thumb audio only.m4a", &["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3", "-c:a", "aac"]);
+    let odd = dir.join("Ünïcödé clip's 名前.mp4");
+    let _ = std::fs::copy(&video, &odd);
+    for (what, p) in [("h264", &video), ("hevc 10-bit with PQ tags", &hevc10), ("a non-ASCII name with an apostrophe", &odd)] {
+        let (th, e) = library::make_thumb_why(ffmpeg, p, &format!("tt-{}", what.len()), 1.5);
+        out.push((format!("thumbnail: {what}"), !th.is_empty() && Path::new(&th).is_file(), e));
+    }
+    let (th, _) = library::make_thumb_why(ffmpeg, &video, "tt-late", 99.0);
+    out.push(("thumbnail: a seek past the end (a wrong duration) still gives the first frame".into(), !th.is_empty(), String::new()));
+    let (th, e) = library::make_thumb_why(ffmpeg, &audio, "tt-audio", 1.5);
+    out.push(("thumbnail: an audio-only file gives none, with ffmpeg's reason".into(), th.is_empty() && !e.trim().is_empty(), e));
+    // A file not all there yet (a copy in progress): no thumbnail; once it is complete, the retry makes it.
+    let full = std::fs::read(&video).unwrap_or_default();
+    let growing = dir.join("thumb growing.mp4");
+    let _ = std::fs::write(&growing, &full[..full.len() * 2 / 5]);
+    let mut c = library::ClipMeta { id: "tt-grow".into(), path: growing.to_string_lossy().into_owned(), title: "growing".into(), duration: 3.0, kind: "import".into(), ..Default::default() };
+    c.thumb = library::make_thumb(ffmpeg, &growing, &c.id, 1.5);
+    out.push(("thumbnail: a file that is still being copied gets none at first".into(), c.thumb.is_empty(), String::new()));
+    core.lib.lock().unwrap().add(c.clone());
+    let a = library::ClipMeta { id: "tt-audio".into(), path: audio.to_string_lossy().into_owned(), title: "audio".into(), duration: 3.0, kind: "import".into(), ..Default::default() };
+    core.lib.lock().unwrap().add(a);
+    let t0 = 1_800_000_000_000u64;
+    let r1 = retry_thumb(core, ffmpeg, "tt-grow", t0);
+    out.push(("retry: still incomplete: failed, counted".into(), r1 == Retried::Failed, format!("{r1:?}")));
+    let _ = std::fs::write(&growing, &full);
+    let r2 = retry_thumb(core, ffmpeg, "tt-grow", t0 + 1000);
+    let now = core.lib.lock().unwrap().get("tt-grow").unwrap_or_default();
+    out.push(("retry: once the file is complete the thumbnail is made, and the clip points at it".into(), r2 == Retried::Made && !thumb_missing(&now), format!("{r2:?} {}", now.thumb)));
+    let r3 = retry_thumb(core, ffmpeg, "tt-grow", t0 + 2000);
+    out.push(("retry: a clip that has its thumbnail is left alone".into(), r3 == Retried::Nothing, format!("{r3:?}")));
+    let ra = retry_thumb(core, ffmpeg, "tt-audio", t0);
+    let ra2 = retry_thumb(core, ffmpeg, "tt-audio", t0 + 86_400_000 * 5);
+    out.push(("retry: an audio-only file is marked once and never tried again".into(), ra == Retried::NoPicture && ra2 == Retried::NoPicture, format!("{ra:?} {ra2:?}")));
+    // Backoff: a hopeless file is tried at most THUMB_TRIES_PER_DAY times a day.
+    let junk = dir.join("thumb junk.mp4");
+    let _ = std::fs::write(&junk, vec![0x5a_u8; 4096]);
+    core.lib.lock().unwrap().add(library::ClipMeta { id: "tt-junk".into(), path: junk.to_string_lossy().into_owned(), title: "junk".into(), kind: "import".into(), ..Default::default() });
+    let day: Vec<Retried> = (0..THUMB_TRIES_PER_DAY + 2).map(|i| retry_thumb(core, ffmpeg, "tt-junk", t0 + i as u64)).collect();
+    let next = retry_thumb(core, ffmpeg, "tt-junk", t0 + 86_400_000);
+    out.push((
+        format!("retry: a hopeless file: {THUMB_TRIES_PER_DAY} tries a day, then later, and again the next day"),
+        day.iter().filter(|r| **r == Retried::Failed).count() == THUMB_TRIES_PER_DAY as usize && day.last() == Some(&Retried::Later) && next == Retried::Failed,
+        format!("{day:?} {next:?}"),
+    ));
+    for id in ["tt-grow", "tt-audio", "tt-junk"] {
+        if let Some(m) = core.lib.lock().unwrap().remove(id) {
+            if !m.thumb.is_empty() {
+                let _ = std::fs::remove_file(&m.thumb);
+            }
+        }
+    }
+    let _ = std::fs::remove_file(tries_file());
+    out
+}
+
 fn repair_thumbs(core: &Core, ffmpeg: &Path) -> usize {
     let clips: Vec<(String, String, String, f64)> = core.lib.lock().unwrap().clips.iter().map(|c| (c.id.clone(), c.path.clone(), c.thumb.clone(), c.duration)).collect();
     let mut fixed = 0;

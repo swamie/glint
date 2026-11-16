@@ -169,6 +169,10 @@
 /* 0.1.38, a project that references its clips: the last picture held while the video takes another clip's file, and
    the label on a missing clip's black picture. Both live in the player (ui/editor.js). */
 .player .e-hold { position: absolute; z-index: 0; pointer-events: none; }
+/* Gapless cuts (0.1.41, editor.js): the second video waits at the next piece's first frame, unseen and unheard. It
+   lies exactly where the shown one does (so a swap shows it in place); outside the editor it takes no room. */
+.player video.e-standby { display: none; }
+.viewer.editing .player video.e-standby { display: block; visibility: hidden; pointer-events: none; }
 .player .e-hold[hidden], .player .e-missing-tag[hidden] { display: none; }
 .player .e-missing-tag { position: absolute; left: 50%; top: 50%; transform: translate(-50%, 44px); z-index: 2; text-align: center; max-width: calc(100% - 24px); padding: 3px 9px; border-radius: 6px; background: rgba(255, 255, 255, .1); color: rgba(255, 255, 255, .8); font-size: 11.5px; font-weight: 600; pointer-events: none; overflow-wrap: anywhere; }
 

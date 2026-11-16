@@ -245,7 +245,9 @@ function cvThumb(C, pieces) {
  * the handle editor.js calls: paint(now), sync(what), setEdit(on), command(cmd), size(), destroy().
  */
 function cvMount(root, c, P) {
-  const box = root.querySelector(".player"), v = box?.querySelector("video"), pane = root.querySelector(".v-edit");
+  const box = root.querySelector(".player"), pane = root.querySelector(".v-edit");
+  // The video shown: editor.js swaps two at a cut (0.1.41, gapless cuts) and says so through P.onVideo.
+  let v = P.v || box?.querySelector("video");
   if (!box || !v || !pane) return null;
   // The blurred background is an element of its own under the pieces: a small canvas of the clip, blurred and
   // darkened by CSS. (Blurring inside the pieces' canvas with ctx.filter, on a canvas too small for the browser
@@ -357,18 +359,23 @@ function cvMount(root, c, P) {
     // smaller copies of the whole video frame for every piece, every frame.
     ctx.imageSmoothingQuality = v.paused ? "high" : "low";
     const tm = P.time();
+    // The source rectangle is in the playing file's own pixels: in a project that references its clips (0.1.38) the
+    // file may have another size than the project's picture (`s`), and fractions of `s` would crop it (0.1.41).
+    const fw = v.videoWidth || s.w, fh = v.videoHeight || s.h;
     for (const p0 of C.pieces) {
       const p = shown(p0, tm);
-      ctx.drawImage(v, p.sx * s.w, p.sy * s.h, p.sw * s.w, p.sh * s.h, p.x * W, p.y * H, p.w * W, p.h * H);
+      ctx.drawImage(v, p.sx * fw, p.sy * fh, p.sw * fw, p.sh * fh, p.x * W, p.y * H, p.w * W, p.h * H);
     }
   }
   // Every frame the video shows (also the one after a seek while paused).
-  const onFrame = () => { if (st.dead) return; draw(); v.requestVideoFrameCallback(onFrame); };
-  if (hasFrames) v.requestVideoFrameCallback(onFrame);
-  const onSeeked = () => { st.dirty = true; st.bgDirty = true; draw(); };
-  v.addEventListener("seeked", onSeeked);
-  v.addEventListener("loadeddata", onSeeked);
-  v.addEventListener("pause", onSeeked); // the still picture, drawn once more at full quality
+  // Each video keeps its own frame callback; only the one shown draws (0.1.41: two videos, swapped at a cut).
+  const onFrameOf = (x) => { const f = () => { if (st.dead) return; if (x === v) draw(); x.requestVideoFrameCallback(f); }; return f; };
+  const vidsAll = () => [...box.querySelectorAll("video")];
+  if (hasFrames) for (const x of vidsAll()) x.requestVideoFrameCallback(onFrameOf(x));
+  const onSeeked = (e) => { if (e && e.target !== v) return; st.dirty = true; st.bgDirty = true; draw(); };
+  const hook = (x, on) => { for (const ev of ["seeked", "loadeddata", "pause"]) (on ? x.addEventListener : x.removeEventListener).call(x, ev, onSeeked); }; // pause: the still picture, drawn once more at full quality
+  for (const x of vidsAll()) hook(x, true);
+  const unVideo = typeof P.onVideo === "function" ? P.onVideo((nv) => { v = nv; st.dirty = true; st.bgDirty = true; if (on()) { place(); draw(); } }) : null;
 
   /* ----- the piece boxes over the picture (only while arranging) ----- */
   const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
@@ -761,7 +768,7 @@ function cvMount(root, c, P) {
 
   const ro = typeof ResizeObserver === "function" ? new ResizeObserver(() => { if (on()) { place(); st.dirty = true; draw(); } }) : null;
   ro?.observe(box);
-  v.addEventListener("loadedmetadata", () => { if (on()) refresh(); });
+  for (const x of vidsAll()) x.addEventListener("loadedmetadata", () => { if (x === v && on()) refresh(); });
 
   return {
     /** Every frame while playing, and after every seek or edit (from applyColor). */
@@ -819,9 +826,8 @@ function cvMount(root, c, P) {
       st.dead = true;
       clearTimeout(st.wheel?.timer);
       ro?.disconnect();
-      v.removeEventListener("seeked", onSeeked);
-      v.removeEventListener("loadeddata", onSeeked);
-      v.removeEventListener("pause", onSeeked);
+      for (const x of vidsAll()) hook(x, false);
+      unVideo?.();
       bar?.removeEventListener("click", onBar);
       box.classList.remove("cv-on", "cv-arranging", "cv-src");
       view.remove();

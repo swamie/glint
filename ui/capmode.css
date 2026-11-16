@@ -52,3 +52,20 @@
 .cm-menu .cm-prog.cm-not span { opacity: .55; }
 .cm-menu .cm-tag { flex: none; margin-left: auto; padding: 2px 7px; border-radius: 999px; font: 700 10px/1.2 var(--sans); font-style: normal; letter-spacing: .03em;
   color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+
+/* 0.1.41: GAME is not recording the game's own window (exclusive fullscreen, refused, paused, waiting for the
+   pick): a small mark on the GAME half; the tooltip and the status line say why. */
+.cm-pill.cm-warn .cm-half[data-cm="game"]::after { content: ""; position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--warn); box-shadow: 0 0 0 1.5px var(--raised); }
+/* The menu: why each program counts, the "never" button beside a game, the "Why?" line of the last decision. */
+.cm-menu .cm-row { display: flex; align-items: stretch; gap: 2px; }
+.cm-menu .cm-row > [data-capm="pick"], .cm-menu .cm-row > [data-capm="unpick"] { flex: 1; min-width: 0; flex-wrap: wrap; }
+.cm-menu .cm-why { flex-basis: 100%; padding-left: 24px; color: var(--muted); font-size: 11px; line-height: 1.25; white-space: normal; }
+.cm-menu .cm-prog.cm-cur > span { font-weight: 700; }
+.cm-menu .cm-never { flex: none; display: grid; place-items: center; width: 26px; padding: 0; border: 0; border-radius: calc(var(--radius) - 2px);
+  background: none; color: var(--muted); cursor: pointer; opacity: .7; }
+.cm-menu .cm-never:hover, .cm-menu .cm-never:focus-visible { color: var(--bad, #e5484d); background: color-mix(in srgb, var(--text) 8%, transparent); opacity: 1; }
+.cm-menu .cm-never svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
+.cm-menu .cm-whyline { padding: 2px 9px 6px; font-size: 11.5px; line-height: 1.35; white-space: normal; }
+.cm-menu .cm-row > button.cm-prog { height: auto; min-height: 30px; padding-top: 4px; padding-bottom: 4px; row-gap: 1px; }
+.cm-menu .cm-row > button.cm-prog > span { flex: 1 1 0; white-space: nowrap; }

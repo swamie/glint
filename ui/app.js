@@ -399,8 +399,18 @@ const blurWaitText = (stage) => (stage === "prepare" ? t("Getting the clip ready
  *  (Settings → Appearance → Tags on clips, `card_tags`); none by default, as since 0.1.21. */
 const CARD_TAGS = ["import", "trim", "edit", "blur", "discord", "upscale", "rule"];
 const cardTagLabel = (kind) => ({ import: t("import"), trim: t("trim"), edit: t("edit"), blur: t("blur"), discord: "Discord", upscale: t("upscaled"), rule: t("rule") }[kind] || kind);
+/* 0.1.41 (item T): a card drawn without its picture (none, or its file failed to load) asks the backend to make it
+ * again (thumb_retry: in the background, a few times a day at most, never for a file with no picture); when it is
+ * there, "clips-changed" redraws the card with it. Once per clip per session from here. */
+const thumbAsked = new Set();
+function thumbAsk(id) {
+  if (!id || thumbAsked.has(id) || typeof invoke !== "function") return;
+  thumbAsked.add(id);
+  setTimeout(() => invoke("thumb_retry", { id }).catch(() => {}), 0);
+}
 function cardHtml(c) {
   const job = S.jobs[c.id];
+  if (!c.thumb && !c.draft) thumbAsk(c.id);
   const bg = c.thumb
     ? ""
     : `style="background:linear-gradient(135deg,hsl(${hue(c.game)} 45% 22%),hsl(${(hue(c.game) + 50) % 360} 50% 12%))"`;
@@ -411,7 +421,7 @@ function cardHtml(c) {
   // once reset a background-image's size, so cards showed only the frame's top-left corner.
   return `<article class="card${S.sel.has(c.id) ? " sel" : ""}" data-clip="${c.id}" data-hover>
     <div class="thumb" ${bg}>
-      ${c.thumb ? `<img class="thumb-img" src="${esc(fileSrc(c.thumb))}" alt="" draggable="false" decoding="async" onerror="this.remove()" style="${THUMB_IMG_STYLE}">` : `<div class="ph">${esc(c.game.slice(0, 1).toUpperCase())}</div>`}
+      ${c.thumb ? `<img class="thumb-img" src="${esc(fileSrc(c.thumb))}" alt="" draggable="false" decoding="async" onerror="this.remove();thumbAsk(${esc(JSON.stringify(c.id))})" style="${THUMB_IMG_STYLE}">` : `<div class="ph">${esc(c.game.slice(0, 1).toUpperCase())}</div>`}
       <span class="check" title="${esc(t("Select"))}">${ICON.check}</span>
       ${tag}
       ${c.favorite ? `<span class="star">${ICON.star}</span>` : ""}
@@ -1266,7 +1276,10 @@ function renderKeybinds() {
     const durs = DURATIONS.includes(k.seconds) ? DURATIONS : [...DURATIONS, k.seconds].sort((a, b) => a - b);
     const mon = kbMon(k);
     const lost = multi && clip && kbNamed(k) && mon < 0; // names a monitor that is not connected (the setting is kept for when it is back)
-    const monSel = `<select class="field kb-mon" data-kb="${i}" data-kbf="monitor" title="${esc(swap ? t("Which monitor this keybind switches to") : t("Which monitor this keybind clips"))}">
+    // 0.1.41: the monitor picker (monpick.js) with the same stored value (-1 or a monitor's index).
+    const monSel = typeof monPick === "function"
+      ? monPick({ kb: i, value: mon, cls: "kb-mon", special: { value: -1, label: swap ? t("Next monitor") : t("Capture monitor ({name})", { name: cap.name }) }, title: swap ? t("Which monitor this keybind switches to") : t("Which monitor this keybind clips") })
+      : `<select class="field kb-mon" data-kb="${i}" data-kbf="monitor" title="${esc(swap ? t("Which monitor this keybind switches to") : t("Which monitor this keybind clips"))}">
         <option value="-1"${mon < 0 ? " selected" : ""}>${swap ? t("Next monitor") : t("Capture monitor ({name})", { name: esc(cap.name) })}</option>
         ${S.monitors.map((m) => `<option value="${m.index}"${mon === m.index ? " selected" : ""}>${esc(monShort(m))}</option>`).join("")}
       </select>`;
@@ -1340,7 +1353,7 @@ function renderRecording() {
     ${typeof cap2TopHtml === "function" ? cap2TopHtml() : ""}
     ${st.error && st.recording ? `<div class="note bad"><b>${t("Capture problem:")}</b> ${esc(st.error)}${typeof depsErrorExtra === "function" ? depsErrorExtra(st.error) : ""}</div>` : ""}
     <div class="section"><h2>${t("Video")}</h2>
-      ${row(t("Monitor"), t("The screen that is captured") + (extra.length ? `<br>${t("Also buffered for a keybind: {list}", { list: extra.map((m) => esc(m.name)).join(", ") })}` : ""), select("monitor", S.monitors.map((m) => [m.index, monLabel(m)]), true))}
+      ${row(t("Monitor"), t("The screen that is captured") + (extra.length ? `<br>${t("Also buffered for a keybind: {list}", { list: extra.map((m) => esc(m.name)).join(", ") })}` : ""), typeof monPick === "function" ? monPick({ set: "monitor", value: s.monitor, inline: true }) : select("monitor", S.monitors.map((m) => [m.index, monLabel(m)]), true))}
       ${row(t("Resolution"), t("Scaled on the GPU. Lower is lighter and smaller"), select("height", resOpts, true))}
       ${row(t("Aspect ratio"), aspectHint, select("aspect", [["auto", t("Auto (fix stretched res)")], ["16:9", "16:9"], ["16:10", "16:10"], ["21:9", "21:9"], ["32:9", "32:9"], ["4:3", "4:3"], ["source", t("As captured (no fix)")]]))}
       ${row(t("Frame rate"), t("Up to your monitor's {hz} Hz. High rates suit Blur renders", { hz: mon.hz }), select("fps", fpsList.map((f) => [f, `${f} fps`]), true))}
@@ -1542,7 +1555,7 @@ document.addEventListener("click", async (e) => {
   if (suppressClick) { suppressClick = false; return; }
   if (e.target.closest(".title-edit")) return; // clicks in a clip's name box stay there
   const el = e.target.closest("[data-page],[data-tab],[data-size],[data-clip],[data-act],[data-v],[data-win],[data-folder],[data-m],[data-corner],[data-theme]");
-  if (e.target.id === "modal") return closeClip();
+  if (e.target.id === "modal") return typeof edCloseAsk === "function" ? edCloseAsk() : closeClip(); // R2 #1: an unexported edit asks first
   if (!$("#menu").hidden && el?.dataset.act !== "sel-move" && !(e.target.closest(".has-sub") && !el?.dataset.m)) setTimeout(closeMenu, 0);
   if (!el) return;
   const d = el.dataset;
@@ -1749,7 +1762,7 @@ window.addEventListener("keydown", (e) => {
   else if (isLib() && !S.open && !inField && e.ctrlKey && e.code === "KeyA") { e.preventDefault(); S.sel = new Set([...S.sel, ...visibleClips().list.map((c) => c.id)]); syncSel(); } // what was picked keeps its order, the rest follow as on screen
   else if (isLib() && !S.open && !inField && e.code === "Delete" && S.sel.size) { e.preventDefault(); bulkDelete(); }
   else if (e.code === "Escape" && !S.open && (S.sel.size || !$("#menu").hidden)) { if (!$("#menu").hidden) closeMenu(); else clearSel(); }
-  else if (e.code === "Escape" && S.open) { if (!document.fullscreenElement) closeClip(); }
+  else if (e.code === "Escape" && S.open) { if (!document.fullscreenElement) (typeof edCloseAsk === "function" ? edCloseAsk : closeClip)(); } // R2 #1: an unexported edit asks first
   else if (S.open && S.player && !e.ctrlKey && !e.altKey && !inField && S.player.key(e)) e.preventDefault();
 }, true);
 

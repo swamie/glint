@@ -1236,6 +1236,9 @@ fn supervise(pipe: Arc<Pipe>) {
         match spawned {
             Err(e) => pipe.set_error(&format!("Could not start ffmpeg: {e}")),
             Ok(mut child) => {
+                // Ends with Glint (0.1.41): a capture ffmpeg also stops when its pipe breaks, but a killed
+                // Glint should never leave one capturing.
+                crate::util::track_child(&child);
                 let mut out = child.stdout.take().unwrap();
                 let pid = child.id();
                 if let Some(err) = child.stderr.take() {

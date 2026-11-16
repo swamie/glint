@@ -37,6 +37,8 @@ const CLIP = { duration: 20, width: 640, height: 360, fps: 30, bar: 8, tone: 100
     { name: "S2", duration: 6, width: 640, height: 360, fps: 30, bar: 8, band: 1, tone: 1500, tracks: [{ title: "Mix", tone: true }, { title: "Desktop", tone: true }, { title: "Microphone", tone: false }] },
     { name: "S3", duration: 5, width: 480, height: 270, fps: 30, bar: 6, band: 2, tone: 700, tracks: [{ title: "Mix", tone: true }] },
     // Tracks in another order and no Mix: Microphone first (its own tone), then a silent Desktop.
+    // An old project's draft working file (F1): its picture changes colour tags half way (the owner's hang).
+    { name: "D1", duration: 8, width: 640, height: 360, fps: 30, bar: 8, band: 2, tone: 1200, tags_change: true, tracks: [{ title: "Mix", tone: true }, { title: "Desktop", tone: true }, { title: "Microphone", tone: false }] },
     { name: "S4", duration: 6, width: 640, height: 360, fps: 30, bar: 8, band: 1, tone: 1800, tracks: [{ title: "Microphone", tone: true }, { title: "Desktop", tone: false }] },
   ] };
 fs.writeFileSync(path.join(dir, "clip.json"), JSON.stringify(CLIP, null, 2));
@@ -98,7 +100,7 @@ function expect(layout, { speed = 1, tail = 0, song = null, kind = "", tones: gi
     const len = it.gap !== undefined ? it.gap : it.len;
     // Frames: 0.2 s inside each end and the middle (timeline seconds), as output times.
     for (const d of len > 0.6 ? [0.2, len / 2, len - 0.2] : [len / 2]) {
-      frames.push(it.gap !== undefined ? { t: out(tl + d), black: true } : { t: out(tl + d), src: +(it.src + d).toFixed(4) });
+      frames.push(it.gap !== undefined ? { t: out(tl + d), black: true } : { t: out(tl + d), src: +(it.src + d * (it.speed || 1)).toFixed(4) });
     }
     if (len > 0.5) tones.push({ freq: CLIP.tone, from: out(tl + 0.15), to: out(tl + len - 0.15), heard: it.gap === undefined });
     tl += len;
@@ -312,7 +314,7 @@ function projectExpect(names, layout, { speed = 1, tail = 0, song = null, kind =
   for (const it of layout) {
     const len = it.gap !== undefined ? it.gap : it.len;
     for (const d of len > 0.6 ? [0.2, len / 2, len - 0.2] : [len / 2]) {
-      frames.push(it.gap !== undefined ? { t: out(tl + d), black: true } : { t: out(tl + d), source: srcs[it.k].name, src: +(it.s + d).toFixed(4) });
+      frames.push(it.gap !== undefined ? { t: out(tl + d), black: true } : { t: out(tl + d), source: srcs[it.k].name, src: +(it.s + d * (it.speed || 1)).toFixed(4) });
     }
     if (len > 0.5) tones.push(it.gap !== undefined
       ? { freq: srcs[0].tone, from: out(tl + 0.15), to: out(tl + len - 0.15), heard: false }
@@ -539,6 +541,72 @@ if (has139) {
   }
 } else {
   files.push({ name: "0.1.39 scenarios (ungroup, group, audio clips on rows)", checks: [{ name: `the model has ${N139.join(", ")}`, ok: false, detail: `missing: ${N139.filter((n) => typeof em[n] !== "function").join(", ")}` }], opts: null, expect: null, model: modelName() });
+}// ---- 0.1.41: a speed for each piece (B: emSetPieceSpeed; a piece's `len` is its timeline length, its footage
+// runs src .. src + len * speed), and a montage shaped like the owner's that hung.
+const has141 = typeof em.emSetPieceSpeed === "function";
+if (has141 && has139) {
+  const one = () => { const m = single(); m.clipPath = "<clip>"; return m; };
+  scenario("speed: one piece at 2x between two at 1x", (check) => {
+    const m = one();
+    check("split at 5", em.emSplitAt(m, 5)); check("split at 10", em.emSplitAt(m, 10));
+    check("the middle piece at 2x", em.emSetPieceSpeed(m, 1, 2) !== false);
+    check("it is sent with its speed", JSON.stringify(em.emToOpts(m).segments) === JSON.stringify([{ start: 0, end: 5 }, { start: 5, end: 10, speed: 2 }, { start: 10, end: 20 }]), JSON.stringify(em.emToOpts(m).segments));
+    return m;
+  }, [{ src: 0, len: 5 }, { src: 5, len: 2.5, speed: 2 }, { src: 10, len: 10 }]);
+  scenario("speed: a piece at 0.5x", (check) => {
+    const m = one();
+    check("split at 4", em.emSplitAt(m, 4));
+    check("the first piece at 0.5x", em.emSetPieceSpeed(m, 0, 0.5) !== false);
+    return m;
+  }, [{ src: 0, len: 8, speed: 0.5 }, { src: 4, len: 16 }]);
+  scenario("speed: a piece at 2x with a song beside it and an ungrouped sound after it", (check) => {
+    const m = one();
+    check("split at 6", em.emSplitAt(m, 6)); check("split at 12", em.emSplitAt(m, 12));
+    check("the middle piece at 2x", em.emSetPieceSpeed(m, 1, 2) !== false);
+    const song = em.emAddFile(m, { path: songPath, title: "song", duration: CLIP.song.duration }, 1);
+    check("a song from 1 s", !!song);
+    check("the last piece ungrouped (its sound keeps its place)", em.emUngroup(m, [{ row: "video", seg: em.emSegmentAt(m, 12) }]).length === 2);
+    return m;
+  }, [{ src: 0, len: 6 }, { src: 6, len: 3, speed: 2 }, { src: 12, len: 8 }],
+  { tones: [heard(D, 0.15, 5.85), heard(D, 6.15, 8.85), heard(D, 9.15, 16.85), heard(CLIP.song.freq, 1.15, 6.85)] });
+  {
+    const pm = projectModel(["S1", "S2"]), m = pm.m, checks = [];
+    const check = (name, ok, detail = "") => checks.push({ name, ok: !!ok, detail: String(detail) });
+    check("S1 at 2x", em.emSetPieceSpeed(m, 0, 2) !== false);
+    files.push({ name: "project: a sped piece (S1 at 2x, then S2)", checks, opts: em.emToOpts(m), expect: projectExpect(["S1", "S2"], [{ k: 0, s: 0, len: 4, speed: 2 }, { k: 1, s: 0, len: 6 }], { joined: true }), project: { sources: ["S1", "S2"], missing: [] }, model: modelName() });
+  }
+  // The owner's montage, small: 18 pieces of one clip, one moved out of order, a gap, both own tracks and a song
+  // mixed (and an ungrouped piece's sound), two pictures on top (the Rust half lays them: `overlay_pngs`).
+  {
+    const checks = [];
+    const check = (name, ok, detail = "") => checks.push({ name, ok: !!ok, detail: String(detail) });
+    const m = one();
+    for (let t = 1; t < 18; t++) check(`split at ${t}`, em.emSplitAt(m, t));
+    // Piece 8..9 goes before piece 7..8 (the owner's range 8 lay earlier in the file than range 7).
+    check("8..9 before 7..8", em.emPutBeside(m, em.emPieceAt(m, 8.5), em.emPieceAt(m, 7.5), false));
+    check("a gap at 12", em.emRemovePiece(m, em.emPieceAt(m, 12.5), true));
+    em.emAddFile(m, { path: songPath, title: "song", duration: CLIP.song.duration }, 3);
+    check("piece 15..16 ungrouped", em.emUngroup(m, [{ row: "video", seg: em.emSegmentAt(m, 15.5) }]).length === 2);
+    const layout = [];
+    for (let k = 0; k < 20; k++) {
+      if (k === 7) layout.push({ src: 8, len: 1 }); else if (k === 8) layout.push({ src: 7, len: 1 }); else if (k === 12) layout.push({ gap: 1 }); else layout.push({ src: k, len: 1 });
+    }
+    files.push({ name: "montage like the owner's: 19 pieces, one out of order, a gap, sound mixed, two pictures", checks, opts: em.emToOpts(m), expect: expect(layout, { tones: [heard(D, 0.15, 11.85), quiet(D, 12.2, 12.8), heard(D, 13.15, 19.85), heard(CLIP.song.freq, 3.15, 8.85)] }), overlay_pngs: [{ from: 2.0, to: 4.0 }, { from: 9.0, to: 11.0 }], model: modelName() });
+  }
+} else {
+  files.push({ name: "0.1.41 scenarios (speed per piece, montage)", checks: [{ name: "the model has emSetPieceSpeed", ok: false, detail: "missing" }], opts: null, expect: null, model: modelName() });
+}// F1 (0.1.41): an old project's draft as its first source (its picture's colour tags change at 4 s) and one
+// added clip, edited across both: ranges that cross the tag change after one that ended, out of order.
+if (has139) {
+  const pm = projectModel(["D1", "S2"]), m = pm.m, checks = [];
+  const check = (name, ok, detail = "") => checks.push({ name, ok: !!ok, detail: String(detail) });
+  check("split at 2", em.emSplitAt(m, 2)); check("split at 3", em.emSplitAt(m, 3)); check("split at 6", em.emSplitAt(m, 6));
+  check("2..3 out, closed up", em.emRemovePiece(m, em.emPieceAt(m, 2.5), false));
+  // Now: D1 0..2, D1 3..6 (across the change), D1 6..8, S2. S2 goes first; D1 3..6 last.
+  check("S2 first", em.emPutBeside(m, em.emPieceAt(m, 9), em.emPieceAt(m, 1), false));
+  check("D1 3..6 last", em.emPutBeside(m, em.emPieceAt(m, 6 + 3.5), em.emPieceAt(m, 12), true));
+  const layout = [{ k: 1, s: 0, len: 6 }, { k: 0, s: 0, len: 2 }, { k: 0, s: 6, len: 2 }, { k: 0, s: 3, len: 3 }];
+  files.push({ name: "F1: an old project's draft (colour tags change in it) + an added clip, edited across both", checks, opts: em.emToOpts(m), expect: projectExpect(["D1", "S2"], layout, { joined: true }), project: { sources: ["D1", "S2"], missing: [] }, model: modelName() });
 }if (missing.length) console.log(`note: not in ui/editmodel.js yet: ${missing.join(", ")} (0.1.36 functions used; scenarios that need them left out)`);
 files.forEach((f, i) => fs.writeFileSync(path.join(dir, `s${String(i + 1).padStart(2, "0")}.json`), JSON.stringify(f, null, 2)));
 const bad = files.reduce((n, f) => n + f.checks.filter((c) => !c.ok).length, 0);

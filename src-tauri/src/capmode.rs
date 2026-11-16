@@ -25,7 +25,14 @@
 //!   Duplication chosen or picked by "auto", e.g. on Windows 10), or the
 //!   window refused twice in a row (`RecStatus::window_failed`): the monitor
 //!   the game is on is recorded instead, still with only the game's sound.
+//!
+//! 0.1.41: the decision is `gamedetect::decide` (one pure function, see that file): layered
+//! evidence of what is a game, the pick that always wins, and a stated source. Exclusive
+//! fullscreen is recorded from its monitor by Desktop Duplication (Graphics Capture cannot see
+//! it); a monitor source pauses while the game is minimized or not in front; every change is
+//! held two looks and logged once with its reason (`State::why`, `Status::capture_why`).
 use crate::core::{self, Core};
+use crate::gamedetect::{self, Source, Why};
 use crate::games::{self, Game, Marks};
 use crate::recorder::{CapStats, CaptureCfg};
 use crate::settings::Settings;
@@ -70,6 +77,12 @@ struct State {
     silent: Option<(u64, u64, std::time::Instant)>,
     /// The last game recorded: a clip of the buffer it left after it exited is filed under it.
     last: Option<String>,
+    /// 0.1.41: what `gamedetect::decide` keeps between looks, its last source and reason, and the
+    /// log line written for it (one line per change).
+    mem: gamedetect::Memory,
+    source: Option<Source>,
+    why: Why,
+    logged: String,
 }
 
 /// The least of the asked range a clip taken while waiting (the game exited) must hold, in seconds.
@@ -165,15 +178,29 @@ pub fn window_capture_ok(s: &Settings) -> bool {
 
 /// Game mode's capture list: the game, or nothing (the recorder waits).
 pub fn cfgs(s: &Settings) -> Vec<CaptureCfg> {
-    let (target, failed) = {
+    let (target, failed, source) = {
         let st = state().lock().unwrap();
-        let failed = st.target.as_ref().is_some_and(|t| st.failed.contains(&t.hwnd));
-        (st.target.clone(), failed)
+        let failed = st.target.as_ref().is_some_and(|t| st.failed.contains(&t.hwnd) || st.mem.failed.contains(&t.hwnd));
+        (st.target.clone(), failed, st.source)
     };
     let Some(t) = target else { return Vec::new() };
     let mons = win::monitors();
     let Some(m) = mons.get(t.monitor as usize).or(mons.first()) else { return Vec::new() };
-    vec![cfg_for(s, &t, m, !failed && window_capture_ok(s))]
+    vec![match source {
+        // Paused (minimized behind a monitor source, hidden, blocked) or no game: nothing runs, the buffer stays.
+        Some(Source::Park) | Some(Source::Wait) => return Vec::new(),
+        Some(Source::MonitorDda) => cfg_dda(s, &t, m),
+        Some(Source::Monitor) => cfg_for(s, &t, m, false),
+        Some(Source::Window) | None => cfg_for(s, &t, m, !failed && window_capture_ok(s)),
+    }]
+}
+
+/// The game's monitor by Desktop Duplication (`ddagrab`): what an exclusive-fullscreen game is
+/// recorded with, since Graphics Capture sees neither its window nor its monitor's picture of it.
+pub fn cfg_dda(s: &Settings, t: &Target, m: &Monitor) -> CaptureCfg {
+    let mut c = cfg_for(s, t, m, false);
+    c.method = "dda".into();
+    c
 }
 
 /// The next target from a list of windows. `prev`: the one recorded now. `pending`: a size seen
@@ -188,6 +215,14 @@ pub fn next_target(prev: Option<&Target>, wins: &[WinInfo], m: &Marks, pending: 
             .cloned();
     };
     let w = &wins[i];
+    // The name is looked up once per game (it may read the program's version info).
+    let name = prev.filter(|p| p.pid == w.pid).map(|p| p.name.clone()).unwrap_or_else(|| games::name_for(w, m.seen));
+    Some(settle(prev, w, name, pending, mons))
+}
+
+/// The target for window `w` (named `name`), with the size rule: a new size of the same window is
+/// taken once it held for a second look; minimized keeps the size it had (else its monitor's).
+pub fn settle(prev: Option<&Target>, w: &WinInfo, name: String, pending: &mut Option<(u64, u32, u32)>, mons: &[Monitor]) -> Target {
     let same_window = prev.filter(|p| p.hwnd == w.hwnd);
     let same_game = prev.filter(|p| p.pid == w.pid);
     let (mut width, mut height) = (w.width, w.height);
@@ -210,9 +245,7 @@ pub fn next_target(prev: Option<&Target>, wins: &[WinInfo], m: &Marks, pending: 
     } else {
         *pending = None;
     }
-    // The name is looked up once per game (it may read the program's version info).
-    let name = same_game.map(|p| p.name.clone()).unwrap_or_else(|| games::name_for(w, m.seen));
-    Some(Target { hwnd: w.hwnd, pid: w.pid, exe: w.exe.clone(), name, monitor: w.monitor, width, height })
+    Target { hwnd: w.hwnd, pid: w.pid, exe: w.exe.clone(), name, monitor: w.monitor, width, height }
 }
 
 /// `Core::track_game`'s look: (name, process, executable) of the game, if any. Desktop mode:
@@ -231,40 +264,89 @@ pub fn found(core: &Core) -> Option<(String, u32, String)> {
     let caps = core.rec.stats().captures;
     let wins = win::windows();
     let mons = win::monitors();
+    let lib = gamedetect::library(); // the cached index; a refresh runs in the background
+    if let Some(fg) = wins.iter().find(|w| w.foreground) {
+        gamedetect::library_hint(&fg.exe, &lib);
+    }
+    let method = util::find_exe(&s.ffmpeg_path, "ffmpeg").map(|f| crate::recorder::resolve_method(&f, &s.method));
+    let env = gamedetect::Env { window_capture: method.as_deref() == Some("wgc"), dda: method.as_deref() == Some("dda"), d3d_fullscreen: win::d3d_fullscreen(), now: clock() };
     let mut st = state().lock().unwrap();
     for c in caps.iter().filter(|c| c.window != 0 && c.status.window_failed) {
-        if !st.failed.contains(&c.window) {
-            util::log(&format!("game mode: window {:#x} could not be captured, recording its monitor instead", c.window));
-            st.failed.push(c.window);
+        if !st.mem.failed.contains(&c.window) {
+            util::log(&format!("game mode: window {:#x} could not be captured", c.window));
+            st.mem.failed.push(c.window);
         }
     }
     if let Some(c) = caps.first() {
         let minimized = wins.iter().find(|w| w.hwnd == c.window).map_or(true, |w| w.minimized);
         let mut silent = st.silent.take();
-        if never_delivered(&mut silent, c, minimized, std::time::Instant::now()) && !st.failed.contains(&c.window) {
-            util::log(&format!("game mode: window {:#x} gave no picture in {FIRST_FRAME_SECS} s, recording its monitor instead", c.window));
-            st.failed.push(c.window);
+        if never_delivered(&mut silent, c, minimized, std::time::Instant::now()) && !st.mem.failed.contains(&c.window) {
+            util::log(&format!("game mode: window {:#x} gave no picture in {FIRST_FRAME_SECS} s", c.window));
+            st.mem.failed.push(c.window);
             silent = None;
         }
         st.silent = silent;
     }
     st.failed.retain(|h| wins.iter().any(|w| w.hwnd == *h));
+    let prefs = gamedetect::Prefs { auto: s.game_auto, pick: &s.game_pick, pick_path: &s.game_pick_path, games: &s.game_exes, not_games: &s.not_game_exes, seen: &seen };
+    let mut mem = std::mem::take(&mut st.mem);
+    let d = gamedetect::decide(&wins, &lib, &prefs, &env, &mut mem, &win::process_alive);
+    st.mem = mem;
     let prev = st.target.clone();
-    let m = marks(&s, &seen, prev.as_ref().map(|t| t.pid));
-    let mut pending = st.pending.take();
-    let next = next_target(prev.as_ref(), &wins, &m, &mut pending, &win::process_alive, &mons);
-    st.pending = pending;
-    if next.as_ref().map(|t| (t.hwnd, t.pid)) != prev.as_ref().map(|t| (t.hwnd, t.pid)) {
-        match &next {
-            Some(t) => util::log(&format!("game mode: {} ({}, window {:#x}, {}x{} on monitor {})", t.name, games::exe_key(&t.exe), t.hwnd, t.width, t.height, t.monitor)),
-            None => util::log("game mode: no game"),
+    let next = match d.window {
+        Some(i) => {
+            let mut pending = st.pending.take();
+            let t = settle(prev.as_ref(), &wins[i], d.why.game.clone(), &mut pending, &mons);
+            st.pending = pending;
+            Some(t)
         }
+        // Waiting for its window (re-created) or paused: the target stays (clip names, its sound).
+        None if d.source == Source::Park => prev.clone(),
+        None => None,
+    };
+    // One log line per change of what is decided (never per look).
+    let key = format!("{}|{}|{:?}|{:?}", d.why.code, d.why.game, d.source, next.as_ref().map(|t| t.hwnd));
+    if key != st.logged {
+        let detail = match &next {
+            Some(t) => format!(" ({}, window {:#x}, {}x{} on monitor {}, by {})", games::exe_key(&t.exe), t.hwnd, t.width, t.height, t.monitor + 1, source_name(d.source, method.as_deref().unwrap_or("?"))),
+            None => String::new(),
+        };
+        util::log(&format!("game mode: {}{detail}", d.why.line()));
+        st.logged = key;
     }
+    st.why = d.why;
+    st.source = Some(d.source);
     if let Some(t) = &next {
         st.last = Some(t.name.clone());
     }
     st.target = next.clone();
     next.map(|t| (t.name, t.pid, t.exe))
+}
+
+/// How a source is captured, for the log.
+fn source_name(s: Source, method: &str) -> &'static str {
+    match s {
+        Source::Window => "window capture (Graphics Capture)",
+        Source::MonitorDda => "its monitor (Desktop Duplication)",
+        Source::Monitor if method == "dda" => "its monitor (Desktop Duplication)",
+        Source::Monitor => "its monitor (Graphics Capture)",
+        Source::Park => "nothing for now (paused, the buffer kept)",
+        Source::Wait => "nothing",
+    }
+}
+
+/// Seconds since Glint started, on a steady clock (`gamedetect::Env::now`).
+fn clock() -> f64 {
+    static T0: OnceLock<std::time::Instant> = OnceLock::new();
+    T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()
+}
+
+/// The reason of the last decision (`Status::capture_why`): empty in desktop mode or while paused.
+pub fn why_of(s: &Settings, running: bool) -> Why {
+    if !game_mode(s) || !running {
+        return Why::default();
+    }
+    state().lock().unwrap().why.clone()
 }
 
 /// Whether the game being played (`pid`) stops counting although its process lives: always in
@@ -313,7 +395,7 @@ pub fn status_of(s: &Settings, running: bool, caps: &[CapStats]) -> (String, Str
             Some(c) if c.window != 0 => "window",
             Some(_) => {
                 let st = state().lock().unwrap();
-                if st.target.as_ref().is_some_and(|t| st.failed.contains(&t.hwnd)) { "screen_failed" } else { "screen" }
+                if st.target.as_ref().is_some_and(|t| st.failed.contains(&t.hwnd) || st.mem.failed.contains(&t.hwnd) || st.mem.exclusive.contains(&t.hwnd)) { "screen_failed" } else { "screen" }
             }
         }
     };
@@ -322,30 +404,44 @@ pub fn status_of(s: &Settings, running: bool, caps: &[CapStats]) -> (String, Str
 
 /// A setting that changes what is recorded in game mode (or the mode itself) changed.
 pub fn marks_changed(old: &Settings, new: &Settings) -> bool {
-    old.capture_mode != new.capture_mode || old.game_desktop_audio != new.game_desktop_audio || old.game_auto != new.game_auto || old.game_pick != new.game_pick || old.game_exes != new.game_exes || old.not_game_exes != new.not_game_exes
+    old.capture_mode != new.capture_mode || old.game_desktop_audio != new.game_desktop_audio || old.game_auto != new.game_auto || old.game_pick != new.game_pick || old.game_pick_path != new.game_pick_path || old.game_exes != new.game_exes || old.not_game_exes != new.not_game_exes
 }
 
-/// One choice of the switch's menu: the user's mark `action` on executable `exe` (`games::exe_key`).
+/// One choice of the switch's menu: the user's mark `action` on executable `exe`: its file name
+/// (`games::exe_key`, as before) or, from 0.1.41, its full path (a pick then keeps the path too).
 pub fn apply_mark(s: &mut Settings, action: &str, exe: &str) -> Result<(), String> {
-    let key = exe.trim().to_lowercase();
+    let raw = exe.trim();
+    let path = (raw.contains('\\') || raw.contains('/')).then(|| raw.replace('/', "\\").to_lowercase());
+    let key = match &path {
+        Some(p) => games::exe_key(p),
+        None => raw.to_lowercase(),
+    };
     let need = || if key.is_empty() { Err("No program was named".to_string()) } else { Ok(()) };
     match action {
         "auto-on" => s.game_auto = true,
         "auto-off" => s.game_auto = false,
         "pick" => {
             need()?;
+            // A pick by name only keeps the path it had when it is the same program.
+            if path.is_some() || s.game_pick != key {
+                s.game_pick_path = path.clone().unwrap_or_default();
+            }
             s.game_pick = key.clone();
             s.not_game_exes.retain(|e| *e != key);
             if !s.game_exes.contains(&key) {
                 s.game_exes.push(key);
             }
         }
-        "unpick" => s.game_pick.clear(),
+        "unpick" => {
+            s.game_pick.clear();
+            s.game_pick_path.clear();
+        }
         "not-game" => {
             need()?;
             s.game_exes.retain(|e| *e != key);
             if s.game_pick == key {
                 s.game_pick.clear();
+                s.game_pick_path.clear();
             }
             if !s.not_game_exes.contains(&key) {
                 s.not_game_exes.push(key);
@@ -378,6 +474,10 @@ pub struct MenuRow {
     pub picked: bool,
     /// The user marked it "not a game".
     pub not_game: bool,
+    /// 0.1.41: its full path (a pick keeps it), and why it counts as a game (`gamedetect::Ev`
+    /// codes: "pick", "library:steam", "fullscreen", ...), empty when it does not.
+    pub path: String,
+    pub why: Vec<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -385,6 +485,8 @@ pub struct GameMenu {
     pub mode: String,
     pub auto: bool,
     pub pick: String,
+    /// The reason of the last decision (game mode), shown as the menu's "Why?" line.
+    pub decision: Why,
     /// The game being recorded / played now, if any.
     pub current: Option<MenuRow>,
     /// Running programs with a visible window, one row each: the current game first, then games, then by name.
@@ -397,21 +499,33 @@ const MENU_MAX: usize = 24;
 
 /// The menu's rows from a window list.
 pub fn menu_rows(wins: &[WinInfo], m: &Marks, current: Option<u32>) -> Vec<MenuRow> {
+    menu_rows_with(wins, m, "", &gamedetect::Library::default(), current)
+}
+
+/// `menu_rows` with the picked program's path and the installed libraries: each row says why it
+/// counts as a game (the same evidence `gamedetect::decide` uses).
+pub fn menu_rows_with(wins: &[WinInfo], m: &Marks, pick_path: &str, lib: &gamedetect::Library, current: Option<u32>) -> Vec<MenuRow> {
+    let prefs = gamedetect::Prefs { auto: m.auto, pick: m.pick, pick_path, games: m.games, not_games: m.not_games, seen: m.seen };
     let mut rows: Vec<(bool, MenuRow)> = Vec::new();
     for w in wins {
         let exe = games::exe_key(&w.exe);
-        if exe.is_empty() || SHELL.contains(&exe.as_str()) {
+        if exe.is_empty() || w.cloaked || SHELL.contains(&exe.as_str()) {
             continue;
         }
         let is_current = current == Some(w.pid);
-        let game = games::rate(w, m).is_some();
+        let ev = gamedetect::evidence(w, &prefs, lib, false);
+        let why: Vec<String> = ev.as_ref().filter(|e| gamedetect::points(e) >= gamedetect::GAME_MIN).map(|e| e.iter().map(|x| x.code.clone()).collect()).unwrap_or_default();
+        let game = !why.is_empty() || games::rate(w, m).is_some();
         if let Some((_, r)) = rows.iter_mut().find(|(_, r)| r.exe == exe) {
             r.current |= is_current;
             r.game |= game;
+            if r.why.is_empty() {
+                r.why = why;
+            }
             continue;
         }
         let title: String = w.title.trim().chars().take(60).collect();
-        rows.push((w.minimized, MenuRow { name: games::name_for(w, m.seen), exe: exe.clone(), title, game, current: is_current, picked: m.pick == exe, not_game: m.not_games.contains(&exe) }));
+        rows.push((w.minimized, MenuRow { name: gamedetect::name_of(w, m.seen, lib), exe: exe.clone(), title, game, current: is_current, picked: m.pick == exe, not_game: m.not_games.contains(&exe), path: w.exe.clone(), why }));
     }
     let mut rows: Vec<MenuRow> = rows.into_iter().map(|(_, r)| r).collect();
     rows.sort_by(|a, b| b.current.cmp(&a.current).then(b.picked.cmp(&a.picked)).then(b.game.cmp(&a.game)).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
@@ -428,9 +542,22 @@ pub fn game_menu(core: St) -> GameMenu {
     let seen = core.games.lock().unwrap().list.clone();
     let current = if game_mode(&s) { state().lock().unwrap().target.as_ref().map(|t| t.pid) } else { core.playing_pid() };
     let m = marks(&s, &seen, current);
-    let programs = menu_rows(&win::windows(), &m, current);
+    let programs = menu_rows_with(&win::windows(), &m, &s.game_pick_path, &gamedetect::library(), current);
     let cur = programs.iter().find(|r| r.current).cloned();
-    GameMenu { mode: s.capture_mode.clone(), auto: s.game_auto, pick: s.game_pick.clone(), current: cur, programs }
+    let decision = if game_mode(&s) { state().lock().unwrap().why.clone() } else { Why { code: "desktop".into(), ..Default::default() } };
+    GameMenu { mode: s.capture_mode.clone(), auto: s.game_auto, pick: s.game_pick.clone(), decision, current: cur, programs }
+}
+
+/// The menu's "Choose a program…": a file dialog for an .exe, picked by its path. None: cancelled.
+#[tauri::command(async)]
+pub fn game_pick_exe(core: St) -> Result<Option<Settings>, String> {
+    let Some(file) = rfd::FileDialog::new().add_filter("Programs", &["exe"]).pick_file() else { return Ok(None) };
+    let mut s = core.settings();
+    apply_mark(&mut s, "pick", &file.to_string_lossy())?;
+    util::log(&format!("game mode: pick {} (chosen by hand)", s.game_pick));
+    core.apply_settings(s);
+    core.emit("status-changed", ());
+    Ok(Some(core.settings()))
 }
 
 /// A choice in that menu (see `apply_mark`). Returns the settings as saved.
@@ -438,7 +565,7 @@ pub fn game_menu(core: St) -> GameMenu {
 pub fn game_mark(core: St, action: String, exe: String) -> Result<Settings, String> {
     let mut s = core.settings();
     apply_mark(&mut s, &action, &exe)?;
-    util::log(&format!("game mode: {action} {exe}"));
+    util::log(&format!("game mode: {action} {}", if exe.contains('\\') { games::exe_key(&exe) } else { exe.clone() }));
     core.apply_settings(s);
     core.emit("status-changed", ());
     Ok(core.settings())
@@ -464,7 +591,7 @@ impl Report {
 }
 
 fn wi(hwnd: u64, pid: u32, exe: &str) -> WinInfo {
-    WinInfo { hwnd, pid, exe: exe.into(), title: String::new(), class: String::new(), fullscreen: false, minimized: false, foreground: false, width: 1920, height: 1080, monitor: 0 }
+    WinInfo { hwnd, pid, exe: exe.into(), title: String::new(), class: String::new(), fullscreen: false, minimized: false, foreground: false, width: 1920, height: 1080, monitor: 0, ..Default::default() }
 }
 
 fn mon(index: u32, width: u32, height: u32, hz: u32) -> Monitor {
@@ -479,6 +606,7 @@ pub fn self_test(report_path: &str) {
         test_settings(&mut r);
         test_detection(&mut r);
         test_targets(&mut r);
+        test_rebuild(&mut r);
         test_args(&mut r);
         test_recorder(&mut r);
         test_clips(&mut r);
@@ -672,6 +800,70 @@ fn test_targets(r: &mut Report) {
     let after = never_delivered(&mut silent, &w, false, later(61));
     let framed = never_delivered(&mut silent, &CapStats { frames: 3, ..cap(5) }, false, later(200));
     r.check("no first frame: minimized or delivering never counts, and the wait starts again", !mini && !after && !framed, "");
+}
+
+/// 0.1.41: the rebuilt detection (gamedetect.rs) and what capmode.rs does with its decision.
+fn test_rebuild(r: &mut Report) {
+    let dir = util::data_dir().join("capmode-test").join("libraries");
+    gamedetect::self_test(&mut |name, ok, detail| r.check(name, ok, &detail), &dir);
+    // Settings saved by 0.1.40 (a pick by file name, no path) load and mean the same.
+    let old = r#"{"capture_mode":"game","game_auto":false,"game_pick":"hades.exe","game_exes":["hades.exe","overwatch.exe"],"not_game_exes":["chrome.exe"]}"#;
+    let s: Settings = serde_json::from_str(old).unwrap_or_default();
+    r.check("0.1.40 settings: mode, pick, marks kept; the new pick path is empty", game_mode(&s) && !s.game_auto && s.game_pick == "hades.exe" && s.game_pick_path.is_empty() && s.game_exes.len() == 2 && s.not_game_exes == ["chrome.exe"], &format!("{} {:?}", s.game_pick, s.game_pick_path));
+    let hades = WinInfo { foreground: true, ..wi(7, 70, r"C:\Program Files (x86)\Steam\steamapps\common\Hades\x64\Hades.exe") };
+    let prefs = gamedetect::Prefs { auto: s.game_auto, pick: &s.game_pick, pick_path: &s.game_pick_path, games: &s.game_exes, not_games: &s.not_game_exes, seen: &[] };
+    let env = gamedetect::Env { window_capture: true, dda: false, d3d_fullscreen: false, now: 0.0 };
+    let d = gamedetect::decide(std::slice::from_ref(&hades), &gamedetect::Library::default(), &prefs, &env, &mut gamedetect::Memory::default(), &|_| true);
+    r.check("0.1.40 settings: the pick by file name is recorded as before, detection off", d.window == Some(0) && d.source == Source::Window && d.why.game == "Hades", &format!("{:?}", d.why));
+    // A pick from the menu or "Choose a program…" keeps the full path; by name it keeps the path of the same program.
+    let mut p = Settings::default();
+    let _ = apply_mark(&mut p, "pick", r"D:\Games\Foo\Launcher\Foo Launcher.EXE");
+    let by_path = p.game_pick == "foo launcher.exe" && p.game_pick_path == r"d:\games\foo\launcher\foo launcher.exe";
+    let _ = apply_mark(&mut p, "pick", "foo launcher.exe");
+    let kept = p.game_pick_path == r"d:\games\foo\launcher\foo launcher.exe";
+    let _ = apply_mark(&mut p, "pick", "other.exe");
+    let other = p.game_pick == "other.exe" && p.game_pick_path.is_empty();
+    let _ = apply_mark(&mut p, "pick", r"C:\x\y.exe");
+    let _ = apply_mark(&mut p, "unpick", "");
+    r.check("pick: by path keeps the path; the same name again keeps it; another name drops it; unpick clears both", by_path && kept && other && p.game_pick.is_empty() && p.game_pick_path.is_empty(), &format!("{} {}", p.game_pick, p.game_pick_path));
+    let a = Settings::default();
+    let b = Settings { game_pick_path: "c:\\x.exe".into(), ..a.clone() };
+    r.check("pick: a new pick path is a change that needs a new look", marks_changed(&a, &b), "");
+    // Exclusive fullscreen: the game's monitor by Desktop Duplication, all else as the monitor fallback.
+    let mons = [mon(0, 2560, 1440, 144), mon(1, 1920, 1080, 60)];
+    let s = Settings { capture_mode: "game".into(), ..Default::default() };
+    let t = Target { hwnd: 0x77, pid: 7, exe: "x.exe".into(), name: "X".into(), monitor: 1, width: 1920, height: 1080 };
+    let dda = cfg_dda(&s, &t, &mons[1]);
+    r.check("cfg: exclusive fullscreen records the game's monitor by Desktop Duplication", dda.method == "dda" && dda.window == 0 && dda.monitor == 1 && CaptureCfg { method: s.method.clone(), ..dda.clone() } == cfg_for(&s, &t, &mons[1], false), &format!("{} monitor {}", dda.method, dda.monitor));
+    let a = crate::recorder::capture_args(&dda, "nvenc", "dda", false, true);
+    r.check("args: that capture is ddagrab of the game's monitor", a.iter().any(|x| x.starts_with("ddagrab=output_idx=1:")), "");
+    // The source decided is what `cfgs` hands the recorder.
+    {
+        let mut st = state().lock().unwrap();
+        *st = State::default();
+        st.target = Some(t.clone());
+        st.source = Some(Source::Park);
+    }
+    let parked = core::capture_cfgs(&s).is_empty();
+    state().lock().unwrap().source = Some(Source::MonitorDda);
+    let ex = core::capture_cfgs(&s);
+    state().lock().unwrap().source = Some(Source::Monitor);
+    let mo = core::capture_cfgs(&s);
+    r.check("cfgs: paused gives nothing (the buffer is kept), exclusive gives Desktop Duplication, a refused window its monitor", parked && ex.first().is_some_and(|c| c.method == "dda" && c.window == 0) && mo.first().is_some_and(|c| c.window == 0 && c.method == s.method), "");
+    state().lock().unwrap().why = Why { code: "exclusive".into(), game: "X".into(), monitor: 1, evidence: vec!["known".into()] };
+    r.check("status: the reason is given in game mode while clipping, not in desktop mode or paused", why_of(&s, true).code == "exclusive" && why_of(&Settings::default(), true).code.is_empty() && why_of(&s, false).code.is_empty(), "");
+    *state().lock().unwrap() = State::default();
+    // Monitors by device name: a position that does not match no longer means the main monitor.
+    let mut m2 = mons.to_vec();
+    m2[1].x = 2560;
+    r.check("monitor of a window: by its device name first, then by position, else the main one", win::monitor_index_of(&m2, "DISPLAY2", -5, -5) == 1 && win::monitor_index_of(&m2, "", 2560, 0) == 1 && win::monitor_index_of(&m2, "DISPLAY9", 7, 7) == 0, "");
+    // The menu says why each program counts.
+    let lib = gamedetect::Library { installs: vec![gamedetect::Install { store: "epic", name: "Rocket League".into(), dir: r"d:\epic\rocketleague\".into() }] };
+    let rl = wi(9, 90, r"D:\Epic\rocketleague\Binaries\Win64\RocketLeague.exe");
+    let tool = wi(10, 91, r"C:\Tools\thing.exe");
+    let cloaked = WinInfo { cloaked: true, ..wi(11, 92, r"C:\Games2\hidden.exe") };
+    let rows = menu_rows_with(&[rl, tool, cloaked], &Marks::none(), "", &lib, None);
+    r.check("menu: each program says why it is a game (known, Epic library), others nothing; hidden windows are left out", rows.len() == 2 && rows[0].why.contains(&"library:epic".to_string()) && rows[0].why.contains(&"known".to_string()) && rows[1].why.is_empty() && !rows[1].game && rows[0].path.ends_with("RocketLeague.exe"), &format!("{:?}", rows.iter().map(|x| (&x.exe, &x.why)).collect::<Vec<_>>()));
 }
 
 fn test_args(r: &mut Report) {

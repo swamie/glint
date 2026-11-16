@@ -498,7 +498,7 @@ function ovMount(root, c, P) {
     for (const o of media) if (o.kind !== "video" && typeof medLoad === "function") medLoad(o, () => { if (!st.dead) { st.dirty = true; redraw(); } });
     // At the main picture's rate (the edit's speed times the player's own; editor.js applyRate), so a clip item keeps pace.
     const soon = mm ? list().filter((o) => o.kind === "video" && o.from > tm && o.from - tm < 1.5) : [];
-    videos?.sync(media.filter((o) => o.kind === "video"), tm, playing(), v.playbackRate || 1, soon);
+    videos?.sync(media.filter((o) => o.kind === "video"), tm, playing(), (typeof P.tlRate === "function" ? P.tlRate() : v.playbackRate) || 1, soon); // timeline rate: a piece's own speed (0.1.41) is not theirs
     // Redrawn at every new playhead time: keyframes, GIFs and clips move; a clip about to start is made ready.
     st.moving = shown.some(kfHas) || media.some((o) => o.kind !== "image") || soon.length > 0;
     st.lastT = tm;
@@ -834,8 +834,11 @@ function ovMount(root, c, P) {
       html += it("front", "M8 8h12v12H8zM4 4h12v2M4 4v12h2", t("Bring to front")) + it("back", "M4 4h12v12H4zM20 8v12H8", t("Send to back"))
         + it("dup", "M8 8h12v12H8zM4 16V4h12", t("Duplicate")) + it("del", "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13", t("Delete"), "danger") + "<hr>";
     } else if (typeof P.cv?.crop === "function") html += it("crop-clip", CROP, t("Crop")) + "<hr>";
+    if (P.zm?.menuHtml) html += P.zm.menuHtml(it); // "Zoom in here" / "Zoom out" (zoom.js, 0.1.41)
     html += it("add", OV_ADD_PATH, t("Add a picture, GIF or clip"));
+    const mx = e.clientX, my = e.clientY;
     medOpenMenu(html, e.clientX, e.clientY, (act) => {
+      if (P.zm?.menuAct?.(act, mx, my)) return;
       if (act === "crop" && hit) startCrop(hit.id);
       else if (act === "crop-clip") P.cv?.crop?.();
       else if (act === "front" && hit) restack(hit.id, true);

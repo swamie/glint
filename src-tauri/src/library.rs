@@ -202,23 +202,62 @@ pub fn thumb_at(duration: f64) -> f64 {
 
 /// Grab one frame as the library thumbnail. Returns the jpg path ("" on failure).
 pub fn make_thumb(ffmpeg: &Path, video: &Path, id: &str, at: f64) -> String {
+    make_thumb_why(ffmpeg, video, id, at).0
+}
+
+/// Clips whose failed thumbnail was already logged this session (once per clip).
+static THUMB_LOGGED: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
+
+/// `make_thumb`, with ffmpeg's last words when every attempt failed: (jpg path or "", error).
+///
+/// 0.1.41 (item T): several attempts, software decoding only, each a fresh file: the frame at `at` (the middle);
+/// 10 % in; the first frame that decodes (no seek: a seek into a file whose index is odd lands nowhere); that again
+/// with the picture made a full-range 4:2:0 JPEG may take (`yuvj420p`, `-strict unofficial`). Measured on synthetic
+/// files with ffmpeg 9 (h264 / hevc 8 and 10-bit / PQ tags / av1 / vp9 / prores / rotation / 0.3 s / one key frame /
+/// odd file names): the first attempt already works for every one of them; what fails is a file that is not all
+/// there yet (still being copied or written) and a file with no picture. Those come back to `polish::retry_thumbs`.
+pub fn make_thumb_why(ffmpeg: &Path, video: &Path, id: &str, at: f64) -> (String, String) {
     let out = thumbs_dir().join(format!("{id}.jpg"));
-    // A clip of a still screen may hold no frame at `at`; fall back to the first frame.
-    for pos in [at, 0.0] {
-        let _ = util::hidden_cmd(ffmpeg)
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{pos:.2}"), "-i"])
-            .arg(video)
-            .args(["-frames:v", "1", "-vf", THUMB_VF, "-q:v", "5"])
-            .arg(&out)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if out.is_file() && std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false) {
-            return out.to_string_lossy().into_owned();
+    let at = if at.is_finite() && at > 0.0 { at } else { 0.0 };
+    let pos = |x: f64| format!("{x:.2}");
+    // (seek before the input, extra output options)
+    let tries: Vec<(Option<String>, &[&str])> = vec![
+        (Some(pos(at)), &[]),
+        (if at > 0.0 { Some(pos(at * 0.2)) } else { None }, &[]),
+        (None, &[]),
+        (None, &["-pix_fmt", "yuvj420p", "-strict", "unofficial"]),
+    ];
+    let mut last = String::new();
+    for (seek, extra) in tries {
+        let _ = std::fs::remove_file(&out);
+        let mut cmd = util::hidden_cmd(ffmpeg);
+        cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
+        if let Some(s) = &seek {
+            cmd.args(["-ss", s]);
+        }
+        cmd.arg("-i").arg(video).args(["-frames:v", "1", "-vf", THUMB_VF]).args(extra).args(["-q:v", "5"]).arg(&out);
+        match cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output() {
+            Ok(o) => {
+                if out.is_file() && std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false) {
+                    return (out.to_string_lossy().into_owned(), String::new());
+                }
+                let e = util::last_lines(&o.stderr, 2);
+                if !e.trim().is_empty() {
+                    last = e;
+                }
+            }
+            Err(e) => last = format!("could not start ffmpeg: {e}"),
         }
     }
-    String::new()
+    let _ = std::fs::remove_file(&out);
+    if last.trim().is_empty() {
+        last = "no picture came out".into();
+    }
+    let first = THUMB_LOGGED.lock().map(|mut g| g.get_or_insert_with(Default::default).insert(id.split("-r").next().unwrap_or(id).to_string())).unwrap_or(true);
+    if first {
+        util::log(&format!("thumbnail: none for clip {id}: {}", last.trim()));
+    }
+    (String::new(), last)
 }
 
 /// Build a library entry for a video file that already exists on disk.

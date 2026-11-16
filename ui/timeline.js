@@ -306,8 +306,21 @@ function tlDropAt(parts, from, sec) {
   return p ? { mode: "beside", k: p.i, after: sec >= (p.at + p.end) / 2 } : { mode: "free" };
 }
 
+/** The stretches to outline for the selected pieces of row `rowId` on a block [a, b] (0.1.41): an audio clip (`clip`)
+ *  whole when it is selected; another row per selected segment `segs[sel.seg]` inside the block. */
+function tlSelSpans(sels, rowId, clip, segs, a, b) {
+  const mine = (sels || []).filter((s) => s.row === rowId);
+  if (!mine.length) return [];
+  if (clip) return b > a ? [[a, b]] : [];
+  return mine.map((s) => segs[s.seg]).filter(Boolean).map((s) => [Math.max(a, s.start), Math.min(b, s.end)]).filter(([lo, hi]) => hi > lo);
+}
+
 /** "3.2 s" style length for a tooltip. */
 const tlFmtLen = (sec) => (Math.round(Math.max(0, sec) * 10) / 10).toFixed(1);
+/** The speed choices for a piece (0.1.41): the menu's chips and the inspector's list. */
+const TL_SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 4];
+/** A speed as the block shows it (0.1.41): "2x", "0.5x", "1.25x". */
+const tlSpeedText = (sp) => `${+(+sp).toFixed(2)}x`;
 
 /** Left-edge trim of a file clip: the new start `at`, keeping the audio where it is. Returns { offset, trimStart, length }. */
 function tlTrimLeft(row0, at, minSeg) {
@@ -565,6 +578,8 @@ function mountTimeline(host, opts) {  const m = opts.model;
   const lockedCut = (c) => hasParts() && emCutLocked(m, c);
   /** Timeline second -> source second, for the source-time data (film strip, track waveforms). */
   const srcAt = (sec) => (hasParts() ? emToSrc(m, sec) : sec);
+  /** The own speed of the piece under timeline second `sec` (1 without one, 0.1.41). */
+  const pieceSpeedAt = (sec) => (hasParts() ? emParts(m)[emPartAt(m, sec)]?.speed || 1 : 1);
   /** Zoom and scroll after the view length may have changed (model change, hide cut parts). */
   function relayout() {
     if (!st.laneW) return;
@@ -874,7 +889,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     setBtn(el.bRemove, "remove", !plan.ok, tlSvg(removed ? tlPaths.restore : tlPaths.trash),
       removed ? keyTip(t("Restore segment"), "remove", t("Restore segment (Del)")) : keyTip(t("Delete segment"), "remove", t("Delete segment (Del)")));
     const ref = refAudio(), row = ref?.r || null;
-    const gain = row ? row.gains[ref.seg] ?? 1 : 1;
+    const gain = row ? levelOf(ref) ?? 1 : 1; // an audio clip: its own level (R1 #5)
     setBtn(el.bMute, "mute", !row, gain === 0 ? PICON.mute : PICON.vol,
       row && gain === 0 ? keyTip(t("Unmute segment"), "mute", t("Unmute segment (M)")) : keyTip(t("Mute segment"), "mute", t("Mute segment (M)")));
     el.bMute.classList.toggle("on", !!row && gain === 0);
@@ -959,12 +974,30 @@ function mountTimeline(host, opts) {  const m = opts.model;
     syncSpacer();
   }
   // Each do... below takes one undo snapshot, changes the model, then calls changed(). They return true if they did something.
-  function doSplit(at = st.shownT) {
-    // 0.1.39: a selected audio clip under the playhead splits too, and so does every member of a group under it.
-    const clips = st.sels.filter((s) => isClip(s.row)).map((s) => s.row).filter((id) => { const r = emRow(m, id); return r && at > r.offset + EM_MIN_SEG && at < r.offset + r.length - EM_MIN_SEG; });
-    const P = canSplitAt(at) ? emParts(m)[emPartAt(m, at)] : null, g = P && m.parts ? m.parts[P.i]?.group : null;
-    if (!canSplitAt(at) && !clips.length) return false;
-    if (clips.length || g) return doSplitClips(clips, at, true);
+  function doSplit(at = st.shownT, only) {
+    // 0.1.41 (as Vegas): Split cuts ONLY what is selected, at `at`: a selected V1 piece (or a piece of its own sound on a
+    // track row) with its grouped sound, a selected audio clip, a selected group. Nothing selected: the V1 piece under
+    // `at` and its grouped sound. Never an added song, an ungrouped sound or an overlay item that is not selected.
+    // `only` (the blade): { video: true } the V1 piece under the pointer, { clip: id } that audio clip.
+    const under = (r) => !!r && at > r.offset + EM_MIN_SEG - 1e-9 && at < r.offset + r.length - EM_MIN_SEG + 1e-9;
+    let piece = false;
+    const clips = [];
+    if (only) { if (only.clip) clips.push(only.clip); else piece = true; }
+    else if (!st.sels.length && st.ovSel) return doOvSplit(st.ovSel, at); // a selected overlay item: that one
+    else if (!st.sels.length) piece = true;
+    else {
+      const segAll = emSegments(m);
+      for (const s of st.sels) {
+        if (isClip(s.row)) { clips.push(s.row); continue; }
+        const sg = segAll[s.seg];
+        if (sg && at > sg.start + 1e-6 && at < sg.end - 1e-6) piece = true; // the V1 piece, or its own sound on a track row
+      }
+    }
+    piece = piece && canSplitAt(at);
+    const cl = [...new Set(clips)].filter((id) => under(emRow(m, id)));
+    if (!piece && !cl.length) return false;
+    const P = piece ? emParts(m)[emPartAt(m, at)] : null, g = P && m.parts ? m.parts[P.i]?.group : null;
+    if (cl.length || g || !piece) return doSplitClips(cl, at, piece);
     emSnapshot(m);
     const c = emSplit(m, at);
     if (c < 0) throw new Error(`timeline: emSplit refused ${at} although canSplitAt allowed it`);
@@ -1003,10 +1036,115 @@ function mountTimeline(host, opts) {  const m = opts.model;
     const clips = m.audio.filter((r) => r.kind === "file" && r.group === g);
     const parts = emParts(m).filter((p) => m.parts?.[p.i]?.group === g && m.parts[p.i] !== skip);
     dt = Math.max(dt, -Math.min(Infinity, ...clips.map((r) => r.offset), ...parts.map((p) => p.at)));
+    // A piece moved left stops at the clip before it (R1 #3), and the whole group with it, so it stays in sync.
+    if (dt < 0) for (const p of parts) dt = Math.max(dt, freeFrom(p.i, p.at + dt) - p.at);
     if (!(Math.abs(dt) > 1e-9)) return;
     for (const r of clips) r.offset += dt;
     const objs = parts.map((p) => ({ o: m.parts[p.i], at: p.at })).sort((a, b) => (dt > 0 ? b.at - a.at : a.at - b.at));
     for (const { o, at } of objs) { const i = m.parts.indexOf(o); if (i >= 0) emPlacePart(m, i, at + dt); }
+  }
+  /** Free placement of piece `i` (display index) at timeline second `from`, moved LEFT: a start that would land inside
+   *  a clip lying before where it was goes to that clip's end instead (R1 #3: a 1 s nudge onto the neighbour put it
+   *  "beside" and left a piece-long gap). Moved right, or onto empty space, `from` as it is. */
+  function freeFrom(i, from) {
+    const P = emParts(m), me = P[i];
+    if (!me || from >= me.at) return from;
+    let out = from;
+    for (const q of P) if (q.i !== i && !q.gap && out > q.at + 1e-6 && out < q.end - 1e-6 && q.end <= me.at + 1e-6) out = q.end;
+    return out;
+  }
+  /** The latest a dragged piece `i` of group `grp` may start when moved left to `from`: the group stops as a whole. */
+  function groupFrom(i, grp, from) {
+    const P = emParts(m), me = P[i];
+    if (!me) return from;
+    let dt = freeFrom(i, from) - me.at;
+    if (grp && dt < 0) for (const p of P) if (p.i !== i && m.parts?.[p.i]?.group === grp) dt = Math.max(dt, freeFrom(p.i, p.at + dt) - p.at);
+    return me.at + dt;
+  }
+  /* ----- moving a selection together (0.1.41) -----
+   * Everything selected together moves together when one of it is dragged (or with Alt+Left / Alt+Right), as one
+   * temporary group: the selected V1 pieces (a piece of a track row stands for its V1 piece) and audio clips, with the
+   * members of their own groups. The group machinery does the moving (live, stopping together at a limit, one undo
+   * step). Each member keeps its own group in `_g0` meanwhile; tmpGroupOff puts it back, and the undo step is
+   * rewritten so it never holds the temporary group. */
+  function tmpGroupOn(sels) {
+    const segAll = emSegments(m), things = [];
+    for (const s of sels || []) {
+      if (isClip(s.row)) { const r = emRow(m, s.row); if (r) things.push(r); continue; }
+      const sg = segAll[s.seg];
+      if (!sg || segGap(s.seg)) continue;
+      emEnsureParts(m, opts.title);
+      const p = m.parts[emPartAt(m, (sg.start + sg.end) / 2)];
+      if (p && !p.gap) things.push(p);
+    }
+    const real = new Set(things.map((x) => x.group).filter(Boolean));
+    for (const x of [...(m.parts || []), ...m.audio.filter((r) => r.kind === "file")]) if (x.group && real.has(x.group)) things.push(x);
+    const list = [...new Set(things)];
+    if (list.length < 2) return null;
+    const id = `tmp${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    for (const x of list) { x._g0 = x.group || ""; x.group = id; }
+    return id;
+  }
+  function tmpGroupOff() {
+    for (const x of [...(m.parts || []), ...m.audio]) {
+      if (!("_g0" in x)) continue;
+      if (x._g0) x.group = x._g0; else delete x.group;
+      delete x._g0;
+    }
+  }
+  /** What a temporary group is made of, as a selection now (pieces by where they are, clips by their row). */
+  function tmpSels() {
+    // Its members carry `_g0` (the group itself may have been tidied away when it had one member left).
+    const out = [];
+    for (const p of emParts(m)) if (m.parts[p.i] && "_g0" in m.parts[p.i]) out.push({ row: "video", seg: emSegmentAt(m, (p.at + p.end) / 2) });
+    for (const r of m.audio) if (r.kind === "file" && "_g0" in r) out.push(clipSel(r));
+    return out;
+  }
+  /** After a drag (or a nudge) with a temporary group: the groups as they were, one clean undo step, the selection kept. */
+  function tmpDone(d) {
+    const tp = d?.tmp;
+    if (!tp) return;
+    d.tmp = null;
+    const keep = d.moved ? tmpSels() : null;
+    tmpGroupOff();
+    if (m.undo.length > tp.n0 && m.undo[tp.n0] === tp.preTemp) m.undo[tp.n0] = tp.pre;
+    if (emState(m) === tp.pre) { m.undo.length = Math.min(m.undo.length, tp.n0); }
+    if (!d.moved && emState(m) !== tp.pre) emRestore(m, tp.pre); // a click: the parts a single clip was given go again
+    if (keep && keep.length) setSels(keep, keep[0]);
+    markAll();
+  }
+  /** Alt+Left / Alt+Right (editor.js): move the selection by `dt` seconds, together, one undo step. */
+  function nudgeSel(dt) {
+    if (!st.sels.length || !Number.isFinite(dt) || !dt) return false;
+    const pre = emState(m), n0 = m.undo.length;
+    const one = st.sels.length === 1 ? st.sels[0] : null;
+    let id = tmpGroupOn(st.sels);
+    if (!id) {
+      // One thing: a clip moves by itself; a piece through a group of one (the same free placement).
+      if (one && isClip(one.row)) {
+        const r = emRow(m, one.row);
+        emSnapshot(m);
+        emPlaceFile(m, r.id, { offset: Math.max(0, r.offset + dt) });
+        if (emState(m) === pre) { m.undo.length = n0; return false; }
+        setSels([clipSel(r)], clipSel(r));
+        changed("file");
+        return true;
+      }
+      if (!one || one.row !== "video" || segGap(one.seg)) return false;
+      emEnsureParts(m, opts.title);
+      const sg = emSegments(m)[one.seg], p = sg && m.parts[emPartAt(m, (sg.start + sg.end) / 2)];
+      if (!p || p.gap) { if (emState(m) !== pre) emRestore(m, pre); return false; }
+      id = `tmp${Date.now().toString(36)}`;
+      p._g0 = p.group || "";
+      p.group = id;
+    }
+    const d = { moved: true, tmp: { id, pre, preTemp: emState(m), n0 } };
+    emSnapshot(m);
+    groupMove(id, dt);
+    tmpDone(d);
+    if (emState(m) === pre) return false;
+    changed("order");
+    return true;
   }
   /** The selection pieces of every member of `s`'s group (just `s` when it has none). */
   function groupSels(s) {
@@ -1113,15 +1251,18 @@ function mountTimeline(host, opts) {  const m = opts.model;
     let at = null;
     const obj = m.parts ? m.parts[c.i] : null, grp = obj?.group; // a piece in a group takes its group along (0.1.39)
     const ok = layout(() => {
-      const done = g.mode === "beside" ? emPutBeside(m, c.i, g.k, g.after) : Math.abs(g.from - c.at0) > 1e-6 && emPlacePart(m, c.i, g.from, opts.title);
+      const from = g.mode === "beside" ? g.from : groupFrom(c.i, grp, g.from); // R1 #3: not onto the clip before it
+      const done = g.mode === "beside" ? emPutBeside(m, c.i, g.k, g.after) : Math.abs(from - c.at0) > 1e-6 && emPlacePart(m, c.i, from, opts.title);
       if (done && grp) { const p = emParts(m).find((q) => m.parts[q.i] === obj); if (p) groupMove(grp, p.at - c.at0, obj); }
       return done;
     });
     if (!ok) return false;
-    // The moved clip stays selected: its first segment, found again by where it is now.
-    const P = emParts(m);
-    if (g.mode === "free") at = g.from + Math.min(c.len / 2, 0.05);
-    else { const q = P.find((p) => !p.gap && Math.abs(p.len - c.len) < 1e-6 && (g.after ? p.at >= g.from - 1e-6 : true)); at = q ? q.at + Math.min(q.len / 2, 0.05) : null; }
+    // The moved clip stays selected: found again by its part object (the model keeps it through a new layout; R1 #6:
+    // matching by length picked the first piece of the same length, and Delete then removed that one).
+    const P = emParts(m), q = obj ? P.find((p) => m.parts?.[p.i] === obj) : null;
+    if (q) at = q.at + Math.min(q.len / 2, 0.05);
+    else if (g.mode === "free") at = g.from + Math.min(c.len / 2, 0.05);
+    else at = null;
     relaid("order", at === null ? [] : [at]);
     return true;
   }
@@ -1147,6 +1288,8 @@ function mountTimeline(host, opts) {  const m = opts.model;
   /** Put piece `i` on the picture at timeline second `at` (0.1.37): the media code makes a clip item covering the
    *  picture and its sound row (opts.pieceUp, inside this undo step), and the piece leaves the row with a gap. */
   function doPieceUp(i, at) {
+    // A piece with its own speed (0.1.41) stays on V1: a picture item plays its footage at 1x.
+    if (emPieceSpeed(m, i) !== 1) { showTip(at, t("A clip with its own speed stays on the video row. Set it to 1x first.")); return false; }
     const info = emPieceToItem(m, i);
     if (!info || typeof opts.pieceUp !== "function") return false;
     const n0 = m.undo.length;
@@ -1241,7 +1384,9 @@ function mountTimeline(host, opts) {  const m = opts.model;
   /** True if trimming `side` to `sec` would change anything (for the menu: tried, then put back). */
   function trimWould(side, sec) {
     const before = emState(m), marks0 = (m.marks || []).slice();
-    const ok = trimTo(side, sec) !== null && emState(m) !== before;
+    // A trim the model refuses by throwing (R1 #7: near the very start or end) is no trim: the menu still opens.
+    let ok = false;
+    try { ok = trimTo(side, sec) !== null && emState(m) !== before; } catch (e) { console.warn("Glint timeline: trim refused", e); ok = false; }
     emRestore(m, before);
     if (m.marks) m.marks = marks0;
     return ok;
@@ -1258,18 +1403,26 @@ function mountTimeline(host, opts) {  const m = opts.model;
   }
   /** Set the level of every selected audio piece: `gain(oldGain)` -> new gain. */
   function setGains(what, gain) {
-    const list = selAudio().map((s) => ({ ...s, g: gain(s.r.gains[s.seg]) }));
-    if (!list.some((s) => Math.abs(s.g - s.r.gains[s.seg]) > 1e-9)) return false; // nothing would change: no empty undo step
+    const list = selAudio().map((s) => ({ ...s, g: gain(levelOf(s)) }));
+    if (!list.some((s) => Math.abs(s.g - levelOf(s)) > 1e-9)) return false; // nothing would change: no empty undo step
     emSnapshot(m);
-    for (const s of list) emSetGain(m, s.r.id, s.seg, s.g);
+    for (const s of list) {
+      if (!isClip(s.row)) { emSetGain(m, s.r.id, s.seg, s.g); continue; }
+      // An audio clip's mute and level are its own (R1 #5): they cover the whole clip and go where it goes.
+      if (s.g <= 0.005) s.r.muted = true;
+      else if (what === "mute" && s.r.muted && s.r.volume > 0.005) s.r.muted = false; // unmuted: the level it had
+      else { s.r.muted = false; s.r.volume = Math.min(EM_MAX_GAIN, s.g); }
+    }
     changed(what);
     return true;
   }
+  /** The level of a selected audio piece: a track row's piece its segment's, an audio clip its own (R1 #5). */
+  function levelOf(s) { return isClip(s.row) ? (s.r.muted ? 0 : s.r.volume) : s.r.gains[s.seg]; }
   /** Mute the selected audio pieces, or unmute them all if the shown one (refAudio) is muted. */
   function doMuteSeg() {
     const ref = refAudio();
     if (!ref) return false;
-    const on = ref.r.gains[ref.seg] > 0;
+    const on = levelOf(ref) > 0;
     return setGains("mute", () => (on ? 0 : 1));
   }
   const doLevel = (g) => setGains("gain", () => Math.min(EM_MAX_GAIN, Math.max(0, +g || 0)));
@@ -1281,21 +1434,24 @@ function mountTimeline(host, opts) {  const m = opts.model;
    */
   function soloGroups() {
     const groups = new Map();
-    for (const s of selAudio()) { if (!groups.has(s.seg)) groups.set(s.seg, []); groups.get(s.seg).push(s.r.id); }
+    // Among the clip's own track rows (0.1.41): an audio clip is not tied to V1's pieces (emSolo).
+    for (const s of selAudio()) { if (isClip(s.row)) continue; if (!groups.has(s.seg)) groups.set(s.seg, []); groups.get(s.seg).push(s.r.id); }
     // A segment where every row is selected cannot be soloed.
-    return [...groups].filter(([, ids]) => ids.length < m.audio.length);
+    const nT = m.audio.filter((r) => r.kind === "track").length;
+    return [...groups].filter(([, ids]) => ids.length < nT);
   }
-  const groupSolo = (seg, ids) => (ids.length === 1 ? emIsSolo(m, ids[0], seg) : m.audio.every((r) => (ids.includes(r.id) ? r.gains[seg] > 0 : r.gains[seg] === 0)));
+  const tracksOnly = () => m.audio.filter((r) => r.kind === "track");
+  const groupSolo = (seg, ids) => (ids.length === 1 ? emIsSolo(m, ids[0], seg) : tracksOnly().every((r) => (ids.includes(r.id) ? r.gains[seg] > 0 : r.gains[seg] === 0)));
   const allSolo = () => { const g = soloGroups(); return g.length > 0 && g.every(([seg, ids]) => groupSolo(seg, ids)); };
   function doSolo() {
     const groups = soloGroups();
-    if (!groups.length || m.audio.length < 2) return false;
+    if (!groups.length || tracksOnly().length < 2) return false;
     const undo = groups.every(([seg, ids]) => groupSolo(seg, ids));
     emSnapshot(m);
     for (const [seg, ids] of groups) {
       if (groupSolo(seg, ids) !== undo) continue;
       if (ids.length === 1) { emSolo(m, ids[0], seg); continue; }
-      for (const r of m.audio) {
+      for (const r of tracksOnly()) {
         if (!ids.includes(r.id)) emSetGain(m, r.id, seg, undo ? 1 : 0);
         else if (!undo && r.gains[seg] === 0) emSetGain(m, r.id, seg, 1);
       }
@@ -1316,6 +1472,25 @@ function mountTimeline(host, opts) {  const m = opts.model;
     emSnapshot(m);
     for (const i of segs) emSetBlank(m, i, on);
     changed("blank");
+    return true;
+  }
+  /** The selected pieces on V1 with footage (display indexes; pieces form: one segment per piece), 0.1.41. */
+  function speedPieces() {
+    const L = emPieceList(m);
+    return [...new Set(st.sels.filter((s) => s.row === "video").map((s) => (m.parts ? emPartAt(m, (emSegments(m)[s.seg]?.start ?? -1) + 1e-6) : 0)))]
+      .filter((i) => L[i] && !L[i].gap);
+  }
+  /** Speed per piece (0.1.41): every selected piece plays at `v` (one undo step). Later indexes first is not needed:
+   *  a speed change never splits or merges pieces, so the indexes stay. */
+  function doSpeed(v) {
+    const list = speedPieces();
+    if (!list.length || !Number.isFinite(v)) return false;
+    const base = emState(m);
+    emSnapshot(m);
+    let any = false;
+    for (const i of list) any = emSetPieceSpeed(m, i, v) || any;
+    if (!any) { if (m.undo[m.undo.length - 1] === base && emState(m) === base) m.undo.pop(); return false; }
+    changed("speed");
     return true;
   }
   function doUndo(redo) {
@@ -1578,12 +1753,10 @@ function mountTimeline(host, opts) {  const m = opts.model;
   /** Highlight every selected piece of row `rowId` (bar [a, b] in source time). */
   function selOutline(ctx, C, a, b, y, bh, rowId) {
     if (!st.sels.length) return;
-    const segs = emSegments(m);
-    for (const sel of st.sels) {
-      if (sel.row !== rowId) continue;
-      const s = segs[sel.seg];
-      if (!s) continue;
-      const sp = span(Math.max(a, s.start), Math.min(b, s.end), 4);
+    // 0.1.41: an audio clip is outlined whole (before, only the segment of the video under where it was clicked: for a
+    // song that runs past the video that was a sliver at the end of the last piece, so the click seemed to miss).
+    for (const [lo, hi] of tlSelSpans(st.sels, rowId, isClip(rowId), emSegments(m), a, b)) {
+      const sp = span(lo, hi, 4);
       if (!sp || sp[1] - sp[0] < 1) continue;
       ctx.globalAlpha = 0.12;
       ctx.fillStyle = C["accent-2"];
@@ -1723,7 +1896,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       const a = Math.max(bx0, X(p.at)), b = Math.min(bx1, X(p.at + p.len));
       if (b - a < 2) continue;
       // A project's clip that is missing (0.1.38): its pieces are black and say so.
-      const gone = typeof opts.missingAt === "function" ? opts.missingAt(p.src + p.len / 2) : null;
+      const gone = typeof opts.missingAt === "function" ? opts.missingAt(p.src + p.flen / 2) : null;
       if (gone) {
         ctx.globalAlpha = 0.9;
         ctx.fillStyle = "#000";
@@ -1735,6 +1908,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       }
       label(ctx, C, "film", p.title || opts.title || t("Video"), a, b, y + 5);
       if (m.parts?.[p.i]?.group && b - a > 16) groupMark(ctx, C, a + 5, y + bh - 13); // in a group (0.1.39)
+      if (p.speed !== 1 && b - a > 30) speedMark(ctx, C, tlSpeedText(p.speed), b - 6, y + bh - 7); // its own speed (0.1.41)
       if (b - a < 18) continue;
       ctx.fillStyle = C.text;
       ctx.globalAlpha = 0.75;
@@ -1742,10 +1916,24 @@ function mountTimeline(host, opts) {  const m = opts.model;
       ctx.globalAlpha = 1;
     }
     drawGhost(ctx, C, y, bh);
+    drawZoomKeys(ctx, C);
     drawTail(ctx, C, y, bh);
   }
   /** The source's length (the film strip's frames are spread over it). */
-  const srcLen = () => (Number.isFinite(m.source) ? m.source : hasParts() ? Math.max(1e-6, ...emParts(m).filter((p) => !p.gap).map((p) => p.src + p.len)) : dur()) || 1;
+  const srcLen = () => (Number.isFinite(m.source) ? m.source : hasParts() ? Math.max(1e-6, ...emParts(m).filter((p) => !p.gap).map((p) => p.src + p.len * (p.speed || 1))) : dur()) || 1;
+  /** A piece's speed as a small tag at its bottom right ("2x", 0.1.41), right-aligned at `xr`. */
+  function speedMark(ctx, C, text, xr, yb) {
+    ctx.font = `700 10px ${C.sans}`;
+    const w = ctx.measureText(text).width + 8;
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = C.bg;
+    rr(ctx, xr - w, yb - 12, w, 13, 4);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = C.text;
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, xr - w + 4, yb - 5.5);
+  }
   /** Gaps on the main video row (0.1.36): an empty stretch with a dashed outline (and on the video row "Gap 1.5 s"). */
   function drawGaps(ctx, C, y, bh, labelled) {
     if (!m.parts) return;
@@ -1771,6 +1959,35 @@ function mountTimeline(host, opts) {  const m = opts.model;
         ctx.fillText(tlEllipsize(ctx, t("Gap {sec} s", { sec: tlFmtLen(p.len) }), room), lx, y + bh / 2);
       }
     }
+  }
+  /** The zoom's keyframes (0.1.41, zoom.js: the canvas pieces' keys): small diamonds on V1's top edge; a click goes to
+   *  one, a drag retimes it (kfRetime). */
+  const zoomKeys = () => (m.canvas?.pieces || []).flatMap((p, pi) => (Array.isArray(p.keys) ? p.keys.map((k) => ({ pi, t: k.t })) : []));
+  function drawZoomKeys(ctx, C) {
+    const L = zoomKeys();
+    if (!L.length) return;
+    ctx.save();
+    for (const k of L) {
+      const x = X(k.t);
+      if (x < -6 || x > st.laneW + 6) continue;
+      const on = st.drag?.type === "zkey" && st.drag.pi === k.pi && Math.abs(st.drag.cur - k.t) < 1e-6;
+      ctx.fillStyle = on ? C["accent-2"] || C.accent : C.warn || C.accent;
+      ctx.strokeStyle = C.bg;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, 0.5); ctx.lineTo(x + 4.5, 5); ctx.lineTo(x, 9.5); ctx.lineTo(x - 4.5, 5); ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  /** The zoom key under lane x `x` near the video row's top edge (client y `cy`), or null. */
+  function zoomKeyAt(x, cy) {
+    const r = st.lanes.find((L) => L.id === "video")?.el.getBoundingClientRect();
+    if (!r || cy - r.top > 11) return null;
+    let best = null, dist = 6;
+    for (const k of zoomKeys()) { const d = Math.abs(X(k.t) - x); if (d <= dist) { dist = d; best = k; } }
+    return best;
   }
   /** Where a clip being dragged would land (0.1.36): its outline, at the pointer (free) or beside a clip (a marker). */
   function drawGhost(ctx, C, y, bh) {
@@ -1962,10 +2179,13 @@ function mountTimeline(host, opts) {  const m = opts.model;
     ctx.fillStyle = tint;
     ctx.fillRect(bx0, y, bx1 - bx0, bh);
     ctx.globalAlpha = 1;
-    const segs = emSegments(m);
+    // An audio clip (0.1.41) is one piece of its own: V1's cuts do not show through it, and its level is its own (one
+    // badge for the whole clip). A track row is the pieces' own sound: one segment per piece.
+    const segs = file ? [{ i: 0, start: a, end: b, removed: false }] : emSegments(m);
+    const levelAt = (i) => (file ? (row.muted ? 0 : row.volume) : row.gains[i]);
     // Silent segments: greyed.
     for (const s of segs) {
-      if (row.gains[s.i] !== 0) continue;
+      if (file || row.gains[s.i] !== 0) continue; // a muted clip is dimmed as a whole (tint)
       const ss = span(Math.max(a, s.start), Math.min(b, s.end));
       if (!ss || ss[1] <= ss[0]) continue;
       ctx.globalAlpha = 0.75;
@@ -1986,14 +2206,14 @@ function mountTimeline(host, opts) {  const m = opts.model;
         // A bar across a joint (cut parts hidden) must not take the peaks of the part cut out in between.
         const s1 = Math.min(timeAtX(x + tlBarStep), s0 + tlBarStep / st.pps), sc = (s0 + s1) / 2;
         if (sc < a || sc >= b) continue;
-        while (si < segs.length - 1 && sc >= segs[si].end) si++;
+        while (!file && si < segs.length - 1 && sc >= segs[si].end) si++;
         // A Game row is drawn quiet where Desktop is heard: the result uses one or the other, never both.
-        const g = muted || (typeof emGameHidden === "function" && emGameHidden(m, row, si)) ? 0 : (row.gains[si] ?? 1) * row.volume * laneVol;
+        const g = muted || (!file && typeof emGameHidden === "function" && emGameHidden(m, row, si)) ? 0 : (file ? 1 : row.gains[si] ?? 1) * row.volume * laneVol;
         // A file's peaks follow the timeline; a track's follow the source (with parts: the part under the bar).
         const base = file ? row.trimStart - row.offset : 0, mapped = !file && hasParts();
         // A file that plays through cuts: the place in the file under the bar (it pauses under a cut-out part).
         const thru = file && row.through;
-        const w0 = thru ? emRowFileAt(m, row, s0) - base : mapped ? srcAt(s0) : s0, w1 = thru ? emRowFileAt(m, row, s1) - base : mapped ? w0 + (s1 - s0) : s1;
+        const w0 = thru ? emRowFileAt(m, row, s0) - base : mapped ? srcAt(s0) : s0, w1 = thru ? emRowFileAt(m, row, s1) - base : mapped ? w0 + (s1 - s0) * pieceSpeedAt(s0) : s1; // a sped piece's sound is squeezed (0.1.41)
         const p = tlPeakMax(wave.peaks, (w0 + base) * wave.ps, (w1 + base) * wave.ps);
         const hh = Math.max(1, Math.min(1, p * g * tlWaveGain) * half);
         (g > 0 ? loud : quiet).roundRect(x + 0.5, mid - hh, tlBarW, hh * 2, 1);
@@ -2009,8 +2229,17 @@ function mountTimeline(host, opts) {  const m = opts.model;
       ctx.fillStyle = tint;
       ctx.fillRect(from, Math.round(mid), to - from, 1);
       ctx.globalAlpha = 1;
+      // Its sound is still on its way (0.1.41, a project's clips load in the background): said quietly.
+      if (!file && opts.soundLoading?.()) {
+        ctx.font = `600 10.5px ${C.sans}`;
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = C.muted;
+        ctx.globalAlpha = 0.8;
+        ctx.fillText(t("Loading sound…"), Math.max(from, 0) + 10, mid - 9);
+        ctx.globalAlpha = 1;
+      }
     }
-    overlays(ctx, C, a, b, y, bh, row.id);
+    if (!file) overlays(ctx, C, a, b, y, bh, row.id); // V1's cut and piece borders: not through an audio clip (0.1.41)
     ctx.restore();
     ctx.lineWidth = 1;
     ctx.strokeStyle = C["line-2"];
@@ -2029,7 +2258,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     ctx.font = `600 10.5px ${C.mono}`;
     ctx.textBaseline = "middle";
     for (const s of segs) {
-      const g = row.gains[s.i];
+      const g = levelAt(s.i);
       if (Math.abs(g - 1) < 0.005 || s.removed) continue;
       const ss = span(Math.max(a, s.start), Math.min(b, s.end), 0);
       if (!ss) continue;
@@ -2323,9 +2552,10 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (st.tool === "blade" && lane && !cut && !trim && bmAt === undefined) {
       e.preventDefault();
       const sec = e.altKey ? at : snapAt(at, [st.shownT, ...shownMarks()]).at;
-      if (lane.dataset.tlLane === "video") { if (!doSplit(sec)) showTip(sec, t("Cannot split here")); }
+      // 0.1.41: the blade cuts what it clicks (and that thing's group), nothing else.
+      if (lane.dataset.tlLane === "video") { if (!doSplit(sec, { video: true })) showTip(sec, t("Cannot split here")); }
       else if (lane.dataset.tlKind === "ov") { const hit = ovAtX(+lane.dataset.tlLane.slice(2), x); if (hit) doOvSplit(hit.o.id, sec); }
-      else { const c = clipAtX(lane.dataset.tlLane, x); if (c) doSplitClips([c.row.id], sec); } // an audio clip (0.1.39)
+      else { const c = clipAtX(lane.dataset.tlLane, x); if (c) { if (!doSplit(sec, { clip: c.row.id })) showTip(sec, t("Cannot split here")); } else if (emRow(m, lane.dataset.tlLane)?.kind === "track" && !doSplit(sec, { video: true })) showTip(sec, t("Cannot split here")); } // an audio clip (0.1.39); a track row: its piece
       return;
     }
     if (cut) Object.assign(d, { type: "cut", c: +cut.dataset.tlCut });
@@ -2366,6 +2596,16 @@ function mountTimeline(host, opts) {  const m = opts.model;
     } else if (lane) {
       const id = lane.dataset.tlLane, ch = id === "video" ? null : clipAtX(id, x), row = ch?.row || null, hit = ch?.hit || null;
       const sel = pieceAtX(id, x);
+      // 0.1.41: a press on something that is selected with other things: they all move together (a temporary group;
+      // tmpDone ends it on release).
+      // (Only a press on a body: an end grip trims, a keyframe diamond retimes, a gap's edge resizes, as before.)
+      const body = id === "video" && sel && !zoomKeyAt(x, e.clientY) && !pieceEndHit(x) && gapHitRight(x) < 0;
+      const pressedSel = hit === "move" ? st.sels.some((s) => s.row === row.id) : body ? tlSelHas(st.sels, sel) && !segGap(sel.seg) : false;
+      if (pressedSel && st.sels.length > 1 && !d.ctrl && !d.shift) {
+        const pre = emState(m), n0 = m.undo.length, tid = tmpGroupOn(st.sels);
+        if (tid) d.tmp = { id: tid, pre, preTemp: emState(m), n0 };
+        else if (emState(m) !== pre) emRestore(m, pre);
+      }
       // On an audio row, a press on a clip moves it (also onto another row: 0.1.39) or trims it; anywhere else it is a
       // click, or a rubber band once it moves.
       if (hit) Object.assign(d, { type: hit, rowId: row.id, lane0: row.lane, row0: { offset: row.offset, trimStart: row.trimStart, length: row.length }, grab: at, sel: clipSel(row), base: emState(m), marks0: (m.marks || []).slice() });
@@ -2373,10 +2613,12 @@ function mountTimeline(host, opts) {  const m = opts.model;
       // The video row (0.1.36): a press on a clip drags it once it moves (free placement, or beside another clip);
       // one on a gap's right edge makes the gap longer or shorter.
       // 0.1.37: a press on either end of a piece trims it, or pulls cut-away footage back out (emTrimPiece).
-      const pe = id === "video" ? pieceEndHit(x) : null;
-      if (pe) {
+      const zk = id === "video" ? zoomKeyAt(x, e.clientY) : null; // 0.1.41: a zoom keyframe on the top edge
+      const pe = id === "video" && !zk ? pieceEndHit(x) : null;
+      if (zk) Object.assign(d, { type: "zkey", pi: zk.pi, t0: zk.t, cur: zk.t, sel: undefined });
+      else if (pe) {
         const p = emPieceList(m)[pe.i];
-        Object.assign(d, { type: "piece-end", sel, i: pe.i, side: pe.side, base: emState(m), marks0: (m.marks || []).slice(), at0: p.at, src0: p.src, len0: p.len, lo: p.lo, hi: p.hi });
+        Object.assign(d, { type: "piece-end", sel, i: pe.i, side: pe.side, base: emState(m), marks0: (m.marks || []).slice(), at0: p.at, src0: p.src, len0: p.len, lo: p.lo, hi: p.hi, speed: p.speed });
       } else if (id === "video" && sel) {
         const gi = gapHitRight(x);
         if (gi >= 0) Object.assign(d, { type: "gap-edge", gap: gi, base: emState(m), at0: emParts(m)[gi].at, len0: emParts(m)[gi].len });
@@ -2398,7 +2640,29 @@ function mountTimeline(host, opts) {  const m = opts.model;
   }
   // The mouse-up never arrives when the window loses the mouse mid-drag (Alt+Tab, a
   // screenshot tool): end the drag instead of leaving it, and its rubber band, hanging.
-  function onLost() { if (st.drag) endDrag(); }
+  /** The window lost the mouse mid-drag (R1 #10: it left a half-applied live preview and an undo step behind). A drag
+   *  that only began is dropped; one with a live preview from a saved state is called off (back to it, no undo step);
+   *  any other is finished as if released where it last was. */
+  function onLost() {
+    const d = st.drag;
+    if (!d) return;
+    try { onLost0(d); } finally { tmpDone(d); }
+  }
+  function onLost0(d) {
+    if (!d.moved) return endDrag();
+    if (d.snapped && typeof d.base === "string") {
+      emRestore(m, d.base);
+      if (m.marks && d.marks0) m.marks = d.marks0.slice();
+      if (m.undo[m.undo.length - 1] === d.base) m.undo.pop();
+      for (const x of st.lanes) x.el.classList.remove("tl-drop-to");
+      el.rows.classList.remove("tl-drop-new");
+      el.pdrop.hidden = true;
+      endDrag();
+      relaid("cancel");
+      return;
+    }
+    onUp(d.lastE || { clientX: d.x0, clientY: d.y0, target: host });
+  }
   function onMove(e) {
     const d = st.drag;
     if (!d) return;
@@ -2476,6 +2740,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
           const s1 = snapAt(from, cands), s2 = snapAt(from + c.len, cands);
           if (s1.hit || s2.hit) from = Math.max(0, s1.dist <= s2.dist ? s1.at : s2.at - c.len);
         }
+        from = groupFrom(c.i, c.grp, from); // moved left it stops at the clip before it (R1 #3)
         d.ghost = { mode: "free", from, to: from + c.len };
         showTip(from);
         if (c.grp && Math.abs(from - c.at0) > 1e-6) {
@@ -2487,6 +2752,17 @@ function mountTimeline(host, opts) {  const m = opts.model;
         }
       }
       st.dirty.add("video");
+      return;
+    }
+    if (d.type === "zkey") {
+      // A zoom keyframe dragged along (0.1.41): kfRetime keeps it between its neighbours. One undo step.
+      const p = m.canvas?.pieces?.[d.pi];
+      if (!p || !Array.isArray(p.keys) || typeof kfRetime !== "function") return;
+      if (!d.snapped) { emSnapshot(m); d.snapped = true; }
+      const to = free ? raw : snapAt(raw, [st.shownT, ...shownMarks(), ...m.cuts]).at;
+      d.cur = kfRetime(p.keys, d.cur, Math.max(0, to), Math.max(dur(), endT()));
+      showTip(d.cur);
+      changed("canvas", false);
       return;
     }
     if (d.type === "piece-end") {
@@ -2501,8 +2777,18 @@ function mountTimeline(host, opts) {  const m = opts.model;
       const r = emTrimPiece(m, d.i, d.side, want);
       if (!r) return;
       // Its group (0.1.39): the same end of every audio clip in it that lay at the same time goes along.
-      if (part0?.group) for (const x of m.audio) if (x.kind === "file" && x.group === part0.group && Math.abs((d.side === "end" ? x.offset + x.length : x.offset) - edge0) < 1e-3) emTrimClip(m, x.id, d.side, d.side === "end" ? r.at + r.len : r.at);
-      const limit = d.side === "end" ? r.src + r.len >= d.hi - 1e-6 && want > r.at + r.len + 0.02 : r.src <= d.lo + 1e-6 && want < d.at0 - (d.src0 - d.lo) - 0.02;
+      // The start (R1 #4): the clip gains (or loses) as much footage as the piece did and starts where it starts now;
+      // pulled out without room before it the piece grows in place, and its sound must too (not stay where it was).
+      if (part0?.group) for (const x of m.audio) if (x.kind === "file" && x.group === part0.group && Math.abs((d.side === "end" ? x.offset + x.length : x.offset) - edge0) < 1e-3) {
+        if (d.side === "end") { emTrimClip(m, x.id, "end", r.at + r.len); continue; }
+        const gained = d.src0 - r.src, lo = Number.isFinite(x.fileLo) ? x.fileLo : 0;
+        const ts = Math.max(lo, x.trimStart - gained);
+        x.length = Math.max(EM_MIN_SEG, x.length + (x.trimStart - ts));
+        x.trimStart = ts;
+        x.offset = r.at;
+      }
+      const sp = d.speed || 1; // a piece with its own speed (0.1.41): footage = timeline x speed
+      const limit = d.side === "end" ? r.src + r.len * sp >= d.hi - 1e-6 && want > r.at + r.len + 0.02 : r.src <= d.lo + 1e-6 && want < d.at0 - (d.src0 - d.lo) / sp - 0.02;
       host.classList.toggle("tl-limit", limit);
       const edgeT = d.side === "end" ? r.at + r.len : r.at;
       showTip(edgeT, limit ? t("No more footage") : `${tlFmtPrecise(toV(edgeT))} · ${tlFmtLen(r.len)} s`);
@@ -2677,11 +2963,16 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (st.scrollX !== before || el.body.scrollTop !== beforeY) apply(d, e);
   }
   function onUp(e) {
+    const d0 = st.drag;
+    try { onUp0(e); } finally { tmpDone(d0); } // a selection moved together: its groups back (0.1.41)
+  }
+  function onUp0(e) {
     const d = st.drag;
     endDrag();
     if (!d) return;
     if (d.type === "seek" && d.at !== undefined) st.hold = { at: d.at, until: performance.now() + 500 };
     if (d.type === "part") { if (d.moved) doMovePart(d.from, d.to); else partClick(d.from); }
+    if (d.type === "zkey") { if (!d.moved) seekExact(d.t0); else if (d.snapped && m.undo[m.undo.length - 1] === emState(m)) m.undo.pop(); }
     if (d.type === "clip" && d.snapped && d.base) { emRestore(m, d.base); if (m.marks) m.marks = d.marks0.slice(); m.undo.pop(); changed("order"); } // the live preview goes; the drop below is the one undo step
     if (d.type === "clip" && d.ghost) { if (d.ghost.mode === "up") doPieceUp(d.clip.i, d.ghost.from); else doPlaceClip(d.clip, d.ghost); }
     if ((d.type === "move" || d.type === "left" || d.type === "right") && d.snapped && d.rowId) {
@@ -2802,7 +3093,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       const x = e.clientX - el.lanes.getBoundingClientRect().left, p = pieceAtX("video", x), pe = pieceEndHit(x);
       cur = pe || gapHitRight(x) >= 0 ? "resize" : p && !segGap(p.seg) ? "grab" : "";
       // A piece's end (0.1.37): trim it, or pull back the footage that was cut away, while the source has any.
-      const q = pe ? emPieceList(m)[pe.i] : null, none = q && (pe.side === "start" ? q.src <= q.lo + 1e-6 : q.src + q.len >= q.hi - 1e-6);
+      const q = pe ? emPieceList(m)[pe.i] : null, none = q && (pe.side === "start" ? q.src <= q.lo + 1e-6 : q.src + q.flen >= q.hi - 1e-6);
       tip = pe ? `${pe.side === "start" ? t("Drag to trim the start, or out to bring back what was cut") : t("Drag to trim the end, or out to bring back what was cut")}${none ? "\n" + t("No more footage on this side") : ""}`
         : gapHitRight(x) >= 0 ? t("Drag to make the gap longer or shorter") : p && segGap(p.seg) ? t("A gap: black and silent. Click it, then Delete closes it.") : p ? t("Drag to move the clip. Over another clip it goes before or after it; anywhere else it sits where you drop it.") : "";
     } else if (lane && lane.dataset.tlKind === "parts") cur = "grab";
@@ -2947,7 +3238,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (!c.trim && trimWould("end", c.splitAt)) top.push(item("trim-end", tlPaths.trimEnd, t("Trim the end to here"), { arg: c.splitAt }));
     const aud = selAudio();
     if (aud.length) {
-      const ref = refAudio(), g = ref.r.gains[ref.seg], many = aud.length > 1;
+      const ref = refAudio(), g = levelOf(ref), many = aud.length > 1;
       const label = g === 0 ? (many ? t("Unmute these pieces") : t("Unmute this piece")) : many ? t("Mute these pieces") : t("Mute this piece");
       top.push(item("mute", g === 0 ? tlPaths.vol : tlPaths.muted, label));
       const chips = [0.25, 0.5, 1, 1.5, 2].map((v) => {
@@ -2962,10 +3253,18 @@ function mountTimeline(host, opts) {  const m = opts.model;
       top.push(item("blank", hidden ? tlPaths.eye : tlPaths.eyeOff, hidden ? t("Show the video here") : t("Hide the video here")));
     }
     if (c.video && typeof cvApi()?.crop === "function") top.push(item("cv-crop", tlPaths.crop, t("Crop to a part of the picture")));
+    // Speed of the selected pieces (0.1.41): the same choices as the inspector.
+    const spl = speedPieces();
+    if (spl.length) {
+      const cur = emPieceSpeed(m, spl[0]);
+      const chips = TL_SPEEDS.map((v) => {
+        const on = Math.abs(cur - v) < 0.005;
+        return `<button type="button" role="menuitemradio" aria-checked="${on}" data-tl-m="speed" data-tl-arg="${v}" class="${on ? "on" : ""}">${esc(tlSpeedText(v))}</button>`;
+      }).join("");
+      top.push(`<div class="tl-mlevel" role="group" aria-label="${esc(t("Speed"))}">${tlSvg(tlPaths.level)}<span>${esc(t("Speed"))}</span><div class="tl-mchips">${chips}</div></div>`);
+    }
     out.push(...top);
     if (top.length) out.push("<hr>");
-+
-
     out.push(item("names", tlPaths.names, t("Names on the audio"), { on: st.names }));
     out.push(item("select-all", tlPaths.selAll, t("Select all pieces")), item("fit", tlPaths.fit, t("Fit the whole clip")));
     if (typeof opts.onCommand === "function") out.push("<hr>", item("shortcuts", tlPaths.keys, t("Shortcuts…")), item("fullscreen", tlPaths.full, t("Fullscreen")));
@@ -3044,6 +3343,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       case "level": return doLevel(+arg);
       case "solo": return doSolo();
       case "blank": return doBlank();
+      case "speed": return doSpeed(+arg);
       case "cv-crop": try { cvApi()?.crop?.(); } catch (e) { console.error("Glint timeline: cv.crop failed", e); } return true;
       case "hide-cuts": return setHideCuts(!st.hideCuts);
       case "names": return setNames(!st.names);
@@ -3271,6 +3571,11 @@ function mountTimeline(host, opts) {  const m = opts.model;
       if (next !== st.ovSel) { st.ovSel = next; markAll(); }
     },
     overlaySelected: () => st.ovSel,
+    /** Speed per piece (0.1.41): the selected pieces on V1 ({ n, speed } of the first; n 0 = none), and set theirs. */
+    pieceSpeed() { const L = st.dead ? [] : speedPieces(); return { n: L.length, speed: L.length ? emPieceSpeed(m, L[0]) : 1 }; },
+    setPieceSpeed(v) { return !st.dead && doSpeed(+v); },
+    /** Move the selection by `dt` seconds, together (Alt+Left / Alt+Right, 0.1.41). */
+    nudgeSel(dt) { return !st.dead && !st.drag && nudgeSel(+dt); },
     /** The pointer's tool: "select" or "blade" (0.1.36). */
     tool: () => st.tool,
     setTool(name) { if (!st.dead) setTool(name); },
@@ -3352,5 +3657,5 @@ function mountTimeline(host, opts) {  const m = opts.model;
 
 // Lets the pure helpers be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { tlRowScale, tlRowKParse, tlPickStep, tlFmtTick, tlFmtPrecise, tlSnap, tlSnapV, tlFileHit, tlSpanHit, tlTrimLeft, tlPeakMax, tlHue, tlViewMap, tlSrcToView, tlViewToSrc, tlJoints, tlSelKey, tlSelHas, tlSelMerge, tlSelToggle, tlSelRect, tlBandHits, tlSelShift, tlFmtLen, tlPartSlot, tlOvRows, tlViewSpan, tlSlipStep, tlDropAt };
+  module.exports = { tlRowScale, tlRowKParse, tlPickStep, tlFmtTick, tlFmtPrecise, tlSnap, tlSnapV, tlFileHit, tlSpanHit, tlTrimLeft, tlPeakMax, tlHue, tlViewMap, tlSrcToView, tlViewToSrc, tlJoints, tlSelKey, tlSelHas, tlSelMerge, tlSelToggle, tlSelRect, tlBandHits, tlSelShift, tlFmtLen, tlPartSlot, tlOvRows, tlViewSpan, tlSlipStep, tlDropAt, tlSelSpans };
 }

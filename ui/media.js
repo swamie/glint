@@ -220,9 +220,38 @@ const medWantsMask = (o) => (+o.round || 0) > 0.005 || (+o.soft || 0) > 0.005;
 
 /* ---------- the preview's sources (browser only) ---------- */
 
-const medStills = new Map(); // path -> { img, ready, failed }
-const medGifs = new Map();   // path -> { frames: [{ bmp, at, dur }], total, ready, failed, img }
+const medStills = new Map(); // path -> { img, ready, failed, failedAt }
+const medGifs = new Map();   // path -> { frames: [{ bmp, at, dur }], total, ready, failed, failedAt, img }
 const medMasks = new Map();  // "aspect|round|soft" -> data URL
+/* R2 #12 (0.1.41): decoded GIF frames were kept for the life of the app and a picture that failed once never loaded
+ * again. Now: at most MED_GIF_KEEP GIFs stay decoded (the oldest is freed first), everything is freed when the
+ * editor's player goes (medVideoSet().destroy -> medRelease), and a failed load is tried again after MED_RETRY_MS. */
+const MED_GIF_KEEP = 24;
+const MED_RETRY_MS = 3000;
+/** Close a decoded GIF's frames. */
+function medFreeGif(g) {
+  for (const f of g?.frames || []) { try { f.bmp?.close?.(); } catch { /* gone */ } }
+  if (g) { g.frames = []; g.freed = true; }
+}
+/** Free every decoded GIF and forget pictures that failed (the editor closed; what the next one shows loads again). */
+function medRelease() {
+  for (const g of medGifs.values()) medFreeGif(g);
+  medGifs.clear();
+  for (const [p, s] of medStills) if (s.failed) medStills.delete(p);
+}
+/** Keep at most `keep` decoded GIFs: the oldest go first (Map order: oldest added first). Returns how many went. */
+function medTrimGifs(keep = MED_GIF_KEEP) {
+  let n = 0;
+  for (const [p, g] of medGifs) {
+    if (medGifs.size <= keep) break;
+    medFreeGif(g);
+    medGifs.delete(p);
+    n++;
+  }
+  return n;
+}
+/** True if a cached load that failed may be tried again now. */
+const medRetryDue = (x, now = Date.now()) => !!(x && x.failed && now - (x.failedAt || 0) >= MED_RETRY_MS);
 
 /** A blur box mask as a data URL (CSS mask-image, stretched over the box), cached by its shape. */
 function medMaskUrl(wPx, hPx, round, soft) {
@@ -252,12 +281,13 @@ const medSrcUrl = (p) => (typeof fileSrc === "function" ? fileSrc(p) : p);
 function medLoad(o, onReady) {
   if (o.kind === "image") {
     let s = medStills.get(o.path);
+    if (medRetryDue(s)) { medStills.delete(o.path); s = null; } // R2 #12: a failed picture is tried again
     if (!s) {
       s = { img: new Image(), ready: false, failed: false, waiting: [] };
       medStills.set(o.path, s);
       s.img.decoding = "async";
       s.img.onload = () => { s.ready = true; for (const f of s.waiting.splice(0)) f(); };
-      s.img.onerror = () => { s.failed = true; s.waiting.length = 0; };
+      s.img.onerror = () => { s.failed = true; s.failedAt = Date.now(); s.waiting.length = 0; };
       s.img.src = medSrcUrl(o.path);
     }
     if (!s.ready && !s.failed && onReady && !s.waiting.includes(onReady)) s.waiting.push(onReady);
@@ -265,11 +295,16 @@ function medLoad(o, onReady) {
   }
   if (o.kind === "gif") {
     let g = medGifs.get(o.path);
+    if (medRetryDue(g)) { medGifs.delete(o.path); g = null; } // R2 #12: a GIF that failed is tried again
     if (!g) {
       g = { frames: [], total: 0, ready: false, failed: false, waiting: [], img: null };
       medGifs.set(o.path, g);
-      medDecodeGif(o.path, g).then(() => { g.ready = true; for (const f of g.waiting.splice(0)) f(); })
-        .catch((e) => { console.warn("Glint: the GIF could not be decoded", o.path, e); g.failed = true; for (const f of g.waiting.splice(0)) f(); });
+      medTrimGifs(); // R2 #12: the oldest decoded GIFs beyond MED_GIF_KEEP are freed
+      medDecodeGif(o.path, g).then(() => {
+        if (g.freed) { medFreeGif(g); return; } // freed while it decoded (the editor closed): drop what came in
+        g.ready = true; for (const f of g.waiting.splice(0)) f();
+      })
+        .catch((e) => { console.warn("Glint: the GIF could not be decoded", o.path, e); g.failed = true; g.failedAt = Date.now(); for (const f of g.waiting.splice(0)) f(); });
     }
     if (!g.ready && !g.failed && onReady && !g.waiting.includes(onReady)) g.waiting.push(onReady);
     return g;
@@ -369,7 +404,8 @@ function medVideoSet(onFrame) {
     state: () => [...els].map(([id, e]) => ({ id, at: e.el.currentTime, want: e.want, muted: e.el.muted, paused: e.el.paused })),
     /** Frees elements of items that are gone. */
     prune(ids) { for (const [id, e] of els) if (!ids.has(id)) { kill(e); els.delete(id); } },
-    destroy() { for (const e of els.values()) kill(e); els.clear(); },
+    // R2 #12: the player is gone: its decoded GIFs and failed pictures go too (medRelease).
+    destroy() { for (const e of els.values()) kill(e); els.clear(); medRelease(); },
   };
 }
 

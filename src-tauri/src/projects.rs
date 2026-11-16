@@ -41,16 +41,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// Most library clips in one project.
-pub const MAX_CLIPS: usize = join::MAX_CLIPS;
+// 0.1.41: a project references its clips, so the old joining limits (20 clips, 30 minutes: join.rs) no longer apply to it.
+pub const MAX_CLIPS: usize = 500;
 /// Most seconds of video in one project.
-pub const MAX_TOTAL_SECS: f64 = join::MAX_TOTAL_SECS;
+pub const MAX_TOTAL_SECS: f64 = 4.0 * 3600.0;
 /// The name of a project made without one.
 pub const DEFAULT_NAME: &str = "New project";
 
 pub const NOT_FOUND: &str = "Project not found";
 pub const NOTHING: &str = "Pick at least one clip to add";
-pub const TOO_MANY: &str = "A project takes at most 20 clips";
-pub const TOO_LONG: &str = "A project takes at most 30 minutes of clips";
+pub const TOO_MANY: &str = "A project takes at most 500 clips";
+pub const TOO_LONG: &str = "A project takes at most 4 hours of clips";
 pub const NO_NAME: &str = "Type a name for the project";
 
 pub const EMPTY: &str = "This project has no clips yet";
@@ -91,6 +92,26 @@ struct Stored {
     /// project made by 0.1.37 or earlier: that one keeps its draft and old ways.
     #[serde(rename = "virtual")]
     virt: bool,
+    /// 0.1.41 (CONTRACT_0141F, F1): a project made before 0.1.38 that got clips since: its draft working file,
+    /// as it was, is its first source (`base`), and `clips[..base_clips]` are the clips inside it. Never rewritten.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base: Option<Base>,
+    base_clips: usize,
+}
+
+/// The draft of an old project as its first source (F1): what it was when the project became one of references.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+struct Base {
+    duration: f64,
+    /// Where each clip inside it after the first starts, and every clip's title (`joins.len() + 1`), as the draft had them.
+    joins: Vec<f64>,
+    names: Vec<String>,
+    width: u32,
+    height: u32,
+    fps: u32,
+    audio_tracks: u32,
+    size: u64,
 }
 
 /// A project as the UI gets it.
@@ -131,17 +152,58 @@ fn file() -> PathBuf {
     util::data_dir().join("projects.json")
 }
 
+/// projects.json exists but could not be read or understood (a sharing violation that outlasted the retries,
+/// a file from a newer version): nothing is saved over it until Glint starts again (0.1.41, R3-9: an empty
+/// list read that way was saved back, wiping every project).
+static UNREADABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn load() -> Vec<Stored> {
-    fs::read_to_string(file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    let path = file();
+    if !path.exists() {
+        return Vec::new();
+    }
+    let mut why = String::new();
+    for attempt in 0..4 {
+        match fs::read_to_string(&path) {
+            Ok(t) => match serde_json::from_str::<Vec<Stored>>(&t) {
+                Ok(v) => return v,
+                Err(e) => {
+                    why = format!("not understood ({e})");
+                    break; // the same text again would fail the same way
+                }
+            },
+            Err(e) => why = format!("not readable ({e})"),
+        }
+        if attempt < 3 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+    }
+    if !UNREADABLE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        util::log(&format!("projects: {} is {why}; it is left as it is and nothing is saved over it", path.display()));
+    }
+    Vec::new()
 }
 
 fn save(list: &[Stored]) {
+    if UNREADABLE.load(std::sync::atomic::Ordering::SeqCst) {
+        util::log("projects: not saved (projects.json could not be read; it is kept as it was)");
+        return;
+    }
     if let Ok(t) = serde_json::to_string(list) {
         let tmp = file().with_extension("json.tmp");
+        // The last good file stays as projects.json.bak.
+        if file().is_file() {
+            let _ = fs::copy(file(), file().with_extension("json.bak"));
+        }
         if fs::write(&tmp, t).is_ok() && fs::rename(&tmp, file()).is_err() {
             let _ = fs::remove_file(&tmp);
         }
     }
+}
+
+/// Tests: forget that projects.json was unreadable.
+pub fn test_reset_unreadable() {
+    UNREADABLE.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Change project `id` in the store. None when there is no such project.
@@ -248,21 +310,55 @@ fn span(c: &ProjectClip) -> f64 {
     c.duration.max(0.0)
 }
 
+/// Project time of a virtual project: its draft source (F1), then every later clip's span.
+fn proj_len(p: &Stored) -> f64 {
+    match &p.base {
+        Some(b) => b.duration.max(0.0) + p.clips[p.base_clips.min(p.clips.len())..].iter().map(span).sum::<f64>(),
+        None => p.clips.iter().map(span).sum(),
+    }
+}
+
 /// A virtual project as the clip the editor opens (CONTRACT_0138, "What the editor
 /// opens"): its clips end to end in the order added, each a source with its start
 /// in project time. A clip the library no longer has, or whose file is gone, is
 /// `missing` (shown from what the project kept of it). None while it has no clips.
 fn virtual_clip(lib: &Library, p: &Stored) -> Option<Value> {
-    if p.clips.is_empty() {
+    if p.clips.is_empty() && p.base.is_none() {
         return None;
     }
-    let mut sources: Vec<Value> = Vec::with_capacity(p.clips.len());
+    let mut sources: Vec<Value> = Vec::with_capacity(p.clips.len() + 1);
     let mut joins: Vec<f64> = Vec::with_capacity(p.clips.len());
     let mut names: Vec<String> = Vec::with_capacity(p.clips.len());
     let (mut at, mut size) = (0.0_f64, 0_u64);
     let mut first: Option<(u32, u32, u32, u32, String)> = None;
     let mut thumb = String::new();
-    for pc in &p.clips {
+    // F1 (0.1.41): an old project's draft file is source 0, as it is: its own clips inside it are `inner`
+    // ({ at, title }: seconds in that file), and every border of them is in `joins` / `join_names`, so
+    // project time for all that was there is the draft's own time and the saved edit fits unchanged.
+    if let Some(b) = &p.base {
+        let d = lib.get(&p.id).filter(|c| c.draft);
+        let live = d.as_ref().filter(|c| Path::new(&c.path).is_file());
+        let name = |i: usize| b.names.get(i).filter(|n| !n.trim().is_empty()).cloned().unwrap_or_else(|| format!("Clip {}", i + 1));
+        let mut inner = vec![json!({ "at": 0.0, "title": name(0) })];
+        joins.push(0.0);
+        names.push(name(0));
+        for (i, &j) in b.joins.iter().enumerate() {
+            inner.push(json!({ "at": j, "title": name(i + 1) }));
+            joins.push(j);
+            names.push(name(i + 1));
+        }
+        let game = d.as_ref().map(|c| c.game.clone()).unwrap_or_default();
+        first = Some((b.width, b.height, b.fps, b.audio_tracks, game));
+        thumb = live.map(|c| c.thumb.clone()).unwrap_or_default();
+        size += b.size;
+        sources.push(json!({
+            "clip": p.id, "path": live.map(|c| c.path.clone()).unwrap_or_default(), "title": p.name, "duration": b.duration, "start": 0.0,
+            "width": b.width, "height": b.height, "fps": b.fps, "audio_tracks": b.audio_tracks, "thumb": thumb, "missing": live.is_none(),
+            "draft": true, "inner": inner,
+        }));
+        at = b.duration;
+    }
+    for pc in &p.clips[p.base_clips.min(p.clips.len())..] {
         let live = lib.get(&pc.id).filter(|c| !c.draft && Path::new(&c.path).is_file());
         let (path, title, w, h, fps, tracks, th, game, sz) = match &live {
             Some(c) => (c.path.clone(), c.title.clone(), c.width, c.height, c.fps, c.audio_tracks, c.thumb.clone(), c.game.clone(), c.size),
@@ -341,7 +437,7 @@ fn clean_name(name: &str) -> String {
 fn make(name: &str, virt: bool) -> Stored {
     let name = clean_name(name);
     let now = util::unix_ms();
-    let p = Stored { id: util::new_id(), name: if name.is_empty() { DEFAULT_NAME.into() } else { name }, created: now, modified: now, clips: Vec::new(), exported: false, virt };
+    let p = Stored { id: util::new_id(), name: if name.is_empty() { DEFAULT_NAME.into() } else { name }, created: now, modified: now, clips: Vec::new(), exported: false, virt, base: None, base_clips: 0 };
     let _g = LOCK.lock().unwrap();
     let mut list = load();
     list.push(p.clone());
@@ -499,7 +595,30 @@ pub fn add(core: &Arc<Core>, id: &str, ids: Vec<String>) -> Result<Added, String
     if proj.virt || empty_old {
         return add_now(core, id, ids).map(Added::Now);
     }
+    // F1 (0.1.41): an old project with its draft becomes one of references at its first add: no job, no join.
+    if let (Some(d), true) = (draft_of(core, id), pending_of(core, id).is_empty()) {
+        // The refusals first, so a refused add leaves it as it was.
+        pick(core, &ids, proj.clips.len(), d.duration.max(0.0))?;
+        to_references(id, &d);
+        return add_now(core, id, ids).map(Added::Now);
+    }
     add_clips(core, id, ids).map(Added::Job)
+}
+
+/// F1: project `id` (made before 0.1.38) keeps its draft `d` as its first source, exactly as it is, and is a
+/// project of references from now on. Its clips so far are the ones inside the draft.
+fn to_references(id: &str, d: &ClipMeta) {
+    let names: Vec<String> = (0..=d.joins.len()).map(|i| d.join_names.get(i).cloned().unwrap_or_default()).collect();
+    let base = Base { duration: d.duration.max(0.0), joins: d.joins.clone(), names, width: d.width, height: d.height, fps: d.fps, audio_tracks: d.audio_tracks, size: d.size };
+    edit(id, |p| {
+        if p.virt {
+            return;
+        }
+        p.base_clips = p.clips.len();
+        p.base = Some(base);
+        p.virt = true;
+    });
+    util::log(&format!("projects: {id} made before 0.1.38 now references its clips; its draft ({:.1} s, {} parts) is its first source", d.duration, d.joins.len() + 1));
 }
 
 /// Append library clips `ids` to project `pid` as references: no job, no file.
@@ -507,7 +626,7 @@ pub fn add(core: &Arc<Core>, id: &str, ids: Vec<String>) -> Result<Added, String
 /// again (it is then two sources).
 fn add_now(core: &Core, pid: &str, ids: Vec<String>) -> Result<Value, String> {
     let proj = stored(pid).ok_or(NOT_FOUND)?;
-    let clips = pick(core, &ids, proj.clips.len(), proj.clips.iter().map(span).sum())?;
+    let clips = pick(core, &ids, proj.clips.len(), proj_len(&proj))?;
     let added: Vec<ProjectClip> = clips.iter().map(pclip).collect();
     let titles: Vec<String> = added.iter().map(|c| c.title.clone()).collect();
     // Checked again under the store's lock, against the list as it is now.
@@ -515,7 +634,7 @@ fn add_now(core: &Core, pid: &str, ids: Vec<String>) -> Result<Value, String> {
         if p.clips.len() + added.len() > MAX_CLIPS {
             return Err(TOO_MANY.to_string());
         }
-        let mut at: f64 = p.clips.iter().map(span).sum();
+        let mut at: f64 = proj_len(p); // after the draft source of an old project (F1), else the clips' spans
         if at + added.iter().map(span).sum::<f64>() > MAX_TOTAL_SECS {
             return Err(TOO_LONG.to_string());
         }
@@ -536,6 +655,32 @@ fn add_now(core: &Core, pid: &str, ids: Vec<String>) -> Result<Value, String> {
     Ok(json!({ "project": get(core, pid), "added": added, "starts": starts, "titles": titles, "job_id": "", "mode": "reference", "secs": 0.0 }))
 }
 
+/// `--speed-test` (speedtest.rs): an old project (a draft made by a job) of clips `first`, then clips `more`
+/// added the way the UI adds them (`add`), timed until they are in (ms).
+pub(crate) fn legacy_add_ms(core: &Arc<Core>, first: &[String], more: &[String]) -> Result<f64, String> {
+    let wait = |jid: &str| -> Result<(), String> {
+        let until = Instant::now() + std::time::Duration::from_secs(600);
+        loop {
+            let j = core.jobs.list().into_iter().find(|j| j.id == jid).unwrap_or_default();
+            if !matches!(j.state.as_str(), "queued" | "running") {
+                return if j.state == "done" { Ok(()) } else { Err(format!("{} {}", j.state, j.message)) };
+            }
+            if Instant::now() > until {
+                return Err("timed out".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    };
+    let p = make("Old one (speed test)", false);
+    let j = enqueue_add(core, &p.id, first.to_vec(), false)?;
+    wait(&j.id)?;
+    let t = Instant::now();
+    if let Added::Job(j) = add(core, &p.id, more.to_vec())? {
+        wait(&j.id)?;
+    }
+    Ok(t.elapsed().as_secs_f64() * 1000.0)
+}
+
 /// Queue a job that appends library clips `ids` to project `id` (a project made before 0.1.38).
 pub fn add_clips(core: &Arc<Core>, id: &str, ids: Vec<String>) -> Result<Job, String> {
     enqueue_add(core, id, ids, false)
@@ -545,7 +690,17 @@ pub fn add_clips(core: &Arc<Core>, id: &str, ids: Vec<String>) -> Result<Job, St
 /// the order given, named as `joined_title` does, made at once (the refusals and
 /// texts of join.rs). The UI opens it.
 pub fn join_clips(core: &Core, ids: Vec<String>) -> Result<Project, String> {
-    let clips = join::pick(core, &ids)?;
+    // The project's own limits (0.1.41), not the old joining ones of `join::pick`.
+    let mut uniq: Vec<&String> = Vec::new();
+    for id in &ids {
+        if !uniq.contains(&id) {
+            uniq.push(id);
+        }
+    }
+    if uniq.len() < 2 {
+        return Err("Pick at least two clips to edit together".into());
+    }
+    let clips = pick(core, &ids, 0, 0.0)?;
     let p = make(&join::joined_title(&clips[0].title, clips.len() - 1), true);
     let list: Vec<ProjectClip> = clips.iter().map(pclip).collect();
     edit(&p.id, |s| s.clips = list);
@@ -894,10 +1049,37 @@ pub fn self_test(report_path: &str) {
         return;
     }
     run_self_test(&mut r);
+    store_safety_checks(&mut r);
     let (passed, failed) = (r.passed, r.failed);
     r.line(&format!("DONE passed={passed} failed={failed}"));
 }
 
+/// 0.1.41, R3-9: a projects.json that cannot be read is never saved over (and the last good one is kept as .bak).
+fn store_safety_checks(r: &mut Report) {
+    let path = file();
+    let had = fs::read(&path).ok();
+    let garbage = b"{ this is not the list Glint writes".to_vec();
+    let _ = fs::write(&path, &garbage);
+    test_reset_unreadable();
+    let seen = load();
+    let p = make("Made while the file was unreadable", true);
+    let kept = fs::read(&path).ok() == Some(garbage.clone());
+    r.check("projects: an unreadable projects.json reads as empty and is never saved over", seen.is_empty() && kept, &p.id);
+    // Back to the file the tests had, and a save that keeps the last good one as .bak.
+    test_reset_unreadable();
+    match had {
+        Some(b) => {
+            let _ = fs::write(&path, &b);
+            let list = load();
+            save(&list);
+            let bak = fs::read(path.with_extension("json.bak")).ok();
+            r.check("projects: a save keeps the last good file as projects.json.bak", bak.as_deref() == Some(b.as_slice()), "");
+        }
+        None => {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
 fn wait_until(secs: f64, mut cond: impl FnMut() -> bool) -> bool {
     let until = Instant::now() + std::time::Duration::from_secs_f64(secs);
     while Instant::now() < until {
@@ -1003,14 +1185,14 @@ fn run_self_test(r: &mut Report) {
     r.check("projects.json keeps it", saved.contains(&p1.id) && saved.contains(DEFAULT_NAME), "");
     r.check("add: nothing is refused", add_clips(&core, &p1.id, vec![]).is_err_and(|e| e == NOTHING), "");
     r.check("add: unknown project is refused", add_clips(&core, "nope", vec![a.clone()]).is_err_and(|e| e == NOT_FOUND), "");
-    let many: Vec<String> = (0..21).map(|i| format!("z{i}")).collect();
-    r.check("add: 21 clips are refused", add_clips(&core, &p1.id, many).is_err_and(|e| e == TOO_MANY), "");
+    let many: Vec<String> = (0..MAX_CLIPS + 1).map(|i| format!("z{i}")).collect();
+    r.check("add: more clips than the limit are refused", add_clips(&core, &p1.id, many).is_err_and(|e| e == TOO_MANY), "");
     r.check("add: an unknown clip is refused", add_clips(&core, &p1.id, vec!["zz".into()]).is_err_and(|e| e == "Clip not found"), "");
     {
         let mut lib = core.lib.lock().unwrap();
-        lib.add(ClipMeta { id: "long".into(), path: dir.join("pa.mp4").to_string_lossy().into_owned(), title: "long".into(), duration: 1801.0, ..Default::default() });
+        lib.add(ClipMeta { id: "long".into(), path: dir.join("pa.mp4").to_string_lossy().into_owned(), title: "long".into(), duration: MAX_TOTAL_SECS + 1.0, ..Default::default() });
     }
-    r.check("add: over 30 minutes is refused", add_clips(&core, &p1.id, vec!["long".into()]).is_err_and(|e| e == TOO_LONG), "");
+    r.check("add: over the time limit is refused", add_clips(&core, &p1.id, vec!["long".into()]).is_err_and(|e| e == TOO_LONG), "");
     core.lib.lock().unwrap().remove("long");
     r.check("refusals queued nothing and left the project as it was", core.jobs.list().is_empty() && get(&core, &p1.id).is_some_and(|p| p.clip.is_none() && !p.busy), "");
 
@@ -1166,10 +1348,10 @@ fn run_self_test(r: &mut Report) {
         ex.len() == s2.len() && ex.iter().zip(&s2).all(|(e, o)| o["clip"] == e.clip.as_str() && o["start"].as_f64() == Some(e.start) && o["duration"].as_f64() == Some(e.duration) && o["path"] == e.path.as_str() && !e.missing),
         &format!("{:?}", ex.iter().map(|e| (e.clip.clone(), e.start, e.duration)).collect::<Vec<_>>()),
     );
-    let fake: Vec<String> = (0..18).map(|i| format!("z{i}")).collect();
-    r.check("virtual add: past 20 clips is refused", add(&core, &v1.id, fake).is_err_and(|e| e == TOO_MANY), "");
-    core.lib.lock().unwrap().add(ClipMeta { id: "long".into(), path: ma.path.clone(), title: "long".into(), duration: 1795.0, ..Default::default() });
-    r.check("virtual add: past 30 minutes is refused", add(&core, &v1.id, vec!["long".into()]).is_err_and(|e| e == TOO_LONG), "");
+    let fake: Vec<String> = (0..MAX_CLIPS - 2).map(|i| format!("z{i}")).collect();
+    r.check("virtual add: past the clip limit is refused", add(&core, &v1.id, fake).is_err_and(|e| e == TOO_MANY), "");
+    core.lib.lock().unwrap().add(ClipMeta { id: "long".into(), path: ma.path.clone(), title: "long".into(), duration: MAX_TOTAL_SECS - 5.0, ..Default::default() });
+    r.check("virtual add: past the time limit is refused", add(&core, &v1.id, vec!["long".into()]).is_err_and(|e| e == TOO_LONG), "");
     core.lib.lock().unwrap().remove("long");
     r.check("virtual add: an unknown clip and nothing are refused", add(&core, &v1.id, vec!["zz".into()]).is_err_and(|e| e == "Clip not found") && add(&core, &v1.id, vec![]).is_err_and(|e| e == NOTHING), "");
     r.check("virtual add: the refusals left it as it was", open(&core, &v1.id).is_ok_and(|o| o["sources"].as_array().map(|s| s.len()) == Some(3)), "");
@@ -1224,20 +1406,41 @@ fn run_self_test(r: &mut Report) {
 
     // A project made before 0.1.38 (a draft): every command as before.
     let p5 = create_legacy(&core, "Old one");
-    let _ = finish(&enqueue_add(&core, &p5.id, vec![a.clone()], false));
+    let _ = finish(&enqueue_add(&core, &p5.id, vec![a.clone(), c.clone()], false));
     let d5 = get(&core, &p5.id).and_then(|p| p.clip).unwrap_or_default();
     let o5 = open(&core, &p5.id).unwrap_or_default();
-    r.check("old project: project_open gives its draft as before (no virtual, its file)", o5["id"] == p5.id.as_str() && o5.get("virtual").is_none() && o5.get("sources").is_none() && o5["path"] == d5.path.as_str() && o5["draft"] == true && Path::new(&d5.path).is_file(), &o5.to_string());
-    let a5 = add(&core, &p5.id, vec![b.clone()]);
-    let job5 = match &a5 {
-        Ok(Added::Job(j)) => Ok(j.clone()),
-        _ => Err(format!("{a5:?}")),
-    };
-    let done5 = finish(&job5);
-    let after5 = get(&core, &p5.id).unwrap_or_default();
-    r.check("old project: project_add_clips still queues the job and rebuilds its draft", job5.is_ok() && done5.state == "done" && !after5.virt && after5.clip.as_ref().is_some_and(|c| c.joins.len() == 1 && c.path != d5.path && Path::new(&c.path).is_file()) && after5.clips.len() == 2, &format!("{} {} {:?}", done5.state, done5.message, job5.err()));
+    r.check("old project: project_open gives its draft as before (no virtual, its file)", o5["id"] == p5.id.as_str() && o5.get("virtual").is_none() && o5.get("sources").is_none() && o5["path"] == d5.path.as_str() && o5["draft"] == true && Path::new(&d5.path).is_file() && d5.joins.len() == 1, &o5.to_string());
     let lj5 = serde_json::to_value(get(&core, &p5.id)).unwrap_or_default();
-    r.check("old project: listed with virtual false and its draft as clip", lj5["virtual"] == false && lj5["clip"]["path"] == after5.clip.as_ref().map(|c| c.path.clone()).unwrap_or_default().as_str() && lj5["clip"]["joins"].as_array().map(|j| j.len()) == Some(1), "");
+    r.check("old project: listed with virtual false and its draft as clip", lj5["virtual"] == false && lj5["clip"]["path"] == d5.path.as_str() && lj5["clip"]["joins"].as_array().map(|j| j.len()) == Some(1), "");
+    let renamed5 = rename(&core, &p5.id, "Old one");
+    let state5 = "{\"v\":1,\"saved\":\"by 0.1.40\"}";
+    let _ = save_state(&core, &p5.id, state5);
+    let bytes5 = fs::read(&d5.path).unwrap_or_default();
+    let (jobs5, joined5) = (core.jobs.list().len(), events().iter().filter(|(e, _)| e == "project-changed").count());
+    // F1 (0.1.41): its first add makes it a project of references at once, the draft as source 0.
+    let t5 = Instant::now();
+    let a5 = add(&core, &p5.id, vec![b.clone()]);
+    let ms5 = t5.elapsed().as_secs_f64() * 1000.0;
+    let now5 = match &a5 {
+        Ok(Added::Now(v)) => v.clone(),
+        _ => Value::Null,
+    };
+    r.check("F1: an old project's add is answered at once (no job, no join)", renamed5.is_ok() && !now5.is_null() && core.jobs.list().len() == jobs5 && events().iter().filter(|(e, _)| e == "project-changed").count() == joined5 && ms5 < 1000.0 && now5["starts"] == json!([d5.duration]), &format!("{ms5:.0} ms {a5:?}"));
+    r.check("F1: its draft file is untouched (same bytes, same path) and its saved edit too", fs::read(&d5.path).unwrap_or_default() == bytes5 && !bytes5.is_empty() && state(&p5.id).as_deref() == Some(state5) && draft_of(&core, &p5.id).is_some_and(|d| d.path == d5.path), "");
+    let v5 = open(&core, &p5.id).unwrap_or_default();
+    let s5 = v5["sources"].as_array().cloned().unwrap_or_default();
+    let j1 = d5.joins.first().copied().unwrap_or(-1.0);
+    r.check(
+        "F1: project_open: virtual, source 0 = the draft (clip = the project, its file, start 0, its length, draft, inner = its clips)",
+        v5["virtual"] == true && s5.len() == 2 && s5[0]["clip"] == p5.id.as_str() && s5[0]["path"] == d5.path.as_str() && s5[0]["start"] == 0.0 && s5[0]["duration"].as_f64() == Some(d5.duration) && s5[0]["draft"] == true && s5[0]["missing"] == false
+            && s5[0]["inner"] == json!([{ "at": 0.0, "title": "Clip PA" }, { "at": j1, "title": "Clip PC" }]) && s5[1]["clip"] == b.as_str() && s5[1]["start"].as_f64() == Some(d5.duration),
+        &v5.to_string(),
+    );
+    r.check("F1: joins / join_names list every border (the draft's inner ones, then each later source's start)", v5["joins"] == json!([0.0, j1, d5.duration]) && v5["join_names"] == json!(["Clip PA", "Clip PC", "Clip PB"]) && v5["duration"].as_f64() == Some(d5.duration + mb.duration), &v5.to_string());
+    let a5b = add(&core, &p5.id, vec![x.clone()]);
+    r.check("F1: the next add is instant too, after the others", matches!(&a5b, Ok(Added::Now(v)) if v["starts"] == json!([d5.duration + mb.duration])) && get(&core, &p5.id).is_some_and(|p| p.virt && p.clips.len() == 4), &format!("{a5b:?}"));
+    let lj5 = serde_json::to_value(get(&core, &p5.id)).unwrap_or_default();
+    r.check("F1: listed as virtual with what project_open returns", lj5["virtual"] == true && lj5["clip"] == open(&core, &p5.id).unwrap_or_default(), "");
     let p6 = create_legacy(&core, "Old empty");
     let files6 = n_files();
     let a6 = add(&core, &p6.id, vec![c.clone()]);
@@ -1277,7 +1480,7 @@ fn run_self_test(r: &mut Report) {
     let back = get(&core2, &p1.id).unwrap_or_default();
     r.check("after a restart: the project, its draft, joins and state are back", back.name == "My montage" && back.clip.as_ref().is_some_and(|c| c.joins == keep.joins && c.path == keep.path) && back.clips.len() == 3 && state(&p1.id).as_deref() == Some(text) && !core2.lib.lock().unwrap().visible().iter().any(|c| c.id == p1.id), &format!("{back:?}"));
     let ov = open(&core2, &v2.id);
-    r.check("after a restart: a project of references opens with its sources, an old one with its draft", ov.as_ref().is_ok_and(|o| o["virtual"] == true && o["sources"].as_array().map(|s| s.len()) == Some(2) && o["sources"][0]["missing"] == false) && open(&core2, &p5.id).is_ok_and(|o| o.get("virtual").is_none()), &format!("{ov:?}"));
+    r.check("after a restart: a project of references opens with its sources, an old one with its draft", ov.as_ref().is_ok_and(|o| o["virtual"] == true && o["sources"].as_array().map(|s| s.len()) == Some(2) && o["sources"][0]["missing"] == false) && open(&core2, &p5.id).is_ok_and(|o| o["virtual"] == true && o["sources"].as_array().map(|s| s.len()) == Some(3) && o["sources"][0]["draft"] == true), &format!("{ov:?}"));
     *RECORD.lock().unwrap() = None;
     let _ = fs::remove_dir_all(&root);
 }

@@ -23,6 +23,9 @@
 .wn-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .wn-date { font-weight: 700; font-size: 14px; letter-spacing: -.015em; }
 .wn-ver { padding: 1px 9px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--raised); color: var(--muted); font: 600 12px var(--mono); }
+/* A landmark release (0.1.41, the editor revamp): a gold version tag and a thin gold line beside its date. */
+.wn-gold .wn-ver { border-color: rgba(232, 185, 84, .6); background: linear-gradient(135deg, rgba(232, 185, 84, .22), rgba(232, 185, 84, .08)); color: #f0c868; box-shadow: 0 0 0 1px rgba(232, 185, 84, .12), 0 0 14px rgba(232, 185, 84, .18); }
+.wn-gold .wn-date { padding-left: 10px; border-left: 2px solid #e8b954; }
 /* NEW / IMPROVED / FIXED: small upper-case grey labels over plain bulleted sentences. */
 .wn-grp { margin-bottom: 12px; }
 /* The label sits right on its list: no gap under it and none above the first sentence. */

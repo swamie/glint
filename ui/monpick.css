@@ -1,0 +1,37 @@
+/* The monitor picker (ui/monpick.js, 0.1.41): the monitors to scale, each with its live picture. */
+.mp { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; min-width: 0; }
+.mp-map { position: relative; flex: none; max-width: 100%; border-radius: var(--radius); background: color-mix(in srgb, var(--text) 4%, var(--bg, transparent));
+  border: 1px solid var(--line); overflow: hidden; }
+.mp-mon { position: absolute; display: block; padding: 0; overflow: hidden; border: 1.5px solid var(--line-2); border-radius: 5px; background: var(--raised-2);
+  color: #fff; cursor: pointer; font: inherit; transition: border-color .15s, box-shadow .15s; }
+.mp-mon:hover { border-color: color-mix(in srgb, var(--accent) 60%, var(--line-2)); }
+.mp-mon.on { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+.mp-mon:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mp-pic { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: .9; pointer-events: none; }
+.mp-mon:not(.on) .mp-pic { opacity: .55; filter: saturate(.7); }
+/* Number, main star and size sit on the picture with a shadow, so they read on any desktop. */
+.mp-num { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -58%); font: 800 22px/1 var(--sans); text-shadow: 0 1px 3px rgba(0, 0, 0, .8); pointer-events: none; }
+.mp-mon.small .mp-num { font-size: 14px; }
+.mp-mon:not(:has(.mp-pic:not([hidden]))) { color: var(--text); }
+.mp-mon:not(:has(.mp-pic:not([hidden]))) .mp-num, .mp-mon:not(:has(.mp-pic:not([hidden]))) .mp-info { text-shadow: none; }
+.mp-main { position: absolute; top: 3px; left: 5px; font-size: 11px; color: #ffd75e; text-shadow: 0 1px 2px rgba(0, 0, 0, .8); pointer-events: none; }
+.mp-info { position: absolute; left: 0; right: 0; bottom: 3px; overflow: hidden; padding: 0 4px; font: 600 10px/1.2 var(--sans); text-align: center; white-space: nowrap;
+  text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(0, 0, 0, .9); pointer-events: none; }
+.mp-cap { color: var(--muted); font-size: 11.5px; }
+.mp-special { align-self: flex-end; height: 26px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--raised);
+  color: var(--text); font: 600 12px/1 var(--sans); cursor: pointer; }
+.mp-special.on { border-color: var(--accent); color: var(--accent); }
+.mp-special:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Compact (keybind rows): a field-like button with a tiny map; the full map opens in a pop-over. */
+.mp-compact { align-items: stretch; }
+.mp-btn { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; text-align: left; cursor: pointer; }
+.mp-mini { position: relative; flex: none; width: 34px; height: 20px; }
+.mp-mini i { position: absolute; border-radius: 2px; background: color-mix(in srgb, var(--text) 28%, transparent); }
+.mp-mini i.on { background: var(--accent); }
+.mp-btn-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-chev { flex: none; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; opacity: .7; }
+.mp-pop { position: fixed; z-index: 1000; display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--line-2); border-radius: calc(var(--radius) + 2px);
+  background: var(--raised); box-shadow: 0 12px 34px rgba(0, 0, 0, .38); }
+.mp-pop-head { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .02em; }
+.mp-pop .mp-map { max-width: none; }
+@media (prefers-reduced-motion: reduce) { .mp-mon { transition: none; } }

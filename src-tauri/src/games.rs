@@ -232,7 +232,7 @@ const GENERIC_NAMES: &[&str] = &["unreal engine", "unity", "java", "openjdk", "b
 pub fn identify(fg: &Foreground) -> Option<String> {
     let lower = fg.exe.to_lowercase();
     let stem = Path::new(&lower).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    if stem.is_empty() || NOT_GAMES.contains(&stem.as_str()) || NOT_GAMES_MORE.contains(&stem.as_str()) {
+    if stem.is_empty() || NOT_GAMES.contains(&stem.as_str()) || NOT_GAMES_MORE.contains(&stem.as_str()) || crate::gamedetect::denied(&stem).is_some() {
         return None;
     }
     // Minecraft (Java) runs inside javaw.exe, which is also every other Java program.
@@ -374,7 +374,7 @@ pub fn rate(w: &win::WinInfo, m: &Marks) -> Option<i64> {
     let key = exe_key(&w.exe);
     let lower = w.exe.to_lowercase();
     let stem = stem_of(&lower);
-    if key.is_empty() || m.not_games.iter().any(|n| *n == key) {
+    if key.is_empty() || w.cloaked || m.not_games.iter().any(|n| *n == key) {
         return None;
     }
     if !m.pick.is_empty() && m.pick == key {
@@ -389,7 +389,7 @@ pub fn rate(w: &win::WinInfo, m: &Marks) -> Option<i64> {
     if m.games.iter().any(|g| *g == key) {
         return Some(SCORE_MARKED);
     }
-    if NOT_GAMES.contains(&stem.as_str()) || NOT_GAMES_MORE.contains(&stem.as_str()) {
+    if NOT_GAMES.contains(&stem.as_str()) || NOT_GAMES_MORE.contains(&stem.as_str()) || crate::gamedetect::denied(&stem).is_some() {
         return None;
     }
     if stem == "javaw" || stem == "java" {

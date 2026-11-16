@@ -139,7 +139,7 @@ fn base_args() -> Vec<String> {
 /// Run 1: the palette into `pal` (a PNG). The frames also go to a null output, whose per-frame stats tell the progress.
 fn palette_args(input: &Path, pal: &Path, w: u32, fps: u32) -> Vec<String> {
     let mut a = base_args();
-    a.extend(["-i".into(), input.to_string_lossy().into_owned()]);
+    a.extend(["-reinit_filter".into(), "0".into(), "-i".into(), input.to_string_lossy().into_owned()]);
     a.extend([
         "-filter_complex".into(),
         format!("[0:v:0]{},split[a][b];[a]palettegen=max_colors=256:stats_mode=diff[p]", picture_filter(w, fps)),
@@ -166,7 +166,7 @@ fn palette_args(input: &Path, pal: &Path, w: u32, fps: u32) -> Vec<String> {
 /// Run 2: every frame with the palette, into the GIF `out`.
 fn gif_args(input: &Path, pal: &Path, out: &Path, w: u32, fps: u32) -> Vec<String> {
     let mut a = base_args();
-    a.extend(["-i".into(), input.to_string_lossy().into_owned(), "-i".into(), pal.to_string_lossy().into_owned()]);
+    a.extend(["-reinit_filter".into(), "0".into(), "-i".into(), input.to_string_lossy().into_owned(), "-i".into(), pal.to_string_lossy().into_owned()]);
     a.extend([
         "-filter_complex".into(),
         format!("[0:v:0]{}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle[g]", picture_filter(w, fps)),
@@ -199,6 +199,7 @@ fn run_ffmpeg(ffmpeg: &Path, args: &[String], expected: f64, cancel: &AtomicBool
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Could not start ffmpeg: {e}"))?;
+    crate::util::track_child(&child); // ends with Glint (0.1.41)
     let err_reader = child.stderr.take().map(|mut err| {
         thread::spawn(move || {
             let mut buf = Vec::new();

@@ -178,7 +178,7 @@ fn audio_codecs(ffmpeg: &Path, file: &Path) -> Vec<String> {
 
 /// The whole ffmpeg command line for one try.
 fn args_for(input: &Path, part: &Path, vf: &str, enc: &str, quality: &str, audio: &[String]) -> Vec<String> {
-    let mut a: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y", "-i"].iter().map(|s| s.to_string()).collect();
+    let mut a: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y", "-reinit_filter", "0", "-i"].iter().map(|s| s.to_string()).collect();
     a.push(input.to_string_lossy().into_owned());
     a.extend(["-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0", "-vf"].iter().map(|s| s.to_string()));
     a.push(vf.to_string());
@@ -209,6 +209,7 @@ fn run_ffmpeg(ffmpeg: &Path, args: &[String], expected: f64, cancel: &AtomicBool
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Could not start ffmpeg: {e}"))?;
+    crate::util::track_child(&child); // ends with Glint (0.1.41)
     let err_reader = child.stderr.take().map(|mut err| {
         thread::spawn(move || {
             let mut buf = Vec::new();

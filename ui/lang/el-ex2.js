@@ -1,0 +1,30 @@
+"use strict";
+// 0.1.41 texts (tag ex2): cancelling an export, a stalled export (ui/editor.js, ui/projects.js).
+glintAddLanguage("el", "Ελληνικά", {
+  "Cancelling…": "Ακύρωση…",
+  "Joining clips… {pct}%": "Ένωση κλιπ… {pct}%",
+  "The export did not finish": "Η εξαγωγή δεν ολοκληρώθηκε",
+  "Dismiss": "Απόρριψη",
+  "Show the log": "Εμφάνιση αρχείου καταγραφής",
+  "The export failed.": "Η εξαγωγή απέτυχε.",
+  "Export cancelled": "Η εξαγωγή ακυρώθηκε",
+  "The export could not be cancelled": "Η εξαγωγή δεν μπόρεσε να ακυρωθεί",
+  // Code review fixes (R2).
+  "Close this clip? Its edit is not saved: only an export keeps it.": "Κλείσιμο του κλιπ; Η επεξεργασία του δεν έχει αποθηκευτεί: μόνο μια εξαγωγή την κρατά.",
+  "Close and lose the edit": "Κλείσιμο χωρίς την επεξεργασία",
+  "The saved edit of this project could not be read, so it opened without it.": "Η αποθηκευμένη επεξεργασία του έργου δεν διαβάστηκε, οπότε άνοιξε χωρίς αυτήν.",
+  "The saved edit no longer fits this project's clips, so it opened without it.": "Η αποθηκευμένη επεξεργασία δεν ταιριάζει πια στα κλιπ του έργου, οπότε άνοιξε χωρίς αυτήν.",
+  "The saved edit of this project is damaged, so it opened without it.": "Η αποθηκευμένη επεξεργασία του έργου είναι κατεστραμμένη, οπότε άνοιξε χωρίς αυτήν.",
+  "Nothing is saved over it until you choose.": "Τίποτα δεν αποθηκεύεται πάνω της μέχρι να επιλέξετε.",
+  "Try again": "Δοκιμάστε ξανά",
+  "Keep this edit instead": "Κράτησε αυτήν την επεξεργασία",
+  "An earlier edit of this project is kept as a backup.": "Μια παλαιότερη επεξεργασία του έργου φυλάσσεται ως αντίγραφο ασφαλείας.",
+  "Bring back the earlier edit": "Επαναφορά της παλαιότερης επεξεργασίας",
+  "The saved edit could not be read, so it cannot be kept as a backup. Save this edit over it?": "Η αποθηκευμένη επεξεργασία δεν διαβάστηκε, οπότε δεν μπορεί να κρατηθεί ως αντίγραφο. Αποθήκευση αυτής της επεξεργασίας πάνω της;",
+  "Save over it": "Αποθήκευση πάνω της",
+  "The saved edit could not be kept as a backup. Save this edit over it?": "Η αποθηκευμένη επεξεργασία δεν κρατήθηκε ως αντίγραφο. Αποθήκευση αυτής της επεξεργασίας πάνω της;",
+  "This edit is saved from now on. The earlier one is kept as a backup.": "Από τώρα αποθηκεύεται αυτή η επεξεργασία. Η παλαιότερη φυλάσσεται ως αντίγραφο.",
+  "This edit is saved from now on.": "Από τώρα αποθηκεύεται αυτή η επεξεργασία.",
+  "The saved edit of this project could not be opened. Nothing is saved over it until you choose.": "Η αποθηκευμένη επεξεργασία του έργου δεν άνοιξε. Τίποτα δεν αποθηκεύεται πάνω της μέχρι να επιλέξετε.",
+  "Sharpness": "Οξύτητα",
+});

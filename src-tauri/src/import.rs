@@ -985,6 +985,12 @@ fn known_clip(core: &Core, path: &str) -> Option<library::ClipMeta> {
 /// order given. A file already in the library (same path, or imported from it
 /// as a copy) is not imported again: its clip comes back with `known`. A file
 /// that is no video or cannot be read comes back with an `error`.
+///
+/// 0.1.41 (CONTRACT_0141F, F3): a new file is in the library, and returned, after its PROBE alone (up to
+/// `DROP_PROBES` files probed at once). Its thumbnail, and the copy into the clips folder when `copy` is
+/// asked, are made afterwards in the background (`drop_after`); when the copy is there, the clip's path is
+/// switched to it (projects reference clips by id, so nothing else changes; the original is never moved,
+/// changed or deleted, and a player that opened the original keeps playing it).
 pub fn import_files(core: &Arc<Core>, paths: Vec<String>, copy: bool, folder: &str) -> Result<Vec<Dropped>, String> {
     let s = core.settings();
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg").ok_or("ffmpeg was not found. Set its path in Settings.")?;
@@ -998,13 +1004,18 @@ pub fn import_files(core: &Arc<Core>, paths: Vec<String>, copy: bool, folder: &s
     let naming = Mutex::new(());
     let job = Job { core, ffmpeg: &ffmpeg, root: &root, place, copy, naming: &naming, folders: &folders };
     let mut out: Vec<Dropped> = Vec::with_capacity(paths.len());
-    let mut recs: Vec<Record> = Vec::new();
+    // First: what is known, refused or the same path again (that one is the first one's clip); the rest is probed.
+    let mut todo: Vec<(usize, Found)> = Vec::new();
+    let mut first_of: HashMap<String, usize> = HashMap::new();
+    let mut again: Vec<(usize, usize)> = Vec::new();
     for p in paths {
         let path = p.trim().to_string();
         let mut d = Dropped { path: path.clone(), ..Default::default() };
         let pb = PathBuf::from(&path);
         let ext = pb.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
-        if let Some(c) = known_clip(core, &path) {
+        if let Some(&k) = first_of.get(&path.to_lowercase()) {
+            again.push((out.len(), k));
+        } else if let Some(c) = known_clip(core, &path) {
             d.clip = Some(c);
             d.known = true;
         } else if !VIDEO_EXTS.contains(&ext.as_str()) {
@@ -1015,22 +1026,46 @@ pub fn import_files(core: &Arc<Core>, paths: Vec<String>, copy: bool, folder: &s
                     let title = pb.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
                     let dirs: Vec<String> = pb.parent().and_then(|x| x.file_name()).map(|x| x.to_string_lossy().into_owned()).into_iter().collect();
                     let game = game_for(&dirs, &title, &Ctx::default());
-                    let it = Found { path: path.clone(), title, game, size: md.len(), modified: mtime_ms(&md), known: false };
-                    match import_one(&job, &it) {
-                        Ok(meta) => {
-                            recs.push(Record { source: path.clone(), id: meta.id.clone() });
-                            d.clip = Some(meta);
-                        }
-                        Err(e) => d.error = e,
-                    }
+                    first_of.insert(path.to_lowercase(), out.len());
+                    todo.push((out.len(), Found { path: path.clone(), title, game, size: md.len(), modified: mtime_ms(&md), known: false }));
                 }
                 _ => d.error = "the file was not found".into(),
             }
         }
-        if !d.error.is_empty() {
-            util::log(&format!("import: dropped file {path} not added: {}", d.error));
-        }
         out.push(d);
+    }
+    // The probes, a few at once; each file stays where it is for now (filed under the folder it will be copied into).
+    let next = AtomicUsize::new(0);
+    let probed: Mutex<Vec<(usize, Result<library::ClipMeta, String>)>> = Mutex::new(Vec::new());
+    std::thread::scope(|sc| {
+        for _ in 0..DROP_PROBES.min(todo.len()) {
+            sc.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::SeqCst);
+                let Some((k, it)) = todo.get(i) else { break };
+                probed.lock().unwrap().push((*k, probe_in_place(&job, it)));
+            });
+        }
+    });
+    let mut recs: Vec<Record> = Vec::new();
+    let mut after: Vec<After> = Vec::new();
+    for (k, res) in probed.into_inner().unwrap() {
+        match res {
+            Ok(meta) => {
+                recs.push(Record { source: out[k].path.clone(), id: meta.id.clone() });
+                after.push(After { id: meta.id.clone(), src: PathBuf::from(&meta.path), duration: meta.duration, copy_to: if copy { Some(meta.folder.clone()) } else { None } });
+                core.lib.lock().unwrap().add(meta.clone());
+                out[k].clip = Some(meta);
+            }
+            Err(e) => out[k].error = e,
+        }
+    }
+    for (k, first) in again {
+        out[k].clip = out[first].clip.clone();
+        out[k].known = out[k].clip.is_some();
+        out[k].error = out[first].error.clone();
+    }
+    for d in out.iter().filter(|d| !d.error.is_empty()) {
+        util::log(&format!("import: dropped file {} not added: {}", d.path, d.error));
     }
     if !recs.is_empty() {
         let n = recs.len();
@@ -1042,11 +1077,164 @@ pub fn import_files(core: &Arc<Core>, paths: Vec<String>, copy: bool, folder: &s
                 let _ = fs::write(records_file(), text);
             }
         }
+        for g in after.iter().filter_map(|a| core.lib.lock().unwrap().get(&a.id)).map(|c| c.game) {
+            core.games.lock().unwrap().note(&g, "");
+        }
         core.emit("clips-changed", ());
         core.emit("games-changed", ());
-        util::log(&format!("import: {n} dropped file(s) added ({})", if copy { "copied" } else { "in place" }));
+        util::log(&format!("import: {n} dropped file(s) added after the probe ({}); thumbnails{} follow", if copy { "to be copied" } else { "in place" }, if copy { " and copies" } else { "" }));
+        drop_after(core.clone(), ffmpeg.clone(), root.clone(), after);
     }
     Ok(out)
+}
+
+/// Files probed at once by `import_files`.
+const DROP_PROBES: usize = 6;
+
+/// A dropped file's library entry from its probe alone: no thumbnail yet, the file where it is.
+fn probe_in_place(j: &Job, it: &Found) -> Result<library::ClipMeta, String> {
+    let src = PathBuf::from(&it.path);
+    let p = library::probe(j.ffmpeg, &src, false).unwrap_or_default();
+    if p.duration <= 0.0 || p.width == 0 {
+        return Err("not a readable video".into());
+    }
+    let game: String = if it.game.trim().is_empty() { UNKNOWN.to_string() } else { it.game.trim().chars().take(60).collect() };
+    let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Clip".into());
+    let lib_folder = j.folder_for(&game)?;
+    let in_clips = crate::core::in_clips_dir(j.root, &it.path);
+    Ok(library::ClipMeta {
+        id: util::new_id(),
+        path: it.path.clone(),
+        title: if it.title.trim().is_empty() { stem } else { it.title.clone() },
+        game,
+        created: if it.modified > 0 { it.modified } else { util::unix_ms() },
+        duration: p.duration,
+        size: it.size,
+        width: p.width,
+        height: p.height,
+        fps: p.fps,
+        kind: "import".into(),
+        audio_tracks: p.audio_streams,
+        folder: if in_clips { folder_of(j.root, &src) } else { lib_folder },
+        ..Default::default()
+    })
+}
+
+/// What is left to do for a dropped file once it is in the library: its thumbnail, and its copy (`copy_to`: the
+/// library folder it goes in, "" = the clips folder itself) when the user's choice is to copy.
+struct After {
+    id: String,
+    src: PathBuf,
+    duration: f64,
+    copy_to: Option<String>,
+}
+
+/// Copies of dropped files still being made (`copies_running`).
+static COPYING: AtomicUsize = AtomicUsize::new(0);
+/// Held while a copy's file name is chosen and claimed (the Import page's runs have their own).
+static DROP_NAMING: Mutex<()> = Mutex::new(());
+
+/// True while a dropped file's copy into the clips folder is still being made in the background (0.1.41).
+pub fn copies_running() -> bool {
+    COPYING.load(Ordering::SeqCst) > 0
+}
+
+/// Dropped clips whose thumbnail `drop_after` is still to make (`polish::retry_thumb` leaves them alone).
+static THUMBS_PENDING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+/// True while clip `id`'s thumbnail is still to be made by a drop's background work.
+pub fn thumb_pending(id: &str) -> bool {
+    THUMBS_PENDING.lock().map(|g| g.as_ref().is_some_and(|s| s.contains(id))).unwrap_or(false)
+}
+
+fn set_thumb_pending(id: &str, on: bool) {
+    if let Ok(mut g) = THUMBS_PENDING.lock() {
+        let s = g.get_or_insert_with(HashSet::new);
+        if on {
+            s.insert(id.to_string());
+        } else {
+            s.remove(id);
+        }
+    }
+}
+
+/// In the background, one file after the other: each dropped file's thumbnail, then its copy, and the clip's path
+/// switched to the copy when it is complete. A copy that fails leaves the clip on the original (logged).
+fn drop_after(core: Arc<Core>, ffmpeg: PathBuf, root: PathBuf, items: Vec<After>) {
+    let copies = items.iter().filter(|a| a.copy_to.is_some()).count();
+    COPYING.fetch_add(copies, Ordering::SeqCst);
+    for a in &items {
+        set_thumb_pending(&a.id, true);
+    }
+    std::thread::spawn(move || {
+        for a in items {
+            let th = library::make_thumb(&ffmpeg, &a.src, &a.id, library::thumb_at(a.duration));
+            set_thumb_pending(&a.id, false); // made or not: from now on the retry (polish.rs) may take it
+            if !th.is_empty() {
+                core.lib.lock().unwrap().update(&a.id, |c| c.thumb = th.clone());
+                core.emit("clips-changed", a.id.clone());
+            }
+            let Some(folder) = a.copy_to else { continue };
+            match copy_dropped(&root, &folder, &a.src) {
+                Ok(dest) => {
+                    let size = fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+                    let dest_s = dest.to_string_lossy().into_owned();
+                    let mut found = false;
+                    core.lib.lock().unwrap().update(&a.id, |c| {
+                        found = true;
+                        c.path = dest_s.clone();
+                        c.size = size;
+                        c.folder = folder.clone();
+                    });
+                    if found {
+                        util::log(&format!("import: dropped file copied, clip {} now uses {}", a.id, dest_s));
+                        core.emit("clips-changed", a.id.clone());
+                    } else {
+                        let _ = fs::remove_file(&dest); // the clip was deleted meanwhile: its copy is not kept
+                    }
+                }
+                Err(e) => util::log(&format!("import: the copy of {} failed, its clip stays on the original: {e}", a.src.display())),
+            }
+            COPYING.fetch_sub(1, Ordering::SeqCst);
+        }
+    });
+}
+
+/// Copy `src` into library folder `folder` of the clips folder `root` under a free name: written as
+/// "<name>.part" first, so a copy cut short never looks like a clip.
+fn copy_dropped(root: &Path, folder: &str, src: &Path) -> Result<PathBuf, String> {
+    let dir = if folder.is_empty() { root.to_path_buf() } else { root.join(folder) };
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Clip".into());
+    let ext = src.extension().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "mp4".into());
+    let dest = {
+        let _g = DROP_NAMING.lock().unwrap();
+        let p = util::unique_path(&dir, &stem, &ext);
+        fs::OpenOptions::new().write(true).create_new(true).open(&p).map_err(|e| e.to_string())?;
+        p
+    };
+    let part = dest.with_file_name(format!("{}.part", dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+    let res = fs::copy(src, &part).map_err(|e| e.to_string()).and_then(|_| {
+        let _ = fs::remove_file(&dest);
+        fs::rename(&part, &dest).map_err(|e| e.to_string())
+    });
+    if let Err(e) = res {
+        let _ = fs::remove_file(&part);
+        let _ = fs::remove_file(&dest);
+        return Err(e);
+    }
+    Ok(dest)
+}
+
+fn wait_for(secs: f64, mut cond: impl FnMut() -> bool) -> bool {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs);
+    while std::time::Instant::now() < until {
+        if cond() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    cond()
 }
 
 /// 0.1.40: files dropped into the editor (`import_files`).
@@ -1070,10 +1258,20 @@ fn drop_tests(r: &mut Report, core: &Arc<Core>, base: &Path, clips: &Path, put: 
     let again = import_files(core, vec![s(&a)], true, "Whatever").unwrap_or_default();
     r.check("drop: a file already in the library is never imported again (no copy either)", again.len() == 1 && again[0].known && again[0].clip.as_ref().is_some_and(|c| c.id == ca.id) && core.lib.lock().unwrap().clips.len() == n0 + 2 && !clips.join("Whatever").join("Valorant 2024.07.01 - 10.00.00.00.mp4").exists(), "");
     let c = put(r"drops\Copy me\Apex Legends 2024.07.02 - 10.00.00.00.mp4", 1_720_000_200);
+    let t0 = std::time::Instant::now();
     let cp = import_files(core, vec![s(&c)], true, "Drop folder").unwrap_or_default();
+    let answered = t0.elapsed().as_millis();
     let cc = cp.first().and_then(|d| d.clip.clone()).unwrap_or_default();
     let dest = clips.join("Drop folder").join("Apex Legends 2024.07.02 - 10.00.00.00.mp4");
-    r.check("drop: copy into the library folder of the open clip; the original stays", Path::new(&cc.path) == dest.as_path() && dest.is_file() && cc.folder == "Drop folder" && c.is_file(), format!("{cc:?}"));
+    // 0.1.41 (F3): the answer comes after the probe, on the original; the copy (and the thumbnail) follow in the background.
+    r.check("drop, copy: answered after the probe alone, the clip on the original for now (no thumbnail yet)", Path::new(&cc.path) == c.as_path() && cc.folder == "Drop folder" && cc.thumb.is_empty() && cc.duration > 0.0, format!("{answered} ms {cc:?}"));
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while copies_running() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let now = core.lib.lock().unwrap().get(&cc.id).unwrap_or_default();
+    r.check("drop, copy: when the copy is done the clip's path switches to it (same id, same folder); the original stays", Path::new(&now.path) == dest.as_path() && dest.is_file() && now.folder == "Drop folder" && c.is_file() && now.size == fs::metadata(&dest).map(|m| m.len()).unwrap_or(0) && !dest.with_file_name("Apex Legends 2024.07.02 - 10.00.00.00.mp4.part").exists(), format!("{now:?}"));
+    r.check("drop: the thumbnail is made in the background", wait_for(10.0, || core.lib.lock().unwrap().get(&cc.id).is_some_and(|m| !m.thumb.is_empty() && Path::new(&m.thumb).is_file())), "");
     let cp2 = import_files(core, vec![s(&c)], true, "Drop folder").unwrap_or_default();
     r.check("drop: the original of a copy dropped again gives that copy's clip", cp2.len() == 1 && cp2[0].known && cp2[0].clip.as_ref().is_some_and(|x| x.id == cc.id), "");
     let lib = core.lib.lock().unwrap().clips.clone();
@@ -1466,6 +1664,12 @@ fn run_self_test(r: &mut Report) {
 
     placement_tests(r, &core, &base, &clips, &put);
     drop_tests(r, &core, &base, &clips, &put);
+    // 0.1.41 item T: thumbnails on synthetic files of every kind, and the retry of missing ones.
+    let tdir = base.join("thumbs-t");
+    let _ = fs::create_dir_all(&tdir);
+    for (name, ok, detail) in crate::polish::thumb_retry_checks(&core, &ffmpeg, &tdir) {
+        r.check(&name, ok, detail);
+    }
 
     let fails = r.lines.iter().filter(|l| l.starts_with("FAIL")).count();
     // Optional, read-only: how the real folders on this PC would be sorted (counts only, nothing imported).

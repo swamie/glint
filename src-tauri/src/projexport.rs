@@ -136,6 +136,12 @@ impl Map<'_> {
     fn at(&self, k: usize, s: f64) -> Option<f64> {
         self.exported.iter().find(|(j, _)| *j == k).map(|(_, f)| f + (s - self.sources[k].start))
     }
+    /// Where clip `k`'s footage ends in the exported file: the next clip's start in a joined file (a clip's
+    /// library length can be longer than its picture: R3-6, a range to its end showed the next clip's first frames).
+    fn end_of(&self, k: usize) -> f64 {
+        let i = self.exported.iter().position(|(j, _)| *j == k);
+        i.and_then(|i| self.exported.get(i + 1)).map(|(_, f)| f - 0.0005).unwrap_or(f64::INFINITY)
+    }
     /// `a..b` in the exported file: the parts on exported clips.
     fn span(&self, a: f64, b: f64) -> Vec<(f64, f64, Piece)> {
         pieces(self.sources, a, b).into_iter().filter_map(|p| Some((self.at(p.k, p.a)?, self.at(p.k, p.b)?, p))).collect()
@@ -160,7 +166,8 @@ fn map_opts(opts: &ExportOpts, segs: Vec<Range>, map: &Map, rows: &RowMap) -> Ex
                 return Some(g);
             }
             let p = pieces(map.sources, g.start, g.end).into_iter().next()?;
-            Some(Range { start: map.at(p.k, p.a)?, end: map.at(p.k, p.b)?, ..g })
+            let end = map.at(p.k, p.b)?.min(map.end_of(p.k));
+            Some(Range { start: map.at(p.k, p.a)?, end, ..g })
         })
         .collect();
     // Moved parts: the order is the list's; in project order the mapped ranges keep theirs.
@@ -213,7 +220,19 @@ fn track_titles(ffmpeg: &Path, files: &[&Source]) -> Result<(Vec<join::Src>, joi
 
 /// Export project `target` made of `sources` with `opts` in project time. `progress`: 0..100
 /// (the join first, then the encode).
-pub fn export(s: &Settings, target: &Target, sources: &[Source], opts: &ExportOpts, progress: &mut dyn FnMut(f32)) -> Result<ClipMeta, String> {
+/// `export` that `cancel_export { id }` ends, the join included (R3-7).
+pub fn export_cancellable(s: &Settings, target: &Target, sources: &[Source], opts: &ExportOpts, id: &str, progress: &mut dyn FnMut(&str, f32)) -> Result<ClipMeta, String> {
+    let guard = editor::ExportGuard::new(id);
+    let flag = guard.flag.clone();
+    editor::with_cancel(&guard.flag, || export_with(s, target, sources, opts, &flag, progress))
+}
+
+/// `export` without a cancel (tests).
+pub fn export(s: &Settings, target: &Target, sources: &[Source], opts: &ExportOpts, progress: &mut dyn FnMut(&str, f32)) -> Result<ClipMeta, String> {
+    export_with(s, target, sources, opts, &AtomicBool::new(false), progress)
+}
+
+fn export_with(s: &Settings, target: &Target, sources: &[Source], opts: &ExportOpts, cancel: &AtomicBool, progress: &mut dyn FnMut(&str, f32)) -> Result<ClipMeta, String> {
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg").ok_or("ffmpeg.exe was not found")?;
     if sources.is_empty() {
         return Err("The project has no clips".into());
@@ -282,7 +301,9 @@ pub fn export(s: &Settings, target: &Target, sources: &[Source], opts: &ExportOp
         let mapped = map_opts(opts, segs, &map, &rows);
         let meta = meta_for(Path::new(&src.path), src.fps);
         util::log(&format!("export project {}: one clip, \"{}\", exported from its own file", target.id, src.title));
-        return editor::export(s, &meta, &mapped, progress);
+        let mut mapped = mapped;
+        fit_to_project(&ffmpeg, &mut mapped, sources, Path::new(&src.path));
+        return editor::export(s, &meta, &mapped, &mut |p| progress("export", p));
     }
 
     // Several clips: the ones used, joined into a temporary working file.
@@ -295,8 +316,8 @@ pub fn export(s: &Settings, target: &Target, sources: &[Source], opts: &ExportOp
     let _guard = TmpFile(file.clone());
     JOINS_MADE.fetch_add(1, Ordering::SeqCst);
     let started = std::time::Instant::now();
-    let done = join::join(&ffmpeg, &srcs, &fps, false, &file, &target.title, &s.encoder, &AtomicBool::new(false), &mut |p| progress(p * 0.4))
-        .map_err(|e| format!("Could not put the project's clips together for the export: {e}"))?;
+    let done = join::join(&ffmpeg, &srcs, &fps, false, &file, &target.title, &s.encoder, cancel, &mut |p| progress("join", p))
+        .map_err(|e| if e == join::CANCELLED || cancel.load(Ordering::SeqCst) { editor::CANCELLED.to_string() } else { format!("Could not put the project's clips together for the export: {e}") })?;
     util::log(&format!("export project {}: {} clips joined in {} ms ({}), starts {:?}", target.id, chosen.len(), started.elapsed().as_millis(), done.mode.name(), done.starts));
     // The joined file has the tracks join gave it, by title.
     let file_titles = done.plan.tracks.titles.clone();
@@ -334,7 +355,29 @@ pub fn export(s: &Settings, target: &Target, sources: &[Source], opts: &ExportOp
     let mapped = map_opts(opts, segs, &map, &rows);
     let fps_out = fps.iter().copied().max().unwrap_or(0);
     let meta = meta_for(&file, fps_out);
-    editor::export(s, &meta, &mapped, &mut |p| progress(40.0 + p * 0.6))
+    let mut mapped = mapped;
+    fit_to_project(&ffmpeg, &mut mapped, sources, &file);
+    editor::export(s, &meta, &mapped, &mut |p| progress("export", p))
+}
+
+/// R2-13: a project is drawn at its own picture size (the first clip's): when the exported file has another size
+/// and the edit has no canvas, the file is fitted inside a canvas of the project's size, as the preview shows it,
+/// so overlays drawn at the project's size land where they were put.
+fn fit_to_project(ffmpeg: &Path, opts: &mut ExportOpts, sources: &[Source], file: &Path) {
+    if opts.canvas.is_some() {
+        return;
+    }
+    let Some(first) = sources.iter().find(|x| !x.missing && Path::new(&x.path).is_file()) else { return };
+    let size = |p: &Path| library::probe(ffmpeg, p, false).map(|q| (q.width as f64, q.height as f64)).filter(|(w, h)| *w > 0.0 && *h > 0.0);
+    let (Some((pw, ph)), Some((fw, fh))) = (size(Path::new(&first.path)), size(file)) else { return };
+    if (pw - fw).abs() < 0.5 && (ph - fh).abs() < 0.5 {
+        return;
+    }
+    let (pa, fa) = (pw / ph, fw / fh);
+    let (w, h) = if fa > pa { (1.0, pa / fa) } else { (fa / pa, 1.0) };
+    let piece = editor::CanvasPiece { sx: 0.0, sy: 0.0, sw: 1.0, sh: 1.0, x: (1.0 - w) / 2.0, y: (1.0 - h) / 2.0, w, h };
+    opts.canvas = Some(editor::Canvas { width: pw, height: ph, background: "black".into(), pieces: vec![piece] });
+    util::log(&format!("export project: the file is {fw}x{fh}, the project {pw}x{ph}: fitted inside"));
 }
 
 /// A file's audio tracks as the editor shows them (`emShownTracks`): (stream index, title), the title
@@ -350,6 +393,27 @@ fn shown_tracks(ffmpeg: &Path, file: &Path) -> Vec<(usize, String)> {
     } else {
         all
     }
+}
+
+/// Startup (R3-8): Glint's own temporary working files that a killed or crashed export left behind, removed by
+/// their exact names (`projexport-*`, `.projexport-*`, join's `match-*`) and only when they are older than this
+/// run of Glint. Returns how many went.
+pub fn sweep_tmp() -> usize {
+    let started = std::time::SystemTime::now() - std::time::Duration::from_secs_f64(util::now_secs());
+    let mut n = 0;
+    let Ok(rd) = std::fs::read_dir(util::tmp_dir()) else { return 0 };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let ours = (name.starts_with(TMP_PREFIX) || name.starts_with(&format!(".{TMP_PREFIX}")) || name.starts_with("match-")) && (name.ends_with(".mp4") || name.ends_with(".joining"));
+        let old = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < started);
+        if ours && old && e.path().is_file() && std::fs::remove_file(e.path()).is_ok() {
+            n += 1;
+        }
+    }
+    if n > 0 {
+        util::log(&format!("startup: {n} temporary export files of an earlier run removed"));
+    }
+    n
 }
 
 /// Temporary working files left in the temp folder (tests: none after any export).
@@ -370,7 +434,8 @@ pub fn sources_of(core: &crate::core::Core, id: &str) -> Result<(Target, Vec<Sou
     let mut out = Vec::new();
     let mut first: Option<ClipMeta> = None;
     for c in &p.clips {
-        let meta = lib.get(&c.id);
+        // F1 (0.1.41): an old project's draft working file is its first source, named by the project's own id.
+        let meta = if c.id == p.id { p.clip.clone().filter(|d| Path::new(&d.path).is_file()) } else { lib.get(&c.id) };
         // Project time is laid out from each clip's length WHEN IT WAS ADDED (projects::virtual_clip does the same for
         // the editor), so a saved edit and the export agree even if the library's clip changed length since.
         let duration = if c.duration > 0.0 { c.duration } else { meta.as_ref().map(|m| m.duration).unwrap_or(0.0) };

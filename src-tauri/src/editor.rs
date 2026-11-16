@@ -50,11 +50,13 @@ pub struct Color {
     pub contrast: f32,
     pub saturation: f32,
     pub gamma: f32,
+    /// 0.1.41: sharpening, 0 = off .. 1: `unsharp` with a 5x5 luma matrix, amount 1.5 x this (chroma untouched).
+    pub sharpness: f32,
 }
 
 impl Default for Color {
     fn default() -> Self {
-        Color { brightness: 1.0, contrast: 1.0, saturation: 1.0, gamma: 1.0 }
+        Color { brightness: 1.0, contrast: 1.0, saturation: 1.0, gamma: 1.0, sharpness: 0.0 }
     }
 }
 
@@ -79,6 +81,9 @@ pub struct Range {
     /// timeline seconds of black picture and silence from the clip's tracks, in its place in
     /// `segments` (`start`, `end`, `color`, `blank` are ignored then).
     pub gap: f64,
+    /// 0.1.41: this range plays at this speed (picture and its tracks' sound, pitch kept); 0 or 1 = as it was.
+    /// `start` / `end` stay source seconds: the range lasts (end - start) / speed on the timeline.
+    pub speed: f64,
 }
 
 /// A source range where an audio row is louder or quieter than its own volume.
@@ -412,13 +417,18 @@ fn same(a: f64, b: f64) -> bool {
 }
 
 fn is_neutral(c: &Color) -> bool {
-    [c.brightness, c.contrast, c.saturation, c.gamma].iter().all(|v| !v.is_finite() || same(*v as f64, 1.0))
+    [c.brightness, c.contrast, c.saturation, c.gamma].iter().all(|v| !v.is_finite() || same(*v as f64, 1.0)) && sharp_amount(c) == 0.0
+}
+
+/// The `unsharp` luma amount of `c` (0 = none): 1.5 x sharpness, sharpness kept to 0..1.
+fn sharp_amount(c: &Color) -> f64 {
+    if c.sharpness.is_finite() && c.sharpness > 0.001 { 1.5 * (c.sharpness as f64).min(1.0) } else { 0.0 }
 }
 
 /// True if `a` and `b` give the same picture (a non-finite field counts as 1, as in `is_neutral`).
 fn same_color(a: &Color, b: &Color) -> bool {
     let f = |v: f32| if v.is_finite() { v as f64 } else { 1.0 };
-    [(a.brightness, b.brightness), (a.contrast, b.contrast), (a.saturation, b.saturation), (a.gamma, b.gamma)].iter().all(|&(x, y)| same(f(x), f(y)))
+    [(a.brightness, b.brightness), (a.contrast, b.contrast), (a.saturation, b.saturation), (a.gamma, b.gamma)].iter().all(|&(x, y)| same(f(x), f(y))) && same(sharp_amount(a), sharp_amount(b))
 }
 
 fn clamped(v: f32, lo: f64, hi: f64) -> f64 {
@@ -488,7 +498,7 @@ pub fn audio_tracks(s: &Settings, src: &ClipMeta) -> Result<Vec<AudioTrack>, Str
     let dir_name = format!("edit-{}", util::sanitize_filename(&src.id));
     remove_stale_dirs(&tmp, &dir_name);
 
-    let titles = audio_titles(&ffmpeg, src_path)?;
+    let titles = crate::edcache::titles(src_path, || audio_titles(&ffmpeg, src_path))?; // P-HOOK 0.1.41 (edcache.rs): remembered per file
     if titles.is_empty() {
         return Ok(Vec::new());
     }
@@ -500,6 +510,7 @@ pub fn audio_tracks(s: &Settings, src: &ClipMeta) -> Result<Vec<AudioTrack>, Str
     let missing: Vec<usize> = (0..titles.len()).filter(|&i| !fresh(&final_path(i))).collect();
 
     if !missing.is_empty() {
+        let _slot = crate::edcache::slot_light()?; // P-HOOK 0.1.41 (edcache.rs): a few of these at once, cancellable
         // One ffmpeg run with an output per track reads the clip once. Stream copy
         // keeps this to a second or two even for a 10-minute clip.
         let mut cmd = util::hidden_cmd(&ffmpeg);
@@ -571,6 +582,12 @@ fn color_filter(c: &Color, matrix: &str, range: &str) -> Option<String> {
     if is_neutral(c) {
         return None;
     }
+    // Sharpness alone (0.1.41): only the unsharp, no trip through RGB.
+    let sharp = sharp_amount(c);
+    let unsharp = format!("unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount={sharp:.4}:chroma_msize_x=5:chroma_msize_y=5:chroma_amount=0");
+    if [c.brightness, c.contrast, c.saturation, c.gamma].iter().all(|v| !v.is_finite() || same(*v as f64, 1.0)) {
+        return Some(unsharp);
+    }
     let b = clamped(c.brightness, 0.0, BRIGHTNESS_MAX);
     let ct = clamped(c.contrast, 0.0, CONTRAST_MAX);
     let sat = clamped(c.saturation, 0.0, SATURATION_MAX);
@@ -613,6 +630,9 @@ fn color_filter(c: &Color, matrix: &str, range: &str) -> Option<String> {
         }
     }
     steps.push(format!("scale=out_color_matrix={matrix}:out_range={range}:flags=bicubic+accurate_rnd"));
+    if sharp > 0.0 {
+        steps.push(unsharp);
+    }
     Some(steps.join(","))
 }
 
@@ -687,15 +707,72 @@ pub(crate) fn video_codec_args(enc: &str) -> Vec<String> {
     a.iter().map(|s| s.to_string()).collect()
 }
 
+/// Seconds without a new frame (no advance of `out_time`) after which an export is ended as stalled (0.1.41).
+pub const STALL_SECS: u64 = 60;
+/// Tests: a shorter stall limit in milliseconds (0 = `STALL_SECS`).
+static STALL_MS_TEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// What an export that was cancelled fails with (the UI shows "Export cancelled" for it).
+pub const CANCELLED: &str = "Export cancelled";
+
+/// Running exports by the id the UI knows them by: `cancel_export` sets the flag (0.1.41).
+static RUNNING: Mutex<Vec<(String, std::sync::Arc<std::sync::atomic::AtomicBool>)>> = Mutex::new(Vec::new());
+
+/// Holds an export's entry in `RUNNING` for as long as it runs.
+pub struct ExportGuard {
+    id: String,
+    pub flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ExportGuard {
+    pub fn new(id: &str) -> ExportGuard {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        RUNNING.lock().unwrap().push((id.to_string(), flag.clone()));
+        ExportGuard { id: id.to_string(), flag }
+    }
+}
+
+impl Drop for ExportGuard {
+    fn drop(&mut self) {
+        let mut list = RUNNING.lock().unwrap();
+        if let Some(i) = list.iter().position(|(id, f)| *id == self.id && std::sync::Arc::ptr_eq(f, &self.flag)) {
+            list.remove(i);
+        }
+    }
+}
+
+/// End the running export `id`: true when there was one (it then fails with `CANCELLED`).
+pub fn cancel_export(id: &str) -> bool {
+    let list = RUNNING.lock().unwrap();
+    let mut any = false;
+    for (x, f) in list.iter().filter(|(x, _)| x == id) {
+        let _ = x;
+        f.store(true, std::sync::atomic::Ordering::SeqCst);
+        any = true;
+    }
+    any
+}
+
+thread_local! {
+    /// The cancel flag of the export this thread runs (set by `export_watched`), read by `run_with_progress`.
+    static CANCEL: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) };
+}
+
 /// Run ffmpeg with `-progress pipe:1` and report 0..100 against `expected` seconds of output.
+/// 0.1.41: the child is tied to Glint's life (`util::track_child`); when its `out_time` does not advance
+/// for `STALL_SECS` it is ended and the export fails saying where it stopped; a cancel ends it too.
 fn run_with_progress(ffmpeg: &Path, args: &[String], expected: f64, progress: &mut dyn FnMut(f32)) -> Result<(), String> {
-    let mut child = util::hidden_cmd(ffmpeg)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Could not start ffmpeg: {e}"))?;
+    let mut cmd = util::hidden_cmd(ffmpeg);
+    cmd.args(args);
+    let cancel = CANCEL.with(|c| c.borrow().clone());
+    run_watched(cmd, expected, progress, cancel.as_deref())
+}
+
+/// `run_with_progress` for any prepared command (tests give it a child that goes silent).
+fn run_watched(mut cmd: std::process::Command, expected: f64, progress: &mut dyn FnMut(f32), cancel: Option<&std::sync::atomic::AtomicBool>) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("Could not start ffmpeg: {e}"))?;
+    util::track_child(&child);
     // Drained on its own thread so a chatty stderr can never block ffmpeg while we read progress.
     let err_reader = child.stderr.take().map(|mut err| {
         std::thread::spawn(move || {
@@ -704,22 +781,64 @@ fn run_with_progress(ffmpeg: &Path, args: &[String], expected: f64, progress: &m
             buf
         })
     });
-    let mut last = -1.0f32;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
     if let Some(out) = child.stdout.take() {
-        for line in BufReader::new(out).lines().map_while(Result::ok) {
-            let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) else { continue };
-            if expected > 0.0 {
-                // 100 is sent only once the file is complete.
-                let pct = ((us / 1e6 / expected) * 100.0).clamp(0.0, 99.0) as f32;
-                if pct >= last + 0.5 {
-                    last = pct;
-                    progress(pct);
+        std::thread::spawn(move || {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
                 }
             }
+        });
+    }
+    let stall = match STALL_MS_TEST.load(Ordering::Relaxed) {
+        0 => Duration::from_secs(STALL_SECS),
+        ms => Duration::from_millis(ms),
+    };
+    let mut last = -1.0f32;
+    let mut out_us = -1.0f64;
+    let mut moved = Instant::now();
+    let mut stopped: Option<String> = None;
+    loop {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(line) => {
+                if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
+                    if us > out_us {
+                        out_us = us;
+                        moved = Instant::now();
+                    }
+                    if expected > 0.0 {
+                        // 100 is sent only once the file is complete.
+                        let pct = ((us / 1e6 / expected) * 100.0).clamp(0.0, 99.0) as f32;
+                        if pct >= last + 0.5 {
+                            last = pct;
+                            progress(pct);
+                        }
+                    }
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            stopped = Some(CANCELLED.to_string());
+        } else if moved.elapsed() >= stall {
+            let pct = if expected > 0.0 { ((out_us.max(0.0) / 1e6 / expected) * 100.0).clamp(0.0, 99.0).floor() } else { 0.0 };
+            stopped = Some(format!("The export stopped making progress at {pct:.0} %. ffmpeg made no new frame for {} seconds, so it was ended. The log has its last words.", stall.as_secs().max(1)));
+        }
+        if stopped.is_some() {
+            let _ = child.kill();
+            break;
         }
     }
     let status = child.wait().map_err(|e| format!("ffmpeg failed: {e}"))?;
     let stderr = err_reader.and_then(|h| h.join().ok()).unwrap_or_default();
+    if let Some(why) = stopped {
+        if why != CANCELLED {
+            util::log(&format!("export: stalled at {:.1} s of output; ffmpeg said: {}", out_us.max(0.0) / 1e6, util::last_lines(&stderr, 4)));
+        }
+        return Err(why);
+    }
     if status.success() {
         Ok(())
     } else {
@@ -727,7 +846,6 @@ fn run_with_progress(ffmpeg: &Path, args: &[String], expected: f64, progress: &m
         Err(if tail.is_empty() { format!("ffmpeg stopped with exit code {}", status.code().unwrap_or(-1)) } else { tail })
     }
 }
-
 thread_local! {
     /// Test hook: Some = `export` stops before ffmpeg and leaves its command line here.
     static DRY_RUN: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
@@ -771,12 +889,19 @@ struct Kept {
     blank: bool,
     /// Timeline seconds of gap (black, silent) just before this range in the result (0.1.36).
     gap: f64,
+    /// 0.1.41: the range's own speed (1 = none).
+    speed: f64,
 }
 
 impl Kept {
     fn looks_like(&self, o: &Kept) -> bool {
-        self.blank == o.blank && same_color(&self.color, &o.color)
+        self.blank == o.blank && same_color(&self.color, &o.color) && same(self.speed, o.speed)
     }
+}
+
+/// A range's own speed (0.1.41): 0.25 ..= 4, absent / 0 / not a number = 1.
+fn range_speed(g: &Range) -> f64 {
+    if g.speed.is_finite() && g.speed > 0.0 { g.speed.clamp(0.25, 4.0) } else { 1.0 }
 }
 
 /// A `segments` entry that is a gap (0.1.36).
@@ -794,7 +919,7 @@ fn kept_ranges(opts: &ExportOpts, duration: f64) -> Vec<Kept> {
     if opts.segments.is_empty() {
         let start = if opts.start.is_finite() { opts.start.clamp(0.0, duration) } else { 0.0 };
         let to_end = !(opts.end.is_finite() && opts.end > start) || opts.end >= duration;
-        return vec![Kept { a: start, b: if to_end { duration } else { opts.end }, color: opts.color.clone(), blank: false, gap: 0.0 }];
+        return vec![Kept { a: start, b: if to_end { duration } else { opts.end }, color: opts.color.clone(), blank: false, gap: 0.0, speed: 1.0 }];
     }
     if opts.segments.iter().any(is_gap) {
         // Gaps (0.1.36): in the order given; each gap goes to the range after it, and two
@@ -816,6 +941,7 @@ fn kept_ranges(opts: &ExportOpts, duration: f64) -> Vec<Kept> {
                 color: if g.blank { Color::default() } else { g.color.clone().unwrap_or_else(|| opts.color.clone()) },
                 blank: g.blank,
                 gap: 0.0,
+                speed: range_speed(g),
             };
             if k.b - k.a <= 0.001 {
                 continue;
@@ -847,6 +973,7 @@ fn kept_ranges(opts: &ExportOpts, duration: f64) -> Vec<Kept> {
             color: if g.blank { Color::default() } else { g.color.clone().unwrap_or_else(|| opts.color.clone()) },
             blank: g.blank,
             gap: 0.0,
+            speed: range_speed(g),
         })
         .filter(|k| k.b - k.a > 0.001)
         .collect();
@@ -1117,8 +1244,8 @@ fn cut_chain(input: &str, ranges: &[(f64, Option<f64>)], tag: &str, tempo: &str,
 /// `cut_chain` with gaps (0.1.36): `gaps[i]` seconds of silence (`silence`: an `anullsrc` of the
 /// input's rate and layout) go just before range `i`, each exactly that many samples long.
 /// Without any gap this is `cut_chain` itself, character for character.
-fn cut_chain_gaps(input: &str, ranges: &[(f64, Option<f64>)], gaps: &[f64], tag: &str, tempo: &str, out: &str, silence: (u32, &str)) -> String {
-    if gaps.iter().all(|g| *g <= 0.0) {
+fn cut_chain_gaps(input: &str, ranges: &[(f64, Option<f64>)], gaps: &[f64], speeds: &[f64], tag: &str, tempo: &str, out: &str, silence: (u32, &str)) -> String {
+    if gaps.iter().all(|g| *g <= 0.0) && speeds.iter().all(|x| same(*x, 1.0)) {
         return cut_chain(input, ranges, tag, tempo, out);
     }
     let k = ranges.len();
@@ -1138,7 +1265,10 @@ fn cut_chain_gaps(input: &str, ranges: &[(f64, Option<f64>)], gaps: &[f64], tag:
             n += 1;
         }
         let end = b.map(|b| format!(":end={b:.6}")).unwrap_or_default();
-        c += &format!(";[{tag}c{i}]atrim=start={a:.6}{end},asetpts=PTS-STARTPTS[{tag}s{i}]");
+        // A range with its own speed (0.1.41): its sound at that speed, the pitch kept.
+        let sk = speeds.get(i).copied().unwrap_or(1.0);
+        let own = if same(sk, 1.0) { String::new() } else { format!(",{}", atempo_chain(sk)) };
+        c += &format!(";[{tag}c{i}]atrim=start={a:.6}{end},asetpts=PTS-STARTPTS{own}[{tag}s{i}]");
         parts += &format!("[{tag}s{i}]");
         n += 1;
     }
@@ -1150,10 +1280,32 @@ fn gain_filter(volume: f64, regions: &[(f64, f64, f64)]) -> String {
     if regions.is_empty() {
         return if same(volume, 1.0) { "anull".into() } else { format!("volume={volume:.4}") };
     }
-    // The first region listed wins where two overlap.
+    // The first region listed wins where two overlap. Up to 0.1.40 one nested `if` per region: ffmpeg's
+    // expression parser gives up at about 100 levels (R3-1). Now the regions are made disjoint first and
+    // summed: 1 + (g - 1) over each, which nests nothing however many there are.
     let mut e = "1".to_string();
-    for (a, b, g) in regions.iter().rev() {
-        e = format!("if(gte(t,{a:.4})*lt(t,{b:.4}),{g:.4},{e})");
+    if regions.len() <= 8 {
+        for (a, b, g) in regions.iter().rev() {
+            e = format!("if(gte(t,{a:.4})*lt(t,{b:.4}),{g:.4},{e})");
+        }
+    } else {
+        let mut taken: Vec<(f64, f64, f64)> = Vec::new();
+        for &(a, b, g) in regions {
+            // The parts of a..b that no earlier region holds.
+            let mut parts = vec![(a, b)];
+            for &(x, y, _) in &taken {
+                parts = parts.into_iter().flat_map(|(p, q)| {
+                    let mut out = Vec::new();
+                    if p < x.min(q) { out.push((p, x.min(q))); }
+                    if q > y.max(p) { out.push((y.max(p), q)); }
+                    out
+                }).filter(|(p, q)| q - p > 1e-6).collect();
+            }
+            taken.extend(parts.into_iter().map(|(p, q)| (p, q, g)));
+        }
+        for (a, b, g) in taken.iter().filter(|r| (r.2 - 1.0).abs() > 1e-9) {
+            e += &format!("+{:.4}*gte(t,{a:.4})*lt(t,{b:.4})", g - 1.0);
+        }
     }
     // `volume` evaluates its expression once per frame; short frames put a
     // region's edge within 2.7 ms of where it was set.
@@ -1737,6 +1889,19 @@ fn canvas_chain(p: &CanvasPlan, input: &str, out: &str, (sw, sh): (u32, u32), ma
 
 /// Write a new clip beside `src` with `opts` applied, and return its library entry.
 /// `progress` receives 0..100 while ffmpeg runs.
+/// `export` that `cancel_export { id }` can end (0.1.41): the command's way in.
+pub fn export_cancellable(s: &Settings, src: &ClipMeta, opts: &ExportOpts, id: &str, progress: &mut dyn FnMut(f32)) -> Result<ClipMeta, String> {
+    let guard = ExportGuard::new(id);
+    with_cancel(&guard.flag, || export(s, src, opts, progress))
+}
+
+/// Run `f` with `flag` as this thread's export cancel flag (every ffmpeg the export starts reads it).
+pub fn with_cancel<T>(flag: &std::sync::Arc<std::sync::atomic::AtomicBool>, f: impl FnOnce() -> T) -> T {
+    let before = CANCEL.with(|c| c.replace(Some(flag.clone())));
+    let out = f();
+    CANCEL.with(|c| *c.borrow_mut() = before);
+    out
+}
 pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dyn FnMut(f32)) -> Result<ClipMeta, String> {
     // The overlay PNGs are temp files made for this export: gone when it ends, whatever happens.
     let _pngs = OverlayFiles(opts.overlays.iter().map(|o| PathBuf::from(&o.png)).collect());
@@ -1752,7 +1917,10 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     let speed = if opts.speed.is_finite() { opts.speed.clamp(0.25, 4.0) } else { 1.0 };
     let pieces = kept_ranges(opts, duration);
     let ranges: Vec<(f64, f64)> = pieces.iter().map(|k| (k.a, k.b)).collect();
-    let kept: f64 = ranges.iter().map(|(a, b)| b - a).sum();
+    // 0.1.41: a range with its own speed lasts (b - a) / speed on the timeline.
+    let speeds: Vec<f64> = pieces.iter().map(|k| k.speed).collect();
+    let kept_src: f64 = ranges.iter().map(|(a, b)| b - a).sum();
+    let kept: f64 = ranges.iter().zip(&speeds).map(|((a, b), sk)| (b - a) / sk).sum();
     let Some(&(_, last_end)) = ranges.last() else {
         return Err("The selection is too short".into());
     };
@@ -1789,8 +1957,10 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     // Overlays, blur boxes and fades (on the result's own timeline, `out_total` long).
     let out_total = out_video + tail;
     let layers = layer_plan(opts, out_total)?;
-    if k_count == 1 && same(speed, 1.0) && plain && opts.tracks.is_empty() && opts.audio.is_empty() && layers.is_none() && opts.canvas.is_none() && tail == 0.0 && gap_total == 0.0 {
+    if k_count == 1 && same(speed, 1.0) && plain && opts.tracks.is_empty() && opts.audio.is_empty() && layers.is_none() && opts.canvas.is_none() && tail == 0.0 && gap_total == 0.0 && speeds.iter().all(|x| same(*x, 1.0)) && kept_src >= crate::clip::MIN_TRIM {
+        util::log(&format!("export: lossless cut of {}: {base:.3}..{:.3} s", src.title, if to_end { duration } else { last_end }));
         let meta = crate::clip::trim(s, src, base, if to_end { duration } else { last_end }, true)?;
+        util::log(&format!("export: lossless cut done, {:.1} MB", meta.size as f64 / 1e6));
         progress(100.0);
         return Ok(meta);
     }
@@ -1800,7 +1970,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     // Every file the mix needs is checked here, before the long encode starts.
     // Files that play through cuts may go on into the black after the video (kept seconds, before the speed).
     let mut plan = audio_plan(&ffmpeg, &src_path, opts, &titles, duration, base, total, k_count, speed, span + tail * speed)?;
-    if (tail > 0.0 || gap_total > 0.0) && matches!(plan, AudioPlan::Copy) {
+    if (tail > 0.0 || gap_total > 0.0 || speeds.iter().any(|x| !same(*x, 1.0))) && matches!(plan, AudioPlan::Copy) {
         plan = AudioPlan::Tracks; // a copied track cannot be padded with silence, nor hold a gap
     }
     if let Some(l) = &layers {
@@ -1874,8 +2044,11 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             let c = color_filter(&pieces[k].color, matrix, range).map(|f| format!(",{f}")).unwrap_or_default();
             format!("{c},format=yuv420p,{tags}")
         };
-        graph.push(format!("[{k}:v:0]{trim}setpts='({placed:.6}+if(eq(N,0),0,max(0,T-{:.6})))/{speed:.6}/TB'{look}[{label}]", a - seek));
-        placed += b - a;
+        // A range with its own speed (0.1.41): its frames' times inside it are divided by it.
+        let sk = speeds[k];
+        let rel = if same(sk, 1.0) { format!("if(eq(N,0),0,max(0,T-{:.6}))", a - seek) } else { format!("if(eq(N,0),0,max(0,T-{:.6}))/{sk:.6}", a - seek) };
+        graph.push(format!("[{k}:v:0]{trim}setpts='({placed:.6}+{rel})/{speed:.6}/TB'{look}[{label}]"));
+        placed += (b - a) / sk;
     }
     if k_count > 1 {
         let labels: String = (0..k_count).map(|k| format!("[v{k}]")).collect();
@@ -1894,9 +2067,20 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     // 30 fps) rather than duplicating or interpolating. `-r` cannot do this:
     // ffmpeg 8 refuses `-r` together with `-fps_mode vfr`, and CFR would
     // duplicate frames through every still stretch.
-    let cap = if src.fps > 0 { src.fps.min(240) } else { 60 };
+    // The frame rate the export's own frames use (the speed-up cap, black in gaps and after the video): the
+    // footage's real average rate, not a library number that can be a joined file's guess (0.1.41, R3-5: a
+    // draft with one odd clip carried 203 fps into every black frame). The library's rate when it is plausible.
+    let probed = library::probe(&ffmpeg, &src_path, false).map(|p| p.fps).unwrap_or(0);
+    let cap = match (src.fps, probed) {
+        (l, p) if l > 0 && (p == 0 || (l as f64) <= p as f64 * 1.5 + 1.0) => l,
+        (_, p) if p > 0 => p,
+        _ => 60,
+    }
+    .clamp(1, 240);
     let mut video = "[vj]null".to_string();
-    if speed > 1.0 + 1e-3 {
+    let fastest = speed * speeds.iter().copied().fold(1.0, f64::max);
+    let any_speed = !same(speed, 1.0) || speeds.iter().any(|x| !same(*x, 1.0));
+    if fastest > 1.0 + 1e-3 {
         video += &format!(",select='if(gte(t,ld(0)),st(0,max(ld(0),t-1/{cap})+1/{cap})*0+1,0)'");
     }
     if let Some(f) = color_filter(&pieces[0].color, matrix, range).filter(|_| uniform) {
@@ -1917,7 +2101,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         // overlays, so those go on over the black.
         video += &format!(",format=yuv420p,{tags}[vk]");
         graph.push(std::mem::take(&mut video));
-        graph.push(format!("color=c=black:s={w}x{h}:r={cap}:d={tail:.6},format=yuv420p,lutyuv=y={black}:u=128:v=128,setsar=1,{tags},setpts=PTS+{out_video:.6}/TB[vt]"));
+        graph.push(format!("color=c=black:s={w}x{h}:r={cap}:d={tail:.6},format=yuv420p,lutyuv=y={black}:u=128:v=128,setsar=1,{tags},settb=AVTB,setpts=PTS+{out_video:.6}/TB[vt]"));
         video = "[vk][vt]interleave=nb_inputs=2".to_string();
     } else if let (true, Some((w, h))) = (gap_total > 0.0, src_size) {
         // Gaps (0.1.36): black frames of each gap's length at the clip's rate, placed where the gap
@@ -1930,7 +2114,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         graph.push(std::mem::take(&mut video));
         let mut labels = "[vk]".to_string();
         for (i, (at, len)) in blacks.iter().enumerate() {
-            graph.push(format!("color=c=black:s={w}x{h}:r={cap}:d={len:.6},format=yuv420p,lutyuv=y={black}:u=128:v=128,setsar=1,{tags},setpts=PTS+{at:.6}/TB[vg{i}]"));
+            graph.push(format!("color=c=black:s={w}x{h}:r={cap}:d={len:.6},format=yuv420p,lutyuv=y={black}:u=128:v=128,setsar=1,{tags},settb=AVTB,setpts=PTS+{at:.6}/TB[vg{i}]"));
             labels += &format!("[vg{i}]");
         }
         video = format!("{labels}interleave=nb_inputs={}", blacks.len() + 1);
@@ -1978,13 +2162,19 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             // Unchanged audio is copied: no generation loss, titles carried over.
             maps.extend(["-map".to_string(), format!("{clip_audio}:a")]);
             audio_args.extend(["-c:a", "copy"].map(String::from));
+            // A stream copy loses the MP4 track titles (R3-4): the editor and joins tell the tracks apart by them.
+            for (i, t) in titles.iter().enumerate() {
+                if let Some(t) = t.as_ref().filter(|t| !t.is_empty()) {
+                    audio_args.extend([format!("-metadata:s:a:{i}"), format!("title={t}")]);
+                }
+            }
         }
         AudioPlan::Tracks => {
             let track_ch = if gap_total > 0.0 { probe_audio(&ffmpeg, &src_path).map(|p| p.channels).unwrap_or_default() } else { Vec::new() };
             for (i, t) in titles.iter().enumerate() {
                 // A gap is silence in the track's own layout (mono stays mono).
                 let layout = if track_ch.get(i).copied().unwrap_or(2) == 1 { "mono" } else { "stereo" };
-                graph.push(cut_chain_gaps(&format!("[{clip_audio}:a:{i}]"), &local, &gaps, &format!("t{i}"), &tempo, &format!("[a{i}]"), (MIX_RATE, layout)));
+                graph.push(cut_chain_gaps(&format!("[{clip_audio}:a:{i}]"), &local, &gaps, &speeds, &format!("t{i}"), &tempo, &format!("[a{i}]"), (MIX_RATE, layout)));
                 maps.extend(["-map".to_string(), format!("[a{i}]")]);
                 let title = t.clone().unwrap_or_else(|| format!("Track {}", i + 1));
                 audio_args.extend([format!("-metadata:s:a:{i}"), format!("title={title}")]);
@@ -2027,13 +2217,13 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             // in the preview, instead of amix dividing by the input count.
             graph.push(format!("{labels}[bed]amix=inputs={}:duration=longest:normalize=0,atrim=end={total:.6}[mix]", rows.len() - n_thru + 1));
             if n_thru == 0 {
-                graph.push(cut_chain_gaps("[mix]", &local, &gaps, "m", &tempo, "[a]", (MIX_RATE, "stereo")));
+                graph.push(cut_chain_gaps("[mix]", &local, &gaps, &speeds, "m", &tempo, "[a]", (MIX_RATE, "stereo")));
             } else {
                 // The cut mix first, then the files that play through the cuts on top of it, on the
                 // result's own timeline. `duration=first`: the result stays as long as the video.
                 // With black after the video the cut mix is padded first, so the files go on into it.
                 let pad = if tail > 0.0 { format!("apad=whole_dur={:.6}", span + tail * speed) } else { "anull".to_string() };
-                graph.push(cut_chain_gaps("[mix]", &local, &gaps, "m", &pad, "[mc]", (MIX_RATE, "stereo")));
+                graph.push(cut_chain_gaps("[mix]", &local, &gaps, &speeds, "m", &pad, "[mc]", (MIX_RATE, "stereo")));
                 graph.push(format!("[mc]{thru}amix=inputs={}:duration=first:normalize=0,{tempo}[a]", n_thru + 1));
             }
             maps.extend(["-map", "[a]"].map(String::from));
@@ -2085,6 +2275,10 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
                 // threads each keeps memory in check on a 1440p clip.
                 a.extend(["-threads", "4"].map(String::from));
             }
+            // 0.1.41, the hang: a joined file whose picture changes its colour tags part way (clips of other
+            // settings) made ffmpeg rebuild the whole graph there, and a rebuild with inputs that had already
+            // ended never started again. Each range input keeps the graph it was set up with.
+            a.extend(["-reinit_filter", "0"].map(String::from));
             a.extend(["-ss".to_string(), format!("{seek:.6}")]);
             if let Some(l) = len {
                 a.extend(["-t".to_string(), format!("{l:.6}")]);
@@ -2092,6 +2286,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             a.extend(["-i".to_string(), src_s.clone()]);
         }
         if needs_clip {
+            a.extend(["-reinit_filter", "0"].map(String::from));
             a.extend(["-ss".to_string(), format!("{base:.6}")]);
             if !to_end {
                 a.extend(["-t".to_string(), format!("{total:.6}")]);
@@ -2108,9 +2303,19 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         a.extend(video_codec_args(enc));
         // Frames keep their own timestamps (no CFR duplication); vfr only drops exact repeats.
         a.extend(["-fps_mode", "vfr"].map(String::from));
+        if any_speed {
+            // A changed speed puts frames between the source frame rate's ticks: without a fine clock the encoder
+            // rounded them onto that rate's grid, up to a frame late against the sound (0.1.41, the sync checks).
+            a.extend(["-enc_time_base:v", "1/90000"].map(String::from));
+        }
         // A keyframe each second of output, like the recorder, so the result can be trimmed losslessly too.
         a.extend(["-force_key_frames", "expr:gte(t,n_forced*1)"].map(String::from));
         a.extend(audio_args.iter().cloned());
+        if layers.is_some() {
+            // A moving picture's input loops for a second more than the result: without a bound the video ran on
+            // past the sound by that much (0.1.41: the owner's montage came out 166.2 s against 165.2 s of sound).
+            a.extend(["-t".to_string(), format!("{out_total:.6}")]);
+        }
         a.extend(["-metadata".to_string(), format!("title={title}"), "-movflags".into(), "+faststart".into(), "-progress".into(), "pipe:1".into()]);
         a.push(out.to_string_lossy().into_owned());
         a
@@ -2128,19 +2333,52 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         return Err("dry run".into());
     }
     let enc = pick_encoder(&ffmpeg, &s.encoder);
-    let mut result = run_with_progress(&ffmpeg, &build(&enc), expected, progress);
+    // Windows refuses a command line over 32767 characters (R3-2): say so plainly instead of "os error 206".
+    let line_len: usize = build(&enc).iter().map(|a| a.len() + 3).sum::<usize>() + ffmpeg.as_os_str().len() + 3;
+    if line_len > 32_000 {
+        util::log(&format!("export: the command would be {line_len} characters ({k_count} pieces): refused"));
+        return Err(format!("This edit has too many pieces ({k_count}) to export in one go. Export it in two parts, or join some pieces first."));
+    }
+    let n_layers = layers.as_ref().map(|l| l.overlays.len() + l.blurs.len()).unwrap_or(0);
+    let plan_name = match &plan { AudioPlan::Silent => "no sound".to_string(), AudioPlan::Copy => "tracks copied".into(), AudioPlan::Tracks => format!("{} tracks", titles.len()), AudioPlan::Mix { rows, .. } => format!("a mix of {} rows", rows.len()) };
+    util::log(&format!("export: re-encode of {}: {k_count} ranges, {:.1} s out, {plan_name}, {n_layers} layers, {}{}, encoder {enc}", src.title, out_total, if gap_total > 0.0 { "gaps, " } else { "" }, if tail > 0.0 { "a tail" } else { "no tail" }));
+    let started = std::time::Instant::now();
+    // The bar never goes back (a retry on the CPU starts its own count from 0: R3-11).
+    let top = std::cell::Cell::new(0f32);
+    let mut forward = |p: f32| {
+        if p > top.get() {
+            top.set(p);
+            progress(p);
+        }
+    };
+    let mut result = run_with_progress(&ffmpeg, &build(&enc), expected, &mut forward);
     if let Err(e) = &result {
-        if enc != "x264" {
+        if enc != "x264" && e != CANCELLED && !e.starts_with("The export stopped") {
             // A hardware encoder can be busy (the recorder and a game may hold its sessions); the CPU always works.
             util::log(&format!("export: {enc} failed ({e}), retrying with libx264"));
             let _ = fs::remove_file(&out);
-            result = run_with_progress(&ffmpeg, &build("x264"), expected, progress);
+            let base_pct = top.get();
+            let mut again = |p: f32| forward(base_pct + (99.0 - base_pct) * p / 100.0);
+            result = run_with_progress(&ffmpeg, &build("x264"), expected, &mut again);
         }
     }
     if let Err(e) = result {
         let _ = fs::remove_file(&out);
+        if e == CANCELLED {
+            util::log(&format!("export: cancelled after {:.1} s", started.elapsed().as_secs_f64()));
+            return Err(e);
+        }
+        // The full command only when it failed, without the user's folder names where that is easy.
+        let home = std::env::var("USERPROFILE").unwrap_or_default();
+        let line = build(&enc).join(" ");
+        let line = if home.len() > 3 { line.replace(&home, "%USERPROFILE%") } else { line };
+        util::log(&format!("export failed after {:.1} s: {e}\n  command: {line}", started.elapsed().as_secs_f64()));
+        if e.starts_with("The export stopped") {
+            return Err(e);
+        }
         return Err(format!("Export failed: {e}"));
     }
+    util::log(&format!("export: done in {:.1} s, {:.1} MB", started.elapsed().as_secs_f64(), fs::metadata(&out).map(|m| m.len() as f64 / 1e6).unwrap_or(0.0)));
     if !fs::metadata(&out).is_ok_and(|m| m.len() > 0) {
         let _ = fs::remove_file(&out);
         return Err("Export failed: ffmpeg wrote no file".into());
@@ -3197,14 +3435,14 @@ fn song_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, dir:
     }
 }
 
-/// The commands of 0.1.35 for options without gaps (hashes of `export_args`, recorded with the 0.1.35 code):
-/// gaps (0.1.36) must leave every one of them exactly as it was.
+/// The commands for options without gaps (hashes of `export_args`). Recorded with 0.1.35; 0.1.41 changed every one on
+/// purpose (`-reinit_filter 0` on the range inputs: the hang) and they were recorded again: later work must keep them.
 const COMMANDS_0135: [(&str, &str); 5] = [
-    ("two ranges, the clip's tracks", "bed2f7f97a421c37"),
-    ("moved parts at 2x, a track and a through file", "e0e47e7a90350ab9"),
-    ("one range, a file cut with the video, fades, tail 1.5 s", "23fbe719e7671892"),
-    ("whole clip, an overlay picture, tail 2 s", "f7935f7be69e6715"),
-    ("three ranges, a blank one and a colored one, levels", "ed97997f06b14239"),
+    ("two ranges, the clip's tracks", "d3dcd31bbeb9d2ba"),
+    ("moved parts at 2x, a track and a through file", "1b89ae06cbbb9158"),
+    ("one range, a file cut with the video, fades, tail 1.5 s", "a5ba623b2d1e11ec"),
+    ("whole clip, an overlay picture, tail 2 s", "3ff0107818def0ad"),
+    ("three ranges, a blank one and a colored one, levels", "4dc5e06fb9e95a29"),
 ];
 
 /// The option sets of `COMMANDS_0135`, in that order.
@@ -3370,6 +3608,315 @@ fn gap_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, (f_de
             r.check("gap: a file that plays through is heard over it, the clip's microphone is not", exact(f, 6.0) && heard(file_gap, ref_file) && silent(mic_gap, ref_mic) && heard(mic_after, ref_mic), &format!("{:?} file {file_gap:?} ({ref_file:?}), mic {mic_gap:?} then {mic_after:?}", durs(f)));
         }
         Err(e) => r.check("gap: a file that plays through", false, &e),
+    }
+}
+
+/// 0.1.41: the stall watchdog, the cancel and the kill-on-close job, with an ffmpeg that goes silent
+/// (one frame, then the next a hundred seconds later in real time: `-re`), and a stall limit of 2 s.
+fn watchdog_checks(r: &mut Report, ffmpeg: &Path) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
+    let silent = || {
+        let mut cmd = util::hidden_cmd(ffmpeg);
+        cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-re", "-f", "lavfi", "-i", "color=c=black:s=64x36:r=0.01:d=1000", "-f", "null", "-progress", "pipe:1", "-"]);
+        cmd
+    };
+    STALL_MS_TEST.store(2000, Ordering::Relaxed);
+    let t0 = Instant::now();
+    let res = run_watched(silent(), 1000.0, &mut |_| {}, None);
+    let secs = t0.elapsed().as_secs_f64();
+    r.check("a silent ffmpeg is ended by the stall watchdog, with the message", res.as_ref().err().is_some_and(|e| e.starts_with("The export stopped making progress at ")) && secs < 8.0, &format!("{res:?} after {secs:.1} s"));
+    STALL_MS_TEST.store(0, Ordering::Relaxed);
+    let flag = std::sync::Arc::new(AtomicBool::new(false));
+    let f2 = flag.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        f2.store(true, Ordering::SeqCst);
+    });
+    let t0 = Instant::now();
+    let res = run_watched(silent(), 1000.0, &mut |_| {}, Some(&flag));
+    let secs = t0.elapsed().as_secs_f64();
+    r.check("a cancel ends the running ffmpeg at once", res.as_ref().err().is_some_and(|e| e == CANCELLED) && secs < 4.0, &format!("{res:?} after {secs:.1} s"));
+    // cancel_export by id: false with nothing running, true while one runs.
+    let none = cancel_export("no-such-export");
+    let guard = ExportGuard::new("e2e-cancel");
+    let some = cancel_export("e2e-cancel") && guard.flag.load(Ordering::SeqCst);
+    drop(guard);
+    r.check("cancel_export: false with nothing running, true for a running export", !none && some && !cancel_export("e2e-cancel"), "");
+    // Every export / join / render ffmpeg is in the kill-on-close job: Windows ends it with Glint.
+    let child = silent().stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    match child {
+        Ok(mut c) => {
+            util::track_child(&c);
+            let tracked = util::child_is_tracked(&c);
+            let _ = c.kill();
+            let _ = c.wait();
+            r.check("a child Glint starts is tied to Glint's life (kill-on-close job)", tracked, "");
+        }
+        Err(e) => r.check("a child Glint starts is tied to Glint's life", false, &e.to_string()),
+    }
+}
+
+/// 0.1.41, the hang: a file whose picture changes its colour tags part way (two encodes with other
+/// `-colorspace` / `-color_primaries` / `-color_trc`, joined without re-encoding), cut into ranges out of
+/// order with a range that ends early, exported with a time limit. Up to 0.1.40 such an export froze.
+fn tag_change_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path) {
+    use std::time::Instant;
+    let part = |name: &str, tags: [&str; 3], tone: u32| -> PathBuf {
+        let p = dir.join(name);
+        let _ = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=60:d=6", "-f", "lavfi", "-i", &format!("sine=frequency={tone}:sample_rate=48000:duration=6"),
+            "-c:v", "libx264", "-preset", "ultrafast", "-g", "60", "-pix_fmt", "yuv420p", "-colorspace", tags[0], "-color_primaries", tags[1], "-color_trc", tags[2], "-c:a", "aac", "-shortest", &p.to_string_lossy()]);
+        p
+    };
+    let a = part("tags-a.mp4", ["bt709", "bt709", "bt709"], 600);
+    let b = part("tags-b.mp4", ["bt470bg", "bt709", "iec61966-2-1"], 900);
+    let list = dir.join("tags-list.txt");
+    let _ = fs::write(&list, format!("file '{}'\nfile '{}'\nfile '{}'\n", a.to_string_lossy().replace('\'', "'\\''"), b.to_string_lossy().replace('\'', "'\\''"), a.to_string_lossy().replace('\'', "'\\''")));
+    let joined = dir.join("tags-joined.mp4");
+    let made = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", &list.to_string_lossy(), "-c", "copy", &joined.to_string_lossy()]);
+    let src = library::register(ffmpeg, &joined, "Tags", "Test Game", "clip");
+    if made.is_err() || src.duration < 17.0 {
+        r.check("tag change: test file made (18 s, tags change at 6 and 12 s)", false, &format!("{made:?} {:.1} s", src.duration));
+        return;
+    }
+    let seg = |a: f64, b: f64| Range { start: a, end: b, ..Default::default() };
+    // Ranges like the owner's: an early one, then two where the second lies earlier in the file and in other tags.
+    // An early range that ends, then ranges that run across a tag change (at 12 s and at 6 s), the second earlier in the file.
+    let opts = ExportOpts { segments: vec![seg(0.5, 2.0), seg(10.5, 13.5), seg(4.0, 7.0)], ordered: true, ..Default::default() };
+    let t0 = Instant::now();
+    let res = export(s, &src, &opts, &mut |_| {});
+    let secs = t0.elapsed().as_secs_f64();
+    let ok = res.as_ref().is_ok_and(|m| (m.duration - 7.5).abs() < 0.1);
+    r.check("tag change: ranges out of order across a colour-tag change export (no hang)", ok && secs < 60.0, &format!("{:?} in {secs:.1} s", res.as_ref().map(|m| m.duration)));
+}
+
+/// A clip with a white flash and a 1 kHz beep (every track) at 0.5, 1.5, 2.5 ... s: `fps`, a keyframe every
+/// two seconds (cuts start between keyframes), `vfr` = frame times jittered, `audio_extra` = sound longer than
+/// the picture, and Glint's own way of writing clips (90 kHz picture clock, AAC with its priming).
+fn flash_clip(ffmpeg: &Path, out: &Path, fps: u32, secs: f64, vfr: bool, audio_extra: f64) -> bool {
+    let frame = 1.0 / fps as f64;
+    let mut vf = format!("color=c=black:s=160x90:r={fps}:d={secs},drawbox=c=white:t=fill:enable='lt(mod(t-0.5+{h},1),{w})'", h = frame * 0.25, w = frame * 0.85);
+    if vfr {
+        vf.push_str(&format!(",settb=1/90000,setpts='(N/{fps}+0.003*sin(N*1.7))/TB'"));
+    }
+    let beep = "if(lt(mod(t-0.5,1),0.06)*gte(t,0.5),0.8*sin(2*PI*1000*t),0)";
+    let asecs = secs + audio_extra;
+    let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i"].map(String::from).to_vec();
+    a.push(vf);
+    for _ in 0..3 {
+        a.extend(["-f", "lavfi", "-i"].map(String::from));
+        a.push(format!("aevalsrc='{beep}|{beep}':s=48000:d={asecs}"));
+    }
+    a.extend(["-map", "0:v", "-map", "1:a", "-map", "2:a", "-map", "3:a", "-c:v", "libx264", "-preset", "ultrafast", "-bf", "0", "-pix_fmt", "yuv420p", "-g"].map(String::from));
+    a.push((fps * 2).to_string());
+    a.extend(["-video_track_timescale", "90000"].map(String::from));
+    if vfr {
+        a.extend(["-fps_mode", "passthrough"].map(String::from));
+    }
+    a.extend(["-c:a", "aac", "-b:a", "128k", "-metadata:s:a:0", "title=Mix", "-metadata:s:a:1", "title=Desktop", "-metadata:s:a:2", "title=Microphone"].map(String::from));
+    a.push(out.to_string_lossy().into_owned());
+    let args: Vec<&str> = a.iter().map(String::as_str).collect();
+    run_ffmpeg(ffmpeg, &args).is_ok()
+}
+
+/// Times of the white flashes in `file` (picture timestamps, as a player shows them).
+fn flash_times(ffmpeg: &Path, file: &Path) -> Vec<f64> {
+    let Ok(out) = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-nostdin", "-i"]).arg(file).args(["-map", "0:v:0", "-vf", "scale=16:16,format=gray,showinfo", "-f", "null", "-"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output() else { return Vec::new() };
+    let text = String::from_utf8_lossy(&out.stderr);
+    let (mut found, mut prev) = (Vec::new(), 0u32);
+    for line in text.lines() {
+        let (Some(p), Some(m)) = (line.find("pts_time:"), line.find("mean:[")) else { continue };
+        let pts: f64 = line[p + 9..].split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(-1.0);
+        let y: u32 = line[m + 6..].split(|c: char| !c.is_ascii_digit()).next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        if y > 128 && prev <= 128 {
+            found.push(pts);
+        }
+        prev = y;
+    }
+    found
+}
+
+/// Starts of the beeps on the first audio track of `file`, decoded back to back from its start (as a player
+/// plays it), on the file's clock (the track's start time added).
+fn beep_times(ffmpeg: &Path, file: &Path) -> Vec<f64> {
+    let Ok(out) = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-nostdin", "-loglevel", "error", "-i"]).arg(file).args(["-map", "0:a:0", "-ac", "1", "-ar", "48000", "-f", "s16le", "-"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).output() else { return Vec::new() };
+    let start = library::ffprobe_for(ffmpeg)
+        .and_then(|fp| util::hidden_cmd(&fp).args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=start_time", "-of", "default=nw=1:nk=1"]).arg(file).stdin(Stdio::null()).stderr(Stdio::null()).output().ok())
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let pcm: Vec<i16> = out.stdout.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+    let (mut found, mut quiet) = (Vec::new(), 48_000usize);
+    for (i, &v) in pcm.iter().enumerate() {
+        if v.unsigned_abs() > 3000 {
+            if quiet > 4800 {
+                found.push(start + i as f64 / 48_000.0);
+            }
+            quiet = 0;
+        } else {
+            quiet += 1;
+        }
+    }
+    found
+}
+
+/// Sound minus picture at every flash of `file` that has a beep within 0.3 s; (offsets, flashes without a beep).
+fn av_offsets(ffmpeg: &Path, file: &Path) -> (Vec<f64>, usize) {
+    let (fl, be) = (flash_times(ffmpeg, file), beep_times(ffmpeg, file));
+    let mut offs = Vec::new();
+    let mut lone = 0;
+    for f in &fl {
+        match be.iter().map(|b| b - f).filter(|d| d.abs() < 0.3).min_by(|a, b| a.abs().total_cmp(&b.abs())) {
+            Some(d) => offs.push(d),
+            None => lone += 1,
+        }
+    }
+    (offs, lone)
+}
+
+/// 0.1.41, a user's report ("the gameplay is delayed against the sound"): picture against sound, to the frame,
+/// through every way an export can go, on clips that tell the time by a flash and a beep each second: 60 and
+/// 30 fps, a variable frame rate, sound longer than the picture; cuts that start between keyframes.
+fn sync_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path) {
+    let seg = |a: f64, b: f64| Range { start: a, end: b, ..Default::default() };
+    let sped = |a: f64, b: f64, x: f64| Range { start: a, end: b, speed: x, ..Default::default() };
+    let warm = Color { brightness: 1.1, ..Default::default() };
+    let clips = [("60 fps", 60u32, false, 0.0), ("30 fps", 30, false, 0.0), ("variable rate", 60, true, 0.0), ("sound longer than the picture", 60, false, 0.7)];
+    for (name, fps, vfr, extra) in clips {
+        let file = dir.join(format!("sync {name}.mp4"));
+        if !flash_clip(ffmpeg, &file, fps, 12.0, vfr, extra) {
+            r.check(&format!("sync: clip {name} made"), false, "");
+            continue;
+        }
+        let src = library::register(ffmpeg, &file, &format!("Sync {name}"), "Test Game", "clip");
+        let src = ClipMeta { fps, ..src };
+        let tol = 1.0 / fps as f64 + 0.004;
+        let (base, lone0) = av_offsets(ffmpeg, &file);
+        let paths: Vec<(&str, ExportOpts)> = vec![
+            ("lossless cut from 2.3 s", ExportOpts { segments: vec![seg(2.3, 9.7)], ..Default::default() }),
+            ("one range re-encoded (a colour)", ExportOpts { segments: vec![seg(2.3, 9.7)], color: warm.clone(), ..Default::default() }),
+            ("several ranges, one out of order", ExportOpts { segments: vec![seg(1.2, 3.8), seg(7.3, 9.9), seg(4.1, 6.6)], ordered: true, ..Default::default() }),
+            ("with a gap", ExportOpts { segments: vec![seg(1.2, 3.8), Range { gap: 1.3, ..Default::default() }, seg(4.1, 6.6)], ordered: true, ..Default::default() }),
+            ("with a tail", ExportOpts { segments: vec![seg(1.2, 6.6)], tail: 1.5, ..Default::default() }),
+            ("whole-result speed 2x", ExportOpts { segments: vec![seg(1.2, 9.6)], speed: 2.0, ..Default::default() }),
+            ("one range at 2x between two at 1x", ExportOpts { segments: vec![seg(1.2, 3.7), sped(3.7, 7.7, 2.0), seg(7.7, 10.4)], ordered: true, ..Default::default() }),
+            ("a range at 0.5x", ExportOpts { segments: vec![sped(1.2, 4.6, 0.5)], ..Default::default() }),
+        ];
+        let mut worst: Vec<String> = Vec::new();
+        let mut bad = false;
+        for (label, opts) in paths {
+            match export(s, &src, &opts, &mut |_| {}) {
+                Ok(m) => {
+                    let (offs, lone) = av_offsets(ffmpeg, Path::new(&m.path));
+                    // At 0.5x a beep is 120 ms but starts on its flash all the same; at 2x and in a sped range 30 ms.
+                    let max = offs.iter().fold(0.0f64, |a, b| a.max(b.abs()));
+                    // Slowed sound: atempo (pitch kept) stretches each sound's start, which then reads up to about 60 ms
+                    // early; the picture itself is exact (measured). Everything else: within a frame.
+                    let tol = if label.contains("0.5x") { 0.065 } else { tol };
+                    if offs.len() < 2 || lone > 0 || max > tol {
+                        bad = true;
+                    }
+                    if offs.len() < 2 || lone > 0 || max > tol {
+                        let p = Path::new(&m.path);
+                        r.line(&format!("INFO sync {name} {label}: flashes {:?} beeps {:?}", flash_times(ffmpeg, p).iter().take(6).map(|x| (x * 1000.0).round() / 1000.0).collect::<Vec<_>>(), beep_times(ffmpeg, p).iter().take(6).map(|x| (x * 1000.0).round() / 1000.0).collect::<Vec<_>>()));
+                    }
+                    worst.push(format!("{label}: {} flashes, worst {:+.1} ms{}", offs.len(), offs.iter().copied().max_by(|a, b| a.abs().total_cmp(&b.abs())).unwrap_or(f64::NAN) * 1000.0, if lone > 0 { format!(", {lone} without sound") } else { String::new() }));
+                    let _ = fs::remove_file(&m.path);
+                }
+                Err(e) => {
+                    bad = true;
+                    worst.push(format!("{label}: {e}"));
+                }
+            }
+        }
+        let src_worst = base.iter().fold(0.0f64, |a, b| a.max(b.abs()));
+        r.check(&format!("sync, {name}: picture and sound within a frame through every export path"), !bad && lone0 == 0 && src_worst <= tol, &format!("source worst {:.1} ms; {}", src_worst * 1000.0, worst.join("; ")));
+    }
+}
+
+/// 0.1.41, "the colours change a frame before the cut": at every cut no frame is dropped, doubled or out of
+/// order, and a range's colour is on exactly its own frames, at 60 fps and from a 30 fps source. The clip's left
+/// half is a frame counter (grey level 3 N mod 200 + 20, lossless), its right half a constant grey 100.
+fn cut_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path) {
+    // (time, mean grey) of every frame of `file`, of its left or right half.
+    let halves = |file: &Path, right: bool| -> Vec<(f64, f64)> {
+        let crop = if right { "crop=iw/2:ih:iw/2:0" } else { "crop=iw/2:ih:0:0" };
+        let Ok(out) = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-nostdin", "-i"]).arg(file).args(["-vf", &format!("{crop},format=gray,showinfo"), "-f", "null", "-"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output() else { return Vec::new() };
+        String::from_utf8_lossy(&out.stderr).lines().filter_map(|l| {
+            let p = l.find("pts_time:")?;
+            let mm = l.find("mean:[")?;
+            Some((l[p + 9..].split_whitespace().next()?.parse().ok()?, l[mm + 6..].split(|c: char| !c.is_ascii_digit() && c != '.').next()?.parse().ok()?))
+        }).collect()
+    };
+    for fps in [60u32, 30] {
+        let file = dir.join(format!("cuts {fps}.mp4"));
+        let made = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", &format!("color=c=gray:s=320x180:r={fps}:d=8,geq=lum='if(lt(X,W/2),mod(N*3,200)+20,100)':cb=128:cr=128"), "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", "-g", &(fps * 2).to_string(), "-pix_fmt", "yuv420p", &file.to_string_lossy()]);
+        if made.is_err() {
+            r.check(&format!("cuts {fps} fps: clip made"), false, &format!("{made:?}"));
+            continue;
+        }
+        let src = ClipMeta { fps, ..library::register(ffmpeg, &file, "Cuts", "Test Game", "clip") };
+        let frame = 1.0 / fps as f64;
+        // A plain, B brighter (its own colour), C plain again, C following on from A in the file; cuts mid-frame.
+        let a = Range { start: 0.5 + frame * 0.4, end: 2.0 + frame * 0.4, ..Default::default() };
+        let b = Range { start: 4.0 + frame * 0.6, end: 5.5 + frame * 0.6, color: Some(Color { brightness: 1.6, ..Default::default() }), ..Default::default() };
+        let cc = Range { start: 2.0 + frame * 0.4, end: 3.0, ..Default::default() };
+        let opts = ExportOpts { segments: vec![a.clone(), b.clone(), cc.clone()], ordered: true, ..Default::default() };
+        let m = match export(s, &src, &opts, &mut |_| {}) {
+            Ok(m) => m,
+            Err(e) => {
+                r.check(&format!("cuts {fps} fps: export"), false, &e);
+                continue;
+            }
+        };
+        let out = Path::new(&m.path);
+        let (left, right) = (halves(out, false), halves(out, true));
+        let (cut1, cut2) = (a.end - a.start, a.end - a.start + b.end - b.start);
+        let in_b = |t: f64| t >= cut1 - 1e-3 && t < cut2 - 1e-3;
+        // Times strictly rise and no step is longer than a frame (nothing dropped); a step at a cut that is not on a
+        // frame boundary is shorter: the frames keep their own times.
+        let steps: Vec<f64> = left.windows(2).map(|w| w[1].0 - w[0].0).collect();
+        let rising = !steps.is_empty() && steps.iter().all(|d| *d > 1e-4 && *d < frame * 1.3);
+        // The counter goes on by one frame (+3 grey) between every two frames of A and of C (B is brightened):
+        // nothing doubled or dropped inside a range; A's last and C's first follow on in the file too.
+        let bad_pairs: Vec<String> = left.windows(2).filter(|w| !in_b(w[0].0) && !in_b(w[1].0)).filter(|w| {
+            // `format=gray` reads the counter in full range: back to the 16..235 values it was drawn in.
+            let tv = |v: f64| v * 219.0 / 255.0 + 16.0;
+            let d = (tv(w[1].1) - tv(w[0].1)).rem_euclid(200.0);
+            (d - 3.0).abs() >= 1.5
+        }).take(4).map(|w| format!("{:.4}:{:.1}->{:.4}:{:.1}", w[0].0, w[0].1, w[1].0, w[1].1)).collect();
+        let counter_ok = bad_pairs.is_empty();
+        // The colour: B's frames (and only those) read brighter on the constant half.
+        let wrong: Vec<String> = right.iter().filter(|(t, v)| in_b(*t) != (*v > 130.0)).take(4).map(|(t, v)| format!("{t:.4} s: {v:.0}")).collect();
+        let first_b = right.iter().find(|(t, _)| in_b(*t)).map(|x| x.0).unwrap_or(-1.0);
+        r.check(&format!("cuts {fps} fps: no frame dropped, doubled or out of order at the cuts"), rising && counter_ok, &format!("{} frames, steps {:.4}..{:.4} s, counter jumps {bad_pairs:?}", left.len(), steps.iter().cloned().fold(f64::INFINITY, f64::min), steps.iter().cloned().fold(0.0, f64::max)));
+        r.check(&format!("cuts {fps} fps: a range's colour on exactly its own frames"), wrong.is_empty() && (first_b - cut1).abs() < 1e-3, &format!("B's first frame at {first_b:.4} s (cut at {cut1:.4}); wrong: {wrong:?}"));
+        let _ = fs::remove_file(&m.path);
+    }
+}
+/// 0.1.41: `Color::sharpness` (unsharp, 5x5 luma, amount 1.5 x sharpness) on exactly the range that has it;
+/// 0 is no filter at all (the same command as without the field), and never a lossless cut.
+fn sharp_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta) {
+    let parsed: Result<Color, _> = serde_json::from_str(r#"{"brightness":1,"contrast":1,"saturation":1,"gamma":1}"#);
+    r.check("sharpness: a colour without it reads as 0 (off)", parsed.is_ok_and(|c| c.sharpness == 0.0), "");
+    let seg = |a: f64, b: f64, sh: f32| Range { start: a, end: b, color: Some(Color { sharpness: sh, ..Default::default() }), ..Default::default() };
+    let plain = ExportOpts { segments: vec![Range { start: 0.5, end: 2.5, ..Default::default() }, Range { start: 4.5, end: 6.5, color: Some(Color { brightness: 1.2, ..Default::default() }), ..Default::default() }], ordered: true, ..Default::default() };
+    let zero = ExportOpts { segments: vec![seg(0.5, 2.5, 0.0), Range { start: 4.5, end: 6.5, color: Some(Color { brightness: 1.2, sharpness: 0.0, ..Default::default() }), ..Default::default() }], ordered: true, ..Default::default() };
+    let same_cmd = matches!((export_args(s, src, &plain), export_args(s, src, &zero)), (Ok(a), Ok(b)) if args_hash(&a) == args_hash(&b));
+    r.check("sharpness 0: the same command as without it", same_cmd, "");
+    // One range sharpened, the next not: its frames have more detail than the source's, the other's do not.
+    // (The test clip is still from 3 to 5 s: both ranges lie outside that.)
+    match export(s, src, &ExportOpts { segments: vec![seg(0.5, 2.5, 1.0), seg(5.5, 7.5, 0.0)], ordered: true, ..Default::default() }, &mut |_| {}) {
+        Ok(m) => {
+            let out = Path::new(&m.path);
+            // At the clip's own size: a smaller grab would average the sharpening away.
+            let (w, h) = (src.width.max(64) as usize, src.height.max(36) as usize);
+            let d = |file: &Path, t: f64| box_detail(&grey_at(ffmpeg, file, t, w, h), w, (w / 10, h / 10, w * 9 / 10, h * 9 / 10));
+            let (sharp, src_a) = (d(out, 1.0), d(Path::new(&src.path), 1.5));
+            let (plain_b, src_b) = (d(out, 3.0), d(Path::new(&src.path), 6.5));
+            r.check("sharpness: the sharpened range's edges are stronger, the next range's are as they were", m.kind == "edit" && sharp > src_a * 1.3 && plain_b < src_b * 1.1, &format!("detail {sharp:.2} vs source {src_a:.2}; next range {plain_b:.2} vs {src_b:.2}"));
+            let _ = fs::remove_file(&m.path);
+        }
+        Err(e) => r.check("sharpness: the sharpened range", false, &e),
     }
 }
 
@@ -3747,8 +4294,44 @@ fn timeline_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, 
     song_checks(r, ffmpeg, s, src, dir, f_mic, &util::data_dir().join("song-exports"));
     tail_checks(r, ffmpeg, s, src, dir, (f_desk, f_mic));
     command_checks(r, ffmpeg, s, src, &tone_s);
+    sharp_checks(r, ffmpeg, s, src);
+    // R3-10: a single plain piece shorter than a lossless cut takes (0.5 s) is re-encoded instead of refused.
+    match export(s, src, &ExportOpts { segments: vec![Range { start: 1.0, end: 1.3, ..Default::default() }], ..Default::default() }, &mut |_| {}) {
+        Ok(m) => {
+            r.check("a 0.3 s plain piece exports (re-encoded, not refused)", m.kind == "edit" && (m.duration - 0.3).abs() < 0.06, &format!("{} {:.3} s", m.kind, m.duration));
+            let _ = fs::remove_file(&m.path);
+        }
+        Err(e) => r.check("a 0.3 s plain piece exports (re-encoded, not refused)", false, &e),
+    }
+    // R3-8: temporary export files a killed run left are swept at start-up: by their exact names, only older ones.
+    {
+        let tmp = util::tmp_dir();
+        let _ = fs::create_dir_all(&tmp);
+        let old = tmp.join("projexport-e2e-left.mp4");
+        let other = tmp.join("keep-me-e2e.mp4");
+        let _ = fs::write(&old, b"x");
+        let _ = fs::write(&other, b"x");
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 86_400);
+        for p in [&old, &other] {
+            if let Ok(f) = fs::OpenOptions::new().write(true).open(p) {
+                let _ = f.set_modified(past);
+            }
+        }
+        let fresh = tmp.join("projexport-e2e-new.mp4");
+        // Made after this run started, as a running export's file would be: never touched.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let _ = fs::write(&fresh, b"x");
+        let n = crate::projexport::sweep_tmp();
+        r.check("start-up sweep: an old project join file goes, other files and a current one stay", n >= 1 && !old.exists() && other.exists() && fresh.exists(), &format!("{n} removed"));
+        let _ = fs::remove_file(&other);
+        let _ = fs::remove_file(&fresh);
+    }
     gap_checks(r, ffmpeg, s, src, (f_desk, f_mic), &tone_s);
     stream_checks(r, ffmpeg, s, src, dir, (300, f_desk, f_mic));
+    watchdog_checks(r, ffmpeg);
+    tag_change_checks(r, ffmpeg, s, dir);
+    sync_checks(r, ffmpeg, s, dir);
+    cut_checks(r, ffmpeg, s, dir);
     let count_before = fs::read_dir(dir).map(|d| d.count()).unwrap_or(0);
     let started = Instant::now();
     let missing = AudioEdit { path: dir.join("nope-missing.mp3").to_string_lossy().into_owned(), ..file_row.clone() };
@@ -3901,7 +4484,7 @@ fn look_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, f_de
         Ok((m, p))
     };
     let grey = Color { saturation: 0.0, ..Default::default() };
-    let piece = |start: f64, end: f64, color: Option<Color>, blank: bool| Range { start, end, color, blank, gap: 0.0 };
+    let piece = |start: f64, end: f64, color: Option<Color>, blank: bool| Range { start, end, color, blank, gap: 0.0, speed: 0.0 };
     let st = |m: &ClipMeta, a: f64, b: f64| signal_stats_at(ffmpeg, Path::new(&m.path), a, b);
     let desc = |m: &ClipMeta, p: &library::Probe| format!("kind={} dur={:.3} frames={}", m.kind, p.duration, p.frames);
     // (luma, saturation) of a window: colorful like the source, grey, or black.
@@ -4085,7 +4668,7 @@ fn ordered_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path) {
         let p = library::probe(ffmpeg, Path::new(&m.path), true).ok_or("probe failed")?;
         Ok((m, p))
     };
-    let piece = |start: f64, end: f64, color: Option<Color>, blank: bool| Range { start, end, color, blank, gap: 0.0 };
+    let piece = |start: f64, end: f64, color: Option<Color>, blank: bool| Range { start, end, color, blank, gap: 0.0, speed: 0.0 };
     let refs: Vec<Option<f64>> = (0..4).map(|i| band_db_at(ffmpeg, &src_file, 0, steps[i], i as f64 * 2.0 + 0.2, i as f64 * 2.0 + 1.8)).collect();
     r.line(&format!("INFO stepped clip tone levels {refs:?}"));
     // Out of source order; the first one runs to the clip's end.
@@ -4430,7 +5013,8 @@ pub fn waveforms(s: &Settings, src: &ClipMeta) -> Result<Vec<Waveform>, String> 
         }
     }
     let src_path = Path::new(&src.path);
-    let n = audio_titles(&ffmpeg, src_path)?.len();
+    let n = crate::edcache::titles(src_path, || audio_titles(&ffmpeg, src_path))?.len(); // P-HOOK 0.1.41 (edcache.rs)
+    let _slot = crate::edcache::slot_light()?; // P-HOOK 0.1.41: a few at once (after the cache check above), cancellable
     let per_second = peaks_per_second(clip_duration(&ffmpeg, src));
     let mut waves = Vec::new();
     if n > 0 {
@@ -4570,6 +5154,7 @@ pub fn thumbs(s: &Settings, src: &ClipMeta, count: u32) -> Result<Vec<String>, S
     if duration <= 0.0 {
         return Err("Could not read the clip's length".into());
     }
+    let _slot = crate::edcache::slot()?; // P-HOOK 0.1.41 (edcache.rs): film strips 2 at once (after the cache check), cancellable
     let part = dir.join(format!("thumbs-{count}.part"));
     let _ = fs::remove_dir_all(&part);
     fs::create_dir_all(&part).map_err(|e| format!("Cannot create the editor's temp folder: {e}"))?;

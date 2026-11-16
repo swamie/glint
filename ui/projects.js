@@ -161,10 +161,11 @@ async function projRefresh() {
   projRefreshUI();
 }
 /** Bring whatever shows projects up to date: the sidebar badge, the Editor page, the open project's panel. */
-function projRefreshUI() {
+function projRefreshUI(opts) {
   if (typeof S === "undefined" || !S.settings) return;
   if (S.page === "editor" && !S.open && !S.renaming) render();
   else if (typeof renderChrome === "function") renderChrome();
+  if (opts && opts.list === false) return projRenderBusy(); // R2 #11: only the busy line, not the whole list
   projRenderPanel();
 }
 
@@ -417,10 +418,13 @@ function projOpen(id) {
 let projOpening = 0; // the newest projOpenVirtual: an older answer arriving late opens nothing
 /** A virtual project (0.1.38): the editor opens what project_open returns (openClip takes the object). */
 async function projOpenVirtual(id) {
-  const ticket = ++projOpening;
+  const ticket = ++projOpening, was = typeof S !== "undefined" ? S.open : null;
   let c;
   try { c = await invoke("project_open", { id }); } catch (e) { return fail(e); }
   if (ticket !== projOpening || !c || !c.id) return;
+  // R2 #14: what was open when it was asked for (nothing, the project itself, or the clip that becomes it) must still be:
+  // a slow answer never opens over another clip, nor reopens an editor that was closed meanwhile.
+  if (S.open !== was) return;
   const p = projById(id);
   if (p) p.clip = c; // clipById finds the same object
   openClip(c);
@@ -471,7 +475,8 @@ function projMountPanel(root, id) {
   aside.innerHTML = `
     <div class="pj-head"><div class="pj-h">${esc(t("Library"))}</div>
       <div class="small pj-hint">${esc(single ? t("Click a clip to preview it. Double-click, press Enter or drag it onto the timeline to add it: this clip then becomes a project.") : t("Click a clip to preview it. Double-click, press Enter or drag clips onto the timeline to add them to the project."))}</div>
-      <div class="small pj-missing" hidden></div></div>
+      <div class="small pj-missing" hidden></div>
+      <div class="small pj-warn-slot"></div></div>
     <div class="pj-pv" hidden></div>
     <div class="pj-tools">
       <input class="field pj-q" type="search" spellcheck="false" autocomplete="off" placeholder="${esc(t("Search clips"))}" aria-label="${esc(t("Search clips"))}" value="${esc(projLib.q)}">
@@ -588,6 +593,22 @@ function projPvShow(id) {
   v.addEventListener("play", projPvTick);
   v.play?.()?.catch?.(() => {});
   projPvPaint();
+  projPrewarm(id);
+}
+
+/* F3 (0.1.41): pre-warm. A clip shown in the click preview is likely added next: its tracks and waveform are
+ * prepared quietly (the backend caches them per file), so a double-click right after finds them ready. Once per
+ * clip per session, after the preview has stayed up for a moment; failures are ignored (the editor asks again). */
+const projWarmed = new Set();
+let projWarmTimer = 0;
+function projPrewarm(id) {
+  clearTimeout(projWarmTimer);
+  if (!id || projWarmed.has(id) || typeof invoke !== "function") return;
+  projWarmTimer = setTimeout(() => {
+    if (projPv.id !== id || projWarmed.has(id)) return;
+    projWarmed.add(id);
+    invoke("editor_audio_tracks", { id }).then(() => invoke("editor_waveforms", { id })).catch(() => projWarmed.delete(id));
+  }, 600);
 }
 function projPvClose() {
   cancelAnimationFrame?.(projPv.raf);
@@ -716,6 +737,9 @@ function projRenderPanel() {
     miss.hidden = !lost.length;
     if (miss.textContent !== txt) miss.textContent = txt;
   }
+  // R2 #3: a saved edit that could not be opened (or a backup of one): what the user can do about it.
+  const warn = $(".pj-warn-slot", aside), wh = projById(aside.dataset.pjFor) ? projWarnHtml(aside.dataset.pjFor) : "";
+  if (warn && warn.innerHTML !== wh) warn.innerHTML = wh;
   projRenderList();
   projRenderBusy();
 }
@@ -729,6 +753,7 @@ function projItemHtml(c, inProj) {
     ${inProj ? `<span class="pj-in" aria-label="${esc(t("Already in the project"))}">${ICON.check}</span>` : ""}
   </div>`;
 }
+const projListHtml = new WeakMap(); // the list element -> the HTML it was last given (R2 #11)
 /** The clips shown in the list now. */
 const projShown = () => projLibFilter(typeof S !== "undefined" ? S.clips : [], projLib.q, projLib.game);
 
@@ -743,9 +768,13 @@ function projRenderList() {
   projLib.sel = projLib.sel.filter((id) => all.has(id));
   const html = shown.length ? shown.map((c) => projItemHtml(c, have.has(c.id))).join("")
     : `<div class="pj-none small">${esc((S.clips || []).length ? t("No clips match the search.") : t("No clips in your library yet."))}</div>`;
-  const top = list.scrollTop;
-  list.innerHTML = html;
-  list.scrollTop = top;
+  // R2 #11: the same list is not built again (every thumbnail would be laid out anew).
+  if (projListHtml.get(list) !== html || !list.firstChild) {
+    const top = list.scrollTop;
+    list.innerHTML = html;
+    list.scrollTop = top;
+    projListHtml.set(list, html);
+  }
   projRenderAddBtn();
 }
 /** Update the selection marks without rebuilding the list. */
@@ -1081,6 +1110,80 @@ function projAskReplace(pid) {
   });
 }
 
+/* ---------- the running export: what it does, Cancel, why it failed (0.1.41) ----------
+ * editor.js keeps a running export in S.exports[id] = { pct, stage, stagePct, cancelling } (edListen reads the
+ * "export-progress" event: { id, pct, stage?: "join" | "export", stage_pct? }) and, after a failed or stalled
+ * export, its message in S.exportErr[id] (cleared when the next export starts). The Export section draws
+ * projExpProgHtml / projExpFailHtml; their buttons (data-pje) are handled here: Cancel calls A's cancel_export,
+ * "Show the log" opens the bug report dialog, which shows the end of glint.log. */
+
+/** The progress line's text for export `job`: "Joining clips… 12%" while the clips of a project are joined, "Cancelling…", else "Exporting… 48%". */
+function projExpText(job) {
+  if (!job) return "";
+  if (job.cancelling) return t("Cancelling…");
+  const pct = (x) => Math.max(0, Math.min(100, Math.floor(+x || 0)));
+  if (job.stage === "join") return t("Joining clips… {pct}%", { pct: pct(job.stagePct != null && Number.isFinite(+job.stagePct) ? job.stagePct : job.pct) });
+  return t("Exporting… {pct}%", { pct: pct(job.pct) });
+}
+/** The running export's bar, its text and its Cancel button. */
+function projExpProgHtml(job, id) {
+  const w = Math.max(0, Math.min(100, +job?.pct || 0));
+  return `<div class="e-prog"><div class="e-prog-head"><div class="small e-prog-txt">${esc(projExpText(job))}</div>
+    <button type="button" class="btn sm e-cancel" data-pje="cancel" data-arg="${esc(id)}"${job?.cancelling ? " disabled" : ""}>${esc(t("Cancel"))}</button></div>
+    <div class="progress"><i style="width:${w}%"></i></div></div>`;
+}
+/** The message of a failed or stalled export of `id` (A's text), with "Show the log"; "" when there is none. */
+function projExpFailHtml(id) {
+  const err = typeof S !== "undefined" && S.exportErr ? S.exportErr[id] : null;
+  if (!err) return "";
+  return `<div class="e-fail" role="alert"><div class="e-fail-head"><b>${esc(t("The export did not finish"))}</b>
+      <button type="button" class="e-ibtn e-fail-x" data-pje="dismiss" data-arg="${esc(id)}" aria-label="${esc(t("Dismiss"))}" title="${esc(t("Dismiss"))}">${ICON.x}</button></div>
+    <div class="small e-fail-msg">${esc(err.message)}</div>
+    <button type="button" class="btn sm e-fail-log" data-pje="log">${esc(t("Show the log"))}</button></div>`;
+}
+/** The text of a failed export's error, in the user's language where it is a known one. */
+function projExpMessage(e) {
+  const msg = String(e?.message ?? e ?? "").trim();
+  return (typeof joinError === "function" ? joinError(msg) : t(msg)) || t("The export failed.");
+}
+/** edExport, when export_clip / export_project rejected: a cancelled export flashes; any other failure is kept for the Export section. */
+function projExpFailed(id, e, job) {
+  if (job && job.cancelling) { flash(t("Export cancelled")); return; }
+  if (!S.exportErr) S.exportErr = {};
+  S.exportErr[id] = { message: projExpMessage(e), at: Date.now() };
+  fail(e);
+}
+/** The Cancel button: ask the backend to end the running export of `id` (A's cancel_export). */
+async function projExpCancel(id) {
+  const job = S.exports?.[id];
+  if (!job || job.cancelling) return;
+  job.cancelling = true;
+  if (S.open === id) S.player?.ed?.renderExport?.();
+  try {
+    const ok = await invoke("cancel_export", { id });
+    if (ok === false && S.exports?.[id] === job) { job.cancelling = false; flash(t("The export could not be cancelled"), true); }
+  } catch (e) {
+    console.warn("Glint: cancel_export failed", e);
+    if (S.exports?.[id] === job) job.cancelling = false;
+    fail(e);
+  }
+  if (S.open === id) S.player?.ed?.renderExport?.();
+}
+/** "Show the log": the bug report dialog (bugreport.js), the only place the app shows glint.log, opened at the log's end. */
+async function projExpShowLog() {
+  if (typeof bugOpen !== "function") return;
+  await bugOpen();
+  const dlg = document.querySelector(".bug-dlg");
+  const sent = dlg?.querySelector("details.bug-sent");
+  if (sent) sent.open = true;
+  const log = dlg?.querySelector(".bug-log");
+  if (log) { log.scrollTop = log.scrollHeight; log.scrollIntoView?.({ block: "nearest" }); }
+}
+function projExpDismiss(id) {
+  if (S.exportErr) delete S.exportErr[id];
+  if (S.open === id) S.player?.ed?.renderExport?.();
+}
+
 /* ---------- the saved edit ---------- */
 
 /** The open project's edit as the text that is saved. */
@@ -1095,34 +1198,126 @@ const projStateText = (P) => JSON.stringify(emStateSave(P.model, projJoinsOf(P.c
 async function projRestore(c, m) {
   const id = c.id;
   let text = null;
+  // "Try again" after a failed load (R2 #3): read the backend's copy again, not this session's.
+  if (projLoadFailed.get(id)?.retry) { projCache.delete(id); projSavedText.delete(id); }
   if (projCarry && projCarry.id === id) { text = projCarry.state; projCarry = null; }
   else if (projCache.has(id)) text = projCache.get(id);
   else {
     try { text = await invoke("project_state", { id }); }
-    catch (e) { console.warn("Glint: project_state failed; the project opens without its saved edit", e); return false; }
+    catch (e) { return projFailLoad(id, null, "read", e); }
   }
-  if (text == null || text === "") return false;
+  if (text == null || text === "") { projLoadFailed.delete(id); return false; } // nothing saved yet: it opens clean, and saving is fine
   let s = text;
-  if (typeof s === "string") { try { s = JSON.parse(s); } catch { console.warn("Glint: the project's saved edit is not readable; it opens clean"); return false; } }
+  if (typeof s === "string") { try { s = JSON.parse(s); } catch { return projFailLoad(id, text, "unreadable"); } }
   // A virtual project's joins start with 0 (one per source): projJoinsOf drops it, so names[k + 1 + j] below fits both kinds.
   const joins = projJoinsOf(c);
-  if (!s || !projJoinsPrefix(s.joins, joins)) { console.warn("Glint: the project's saved edit does not fit its clips; it opens clean"); return false; }
+  if (!s || !projJoinsPrefix(s.joins, joins)) return projFailLoad(id, text, "fit");
   const end = m.duration; // the draft's length now
   const k = s.joins.length, fresh = joins.slice(k);
+  // R1 (0.1.41): a state saved by 0.1.37-0.1.40 may hold the ROW's length (gaps included) as `duration`; the model
+  // repairs it (emStateSrcLen). The same repair here, against the footage before the clips added since (where the
+  // first new clip starts), so the checks below and emAddParts see the true source length.
+  if (typeof emStateSrcLen === "function" && typeof emStateOk === "function" && emStateOk(s)) {
+    const D = emStateSrcLen(s, fresh.length ? fresh[0] : end);
+    if (D !== s.duration) s = { ...s, duration: D };
+  }
   // New clips start where the old draft ended. One that starts inside it means the old seconds moved
   // (not what projects.rs does): the edit would land on other pictures, so it opens clean instead.
-  if (fresh.length && !(fresh[0] >= +s.duration - 0.25)) { console.warn("Glint: the project's draft no longer matches its saved edit; it opens clean"); return false; }
-  if (!emStateLoad(m, s)) { console.warn("Glint: the project's saved edit is not readable; it opens clean"); return false; }
+  if (fresh.length && !(fresh[0] >= +s.duration - 0.25)) return projFailLoad(id, text, "fit");
+  if (!emStateLoad(m, s)) return projFailLoad(id, text, "unreadable");
+  projLoadFailed.delete(id);
   if (!fresh.length) return true;
   const names = Array.isArray(c.join_names) ? c.join_names : [];
   const name = (i) => (typeof names[i] === "string" && names[i].trim()) || t("Clip {n}", { n: i + 1 });
   return emAddParts(m, fresh, fresh.map((_, j) => name(k + 1 + j)), end, name(0)) ? "added" : true;
 }
 
+/* ---------- a saved edit that could not be opened (R2 #3, 0.1.41) ----------
+ * The project then opens clean, but the clean edit is NEVER saved over the one on disk by itself: projFlush stands
+ * aside until the user picks, in the Library panel's notice: "Try again" (reads it again and reopens), or "Keep
+ * this edit instead" (from then on this edit is saved; the old text, when it could be read, is kept as a backup in
+ * localStorage, which "Bring back the earlier edit" restores). */
+const projLoadFailed = new Map(); // project id -> { text (the saved text, or null when it could not be read), why, keep, retry }
+const PROJ_BACKUP_KEY = "glint.projBackup.";
+/** projRestore found a saved edit it cannot use: remember it, so nothing is saved over it. Returns false (opens clean). */
+function projFailLoad(id, text, why, err) {
+  const raw = typeof text === "string" ? text : text != null ? (() => { try { return JSON.stringify(text); } catch { return null; } })() : null;
+  console.warn(`Glint: the project's saved edit could not be opened (${why}); it opens clean and nothing is saved over it`, err || "");
+  projLoadFailed.set(id, { text: raw, why, keep: false, retry: false });
+  return false;
+}
+/** True while project `id`'s saved edit failed to load and the user has not chosen to keep the clean edit. */
+const projSaveBlocked = (id) => { const f = projLoadFailed.get(id); return !!f && !f.keep; };
+const projBackupOf = (id) => { try { return localStorage.getItem(PROJ_BACKUP_KEY + id); } catch { return null; } };
+/** The notice in the Library panel for project `id`, or "". */
+function projWarnHtml(id) {
+  const f = projLoadFailed.get(id);
+  if (f && !f.keep) {
+    const why = f.why === "read" ? t("The saved edit of this project could not be read, so it opened without it.")
+      : f.why === "fit" ? t("The saved edit no longer fits this project's clips, so it opened without it.")
+      : t("The saved edit of this project is damaged, so it opened without it.");
+    return `<div class="pj-warn" role="alert"><div>${esc(why)} ${esc(t("Nothing is saved over it until you choose."))}</div>
+      <div class="pj-warn-row"><button type="button" class="btn sm" data-pjw="retry">${esc(t("Try again"))}</button>
+      <button type="button" class="btn sm" data-pjw="keep">${esc(t("Keep this edit instead"))}</button></div></div>`;
+  }
+  if (projBackupOf(id)) {
+    return `<div class="pj-warn pj-warn-soft"><div>${esc(t("An earlier edit of this project is kept as a backup."))}</div>
+      <div class="pj-warn-row"><button type="button" class="btn sm" data-pjw="restore">${esc(t("Bring back the earlier edit"))}</button></div></div>`;
+  }
+  return "";
+}
+/** "Try again": read the saved edit again and reopen the project with it. */
+function projRetryLoad(id) {
+  const f = projLoadFailed.get(id);
+  if (f) f.retry = true;
+  const p = projById(id);
+  if (!p) return;
+  if (p.virtual) projOpenVirtual(id); else openClip(id);
+}
+/** "Keep this edit instead": from now on the open edit is saved; the old one is kept as a backup when it could be read. */
+async function projKeepClean(id) {
+  const f = projLoadFailed.get(id);
+  if (!f) return;
+  if (f.text == null) {
+    if (!(await ask(t("The saved edit could not be read, so it cannot be kept as a backup. Save this edit over it?"), t("Save over it")))) return;
+  } else {
+    try { localStorage.setItem(PROJ_BACKUP_KEY + id, f.text); }
+    catch { if (!(await ask(t("The saved edit could not be kept as a backup. Save this edit over it?"), t("Save over it")))) return; }
+  }
+  f.keep = true;
+  projSavedText.delete(id);
+  const P = S.player;
+  if (P && P.clipMeta?.id === id) projFlush(P);
+  flash(f.text != null ? t("This edit is saved from now on. The earlier one is kept as a backup.") : t("This edit is saved from now on."));
+  projRenderPanel();
+}
+/** "Bring back the earlier edit": the backup becomes the saved edit (the current one becomes the backup) and the project reopens with it. */
+async function projBringBack(id) {
+  const old = projBackupOf(id);
+  if (!old) return;
+  const P = S.player;
+  const cur = P && P.clipMeta?.id === id && P.model ? (() => { try { return projStateText(P); } catch { return null; } })() : projCache.get(id) ?? null;
+  try {
+    await invoke("project_save_state", { id, state: old });
+    try { if (cur) localStorage.setItem(PROJ_BACKUP_KEY + id, cur); else localStorage.removeItem(PROJ_BACKUP_KEY + id); } catch { /* the swap is best effort */ }
+  } catch (e) { return fail(e); }
+  projLoadFailed.set(id, { text: null, why: "", keep: false, retry: true }); // read it back from disk; nothing is saved meanwhile
+  projCache.delete(id);
+  projSavedText.delete(id);
+  const p = projById(id);
+  if (p && S.open === id) { if (p.virtual) projOpenVirtual(id); else openClip(id); }
+}
+
 /** editor.js: the project's model is ready. An edit opened as it was saved is not saved again; one that grew is. */
 function projModelReady(P, restored) {
   if (!P || !P.model || !P.clipMeta) return;
   const id = P.clipMeta.id;
+  // R2 #3: a saved edit that could not be opened: the clean model is neither cached nor saved; the panel says so.
+  if (projSaveBlocked(id)) {
+    flash(t("The saved edit of this project could not be opened. Nothing is saved over it until you choose."), true);
+    projRenderPanel();
+    return;
+  }
   let text;
   try { text = projStateText(P); } catch (e) { return console.warn("Glint: could not read the project's edit", e); }
   if (restored === "added") return projDirty(P, "add");
@@ -1143,13 +1338,15 @@ function projFlush(P) {
   projSaveTimer = 0;
   if (!P || !P.draft || !P.model || !P.clipMeta || !projById(P.clipMeta.id)) return null;
   const id = P.clipMeta.id;
+  if (projSaveBlocked(id)) return null; // R2 #3: never over a saved edit that could not be opened (projWarnHtml)
   let text;
   try { text = projStateText(P); } catch (e) { console.warn("Glint: could not read the project's edit", e); return null; }
   projCache.set(id, text);
   if (projSavedText.get(id) === text) return null;
   projSavedText.set(id, text);
   return Promise.resolve().then(() => invoke("project_save_state", { id, state: text })).then((p) => {
-    if (p && p.id) { projUpsert(p); projRefreshUI(); }
+    // R2 #11: a save changes the card and the badge, not the Library list beside the editor: it is not rebuilt.
+    if (p && p.id) { projUpsert(p); projRefreshUI({ list: false }); }
   }).catch((e) => {
     console.warn("Glint: project_save_state failed; trying again at the next change", e);
     if (projSavedText.get(id) === text) projSavedText.delete(id);
@@ -1291,10 +1488,23 @@ function projKey(e) {
 /* ---------- wiring (in the app only; node tests load this file without a page) ---------- */
 if (typeof document !== "undefined" && typeof window !== "undefined" && window.__TAURI__) {
   document.addEventListener("click", (e) => {
-    const b = e.target.closest?.("[data-pjm],[data-pja],[data-pjp],[data-pj]");
+    const b = e.target.closest?.("[data-pjm],[data-pja],[data-pjp],[data-pj],[data-pje],[data-pjw]");
     if (!b || b.disabled) return;
     const d = b.dataset;
     try {
+      // The Library panel's notice about a saved edit that could not be opened (R2 #3).
+      if (d.pjw) {
+        const id = projPanel()?.dataset.pjFor;
+        if (!id) return;
+        if (d.pjw === "retry") return projRetryLoad(id);
+        if (d.pjw === "keep") return void projKeepClean(id);
+        if (d.pjw === "restore") return void projBringBack(id);
+        return;
+      }
+      // The Export section's buttons (0.1.41).
+      if (d.pje === "cancel") return void projExpCancel(d.arg);
+      if (d.pje === "dismiss") return projExpDismiss(d.arg);
+      if (d.pje === "log") return void projExpShowLog();
       if (d.pjp === "new") return void projNew();
       if (d.pjp === "pick") { const card = b.closest(".pj-card"); if (card && !S.open) projPageClick(card.dataset.pj, e); return; }
       if (d.pjp === "sel-rename") return void projRenameMany(projSel.ids.slice());

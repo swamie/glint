@@ -1,6 +1,6 @@
 [package]
 name = "glint"
-version = "0.1.40"
+version = "0.1.41"
 edition = "2021"
 description = "Offline instant-replay clipper"
 default-run = "glint"
@@ -57,6 +57,8 @@ features = [
     "Win32_System_LibraryLoader",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
+    "Win32_System_JobObjects",
+    "Win32_Security",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
     # The installer's window (setup_ui.rs): visual styles, DPI, shortcuts and

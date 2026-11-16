@@ -36,6 +36,9 @@
 //              main video row, black and silent from the clip's own tracks in the result (overlays and
 //              rows that play through cuts go on over it). A single clip gets parts once it has a gap.
 //              m.duration is then the whole row with its gaps; m.source the length of the source.
+//              A clip part may have a SPEED (0.1.41): { src, len, title, speed } with speed 0.25..4 (absent = 1).
+//              `len` is always its length on the TIMELINE; the footage it shows is src .. src + len * speed
+//              (emPartSp / emFootLen). A single clip gets parts once a piece has a speed.
 //   overlays   things on the picture (ui/overlays.js), bottom to top: { id, kind, from, to, ... }
 //              kind: text, rect, ellipse, line, arrow, pen, blur. from / to: timeline seconds it
 //              is on screen; positions are fractions (0..1) of the picture.
@@ -47,8 +50,20 @@ const EM_MAX_GAIN = 2;
 const EM_EPS = 1e-6;
 const EM_MARK_GAP = 0.05;  // two bookmarks are never closer than this, seconds
 const EM_MARK_BACK = 0.3;  // "previous bookmark" skips one the playhead is this close after (like a "previous track" button)
-const EM_COLOR_KEYS = ["brightness", "contrast", "saturation", "gamma"];
+// 0.1.41 (P): `sharpness` 0..1 (0 = off; the export maps it to ffmpeg unsharp). It is kept in a color ONLY while it is
+// on (emSetColor removes it at 0): a color without it reads as 0, and an edit that does not use it is stored, saved and
+// sent (emColorOut) exactly as before.
+const EM_COLOR_KEYS = ["brightness", "contrast", "saturation", "gamma", "sharpness"];
 const emNoColor = () => ({ brightness: 1, contrast: 1, saturation: 1, gamma: 1 });
+/** A color key's neutral value: 0 for sharpness, 1 for the others. */
+const emColorDef = (k) => (k === "sharpness" ? 0 : 1);
+/** A color as emToOpts sends it: `sharpness` only when it is on. */
+const emColorOut = (c) => { const o = { ...c }; if (!(+o.sharpness > 0)) delete o.sharpness; return o; };
+const EM_SPEED_MIN = 0.25, EM_SPEED_MAX = 4; // a piece's own speed (0.1.41)
+/** A part's own speed (0.1.41): 1 when it has none (or for a gap). */
+const emPartSp = (p) => (p && !p.gap && Number.isFinite(p.speed) && p.speed > 0 ? p.speed : 1);
+/** The footage seconds a part shows: its timeline length times its speed. */
+const emFootLen = (p) => p.len * emPartSp(p);
 
 /**
  * A fresh model. `tracks` is the result of the `editor_audio_tracks` command
@@ -301,7 +316,9 @@ function emSetTrimStart(m, sec, strict) {
   if (sec <= EM_EPS) return 0;
   const L = emPieceList(m);
   if (!L.some((p) => !p.gap && p.at + p.len > sec + EM_MIN_SEG - EM_EPS)) return strict ? null : 0;
+  emKeepSource(m); // R1: the source's length before any piece leaves (a plain clip must not lose its footage)
   emSplitAt(m, sec);
+  if (!m.parts) return 0; // R1: an untouched clip, `sec` within EM_MIN_SEG of its start: nothing to cut (it threw)
   const groups = emGroups(m);
   let acc = 0;
   const order = groups.filter((g) => { const keep = acc + g.part.len / 2 >= sec; acc += g.part.len; return keep; });
@@ -318,7 +335,9 @@ function emSetTrimEnd(m, sec, strict) {
   if (sec >= m.duration - EM_EPS) return m.duration;
   const L = emPieceList(m);
   if (!L.some((p) => !p.gap && p.at < sec - EM_MIN_SEG + EM_EPS)) return strict ? null : m.duration;
+  emKeepSource(m); // R1: see emSetTrimStart
   emSplitAt(m, sec);
+  if (!m.parts) return m.duration; // R1: an untouched clip, `sec` within EM_MIN_SEG of its end: nothing to cut (it threw)
   const groups = emGroups(m);
   let acc = 0;
   const order = groups.filter((g) => { const keep = acc + g.part.len / 2 < sec; acc += g.part.len; return keep; });
@@ -364,6 +383,7 @@ function emSetParts(m, starts, titles) {
   });
   if (list.length < 2) return false;
   m.bounds = list.map((p) => p.x); // where each source clip starts: a piece's footage ends there (0.1.37)
+  if (!Number.isFinite(m.source)) m.source = D; // R1: the draft's length, known from the start (emStateSave, emLayGroups)
   m.parts = list.map((p, j) => ({
     src: p.x,
     len: (j + 1 < list.length ? list[j + 1].x : D) - p.x,
@@ -381,7 +401,7 @@ function emSetParts(m, starts, titles) {
 function emParts(m) {
   if (!m.parts) return [];
   let at = 0;
-  return m.parts.map((p, i) => { const o = { i, at, end: at + p.len, src: p.src, len: p.len, title: p.title, ...(p.gap ? { gap: true } : {}) }; at += p.len; return o; });
+  return m.parts.map((p, i) => { const o = { i, at, end: at + p.len, src: p.src, len: p.len, title: p.title, ...(p.gap ? { gap: true } : {}), ...(emPartSp(p) !== 1 ? { speed: emPartSp(p) } : {}) }; at += p.len; return o; });
 }
 
 /** Timeline seconds of the part borders (where each part after the first starts). */
@@ -414,9 +434,9 @@ function emToSrc(m, sec) {
   if (p.gap) {
     // A gap has no source: the start of the clip after it (or the end of the one before).
     const next = P.find((q) => !q.gap && q.at >= p.end - EM_EPS), prev = [...P].reverse().find((q) => !q.gap && q.end <= p.at + EM_EPS);
-    return next ? next.src : prev ? prev.src + prev.len : 0;
+    return next ? next.src : prev ? prev.src + emFootLen(prev) : 0;
   }
-  return p.src + Math.min(p.len, Math.max(0, x - p.at));
+  return p.src + Math.min(p.len, Math.max(0, x - p.at)) * emPartSp(p);
 }
 
 /** Source second -> timeline second. A source border belongs to the part that starts there. */
@@ -428,11 +448,12 @@ function emFromSrc(m, src) {
   let best = null; // the part with the largest source start at or before x
   for (const p of P) if (p.src <= x + EM_EPS && (!best || p.src > best.src)) best = p;
   best ||= P[0];
-  return best.at + Math.min(best.len, Math.max(0, x - best.src));
+  return best.at + Math.min(best.len, Math.max(0, x - best.src) / emPartSp(best));
 }
 
 /** The source ranges under timeline range [a, b): [{ tl, src, len }] in timeline order; neighbours that also touch in source are merged.
- *  A gap (0.1.36) is { tl, src: null, len, gap: true }. */
+ *  A gap (0.1.36) is { tl, src: null, len, gap: true }. `len` is TIMELINE seconds; a range of a piece with a speed
+ *  (0.1.41) has `speed` too and shows source src .. src + len * speed (never merged with a neighbour of another speed). */
 function emSrcSpans(m, a, b) {
   if (!(b > a)) return [];
   if (!m.parts) return [{ tl: a, src: a, len: b - a }];
@@ -446,11 +467,12 @@ function emSrcSpans(m, a, b) {
       else out.push({ tl: lo, src: null, len: hi - lo, gap: true });
       continue;
     }
-    const s = { tl: lo, src: p.src + (lo - p.at), len: hi - lo };
+    const sp = emPartSp(p);
+    const s = { tl: lo, src: p.src + (lo - p.at) * sp, len: hi - lo, ...(sp !== 1 ? { speed: sp } : {}) };
     // A project that references its clips (0.1.38, m.virtual): footage that follows on across two clips' border is
     // still two files, so the ranges are not merged there.
     const border = m.virtual && Array.isArray(m.bounds) && m.bounds.some((x) => x > EM_EPS && Math.abs(x - s.src) < EM_EPS);
-    if (last && !last.gap && !border && Math.abs(last.src + last.len - s.src) < EM_EPS) last.len += s.len;
+    if (last && !last.gap && !border && (last.speed || 1) === sp && Math.abs(last.src + last.len * sp - s.src) < EM_EPS) last.len += s.len;
     else out.push(s);
   }
   return out;
@@ -554,13 +576,14 @@ function emLayGroups(m, groups, order) {
     at += g.part.len;
   });
   // One clip left, from the start of the source, and no gap: back to a plain clip (timeline = source).
-  const whole = order.length === 1 && !order[0].part.gap && !order[0].part.noSound && !order[0].part.group && Math.abs(order[0].part.src) < EM_EPS && Math.abs(order[0].part.len - (Number.isFinite(m.source) ? m.source : order[0].part.len)) < 1e-6;
+  const whole = order.length === 1 && !order[0].part.gap && !order[0].part.noSound && !order[0].part.group && emPartSp(order[0].part) === 1 && Math.abs(order[0].part.src) < EM_EPS && Math.abs(order[0].part.len - (Number.isFinite(m.source) ? m.source : order[0].part.len)) < 1e-6;
   m.parts = whole ? null : order.map((g) => g.part);
   m.duration = total;
   Object.assign(m, { cuts, removed, colors, blank });
   m.audio.forEach((r, k) => { r.gains = gains[k]; });
   // Sorted; one at the very end of the clip can land on a border where another starts: keep one of them.
   if (m.marks) m.marks = marks.sort((a, b) => a - b).filter((x, i, l) => i === 0 || x - l[i - 1] >= EM_MARK_GAP - EM_EPS);
+  emTidyGroups(m); // R1: a piece that left the row (removed, I / O) may leave its group with one member
 }
 
 /* ---------- a project that references its clips (0.1.38) ----------
@@ -585,7 +608,7 @@ const emFileToProj = (sources, k, local) => (sources[k] ? sources[k].start + loc
 /** Which source piece `i` of model `m` shows (-1 for a gap). */
 function emPieceSource(m, sources, i) {
   const p = emPieceList(m)[i];
-  return !p || p.gap ? -1 : emSourceAt(sources, p.src + p.len / 2);
+  return !p || p.gap ? -1 : emSourceAt(sources, p.src + p.flen / 2);
 }
 /** A clip's track list as the editor shows it (emNew's rule): without "Mix" when there are titled tracks, without
  *  track 0 for an untitled 3-track clip. */
@@ -642,7 +665,7 @@ function emSegIsGap(m, i) {
 /** The source's length, remembered before the first change that could hide it (a lifted piece). */
 function emKeepSource(m) {
   if (Number.isFinite(m.source)) return m.source;
-  m.source = m.parts ? Math.max(0, ...m.parts.filter((p) => !p.gap).map((p) => p.src + p.len)) : m.duration;
+  m.source = m.parts ? Math.max(0, ...m.parts.filter((p) => !p.gap).map((p) => p.src + emFootLen(p))) : m.duration;
   return m.source;
 }
 /** A single clip becomes one part (named `title`, else the clip's own name m.clipTitle), so it can have gaps. */
@@ -663,7 +686,7 @@ function emEnsureParts(m, title) {
 
 /** The source seconds where each source clip starts, and the source's end: [0, ..., end]. */
 function emClipBounds(m) {
-  const end = Number.isFinite(m.source) ? m.source : m.parts ? Math.max(0, ...m.parts.filter((p) => !p.gap).map((p) => p.src + p.len)) : m.duration;
+  const end = Number.isFinite(m.source) ? m.source : m.parts ? Math.max(0, ...m.parts.filter((p) => !p.gap).map((p) => p.src + emFootLen(p))) : m.duration;
   const list = Array.isArray(m.bounds) && m.bounds.length >= 2 ? m.bounds.filter((x) => Number.isFinite(x) && x > EM_EPS && x < end - EM_EPS) : [];
   return [0, ...list, end];
 }
@@ -679,10 +702,12 @@ function emNeedsPieces(m) {
   if (m.removed.some(Boolean)) return true;
   return m.parts ? m.cuts.length !== m.parts.length - 1 : m.cuts.length > 0;
 }
-/** The row in order: [{ i, at, len, src, lo, hi, gap, title }] (a gap has src -1, lo = hi = 0). */
+/** The row in order: [{ i, at, len, src, lo, hi, gap, title, speed, flen }] (a gap has src -1, lo = hi = 0).
+ *  len: timeline seconds; flen: the footage it shows (len * speed); lo / hi: footage limits in source seconds. */
 function emPieceList(m) {
-  if (!m.parts) return [{ i: 0, at: 0, len: m.duration, src: 0, lo: 0, hi: emClipBounds(m)[1] ?? m.duration, gap: false, title: m.clipTitle || "" }];
-  return emParts(m).map((p) => (p.gap ? { i: p.i, at: p.at, len: p.len, src: -1, lo: 0, hi: 0, gap: true, title: "" } : { i: p.i, at: p.at, len: p.len, src: p.src, ...emLimits(m, p.src, p.len), gap: false, title: p.title }));
+  if (!m.parts) return [{ i: 0, at: 0, len: m.duration, src: 0, lo: 0, hi: emClipBounds(m)[1] ?? m.duration, gap: false, title: m.clipTitle || "", speed: 1, flen: m.duration }];
+  return emParts(m).map((p) => (p.gap ? { i: p.i, at: p.at, len: p.len, src: -1, lo: 0, hi: 0, gap: true, title: "", speed: 1, flen: p.len }
+    : { i: p.i, at: p.at, len: p.len, src: p.src, ...emLimits(m, p.src, emFootLen(p)), gap: false, title: p.title, speed: emPartSp(p), flen: emFootLen(p) }));
 }
 /** Index of the piece or gap under timeline second `time` (a border belongs to the piece after it), or -1 after the end. */
 function emPieceAt(m, time) {
@@ -725,13 +750,14 @@ function emTrimPiece(m, i, side, time) {
   emEnsureParts(m);
   const groups = emGroups(m), order = groups.slice(), g = groups[i];
   let part, delta;
+  const sp = p.speed || 1; // timeline seconds x speed = footage seconds (0.1.41)
   if (side === "end") {
-    const len = Math.min(p.hi - p.src, Math.max(EM_MIN_SEG, time - p.at));
+    const len = Math.min((p.hi - p.src) / sp, Math.max(EM_MIN_SEG, time - p.at));
     delta = len - p.len;
     part = { ...g.part, len };
   } else {
-    const src = Math.max(p.lo, Math.min(p.src + p.len - EM_MIN_SEG, p.src + (time - p.at)));
-    delta = p.src - src;
+    const src = Math.max(p.lo, Math.min(p.src + (p.len - EM_MIN_SEG) * sp, p.src + (time - p.at) * sp));
+    delta = (p.src - src) / sp;
     part = { ...g.part, src, len: p.len + delta };
   }
   if (Math.abs(delta) < 1e-9) return { at: p.at, len: p.len, src: p.src };
@@ -746,6 +772,44 @@ function emTrimPiece(m, i, side, time) {
   const j = m.parts ? m.parts.indexOf(part) : 0, q = emPieceList(m)[j < 0 ? 0 : j];
   return q ? { at: q.at, len: q.len, src: q.src } : null;
 }
+/**
+ * Speed per piece (0.1.41): piece `i` (display index) plays its footage at `speed` (EM_SPEED_MIN..EM_SPEED_MAX, rounded
+ * to 0.01; 1 removes it). It keeps its start and its footage, so its length on the timeline becomes footage / speed;
+ * what follows on V1 moves along by the difference (a gap stays a gap), as after a trim (emLayGroups: an overlay wholly
+ * inside a piece after it, canvas keyframes and bookmarks in those pieces go with them; everything else keeps its
+ * timeline place). An audio clip in a G group with a piece that moved moves by as much (the group keeps its relation);
+ * other audio clips, songs and overlay items stay where they are and never change speed. Returns true if it changed.
+ * Refused on a gap. Does not snapshot.
+ */
+function emSetPieceSpeed(m, i, speed) {
+  if (!Number.isFinite(+speed)) return false;
+  let want = Math.round(Math.min(EM_SPEED_MAX, Math.max(EM_SPEED_MIN, +speed)) * 100) / 100;
+  emPiecify(m);
+  const L = emPieceList(m), p = L[i];
+  if (!p || p.gap) return false;
+  // It stays at least EM_MIN_SEG long on the timeline: a faster speed than that allows is lowered to fit.
+  if (p.flen / want < EM_MIN_SEG - EM_EPS) want = Math.max(EM_SPEED_MIN, Math.floor((p.flen / EM_MIN_SEG) * 100) / 100);
+  if (Math.abs(p.speed - want) < 1e-9 || p.flen / want < EM_MIN_SEG - EM_EPS) return false;
+  emEnsureParts(m);
+  const before = emParts(m).map((q) => ({ part: m.parts[q.i], at: q.at }));
+  const groups = emGroups(m), order = groups.slice(), g = groups[i];
+  const part = { ...g.part, len: emFootLen(g.part) / want };
+  if (want === 1) delete part.speed; else part.speed = want;
+  order[i] = { ...g, part }; // its own bookmarks keep their timeline place (kept inside it, as after a trim)
+  emLayGroups(m, groups, emNormGroups(m, order));
+  // G groups: an audio clip goes along with its group's piece that moved (the first such piece).
+  const after = new Map(emParts(m).map((q) => [m.parts[q.i], q.at]));
+  const moved = new Map();
+  for (const b of before) {
+    const now = after.get(b.part === g.part ? part : b.part);
+    if (b.part.group && now !== undefined && !moved.has(b.part.group)) moved.set(b.part.group, now - b.at);
+  }
+  for (const r of m.audio) if (r.kind === "file" && r.group && Math.abs(moved.get(r.group) || 0) > EM_EPS) r.offset = Math.max(0, r.offset + moved.get(r.group));
+  return true;
+}
+/** Piece `i`'s own speed (1 without one). */
+const emPieceSpeed = (m, i) => emPieceList(m)[i]?.speed || 1;
+
 /** What the media code needs to put piece `i` on the picture as a clip item: { off, len, at } (source seconds of the
  *  working file / clip, its length and its place on the timeline), or null for a gap. */
 function emPieceToItem(m, i) {
@@ -801,7 +865,7 @@ function emPiecify(m, keepMarks) {
       if (s.removed) return;
       const len = rel[k + 1] - rel[k];
       if (g.part.gap) order.push(emGapGroup(m, len));
-      else order.push({ p: null, part: { ...g.part, src: g.part.src + rel[k], len }, cuts: [], segs: [{ ...s, removed: false }], marks: [] });
+      else order.push({ p: null, part: { ...g.part, src: g.part.src + rel[k] * emPartSp(g.part), len }, cuts: [], segs: [{ ...s, removed: false }], marks: [] });
     });
   }
   emLayGroups(m, groups, emNormGroups(m, order));
@@ -817,7 +881,7 @@ function emSplitPartAt(m, sec) {
   const i = emSegmentAt(m, sec), edges = [0, ...m.cuts, m.duration];
   if (Math.abs(edges[i] - sec) > 1e-6) emSplitIn(m, i, sec);
   const a = m.parts[k], len1 = sec - p.at;
-  m.parts.splice(k, 1, { ...a, len: len1 }, { ...a, src: a.src + len1, len: a.len - len1 });
+  m.parts.splice(k, 1, { ...a, len: len1 }, { ...a, src: a.src + len1 * emPartSp(a), len: a.len - len1 });
   return true;
 }
 /**
@@ -889,6 +953,10 @@ function emSetGapLen(m, i, len) {
 /** Add a gap `len` seconds long at timeline second `at` (a clip there is split; at a border it goes between). */
 function emInsertGap(m, at, len, title) {
   if (!(len >= 0.01) || !(at >= 0) || at >= m.duration - EM_EPS) return false;
+  // R1: no piece shorter than EM_MIN_SEG: within that of a piece's start or end the gap goes at that border.
+  const p = emPieceList(m)[emPieceAt(m, at)];
+  if (p && !p.gap) { if (at - p.at < EM_MIN_SEG - EM_EPS) at = p.at; else if (p.at + p.len - at < EM_MIN_SEG - EM_EPS) at = p.at + p.len; }
+  if (at >= m.duration - EM_EPS) return false; // at the very end: time after the video is no gap
   emEnsureParts(m, title);
   emSplitPartAt(m, at);
   const groups = emGroups(m), order = groups.slice();
@@ -1076,17 +1144,24 @@ function emStateOk(s) {
   if (!n || !s.cuts.every((c, i) => num(c) && c > 0 && c < T && (i === 0 || c > s.cuts[i - 1]))) return false;
   if (!Array.isArray(s.removed) || s.removed.length !== n || !s.removed.some((r) => !r)) return false;
   if (!Array.isArray(s.blank) || s.blank.length !== n) return false;
-  if (!Array.isArray(s.colors) || s.colors.length !== n || !s.colors.every((c) => c && typeof c === "object" && EM_COLOR_KEYS.every((k) => num(c[k])))) return false;
+  // `sharpness` (0.1.41) may be absent: a color saved before it reads as 0 (emStateLoad fills it in).
+  if (!Array.isArray(s.colors) || s.colors.length !== n || !s.colors.every((c) => c && typeof c === "object" && EM_COLOR_KEYS.every((k) => num(c[k]) || (k === "sharpness" && c[k] == null)))) return false;
   if (!num(s.speed) || s.speed < 0.25 || s.speed > 4) return false;
   if (!Array.isArray(s.joins) || !s.joins.every(num)) return false;
   if (!Array.isArray(s.audio) || !s.audio.every((r) => r && (r.kind === "track" || r.kind === "file") && Array.isArray(r.gains) && r.gains.length === n && r.gains.every(num) && num(r.volume)
     && (r.kind === "track" || (typeof r.path === "string" && r.path && num(r.offset) && num(r.trimStart) && num(r.length) && num(r.fileDuration) && typeof r.id === "string")))) return false;
   if (s.parts != null) {
-    if (!Array.isArray(s.parts) || s.parts.length < 1 || !s.parts.every((p) => p && num(p.src) && num(p.len) && p.len > 0 && typeof p.title === "string")) return false;
+    if (!Array.isArray(s.parts) || s.parts.length < 1 || !s.parts.every((p) => p && num(p.src) && num(p.len) && p.len > 0 && typeof p.title === "string"
+      && (p.speed == null || (num(p.speed) && p.speed >= EM_SPEED_MIN && p.speed <= EM_SPEED_MAX)))) return false;
     // Without gaps or lifted pieces the parts tile the source exactly (as before 0.1.36); else each clip lies in it.
+    // Footage: a piece with a speed (0.1.41) shows len * speed seconds of it.
     const clips = s.parts.filter((p) => !p.gap);
-    if (!clips.length || !clips.every((p) => p.src >= -1e-3 && p.src + p.len <= D + 1e-3)) return false;
-    if (!s.parts.some((p) => p.gap) && Math.abs(T - D) > 1e-3 && !(T < D)) return false;
+    // R1: a state saved by 0.1.37-0.1.40 without m.source has the ROW's length as `duration` (emStateSrcLen
+    // repairs it); its footage may then reach past it. Otherwise each clip lies in the source.
+    const rowLen = Math.abs(T - D) < 1e-3;
+    if (!clips.length || !clips.every((p) => p.src >= -1e-3 && (rowLen || p.src + emFootLen(p) <= D + 1e-3))) return false;
+    // R1: no rule on the pieces' total any more: pieces may show the same footage twice (a piece's end pulled out
+    // over footage another piece shows), so the row can be longer than the source without a gap.
   }
   // Overlays and fades (0.1.25) are optional: a state saved before them has none.
   if (s.overlays != null && !(Array.isArray(s.overlays) && s.overlays.every(emOverlayOk))) return false;
@@ -1117,9 +1192,28 @@ const emOverlayOk = (o) => !!o && typeof o === "object" && EM_OVERLAY_KINDS.incl
  * clip with another track joins); a track the state does not know starts at full level. File rows
  * come back as saved. Returns false, and leaves `m` as it was, when `s` cannot be used.
  */
+/**
+ * R1 (0.1.41): the source length of saved state `s` (emStateOk), loaded onto a draft `draftLen` seconds long. Before
+ * 0.1.41 a model often had no m.source, and emStateSave then wrote the ROW's length (gaps included, pieces dropped)
+ * as `duration`. Such a state (duration = the parts' sum) is understood: footage reaching past `duration` makes it
+ * that far (the I key on a clip border); a `duration` longer than the draft (gaps) is the draft's own length when
+ * the footage fits in it. Anything else is `duration` as saved.
+ */
+function emStateSrcLen(s, draftLen) {
+  const D = s.duration;
+  if (!Array.isArray(s.parts) || !s.parts.length) return D;
+  const T = s.parts.reduce((a, p) => a + p.len, 0);
+  const foot = Math.max(0, ...s.parts.filter((p) => !p.gap).map((p) => p.src + emFootLen(p)));
+  if (Math.abs(T - D) >= 1e-3) return D; // saved with m.source: as it is
+  if (foot > D + 1e-3) return foot;
+  if (D > draftLen + 0.5 && foot <= draftLen + 1e-3) return draftLen;
+  return D;
+}
 function emStateLoad(m, s) {
   if (typeof s === "string") { try { s = JSON.parse(s); } catch { return false; } }
-  if (!emStateOk(s) || s.duration > m.duration + 0.5) return false;
+  if (!emStateOk(s)) return false;
+  { const D = emStateSrcLen(s, m.duration); if (D !== s.duration) s = { ...s, duration: D }; } // R1: an older state's row length repaired
+  if (s.duration > m.duration + 0.5) return false;
   const n = s.cuts.length + 1;
   const saved = s.audio.filter((r) => r.kind === "track");
   const used = new Set();
@@ -1141,10 +1235,12 @@ function emStateLoad(m, s) {
   const sameTracks = used.size === saved.length && tracks.length === saved.length;
   const files = s.audio.filter((r) => r.kind === "file").map((r) => ({ ...r, gains: r.gains.slice(), ...(laneIds.has(r.lane) ? { lane: laneIds.get(r.lane) } : {}) }));
   // With gaps or a lifted piece (0.1.36) the parts say how long the row is; `duration` stays the source's.
-  const whole = Array.isArray(s.parts) && s.parts.length === 1 && !s.parts[0].gap && !s.parts[0].noSound && !s.parts[0].group && Math.abs(s.parts[0].src) < 1e-6 && Math.abs(s.parts[0].len - s.duration) < 1e-3;
-  m.parts = Array.isArray(s.parts) && s.parts.length >= 1 && !whole ? s.parts.map((p) => (p.gap ? { src: -1, len: p.len, title: "", gap: true } : { src: p.src, len: p.len, title: p.title, ...(p.noSound ? { noSound: true } : {}), ...(typeof p.group === "string" ? { group: p.group } : {}) })) : null;
+  const whole = Array.isArray(s.parts) && s.parts.length === 1 && !s.parts[0].gap && !s.parts[0].noSound && !s.parts[0].group && emPartSp(s.parts[0]) === 1 && Math.abs(s.parts[0].src) < 1e-6 && Math.abs(s.parts[0].len - s.duration) < 1e-3;
+  m.parts = Array.isArray(s.parts) && s.parts.length >= 1 && !whole ? s.parts.map((p) => (p.gap ? { src: -1, len: p.len, title: "", gap: true } : { src: p.src, len: p.len, title: p.title, ...(p.noSound ? { noSound: true } : {}), ...(typeof p.group === "string" ? { group: p.group } : {}), ...(emPartSp(p) !== 1 ? { speed: p.speed } : {}) })) : null;
   m.duration = m.parts ? m.parts.reduce((a, p) => a + p.len, 0) : s.duration;
-  if (m.parts && (m.parts.some((p) => p.gap) || Math.abs(m.duration - s.duration) > 1e-6)) m.source = s.duration;
+  // R1: with parts the source's length is always kept (it used to be dropped when the parts added up to it, and then
+  // lost for good when the I / O keys dropped a piece: footage limits, emStateSave's `duration`).
+  if (m.parts) m.source = s.duration;
   else delete m.source;
   m.cuts = s.cuts.slice();
   m.removed = s.removed.map((r) => !!r);
@@ -1235,7 +1331,7 @@ function emPlayable(m, t) {
 
 /* ---------- picture: color and hiding, per segment ---------- */
 
-const emSameColor = (a, b = emNoColor()) => EM_COLOR_KEYS.every((k) => Math.abs((a?.[k] ?? 1) - (b?.[k] ?? 1)) < 0.005);
+const emSameColor = (a, b = emNoColor()) => EM_COLOR_KEYS.every((k) => Math.abs((a?.[k] ?? emColorDef(k)) - (b?.[k] ?? emColorDef(k))) < 0.005);
 
 /** The color correction in force at source time `t`. */
 const emColorAt = (m, t) => m.colors[emSegmentAt(m, t)] || emNoColor();
@@ -1252,7 +1348,12 @@ function emSetColor(m, segs, change) {
   let any = false;
   for (const i of list) {
     if (i < 0 || i >= m.colors.length) continue;
-    for (const k of EM_COLOR_KEYS) if (k in change && Number.isFinite(+change[k])) m.colors[i][k] = +change[k];
+    for (const k of EM_COLOR_KEYS) {
+      if (!(k in change) || !Number.isFinite(+change[k])) continue;
+      // Sharpness (0.1.41): 0..1, kept only while it is on (0 removes it: the color is then as it was before it existed).
+      if (k === "sharpness") { const x = Math.min(1, Math.max(0, +change[k])); if (x > 0) m.colors[i].sharpness = x; else delete m.colors[i].sharpness; }
+      else m.colors[i][k] = +change[k];
+    }
     any = true;
   }
   return any;
@@ -1430,8 +1531,9 @@ function emSetGain(m, id, i, gain) {
 
 /** True if row `id` is the only one heard in segment `i` (and at least one other row exists). */
 function emIsSolo(m, id, i) {
-  const row = emRow(m, id);
-  return !!row && m.audio.length > 1 && row.gains[i] > 0 && m.audio.every((r) => r === row || r.gains[i] === 0);
+  // 0.1.41: among the clip's own track rows only; an audio clip (a song, an ungrouped sound) is not tied to V1's pieces.
+  const row = emRow(m, id), T = m.audio.filter((r) => r.kind === "track");
+  return !!row && row.kind === "track" && T.length > 1 && row.gains[i] > 0 && T.every((r) => r === row || r.gains[i] === 0);
 }
 
 /**
@@ -1440,10 +1542,10 @@ function emIsSolo(m, id, i) {
  * at their recorded level.
  */
 function emSolo(m, id, i) {
-  const row = emRow(m, id);
-  if (!row || i < 0 || i >= row.gains.length || m.audio.length < 2) return false;
+  const row = emRow(m, id), T = m.audio.filter((r) => r.kind === "track");
+  if (!row || row.kind !== "track" || i < 0 || i >= row.gains.length || T.length < 2) return false; // 0.1.41: track rows only
   const undo = emIsSolo(m, id, i);
-  for (const r of m.audio) if (r !== row) r.gains[i] = undo ? 1 : 0;
+  for (const r of T) if (r !== row) r.gains[i] = undo ? 1 : 0;
   if (!undo && row.gains[i] === 0) row.gains[i] = 1;
   return true;
 }
@@ -1459,7 +1561,7 @@ function emAddFile(m, info, at = 0) {
   const offset = Math.max(0, +at || 0);
   const room = emKeptDuration(m) - emSrcToOut(m, offset);
   const row = {
-    id: `f${Date.now().toString(36)}${n}`,
+    id: emNewId("f"), // 0.1.41: was f<ms><n>, which could equal an emNewId("f") of the same millisecond
     kind: "file",
     path: info.path,
     title: info.title || `Audio ${n}`,
@@ -1483,13 +1585,14 @@ function emRemoveRow(m, id) {
   // Any row: an added file, or one of the clip's own tracks (0.1.33). A deleted track is not in the export.
   // 0.1.39: an added row (m.lanes) goes with every clip on it; a deleted track row's clips get a row of their own.
   const li = (m.lanes || []).findIndex((L) => L.id === id);
-  if (li >= 0) { m.lanes.splice(li, 1); m.audio = m.audio.filter((r) => !(r.kind === "file" && r.lane === id)); return true; }
+  if (li >= 0) { m.lanes.splice(li, 1); m.audio = m.audio.filter((r) => !(r.kind === "file" && r.lane === id)); emTidyGroups(m); return true; }
   const at = m.audio.findIndex((r) => r.id === id);
   if (at < 0) return false;
   const row = m.audio[at];
   m.audio.splice(at, 1);
   if (row.kind === "track") for (const c of m.audio) if (c.kind === "file" && c.lane === id) c.lane = emNewLane(m, row.title).id;
   if (row.kind === "file") emDropEmptyLanes(m);
+  emTidyGroups(m); // R1: a group left with one member is no group
   return true;
 }
 /** The clip's own tracks whose row was deleted: [{ index, title }]. */
@@ -1564,6 +1667,39 @@ function emNormLanes(m) {
     r.lane = L.id;
   }
   emDropEmptyLanes(m);
+  emClipLevels(m); // 0.1.41: an audio clip's level is its own
+}
+/**
+ * 0.1.41: an audio clip's mute and level are its own (`muted`, `volume`); V1's pieces never cut into it. An edit saved
+ * before (0.1.39 / 0.1.40: "Mute this piece" or a level chip on a song wrote the level of the V1 segment under it)
+ * becomes this: the clip is split where its level changed, and each part takes that level as its own (0 = muted).
+ * It sounds as it did. Afterwards its per-segment levels are all 1. True if anything changed.
+ */
+function emClipLevels(m) {
+  let any = false;
+  for (const r of m.audio.slice()) {
+    if (r.kind !== "file" || !Array.isArray(r.gains) || r.gains.every((g) => Math.abs(g - 1) < 0.005)) continue;
+    const a = r.offset, b = emRowEnd(m, r);
+    const segs = emSegments(m).filter((s) => !s.removed && s.end > a + EM_EPS && s.start < b - EM_EPS);
+    const level = (s) => (Number.isFinite(r.gains[s.i]) ? r.gains[s.i] : 1);
+    const parts = [{ row: r, g: segs.length ? level(segs[0]) : 1 }];
+    let cur = r;
+    for (let k = 1; k < segs.length; k++) {
+      const g = level(segs[k]);
+      if (Math.abs(g - parts[parts.length - 1].g) < 0.005) continue;
+      if (!emSplitClip(m, cur.id, segs[k].start)) continue; // too short a stretch: it keeps the level before it
+      cur = m.audio[m.audio.indexOf(cur) + 1];
+      parts.push({ row: cur, g });
+    }
+    for (const p of parts) {
+      const x = p.row;
+      if (p.g <= 0.005) x.muted = true;
+      else x.volume = Math.min(EM_MAX_GAIN, (Number.isFinite(x.volume) ? x.volume : 1) * p.g);
+      x.gains = x.gains.map(() => 1);
+    }
+    any = true;
+  }
+  return any;
 }
 /** The audio rows in display order: the clip's own track rows, then the added rows. */
 const emLanes = (m) => [
@@ -1604,7 +1740,7 @@ function emTrimClip(m, id, side, time) {
     r.trimStart += at - r.offset;
     r.length = end - at;
     r.offset = at;
-  } else if (side === "end") r.length = Math.max(EM_MIN_SEG, Math.min(fhi - r.trimStart, time - r.offset));
+  } else if (side === "end") r.length = Math.min(Math.max(fhi - r.trimStart, r.length), Math.max(EM_MIN_SEG, Math.min(fhi - r.trimStart, time - r.offset))); // R1: never past its file (a clip shorter than EM_MIN_SEG at the file's end)
   else return null;
   return { at: r.offset, len: r.length };
 }
@@ -1672,7 +1808,8 @@ function emUngroup(m, sels) {
   }
   for (const part of pieces) {
     delete part.group;
-    if (part.noSound) continue;
+    // A piece with its own speed (0.1.41) keeps its sound: an audio clip plays at 1x, so it could not sound the same.
+    if (part.noSound || emPartSp(part) !== 1) continue;
     const P = emParts(m).find((q) => m.parts[q.i] === part);
     if (!P) continue;
     const i = emSegmentAt(m, P.at + P.len / 2);
@@ -1699,9 +1836,9 @@ function emUngroup(m, sels) {
 /** Group (G): pieces on V1 and audio clips, in any mix. Returns the group id, or null for fewer than two. Does not snapshot. */
 function emGroup(m, items) {
   emPiecify(m);
-  const things = [];
+  const things = [], hadParts = !!m.parts;
   for (const it of items || []) { const x = emItemOf(m, it); const o = x?.part || x?.row; if (o && !things.includes(o)) things.push(o); }
-  if (things.length < 2) return null;
+  if (things.length < 2) { if (!hadParts) m.parts = null; return null; } // R1: refused: the plain clip stays plain (emItemOf gave it parts)
   const id = emNewId("g");
   for (const o of things) o.group = id;
   emTidyGroups(m);
@@ -1780,6 +1917,19 @@ const emRound = (x) => Math.round(x * 1000) / 1000;
  *             `segments` are in display order (any source order). A file row
  *             that spans parts then comes as one entry per source range.
  * Every time sent is SOURCE time (emSrcSpans); without parts that is the model's time.
+ *
+ * Speed per piece (0.1.41; set with emSetPieceSpeed(m, i, speed), read with emPieceSpeed(m, i)): a range of a
+ * piece with its own speed has `speed` (0.25..4; absent = 1). Which time each field is in:
+ *   SOURCE seconds (the footage, before any speed): segments[].start / end (a range with `speed` lasts
+ *     (end - start) / speed in the result); a track row's regions[].start / end; a non-through file row's
+ *     offset (a source second of the video it is cut with).
+ *   RESULT seconds before the whole-result `speed` (= the editor's timeline; every per-piece speed already
+ *     applied): segments[].gap, a through row's offset / length / regions, `tail` is already divided by `speed`.
+ *   OUTPUT seconds (the finished file, every speed applied): blurs[].from / to and their track, fade_in /
+ *     fade_out, overlay items (overlays.js), canvas_tracks (keyframes.js).
+ *   trim_start / length of a file row are seconds of THAT file (played at 1x, then by the whole-result speed).
+ * A track row's sound over a sped range plays at that range's speed (with the pitch kept), as its picture does.
+ * An untouched edit sends no `speed` on any range: the options are byte for byte as before 0.1.41.
  */
 function emToOpts(m) {
   const segs = emSegments(m);
@@ -1789,7 +1939,8 @@ function emToOpts(m) {
   const uniform = pics.every((p) => emSameColor(p.color, pics[0].color));
   // Source ranges [{ start, end }] under timeline range [a, b); without parts exactly [a, b].
   // A gap (0.1.36) is { gap: length }; srcOf leaves it out, srcGapOf keeps it.
-  const srcGapOf = (a, b) => (m.parts ? emSrcSpans(m, a, b).map((x) => (x.gap ? { gap: x.len } : { start: x.src, end: x.src + x.len })) : [{ start: a, end: b }]);
+  // A range of a piece with its own speed (0.1.41) ends where its footage does and carries `speed`.
+  const srcGapOf = (a, b) => (m.parts ? emSrcSpans(m, a, b).map((x) => (x.gap ? { gap: x.len } : { start: x.src, end: x.src + x.len * (x.speed || 1), ...(x.speed ? { speed: x.speed } : {}) })) : [{ start: a, end: b }]);
   const srcOf = (a, b) => srcGapOf(a, b).filter((x) => !x.gap);
   // A Game row counts as silent where Desktop is heard (see emGameHidden); left out if that is everywhere.
   // 0.1.39: a track row is silent over a piece whose sound was ungrouped (that sound is an audio clip now).
@@ -1842,7 +1993,12 @@ function emToOpts(m) {
       const last = segments[segments.length - 1];
       if (last && last.gap !== undefined) last.gap = emRound(last.gap + x.gap);
       else segments.push({ gap: emRound(x.gap) });
-    } else segments.push({ start: emRound(x.start), end: emRound(x.end), ...(uniform ? {} : { color: { ...p.color } }), ...(p.blank ? { blank: true } : {}) });
+    } else {
+      // A range with its own speed (0.1.41): to the microsecond, so (end - start) / speed is its timeline length to well
+      // under a frame and the ranges after it stay frame-tight (to the ms, 0.25x would be up to 4 ms off per range).
+      const rs = x.speed ? (v) => Math.round(v * 1e6) / 1e6 : emRound;
+      segments.push({ start: rs(x.start), end: rs(x.end), ...(uniform ? {} : { color: emColorOut(p.color) }), ...(p.blank ? { blank: true } : {}), ...(x.speed ? { speed: x.speed } : {}) });
+    }
   }
   const ranges = segments.filter((s) => s.gap === undefined);
   const ordered = segments.length !== ranges.length || ranges.some((s, i) => i > 0 && s.start < ranges[i - 1].end - 0.0005);
@@ -1856,7 +2012,7 @@ function emToOpts(m) {
     start: 0,
     end: 0,
     speed: m.speed,
-    color: uniform && pics.length ? { ...pics[0].color } : emNoColor(),
+    color: emColorOut(uniform && pics.length ? pics[0].color : emNoColor()), // `sharpness` only when on (0.1.41)
     // Nothing is heard (every row muted or deleted): the older per-track list with one silent track says "no sound"
     // (an empty `audio` alone would mean "keep the clip's tracks as recorded").
     tracks: !audio.length && !emAudioUntouched(m) ? [{ index: 0, volume: 0 }] : [],
@@ -1907,6 +2063,7 @@ if (typeof module !== "undefined" && module.exports) {
     emPieceList, emPieceAt, emSplitAt, emRemovePiece, emTrimPiece, emPieceToItem, emPiecify, emNeedsPieces, emClipBounds, emLimits,
     emHasGaps, emGapAt, emSegIsGap, emKeepSource, emEnsureParts, emSplitPartAt, emPlacePart, emPutBeside, emCloseGap, emCloseGaps, emSetGapLen, emInsertGap, emLiftSeg, emSplitOverlay, emKeyAt, emGroups, emNormGroups, emLayGroups,
     emGapStats, emPlaceNew,
+    EM_SPEED_MIN, EM_SPEED_MAX, emPartSp, emFootLen, emSetPieceSpeed, emPieceSpeed, emClipLevels,
     emUngroup, emGroup, emGroupOf, emClipList, emMoveClip, emTrimClip, emSplitClip, emRemoveClip, emLanes, emLaneOf, emNewLane, emNormLanes, emDropEmptyLanes, emSegNoSound, emTidyGroups,
     emRowEnd, emRowFileAt, emEnd, emTail, emResultDuration, emRowsThrough, emSlipFile, emMoveOverlay, emTrimOverlay, emOvMaxLen, EM_OV_MIN, emSetThrough, emTracksGone, emRemoveRow, emHasLayers, emOutRange, emLayerOpts, emOverlayOk, EM_OVERLAY_KINDS, emCanvasOk, emCanvasOpts };
 }

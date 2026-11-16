@@ -13,7 +13,9 @@ mod core;
 mod denoise;
 mod deps;
 mod e2e;
+mod edcache;
 mod editor;
+mod gamedetect;
 mod games;
 mod gif;
 mod hotkeys;
@@ -24,6 +26,8 @@ mod join;
 mod keys;
 mod lang;
 mod library;
+mod livecheck;
+mod monprev;
 mod naming;
 mod polish;
 mod procaudio;
@@ -33,6 +37,7 @@ mod recorder;
 mod rules;
 mod settings;
 mod sound;
+mod speedtest;
 mod spill;
 mod update;
 mod upscale;
@@ -144,6 +149,21 @@ fn main() {
         capmode::self_test(args.get(i + 1).map(String::as_str).unwrap_or("capmode.txt"));
         return;
     }
+    if let Some(i) = args.iter().position(|a| a == "--live-window") {
+        // Test-only (the live check's own capture target): one no-activate colored window for a few seconds.
+        livecheck::window_main(&args[i + 1..]);
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--live-check") {
+        // Test-only live verification: real monitor pictures, the real window list and libraries, three 3 s captures of its own window.
+        livecheck::run(args.get(i + 1).map(String::as_str).unwrap_or("live"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--monprev-test") {
+        // glint.exe --monprev-test <report.txt>: the monitor picker's picture, scaled and encoded from a synthetic bitmap; never reads the screen.
+        monprev::self_test(args.get(i + 1).map(String::as_str).unwrap_or("monprev.txt"));
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--buffer-test") {
         // glint.exe --buffer-test <report.txt>: the RAM / disk replay buffer on made-up data.
         recorder::self_test(args.get(i + 1).map(String::as_str).unwrap_or("buffer.txt"));
@@ -162,6 +182,11 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--join-test") {
         // glint.exe --join-test <report.txt>: "Edit together" on made-up clips.
         join::self_test(args.get(i + 1).map(String::as_str).unwrap_or("join.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--speed-test") {
+        // glint.exe --speed-test <report.txt>: how long adding clips to the editor takes, on synthetic 1440p60 clips (0.1.41).
+        speedtest::self_test(args.get(i + 1).map(String::as_str).unwrap_or("speed.txt"));
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--project-test") {

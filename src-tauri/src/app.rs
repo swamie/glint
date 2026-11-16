@@ -464,6 +464,28 @@ fn trim_clip(core: St, id: String, start: f64, end: f64, include_mic: bool) -> R
     Ok(new)
 }
 
+/// A card is drawn without a thumbnail (0.1.41, item T): try to make it again, in the background, one at a time
+/// (polish.rs `retry_thumb`: a few times a day at most, never for a file with no picture). "clips-changed" follows
+/// when one arrives. False when ffmpeg is not there.
+#[tauri::command]
+fn thumb_retry(core: St, id: String) -> bool {
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let Some(ffmpeg) = crate::util::find_exe(&core.settings().ffmpeg_path, "ffmpeg") else { return false };
+    let c = core.inner().clone();
+    std::thread::spawn(move || {
+        let _g = ONE_AT_A_TIME.lock();
+        crate::polish::retry_thumb(&c, &ffmpeg, &id, crate::util::unix_ms());
+    });
+    true
+}
+
+/// The editor closed or opened something else (0.1.41, edcache.rs): track, waveform and film-strip preparations
+/// still waiting for their turn give up. What already runs finishes and is cached.
+#[tauri::command]
+fn editor_prep_cancel() {
+    crate::edcache::cancel();
+}
+
 /// The clip's audio tracks as separate files, for the editor's track mixer.
 #[tauri::command(async)]
 fn editor_audio_tracks(core: St, id: String) -> Result<Vec<crate::editor::AudioTrack>, String> {
@@ -479,14 +501,21 @@ fn export_clip(core: St, id: String, opts: crate::editor::ExportOpts) -> Result<
     let meta = core.lib.lock().unwrap().get(&id).ok_or("Clip not found")?;
     let emitter = core.inner().clone();
     let source = id.clone();
-    let mut progress = |pct: f32| emitter.emit("export-progress", serde_json::json!({ "id": source, "pct": pct }));
-    let new = crate::editor::export(&core.settings(), &meta, &opts, &mut progress)?;
+    let mut progress = |pct: f32| emitter.emit("export-progress", serde_json::json!({ "id": source, "pct": pct, "stage": "export", "stage_pct": pct }));
+    let new = crate::editor::export_cancellable(&core.settings(), &meta, &opts, &id, &mut progress)?;
     core.lib.lock().unwrap().add(new.clone());
     if meta.draft {
         crate::projects::mark_exported(core.inner(), &id); // the project shows "Exported"
     }
     core.emit("clips-changed", new.id.clone());
     Ok(new)
+}
+
+/// End the running export of clip or project `id` (0.1.41): true if one was running; it then fails with
+/// "Export cancelled". false = nothing to cancel.
+#[tauri::command(async)]
+fn cancel_export(id: String) -> bool {
+    crate::editor::cancel_export(&id)
 }
 
 /// Export a project that references its library clips (0.1.38, `projexport.rs`): `opts` in project
@@ -497,8 +526,12 @@ fn export_project(core: St, id: String, opts: crate::editor::ExportOpts) -> Resu
     let (target, sources) = crate::projexport::sources_of(core.inner(), &id)?;
     let emitter = core.inner().clone();
     let source = id.clone();
-    let mut progress = |pct: f32| emitter.emit("export-progress", serde_json::json!({ "id": source, "pct": pct }));
-    let new = crate::projexport::export(&core.settings(), &target, &sources, &opts, &mut progress)?;
+    // The join first (0..40 % of the bar), then the encode; the stage and its own percent for the text (P).
+    let mut progress = |stage: &str, pct: f32| {
+        let all = if stage == "join" { pct * 0.4 } else { 40.0 + pct * 0.6 };
+        emitter.emit("export-progress", serde_json::json!({ "id": source, "pct": all, "stage": stage, "stage_pct": pct }))
+    };
+    let new = crate::projexport::export_cancellable(&core.settings(), &target, &sources, &opts, &id, &mut progress)?;
     core.lib.lock().unwrap().add(new.clone());
     crate::projects::mark_exported(core.inner(), &id); // the project shows "Exported"
     core.emit("clips-changed", new.id.clone());
@@ -966,6 +999,8 @@ pub fn run(minimized: bool) {
             pick_folder,
             trim_clip,
             editor_audio_tracks,
+            editor_prep_cancel,
+            thumb_retry,
             editor_waveforms,
             editor_thumbs,
             editor_audio_info,
@@ -990,6 +1025,7 @@ pub fn run(minimized: bool) {
             pick_import_folder,
             export_clip,
             export_project,
+            cancel_export,
             replace_clips,
             take_pending_edit,
             clipboard_text,
@@ -1025,6 +1061,8 @@ pub fn run(minimized: bool) {
             crate::capture2::auto_info,
             crate::capture2::recommended_settings,
             crate::capmode::game_menu,
+            crate::capmode::game_pick_exe,
+            crate::monprev::monitor_preview,
             crate::capmode::game_mark
         ])
         .setup(move |app| {
@@ -1043,6 +1081,7 @@ pub fn run(minimized: bool) {
             build_tray(&handle, core.clone())?;
             crate::polish::apply_icon(&handle, &core.settings()); // tray icon in the theme's color, if on
             crate::polish::spawn_thumb_repair(core.clone());
+            crate::polish::spawn_thumb_retry(core.clone()); // 0.1.41: thumbnails that are missing, tried again every start
             crate::icons::fill_in_background(core.clone()); // icons for games that have none (imported ones)
             core.watch();
 

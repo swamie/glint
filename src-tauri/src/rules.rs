@@ -102,11 +102,12 @@ pub const BUILTIN_LOOKS: &[(&str, [f32; 4])] = &[
 
 /// The color of look `name`: a built-in look first, then the user's own presets.
 pub fn look_color(s: &Settings, name: &str) -> Option<Color> {
-    let mk = |v: [f32; 4]| Color { brightness: v[0], contrast: v[1], saturation: v[2], gamma: v[3] };
+    let mk = |v: [f32; 4], sharpness: f32| Color { brightness: v[0], contrast: v[1], saturation: v[2], gamma: v[3], sharpness };
     if let Some((_, v)) = BUILTIN_LOOKS.iter().find(|(n, _)| *n == name) {
-        return Some(mk(*v));
+        return Some(mk(*v, 0.0));
     }
-    s.color_presets.iter().find(|p| p.name == name).map(|p| mk([p.brightness, p.contrast, p.saturation, p.gamma]))
+    // A preset's sharpness too (0.1.41).
+    s.color_presets.iter().find(|p| p.name == name).map(|p| mk([p.brightness, p.contrast, p.saturation, p.gamma], p.sharpness))
 }
 
 /// The saved layout a Canvas block names: by id, else by name (see `Step::layout`).
@@ -372,6 +373,7 @@ fn run_ff(ffmpeg: &Path, args: &[String], expected: f64, cancel: &AtomicBool, on
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Could not start ffmpeg: {e}"))?;
+    crate::util::track_child(&child); // ends with Glint (0.1.41)
     let err_reader = child.stderr.take().map(|mut err| {
         thread::spawn(move || {
             let mut buf = Vec::new();
@@ -444,7 +446,7 @@ fn color_step(tools: &Tools, cur: &Path, out: &Path, look: &str, cancel: &Atomic
     let duration = library::probe(&tools.ffmpeg, cur, false).map(|p| p.duration).unwrap_or(0.0);
     let titles = track_titles(&tools.ffmpeg, cur);
     let build = |enc: &str| -> Vec<String> {
-        let mut a = sv(&["-hide_banner", "-loglevel", "error", "-nostdin", "-nostats", "-y", "-i"]);
+        let mut a = sv(&["-hide_banner", "-loglevel", "error", "-nostdin", "-nostats", "-y", "-reinit_filter", "0", "-i"]);
         a.push(cur.to_string_lossy().into_owned());
         a.extend(sv(&["-map", "0:v:0", "-map", "0:a?", "-vf"]));
         a.push(vf.clone());
@@ -974,7 +976,7 @@ fn pure_checks(r: &mut Report) {
     let tiny = Rule { steps: vec![Step { kind: "compress".into(), mb: 2, ..Default::default() }], ..Default::default() };
     r.check("check: a size under 5 MB is refused", check(&s, &tiny).is_err(), "");
     let mut s2 = Settings::default();
-    s2.color_presets.push(crate::settings::ColorPreset { name: "Mine".into(), brightness: 1.2, contrast: 1.0, saturation: 1.0, gamma: 1.0 });
+    s2.color_presets.push(crate::settings::ColorPreset { name: "Mine".into(), brightness: 1.2, contrast: 1.0, saturation: 1.0, gamma: 1.0, sharpness: 0.0 });
     let mine = look_color(&s2, "Mine");
     r.check("looks: the user's own preset is found by name", mine.as_ref().is_some_and(|c| (c.brightness - 1.2).abs() < 1e-6), "");
     r.check("looks: a built-in look is found by name", look_color(&s, "Black and white").is_some_and(|c| c.saturation == 0.0 && (c.contrast - 1.12).abs() < 1e-6), "");

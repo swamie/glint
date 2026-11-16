@@ -590,11 +590,13 @@ fn audio_codec(a: &mut Vec<String>) {
 /// Arguments for the copy ways (input 0 = the concat list).
 fn copy_args(srcs: &[Src], plan: &Plan, list: &Path, title: &str, out: &Path) -> Vec<String> {
     let mut a = head();
-    a.extend(sv(&["-f", "concat", "-safe", "0", "-i"]));
+    // 0.1.41: a clip whose picture changes its colour tags part way must not rebuild the graph (the export hang).
+    a.extend(sv(&["-reinit_filter", "0", "-f", "concat", "-safe", "0", "-i"]));
     a.push(list.to_string_lossy().into_owned());
     let outs = plan.tracks.titles().len();
     if plan.mode == Mode::CopyVideo && outs > 0 {
         for s in srcs {
+            a.extend(sv(&["-reinit_filter", "0"]));
             a.push("-i".into());
             a.push(s.path.to_string_lossy().into_owned());
         }
@@ -663,6 +665,7 @@ fn draft_quality(args: Vec<String>) -> Vec<String> {
 fn encode_args(srcs: &[Src], plan: &Plan, enc: &str, title: &str, out: &Path) -> Vec<String> {
     let mut a = head();
     for s in srcs {
+        a.extend(sv(&["-reinit_filter", "0"]));
         a.push("-i".into());
         a.push(s.path.to_string_lossy().into_owned());
     }
@@ -673,7 +676,8 @@ fn encode_args(srcs: &[Src], plan: &Plan, enc: &str, title: &str, out: &Path) ->
     for (i, s) in srcs.iter().enumerate() {
         let sar = if sar_value(&s.video().sar) != 1.0 { ",scale=w='trunc(iw*sar/2)*2':h=ih,setsar=1" } else { "" };
         g.push(format!(
-            "[{i}:v:0]setpts=PTS-STARTPTS{sar},scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bicubic,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={fps},format=yuv420p[v{i}]"
+            // One set of colour tags for the whole working file (0.1.41): each clip converted from its own tags to BT.709.
+            "[{i}:v:0]setpts=PTS-STARTPTS{sar},scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bicubic:out_color_matrix=bt709:out_range=tv,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={fps},format=yuv420p,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv[v{i}]"
         ));
         cat.push_str(&format!("[v{i}]"));
         for k in 0..outs {
@@ -692,7 +696,7 @@ fn encode_args(srcs: &[Src], plan: &Plan, enc: &str, title: &str, out: &Path) ->
         a.push(format!("[ao{k}]"));
     }
     a.extend(draft_quality(crate::editor::video_codec_args(enc)));
-    a.extend(sv(&["-pix_fmt", "yuv420p"]));
+    a.extend(sv(&["-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]));
     // A keyframe where every clip starts: the joins can be cut without re-encoding.
     let keys: Vec<String> = plan.starts.iter().skip(1).map(|t| format!("{t:.3}")).collect();
     if !keys.is_empty() {
@@ -803,6 +807,7 @@ fn match_encoder(t: &VInfo, wanted: &str) -> (String, Vec<String>) {
 /// the sound, copied as it is, stays where it was against the picture).
 fn match_args(src: &Src, t: &VInfo, fps: u32, enc: &str, order: &[String], out: &Path) -> Vec<String> {
     let mut a = head();
+    a.extend(sv(&["-reinit_filter", "0"]));
     a.push("-i".into());
     a.push(src.path.to_string_lossy().into_owned());
     let (w, h) = (t.width, t.height);
@@ -899,6 +904,7 @@ fn run_ffmpeg(ffmpeg: &Path, args: &[String], expected: f64, cancel: &AtomicBool
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Could not start ffmpeg: {e}"))?;
+    crate::util::track_child(&child); // ends with Glint (0.1.41)
     let err_reader = child.stderr.take().map(|mut err| {
         thread::spawn(move || {
             let mut buf = Vec::new();

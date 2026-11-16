@@ -386,6 +386,7 @@ fn run_blur_piped(blur_cli: &Path, link: &Path, output: &Path, cancel: &AtomicBo
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("Could not start blur-cli: {e}"))?;
+    crate::util::track_child(&child); // ends with Glint (0.1.41)
 
     // Read progress on a helper thread so a stalled render can be detected and killed.
     let (tx, rx) = std::sync::mpsc::channel::<String>();
@@ -812,6 +813,7 @@ fn stage_codec(enc: &str) -> &'static [&'static str] {
 /// Run a hidden ffmpeg to the end, or kill it once `cancel` is set.
 fn run_cancellable(mut cmd: std::process::Command, cancel: &AtomicBool) -> Result<(), String> {
     let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| format!("Could not start ffmpeg: {e}"))?;
+    crate::util::track_child(&child); // ends with Glint (0.1.41)
     let err = child.stderr.take().map(|mut e| {
         std::thread::spawn(move || {
             let mut buf = Vec::new();
@@ -899,7 +901,7 @@ fn stage_cmd(ffmpeg: &Path, input: &Path, out: &Path, plan: &StagePlan, decode: 
         cmd.args(["-advanced_editlist", "0"]);
     }
     // Input options belong to the next -i only: the audio input is read normally, edit lists applied.
-    cmd.args(decode).arg("-i").arg(input).arg("-i").arg(input);
+    cmd.args(decode).args(["-reinit_filter", "0"]).arg("-i").arg(input).arg("-i").arg(input);
     cmd.args(["-map", "0:v:0", "-map", "1:a?", "-dn", "-sn", "-vf", &plan.graph]).args(codec);
     // The fps filter made the rate constant; `-fps_mode cfr` here dropped frames next to a long gap under -copyts.
     cmd.args(["-fps_mode", "passthrough", "-c:a", "copy", "-map_metadata", "1"]);

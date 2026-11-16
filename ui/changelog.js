@@ -14,6 +14,35 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.41", date: "2026-11-16", gold: true,
+    new: [
+      t("Speed for each clip. Select a clip and set 0.25x to 4x in the Speed section, or right-click it. Its own sound follows, and the whole-video speed still works on top."),
+      t("Zoom with keyframes. Set a zoom in the Zoom section and add keyframes, or right-click the picture: “Zoom in here” and “Zoom out”. Drag on the picture to move the zoom."),
+      t("Sharpness in Color, next to brightness, contrast and saturation."),
+      t("Cancel a running export. An export that stops moving now ends by itself after a minute and says why, with a button to see the log."),
+      t("Game detection is rebuilt. Glint reads your installed Steam, Epic, Riot, Xbox, GOG, Ubisoft, Battle.net and EA libraries, a game you pick stays picked, and when a game cannot be recorded as a window Glint says why instead of quietly recording your screen."),
+      t("Wherever you pick a monitor, Glint shows your monitors as they are arranged, with a live picture of each."),
+    ],
+    improved: [
+      t("The editor opens at once. Projects and clips are playable right away; their sound tracks, waveforms and film strips fill in after, nearest the playhead first, and are remembered for next time."),
+      t("Adding clips is instant, also to projects made before 0.1.38: they no longer rebuild their working file on every add. Dropped files appear right away and are copied in the background."),
+      t("A project can hold up to 500 clips and 4 hours of footage. The old limit was 20 clips and 30 minutes."),
+      t("Cuts play without a hitch in the preview, and the color of the next clip starts on its first frame, not a frame early."),
+      t("Split cuts only what is selected. Cutting the video no longer cuts an added song, and a song has its own mute and level."),
+      t("Everything selected together moves together when you drag one of them. Alt+Left and Alt+Right nudge the selection by a frame."),
+      t("Closing a single clip with an unsaved edit asks first, and Esc in a number box no longer closes the editor."),
+    ],
+    fixed: [
+      t("Big montages froze at about 48 percent while exporting. The cause was clips recorded with different color settings in one project; exports of such projects now finish."),
+      t("An export left running when Glint closed kept running in the background. Glint now ends everything it started."),
+      t("A project could reopen empty and lose its edit: after an end was pulled out over footage used twice, after I or O on a clip border, or when the saved edit failed to load once. All three are fixed, and an edit that fails to load is never overwritten."),
+      t("A long song could not be clicked: only a sliver at the end of the last clip was selected."),
+      t("Nudging a clip onto its neighbour made a clip-long gap; a grouped clip and its sound could drift apart; Delete could remove the wrong clip after a drag; the first color slider drag changed every clip."),
+      t("Exports: a black frame flashed one frame early at a gap; a single clip with its own speed kept its sound at normal speed; a montage with pictures on it could run a second past its sound; a trimmed export could lose its audio track names; text on a project that keeps only a clip of another size came out stretched."),
+      t("Imported clips that showed only a letter instead of a picture: the thumbnail is now tried several times and again later."),
+    ],
+  },
+  {
     version: "0.1.40", date: "2026-11-16",
     new: [
       t("Drop video files into the editor to add them. They are imported into your Library and placed on the timeline where you drop them. Dropped on a single clip, they make it a project and your edit stays as it is."),
@@ -541,7 +570,8 @@ function wnDate(iso) {
 
 function wnHtml() {
   const group = (label, list) => (list && list.length ? `<div class="wn-grp"><div class="wn-lab">${esc(label)}</div><ul>${list.map((s) => `<li>${esc(s)}</li>`).join("")}</ul></div>` : "");
-  return wnReleases().map((r) => `<section class="wn-rel">
+  // `gold: true` on a release (0.1.41: the editor revamp): its version tag gets a gold accent.
+  return wnReleases().map((r) => `<section class="wn-rel${r.gold ? " wn-gold" : ""}">
       <div class="wn-top"><span class="wn-date">${esc(wnDate(r.date))}</span><span class="wn-ver">${esc(r.version)}</span></div>
       ${group(t("New"), r.new)}${group(t("Improved"), r.improved)}${group(t("Fixed"), r.fixed)}
     </section>`).join("");

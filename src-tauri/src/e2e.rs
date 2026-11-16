@@ -43,6 +43,10 @@ struct SourceSpec {
     band: u32,
     tone: u32,
     tracks: Vec<TrackSpec>,
+    /// 0.1.41: made as an old project's draft is: two encodes with other colour tags joined by a stream copy
+    /// (its frames change their tags half way), like the owner's working file that hung the export.
+    #[serde(default)]
+    tags_change: bool,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -77,6 +81,15 @@ struct Scenario {
     expect: Option<Expect>,
     model: String,
     project: Option<ProjectSpec>,
+    /// 0.1.41: pictures to lay on the result (made here: a faint full-size picture, so the bar still reads).
+    overlay_pngs: Vec<OverlaySpec>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+#[serde(default)]
+struct OverlaySpec {
+    from: f64,
+    to: f64,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -216,7 +229,15 @@ fn run(r: &mut Report) {
             r.check(&format!("{label}: has options and an expectation"), false, "the model could not make this edit (see above)");
             continue;
         };
-        // 0.1.39: an audio clip of the clip's own sound names its file: the node half writes "<clip>".
+        // 0.1.41: pictures on top (the UI sends PNGs; made here at the clip's size, faint enough for the bar to read).
+        for (k, ov) in sc.overlay_pngs.iter().enumerate() {
+            let png = crate::util::tmp_dir().join("overlays").join(format!("e2e-{k}-{}.png", crate::util::new_id()));
+            let _ = std::fs::create_dir_all(png.parent().unwrap_or(Path::new(".")));
+            let ok = util::hidden_cmd(&ffmpeg).args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", &format!("color=c=white@0.08:s={}x{},format=rgba", spec.width, spec.height), "-frames:v", "1"]).arg(&png).stdin(Stdio::null()).status().is_ok_and(|s| s.success());
+            if ok {
+                opts.overlays.push(editor::Overlay { png: png.to_string_lossy().into_owned(), from: ov.from, to: ov.to, ..Default::default() });
+            }
+        }        // 0.1.39: an audio clip of the clip's own sound names its file: the node half writes "<clip>".
         for e in &mut opts.audio {
             if e.path == "<clip>" {
                 e.path = src.path.clone();
@@ -405,9 +426,38 @@ fn source_clip(ffmpeg: &Path, sp: &SourceSpec, work: &Path) -> Option<library::C
         for (i, t) in sp.tracks.iter().enumerate() {
             cmd.args(["-map", &format!("{}:a", i + 1)]).arg(format!("-metadata:s:a:{i}")).arg(format!("title={}", t.title));
         }
-        cmd.args(["-c:v", "libx264", "-preset", "ultrafast", "-g", &fps.to_string(), "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "2", "-t", &format!("{d}")]).arg(&out);
-        if !cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success()) {
-            return None;
+        cmd.args(["-c:v", "libx264", "-preset", "ultrafast", "-g", &fps.to_string(), "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "2", "-t", &format!("{d}")]);
+        if !sp.tags_change {
+            cmd.arg(&out);
+            if !cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success()) {
+                return None;
+            }
+        } else {
+            // The whole picture once with one set of tags and once with another, then the first half of the one
+            // and the second half of the other joined without re-encoding (at a keyframe: one each second).
+            let whole = |tags: [&str; 3], name: &str| -> Option<PathBuf> {
+                let p = dir.join(name);
+                let mut c2 = util::hidden_cmd(ffmpeg);
+                c2.args(cmd.get_args());
+                // Replace the output path's place: the args end with "-t d"; add the tags and the file.
+                c2.args(["-colorspace", tags[0], "-color_primaries", tags[1], "-color_trc", tags[2]]).arg(&p);
+                c2.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().ok().filter(|s| s.success()).map(|_| p)
+            };
+            let a = whole(["bt709", "bt709", "bt709"], &format!("{}-a.mp4", sp.name))?;
+            let b = whole(["bt470bg", "bt709", "iec61966-2-1"], &format!("{}-b.mp4", sp.name))?;
+            let half = (d / 2.0).floor();
+            let list = dir.join(format!("{}-list.txt", sp.name));
+            let q = |p: &Path| p.to_string_lossy().replace('\'', "'\\''");
+            std::fs::write(&list, format!("file '{}'\noutpoint {half}\nfile '{}'\ninpoint {half}\n", q(&a), q(&b))).ok()?;
+            let mut cat = util::hidden_cmd(ffmpeg);
+            cat.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"]).arg(&list).args(["-map", "0", "-c", "copy"]);
+            for (i, t) in sp.tracks.iter().enumerate() {
+                cat.arg(format!("-metadata:s:a:{i}")).arg(format!("title={}", t.title));
+            }
+            let ok = cat.arg(&out).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+            if !ok {
+                return None;
+            }
         }
     }
     let mut meta = library::register(ffmpeg, &out, &sp.name, "Desktop", "clip");
@@ -480,7 +530,7 @@ fn project_scenario(r: &mut Report, ffmpeg: &Path, s: &Settings, spec: &ClipSpec
     let results = |w: &Path| std::fs::read_dir(w).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "mp4")).count()).unwrap_or(0);
     let (joins0, files0) = (projexport::JOINS_MADE.load(Ordering::SeqCst), results(work));
     let started = std::time::Instant::now();
-    let res = projexport::export(s, &target, &sources, opts, &mut |_| {});
+    let res = projexport::export(s, &target, &sources, opts, &mut |_, _| {});
     let joined = projexport::JOINS_MADE.load(Ordering::SeqCst) > joins0;
     let left = projexport::leftovers();
     r.check(&format!("{label}: no temporary working file left"), left.is_empty(), &format!("{left:?}"));

@@ -421,6 +421,33 @@ pub struct WinInfo {
     pub height: u32,
     /// Index into `monitors()` of the monitor it is (mostly) on.
     pub monitor: u32,
+    /// 0.1.41: hidden by the desktop window manager (a suspended store app, another virtual
+    /// desktop). Listed so a game that is only hidden for a moment is not taken for gone.
+    pub cloaked: bool,
+    /// Its styles: WS_POPUP (a swap chain's window usually is one) and WS_CAPTION (a title bar).
+    pub popup: bool,
+    pub caption: bool,
+    /// The program keeps this window out of every screen capture (SetWindowDisplayAffinity).
+    pub excluded: bool,
+    /// A store app's window: the frame belongs to ApplicationFrameHost, `pid` and `exe` are the
+    /// app's own (its CoreWindow's process).
+    pub hosted: bool,
+}
+
+/// An exclusive-fullscreen Direct3D program is in front (the shell's own notification state,
+/// `QUNS_RUNNING_D3D_FULL_SCREEN`). Cheap; reads nothing of another process.
+pub fn d3d_fullscreen() -> bool {
+    use windows::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_RUNNING_D3D_FULL_SCREEN};
+    unsafe { SHQueryUserNotificationState().is_ok_and(|s| s == QUNS_RUNNING_D3D_FULL_SCREEN) }
+}
+
+/// The index of the monitor called `device` ("DISPLAY2") among `mons`, else the one whose corner
+/// is at (`x`, `y`), else 0. By name first: positions move while a game switches the display mode.
+pub fn monitor_index_of(mons: &[Monitor], device: &str, x: i32, y: i32) -> u32 {
+    mons.iter()
+        .find(|m| !device.is_empty() && m.name.eq_ignore_ascii_case(device))
+        .or_else(|| mons.iter().find(|m| m.x == x && m.y == y))
+        .map_or(0, |m| m.index)
 }
 
 #[link(name = "dwmapi")]
@@ -428,16 +455,32 @@ extern "system" {
     fn DwmGetWindowAttribute(hwnd: isize, attr: u32, value: *mut c_void, size: u32) -> i32;
 }
 
-/// Every visible, uncloaked top-level window with no owner and no tool-window style, of every
-/// program but Glint itself: a few milliseconds.
+/// Every visible top-level window with no owner and no tool-window style, of every program but
+/// Glint itself: a few milliseconds. Cloaked ones are listed with `cloaked` set (0.1.41; they were
+/// left out before). Only window facts, DWM attributes and the program's path are read.
 pub fn windows() -> Vec<WinInfo> {
     use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
-    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
-    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetClientRect, GetWindow, GetWindowRect, GetWindowTextW, IsIconic, IsWindowVisible, GW_OWNER};
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumChildWindows, EnumWindows, GetClassNameW, GetClientRect, GetWindow, GetWindowDisplayAffinity, GetWindowRect, GetWindowTextW, IsIconic, IsWindowVisible, GWL_STYLE, GW_OWNER, WS_CAPTION, WS_POPUP};
     unsafe extern "system" fn collect(hwnd: HWND, lp: LPARAM) -> BOOL {
         let list = &mut *(lp.0 as *mut Vec<HWND>);
         list.push(hwnd);
         BOOL(1)
+    }
+    /// A store app's frame: the process of its CoreWindow child, if that is another process.
+    unsafe fn hosted_pid(frame: HWND, frame_pid: u32) -> Option<u32> {
+        let mut kids: Vec<HWND> = Vec::new();
+        let _ = EnumChildWindows(frame, Some(collect), LPARAM(&mut kids as *mut Vec<HWND> as isize));
+        kids.into_iter().find_map(|k| {
+            let mut cbuf = [0u16; 64];
+            let n = GetClassNameW(k, &mut cbuf).max(0) as usize;
+            if String::from_utf16_lossy(&cbuf[..n]) != "Windows.UI.Core.CoreWindow" {
+                return None;
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(k, Some(&mut pid));
+            (pid != 0 && pid != frame_pid).then_some(pid)
+        })
     }
     let mut all: Vec<HWND> = Vec::new();
     let mons = monitors();
@@ -456,15 +499,19 @@ pub fn windows() -> Vec<WinInfo> {
                 continue;
             }
             // Cloaked: a window of a suspended store app or on another virtual desktop (DWMWA_CLOAKED = 14).
-            let mut cloaked = 0u32;
-            if DwmGetWindowAttribute(hwnd.0 as isize, 14, &mut cloaked as *mut u32 as *mut c_void, 4) == 0 && cloaked != 0 {
-                continue;
-            }
+            let mut cloak = 0u32;
+            let cloaked = DwmGetWindowAttribute(hwnd.0 as isize, 14, &mut cloak as *mut u32 as *mut c_void, 4) == 0 && cloak != 0;
             let mut pid = 0u32;
             GetWindowThreadProcessId(hwnd, Some(&mut pid));
             if pid == 0 || pid == own {
                 continue;
             }
+            let mut cbuf = [0u16; 128];
+            let clen = GetClassNameW(hwnd, &mut cbuf).max(0) as usize;
+            let class = String::from_utf16_lossy(&cbuf[..clen]);
+            // A store app (UWP): the frame is ApplicationFrameHost's, the app is its CoreWindow's process.
+            let hosted = if class == "ApplicationFrameWindow" { hosted_pid(hwnd, pid) } else { None };
+            let pid = hosted.unwrap_or(pid);
             let exe = match exes.iter().find(|(p, _)| *p == pid) {
                 Some((_, e)) => e.clone(),
                 None => {
@@ -476,14 +523,17 @@ pub fn windows() -> Vec<WinInfo> {
             let Some(exe) = exe else { continue };
             let mut tbuf = [0u16; 256];
             let tlen = GetWindowTextW(hwnd, &mut tbuf).max(0) as usize;
-            let mut cbuf = [0u16; 128];
-            let clen = GetClassNameW(hwnd, &mut cbuf).max(0) as usize;
+            let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+            let mut affinity = 0u32;
+            let excluded = GetWindowDisplayAffinity(hwnd, &mut affinity).is_ok() && affinity != 0;
             let minimized = IsIconic(hwnd).as_bool();
             let mut cr = RECT::default();
             let (width, height) = if !minimized && GetClientRect(hwnd, &mut cr).is_ok() { ((cr.right - cr.left).max(0) as u32, (cr.bottom - cr.top).max(0) as u32) } else { (0, 0) };
             let mut wr = RECT::default();
-            let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
-            let have_mon = GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool();
+            let mut mx = MONITORINFOEXW::default();
+            mx.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+            let have_mon = GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut mx as *mut MONITORINFOEXW as *mut MONITORINFO).as_bool();
+            let mi = mx.monitorInfo;
             let fullscreen = !minimized
                 && have_mon
                 && GetWindowRect(hwnd, &mut wr).is_ok()
@@ -491,19 +541,26 @@ pub fn windows() -> Vec<WinInfo> {
                 && wr.top <= mi.rcMonitor.top
                 && wr.right >= mi.rcMonitor.right
                 && wr.bottom >= mi.rcMonitor.bottom;
-            let monitor = if have_mon { mons.iter().find(|m| m.x == mi.rcMonitor.left && m.y == mi.rcMonitor.top).map_or(0, |m| m.index) } else { 0 };
+            // By device name (0.1.41): matching positions alone fell back to the main monitor
+            // whenever they did not agree, and the main monitor was recorded instead of the game's.
+            let monitor = if have_mon { monitor_index_of(&mons, &device_name(&mx.szDevice), mi.rcMonitor.left, mi.rcMonitor.top) } else { 0 };
             out.push(WinInfo {
                 hwnd: hwnd.0 as usize as u64,
                 pid,
                 exe,
                 title: String::from_utf16_lossy(&tbuf[..tlen]),
-                class: String::from_utf16_lossy(&cbuf[..clen]),
+                class,
                 fullscreen,
                 minimized,
                 foreground: hwnd == fg,
                 width,
                 height,
                 monitor,
+                cloaked,
+                popup: style & WS_POPUP.0 as isize != 0,
+                caption: style & WS_CAPTION.0 as isize == WS_CAPTION.0 as isize,
+                excluded,
+                hosted: hosted.is_some(),
             });
         }
     }

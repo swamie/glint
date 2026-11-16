@@ -119,7 +119,10 @@ fn write_as(s: &Settings, mut cap: Capture, game: &str, game_mode: bool) -> Resu
         }
     };
     let mut child = match cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn() {
-        Ok(c) => c,
+        Ok(c) => {
+            crate::util::track_child(&c); // ends with Glint (0.1.41)
+            c
+        }
         Err(e) => {
             cleanup(&inputs);
             let _ = fs::remove_file(&out);
@@ -443,6 +446,9 @@ pub fn restore_titles(ffmpeg: &Path, src: &Path, out: &Path) {
     let _ = fs::remove_file(&tmp);
 }
 
+/// The shortest lossless cut (seconds); the editor re-encodes a shorter kept piece instead (0.1.41).
+pub const MIN_TRIM: f64 = 0.5;
+
 /// The most a lossless cut may start before the asked time (checked by
 /// `--blur-sync-test`). The cut starts AT the asked time; see `trim_start`.
 pub const TRIM_EARLY_MAX: f64 = 0.05;
@@ -502,7 +508,7 @@ pub fn output_dir(s: &Settings, src: &ClipMeta) -> (PathBuf, String) {
 /// "joined", its joins and part names.
 pub fn trim(s: &Settings, src: &ClipMeta, start: f64, end: f64, include_mic: bool) -> Result<ClipMeta, String> {
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg").ok_or("ffmpeg.exe was not found")?;
-    if end - start < 0.5 {
+    if end - start < MIN_TRIM {
         return Err("The selection is too short".into());
     }
     let src_path = PathBuf::from(&src.path);

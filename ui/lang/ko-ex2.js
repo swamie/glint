@@ -1,0 +1,30 @@
+"use strict";
+// 0.1.41 texts (tag ex2): cancelling an export, a stalled export (ui/editor.js, ui/projects.js).
+glintAddLanguage("ko", "한국어", {
+  "Cancelling…": "취소하는 중…",
+  "Joining clips… {pct}%": "클립 합치는 중… {pct}%",
+  "The export did not finish": "내보내기를 끝내지 못했어요",
+  "Dismiss": "닫기",
+  "Show the log": "로그 보기",
+  "The export failed.": "내보내기에 실패했어요.",
+  "Export cancelled": "내보내기를 취소했어요",
+  "The export could not be cancelled": "내보내기를 취소하지 못했어요",
+  // Code review fixes (R2).
+  "Close this clip? Its edit is not saved: only an export keeps it.": "이 클립을 닫을까요? 편집 내용은 저장되지 않아요. 내보내야만 남아요.",
+  "Close and lose the edit": "닫고 편집 버리기",
+  "The saved edit of this project could not be read, so it opened without it.": "이 프로젝트의 저장된 편집을 읽을 수 없어서 편집 없이 열었어요.",
+  "The saved edit no longer fits this project's clips, so it opened without it.": "저장된 편집이 이 프로젝트의 클립과 더 이상 맞지 않아서 편집 없이 열었어요.",
+  "The saved edit of this project is damaged, so it opened without it.": "이 프로젝트의 저장된 편집이 손상되어 편집 없이 열었어요.",
+  "Nothing is saved over it until you choose.": "직접 고르기 전까지는 그 위에 아무것도 저장하지 않아요.",
+  "Try again": "다시 시도",
+  "Keep this edit instead": "대신 지금 편집 유지",
+  "An earlier edit of this project is kept as a backup.": "이 프로젝트의 이전 편집이 백업으로 남아 있어요.",
+  "Bring back the earlier edit": "이전 편집 되돌리기",
+  "The saved edit could not be read, so it cannot be kept as a backup. Save this edit over it?": "저장된 편집을 읽을 수 없어서 백업으로 남길 수 없어요. 지금 편집을 그 위에 저장할까요?",
+  "Save over it": "덮어서 저장",
+  "The saved edit could not be kept as a backup. Save this edit over it?": "저장된 편집을 백업으로 남기지 못했어요. 지금 편집을 그 위에 저장할까요?",
+  "This edit is saved from now on. The earlier one is kept as a backup.": "이제부터 지금 편집이 저장돼요. 이전 편집은 백업으로 남아요.",
+  "This edit is saved from now on.": "이제부터 지금 편집이 저장돼요.",
+  "The saved edit of this project could not be opened. Nothing is saved over it until you choose.": "이 프로젝트의 저장된 편집을 열 수 없었어요. 직접 고르기 전까지는 그 위에 아무것도 저장하지 않아요.",
+  "Sharpness": "선명도",
+});

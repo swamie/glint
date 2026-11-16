@@ -81,6 +81,21 @@ body.pj-dragging #modal .e-tl, body.pj-dragging #modal .player, body.pj-dragging
 .pj-pv-cap > b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .pj-pv-cap > span { flex: none; color: var(--muted); font: 600 11.5px var(--mono); }
 
+/* 0.1.41 (R2 #3): a saved edit that could not be opened, in the Library panel. */
+.pj-warn { margin-top: 8px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--danger) 10%, transparent); line-height: 1.4; overflow-wrap: anywhere; }
+.pj-warn.pj-warn-soft { border-color: var(--line-2); background: var(--raised); }
+.pj-warn-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+
+/* 0.1.41: the Export section while an export runs (Cancel beside its text) and after one failed. */
+.e-prog-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.e-prog-head .e-prog-txt { flex: 1; min-width: 0; }
+.e-prog-head .e-cancel { flex: none; }
+.e-fail { margin: 6px 0 8px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.e-fail-head { display: flex; align-items: center; gap: 6px; color: var(--danger); font-size: 12.5px; }
+.e-fail-head b { flex: 1; min-width: 0; }
+.e-fail-x { flex: none; width: 22px; height: 22px; }
+.e-fail-msg { margin: 4px 0 8px; overflow-wrap: anywhere; white-space: pre-line; }
+
 /* 0.1.40: a single clip's Library list shows only while editing (the plain viewer has no room for it). */
 .viewer:not(.editing) > .pj-lib.pj-single, .viewer:not(.ws) > .pj-lib.pj-single { display: none; }
 

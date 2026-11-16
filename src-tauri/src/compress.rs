@@ -333,7 +333,7 @@ fn video_filter(plan: &Plan) -> Option<String> {
 /// ffmpeg arguments for one pass. Pass 1 writes only the stats (no audio, no file).
 fn pass_args(src: &Path, plan: &Plan, kbps: f64, preset: &str, log: &Path, pass: u8, out: Option<&Path>) -> Vec<String> {
     let k = kbps.round().max(1.0) as u64;
-    let mut a: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y", "-i"].iter().map(|s| s.to_string()).collect();
+    let mut a: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y", "-reinit_filter", "0", "-i"].iter().map(|s| s.to_string()).collect();
     a.push(src.to_string_lossy().into_owned());
     a.extend(["-map".into(), "0:v:0".into()]);
     if let Some(vf) = video_filter(plan) {
@@ -377,6 +377,7 @@ fn run_ffmpeg(ffmpeg: &Path, args: &[String], expected: f64, cancel: &AtomicBool
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Could not start ffmpeg: {e}"))?;
+    crate::util::track_child(&child); // ends with Glint (0.1.41)
     let err_reader = child.stderr.take().map(|mut err| {
         thread::spawn(move || {
             let mut buf = Vec::new();

@@ -155,11 +155,13 @@ pub struct ColorPreset {
     pub contrast: f32,
     pub saturation: f32,
     pub gamma: f32,
+    /// 0.1.41: 0 = off .. 1 (the export's unsharp, luma amount 1.5 x this).
+    pub sharpness: f32,
 }
 
 impl Default for ColorPreset {
     fn default() -> Self {
-        ColorPreset { name: String::new(), brightness: 1.0, contrast: 1.0, saturation: 1.0, gamma: 1.0 }
+        ColorPreset { name: String::new(), brightness: 1.0, contrast: 1.0, saturation: 1.0, gamma: 1.0, sharpness: 0.0 }
     }
 }
 
@@ -248,6 +250,9 @@ pub struct Settings {
     /// Marks from the switch's right-click menu, by executable name in lower case ("cs2.exe"):
     /// the program picked by hand ("" = none), programs that are games, programs that are not.
     pub game_pick: String,
+    /// 0.1.41: the picked program's full path, lower case ("" for a pick made before 0.1.41: then
+    /// the file name alone finds it, as before). Lets a picked launcher hand over to its game.
+    pub game_pick_path: String,
     pub game_exes: Vec<String>,
     pub not_game_exes: Vec<String>,
     pub record_on_start: bool,
@@ -386,6 +391,7 @@ impl Default for Settings {
             capture_mode: "desktop".into(),
             game_auto: true,
             game_pick: String::new(),
+            game_pick_path: String::new(),
             game_exes: Vec::new(),
             not_game_exes: Vec::new(),
             record_on_start: true,

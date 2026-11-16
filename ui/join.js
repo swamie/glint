@@ -8,8 +8,8 @@
 // Loaded after editor.js and jobs.js, before projects.js and app.js: at load time this file only
 // defines things. Names start with `join` / `JOIN_`, plus `clipById` (used by the viewer).
 
-const JOIN_MAX_CLIPS = 20;          // as join.rs MAX_CLIPS (also a project's limit)
-const JOIN_MAX_MIN = 30;            // as join.rs MAX_TOTAL_SECS, in minutes
+const JOIN_MAX_CLIPS = 500;         // as projects.rs MAX_CLIPS (0.1.41: a project references its clips, the old limit of 20 is gone)
+const JOIN_MAX_MIN = 240;           // as projects.rs MAX_TOTAL_SECS, in minutes
 const JOIN_ICON = '<svg viewBox="0 0 24 24"><rect x="2.500" y="6" width="7.500" height="12" rx="1.500"/><rect x="14" y="6" width="7.500" height="12" rx="1.500"/><path d="M10 12h4"/></svg>';
 const joinOpenWhenDone = new Set(); // job ids started here ("Edit together"): their project opens when ready
 const joinPending = [];             // project ids waiting for the viewer to be free, oldest first
