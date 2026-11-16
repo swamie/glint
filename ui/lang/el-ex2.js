@@ -27,4 +27,5 @@ glintAddLanguage("el", "Ελληνικά", {
   "This edit is saved from now on.": "Από τώρα αποθηκεύεται αυτή η επεξεργασία.",
   "The saved edit of this project could not be opened. Nothing is saved over it until you choose.": "Η αποθηκευμένη επεξεργασία του έργου δεν άνοιξε. Τίποτα δεν αποθηκεύεται πάνω της μέχρι να επιλέξετε.",
   "Sharpness": "Οξύτητα",
+  "Length of the edit. Its clips are {len} long in all.": "Διάρκεια της επεξεργασίας. Τα κλιπ του έχουν συνολικά διάρκεια {len}.",
 });

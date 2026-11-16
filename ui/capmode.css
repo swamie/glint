@@ -45,7 +45,8 @@
 
 /* The switch's right-click menu (the app's own #menu). */
 .menu.cm-menu { max-width: 380px; }
-.menu.cm-menu .menu-head { height: 25px; margin-bottom: 4px; line-height: 24px; letter-spacing: 0; }
+/* 0.1.43: the head ("No game found", "Game: …") in the same type as "Pick the game by hand" (.cm-sub). */
+.menu.cm-menu .menu-head { height: 25px; margin-bottom: 4px; line-height: 24px; letter-spacing: 0; font-size: 11.5px; font-weight: 600; text-transform: none; }
 .cm-menu .cm-sub { flex: none; padding: 2px 9px 4px; color: var(--muted); font-size: 11.5px; font-weight: 600; }
 .cm-menu .cm-list { display: flex; flex-direction: column; max-height: 290px; overflow-y: auto; }
 .cm-menu .cm-prog span { min-width: 0; }

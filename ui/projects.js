@@ -54,6 +54,50 @@ function projSummary(p) {
   const secs = p?.clip && +p.clip.duration > 0 ? +p.clip.duration : clips.reduce((s, c) => s + (+c.duration || 0), 0);
   return { n: clips.length, secs };
 }
+/**
+ * The length of the RESULT of a saved edit (0.1.43: a project's card showed the length of all its footage, 10:27
+ * for a 3:36 montage). `s` is the parsed state text (emStateSave). Timeline seconds are the result's before the
+ * whole-result speed: the pieces on the video row, or whatever runs on after them (an overlay item, an audio clip).
+ * 0 when the state says nothing usable.
+ */
+function projStateLen(s) {
+  if (!s || typeof s !== "object") return 0;
+  const num = (x) => (typeof x === "number" && Number.isFinite(x) ? x : 0);
+  let video = 0;
+  if (Array.isArray(s.parts) && s.parts.length) video = s.parts.reduce((a, p) => a + Math.max(0, num(p && p.len)), 0);
+  else if (Array.isArray(s.removed) && num(s.duration) > 0) {
+    // An edit without pieces (a plain clip): what is kept between its cuts.
+    const edges = [0, ...(Array.isArray(s.cuts) ? s.cuts.map(num) : []), num(s.duration)];
+    s.removed.forEach((gone, i) => { if (!gone && i + 1 < edges.length) video += Math.max(0, edges[i + 1] - edges[i]); });
+  }
+  let end = video;
+  for (const o of Array.isArray(s.overlays) ? s.overlays : []) end = Math.max(end, num(o && o.to));
+  for (const r of Array.isArray(s.audio) ? s.audio : []) if (r && r.kind === "file") end = Math.max(end, num(r.offset) + num(r.length));
+  const speed = num(s.speed) > 0 ? num(s.speed) : 1;
+  return end > 0 ? end / speed : 0;
+}
+// Project id -> { mod, secs }: the result length of its saved edit, read once per change of the project.
+const projLens = new Map();
+let projLenTimer = 0;
+/** The edit's length of project `p` if it is known (else 0), asking for it in the background when it is not. */
+function projEditLen(p) {
+  if (!p || !p.id) return 0;
+  const mod = p.modified || p.created || 0, hit = projLens.get(p.id);
+  if (hit && hit.mod === mod) return hit.secs;
+  if (hit && hit.pending === mod) return hit.secs || 0;
+  projLens.set(p.id, { mod: hit ? hit.mod : -1, secs: hit ? hit.secs : 0, pending: mod });
+  if (typeof invoke === "function") {
+    invoke("project_state", { id: p.id }).then((text) => {
+      let secs = 0;
+      try { secs = text ? projStateLen(JSON.parse(text)) : 0; } catch { secs = 0; }
+      projLens.set(p.id, { mod, secs });
+      // One repaint for however many answers arrive together.
+      clearTimeout(projLenTimer);
+      projLenTimer = setTimeout(() => { if (typeof S !== "undefined" && S.page === "editor" && !S.open && !S.renaming && typeof render === "function") render(); }, 60);
+    }).catch(() => projLens.set(p.id, { mod, secs: 0 }));
+  }
+  return hit ? hit.secs || 0 : 0;
+}
 /** Why `clips` cannot be added to project `p` (limits as join.rs: 20 clips, 30 minutes for the whole project), or "". */
 function projAddRefusal(p, clips) {
   const have = Array.isArray(p?.clips) ? p.clips : [];
@@ -186,7 +230,10 @@ function projBusyInfo(p) {
 /* ---------- the Editor page ---------- */
 
 function projCardHtml(p) {
-  const { n, secs } = projSummary(p), busy = projBusyInfo(p), c = p.clip, lost = projMissing(p);
+  const { n, secs: footage } = projSummary(p), busy = projBusyInfo(p), c = p.clip, lost = projMissing(p);
+  // The length shown is the edit's result when the project has a saved edit (0.1.43), else its footage.
+  const edit = n ? projEditLen(p) : 0, secs = edit > 0 ? edit : footage;
+  const lenTip = edit > 0 && Math.abs(edit - footage) > 0.5 ? t("Length of the edit. Its clips are {len} long in all.", { len: fmtDur(footage) }) : "";
   const bg = c && c.thumb ? "" : `style="background:linear-gradient(135deg,hsl(${hue(p.name)} 40% 22%),hsl(${(hue(p.name) + 50) % 360} 45% 12%))"`;
   const meta = [n === 1 ? t("1 clip") : t("{n} clips", { n }), ...(secs > 0 ? [fmtDur(secs)] : [])].join(" · ");
   return `<article class="card pj-card${projSel.ids.includes(p.id) ? " sel" : ""}" data-pj="${esc(p.id)}" tabindex="0" data-hover title="${esc(p.name)}">
@@ -195,7 +242,7 @@ function projCardHtml(p) {
       ${c && c.thumb ? `<img class="thumb-img" src="${esc(fileSrc(c.thumb))}" alt="" draggable="false" decoding="async" onerror="this.remove()" style="${typeof THUMB_IMG_STYLE === "string" ? THUMB_IMG_STYLE : ""}">` : `<div class="ph">${n ? JOIN_ICON : ICON.plus}</div>`}
       ${p.exported ? `<span class="tag pj-tag-exp">${esc(t("Exported"))}</span>` : !n ? `<span class="tag pj-tag-empty">${esc(t("Empty"))}</span>` : ""}
       ${lost.length ? `<span class="tag pj-tag-missing" title="${esc(t("Missing from the library: {titles}", { titles: lost.join(", ") }))}">${esc(lost.length === 1 ? t("1 clip missing") : t("{n} clips missing", { n: lost.length }))}</span>` : ""}
-      ${secs > 0 ? `<span class="dur">${fmtDur(secs)}</span>` : ""}
+      ${secs > 0 ? `<span class="dur"${lenTip ? ` title="${esc(lenTip)}"` : ""}>${fmtDur(secs)}</span>` : ""}
       ${busy ? `<div class="pj-card-busy"><span>${esc(busy.text)}</span></div><div class="job"><i style="width:${busy.pct}%"></i></div>` : ""}
     </div>
     <h3>${esc(p.name)}</h3>

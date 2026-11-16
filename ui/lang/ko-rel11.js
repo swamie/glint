@@ -278,4 +278,6 @@ glintAddLanguage("ko", "한국어", {
   "Imported clips that showed only a letter instead of a picture: the thumbnail is now tried several times and again later.": "가져온 클립에 그림 대신 글자만 보이던 문제: 이제 썸네일을 여러 번 시도하고 나중에 다시 시도해요.",
   "A project can hold up to 500 clips and 4 hours of footage. The old limit was 20 clips and 30 minutes.": "프로젝트에 클립을 500개, 영상을 4시간까지 넣을 수 있어요. 예전 한도는 클립 20개와 30분이었어요.",
   "Exporting a project made before 0.1.38, after clips were added to it in 0.1.41, said a clip was missing although it was right there in the editor. The export now uses exactly the sources the editor shows.": "0.1.38 이전에 만든 프로젝트에 0.1.41에서 클립을 추가한 뒤 내보내면, 편집기에 그대로 있는 클립이 없다고 나왔어요. 이제 내보내기가 편집기에 보이는 것과 똑같은 원본을 써요.",
+  "A project's card showed the length of all its footage (10:27 for a montage of 3:36). It now shows the length of the edit.": "프로젝트 카드에 모든 영상의 길이가 나왔어요(3분 36초 몽타주인데 10분 27초). 이제 편집한 결과의 길이가 나와요.",
+  "Tags on thumbnails such as “Exported” are set tighter, and the game menu's heading uses the same type as the rest of the menu.": "“내보냄” 같은 썸네일 태그의 글자 간격을 좁혔고, 게임 메뉴의 제목은 메뉴의 나머지와 같은 글꼴을 써요.",
 });

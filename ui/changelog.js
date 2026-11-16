@@ -14,6 +14,13 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.43", date: "2026-11-16",
+    fixed: [
+      t("A project's card showed the length of all its footage (10:27 for a montage of 3:36). It now shows the length of the edit."),
+      t("Tags on thumbnails such as “Exported” are set tighter, and the game menu's heading uses the same type as the rest of the menu."),
+    ],
+  },
+  {
     version: "0.1.42", date: "2026-11-16", gold: true,
     fixed: [
       t("Exporting a project made before 0.1.38, after clips were added to it in 0.1.41, said a clip was missing although it was right there in the editor. The export now uses exactly the sources the editor shows."),

@@ -27,4 +27,5 @@ glintAddLanguage("ko", "한국어", {
   "This edit is saved from now on.": "이제부터 지금 편집이 저장돼요.",
   "The saved edit of this project could not be opened. Nothing is saved over it until you choose.": "이 프로젝트의 저장된 편집을 열 수 없었어요. 직접 고르기 전까지는 그 위에 아무것도 저장하지 않아요.",
   "Sharpness": "선명도",
+  "Length of the edit. Its clips are {len} long in all.": "편집한 결과의 길이예요. 클립을 모두 합치면 {len}이에요.",
 });

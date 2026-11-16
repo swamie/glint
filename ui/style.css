@@ -208,7 +208,7 @@ select.field option { background: var(--raised); }
 .card:hover .thumb { border-color: var(--accent); transform: translateY(-2px); }
 .thumb .ph { position: absolute; inset: 0; display: grid; place-items: center; font: 400 44px var(--serif); color: rgba(255, 255, 255, .5); }
 .thumb .dur { position: absolute; right: 8px; bottom: 8px; padding: 1px 6px; border-radius: 5px; background: rgba(4, 7, 12, .82); font: 600 11.5px var(--sans); }
-.thumb .tag { position: absolute; left: 8px; bottom: 8px; padding: 1px 6px; border-radius: 5px; background: var(--accent); color: var(--accent-ink); font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercase; }
+.thumb .tag { position: absolute; left: 8px; bottom: 8px; padding: 1px 6px; border-radius: 5px; background: var(--accent); color: var(--accent-ink); font: 700 10px var(--sans); letter-spacing: .03em; text-transform: uppercase; }
 .thumb .star { position: absolute; right: 8px; top: 8px; width: 26px; height: 26px; border-radius: 6px; background: rgba(4, 7, 12, .82); display: grid; place-items: center; color: var(--warn); }
 .thumb .star svg { width: 14px; height: 14px; fill: currentColor; stroke: none; }
 .thumb .job { position: absolute; inset: auto 0 0 0; height: 4px; background: rgba(255, 255, 255, .12); overflow: hidden; }
