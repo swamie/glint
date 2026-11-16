@@ -74,7 +74,7 @@ struct State {
     /// Windows whose capture failed twice in a row: their monitor is recorded instead.
     failed: Vec<u64>,
     /// A window capture that has not delivered its first frame yet: (pipeline id, window, since).
-    silent: Option<(u64, u64, std::time::Instant)>,
+    silent: Option<(u64, u64, u32, std::time::Instant)>,
     /// The last game recorded: a clip of the buffer it left after it exited is filed under it.
     last: Option<String>,
     /// 0.1.41: what `gamedetect::decide` keeps between looks, its last source and reason, and the
@@ -132,15 +132,26 @@ pub fn last_game() -> Option<String> {
 const FIRST_FRAME_SECS: u64 = 12;
 
 /// Whether the window capture `c` has gone silent from its start for too long (see `FIRST_FRAME_SECS`).
-fn never_delivered(silent: &mut Option<(u64, u64, std::time::Instant)>, c: &CapStats, minimized: bool, now: std::time::Instant) -> bool {
+///
+/// The wait is per ffmpeg run (`RecStatus::pid`), not per capture: the recorder restarts ffmpeg when
+/// the encoder refuses the capture's frames (AMD's AMF on integrated Radeon graphics: two failed runs,
+/// then frames through system memory). Counted across those runs, the wait ran out about a second
+/// after the encoder was fixed, on a window that was fine, and GAME mode recorded the whole monitor
+/// for the rest of the window's life (seen with tModLoader on a Radeon 840M, 0.1.44). Between runs
+/// (no ffmpeg) nothing is counted; a window ffmpeg itself cannot capture is the recorder's
+/// `window_failed`.
+fn never_delivered(silent: &mut Option<(u64, u64, u32, std::time::Instant)>, c: &CapStats, minimized: bool, now: std::time::Instant) -> bool {
     if c.window == 0 || c.frames > 0 || minimized {
         *silent = None;
         return false;
     }
+    if c.status.pid == 0 {
+        return false;
+    }
     match silent {
-        Some((id, w, since)) if *id == c.id && *w == c.window => now.duration_since(*since).as_secs() >= FIRST_FRAME_SECS,
+        Some((id, w, pid, since)) if *id == c.id && *w == c.window && *pid == c.status.pid => now.duration_since(*since).as_secs() >= FIRST_FRAME_SECS,
         _ => {
-            *silent = Some((c.id, c.window, now));
+            *silent = Some((c.id, c.window, c.status.pid, now));
             false
         }
     }
@@ -811,7 +822,8 @@ fn test_targets(r: &mut Report) {
     let t0 = std::time::Instant::now();
     let later = |s: u64| t0 + std::time::Duration::from_secs(s);
     let mut silent = None;
-    let w = cap(5);
+    let run = |pid: u32| CapStats { status: crate::recorder::RecStatus { pid, ..Default::default() }, ..cap(5) };
+    let w = run(100);
     let a = never_delivered(&mut silent, &w, false, t0);
     let b = never_delivered(&mut silent, &w, false, later(FIRST_FRAME_SECS - 1));
     let c = never_delivered(&mut silent, &w, false, later(FIRST_FRAME_SECS));
@@ -820,8 +832,23 @@ fn test_targets(r: &mut Report) {
     let _ = never_delivered(&mut silent, &w, false, t0);
     let mini = never_delivered(&mut silent, &w, true, later(60));
     let after = never_delivered(&mut silent, &w, false, later(61));
-    let framed = never_delivered(&mut silent, &CapStats { frames: 3, ..cap(5) }, false, later(200));
+    let framed = never_delivered(&mut silent, &CapStats { frames: 3, ..run(100) }, false, later(200));
     r.check("no first frame: minimized or delivering never counts, and the wait starts again", !mini && !after && !framed, "");
+    // Recorded on a Radeon 840M (tModLoader, 0.1.44): AMF refused the GPU frames twice (ffmpeg
+    // restarted, nothing between runs) and frames came through system memory from the third run,
+    // about 18 s after the start. Counted per capture, the window "gave no picture" at 12 s.
+    let mut silent = None;
+    let r1 = never_delivered(&mut silent, &run(4101), false, t0);
+    let gap = never_delivered(&mut silent, &run(0), false, later(7));
+    let r2 = never_delivered(&mut silent, &run(4102), false, later(8));
+    let r2b = never_delivered(&mut silent, &run(4102), false, later(14));
+    let r3 = never_delivered(&mut silent, &run(4103), false, later(17));
+    let r3b = never_delivered(&mut silent, &run(4103), false, later(18));
+    r.check("no first frame: the wait is per ffmpeg run, so encoder restarts never fail the window", !r1 && !gap && !r2 && !r2b && !r3 && !r3b, &format!("{r1} {gap} {r2} {r2b} {r3} {r3b}"));
+    let mut silent = None;
+    let _ = never_delivered(&mut silent, &run(4200), false, t0);
+    let still = never_delivered(&mut silent, &run(4200), false, later(FIRST_FRAME_SECS));
+    r.check("no first frame: one ffmpeg run that captures nothing for the whole wait still fails the window", still, "");
 }
 
 /// 0.1.41: the rebuilt detection (gamedetect.rs) and what capmode.rs does with its decision.
