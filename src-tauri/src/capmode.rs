@@ -83,6 +83,27 @@ struct State {
     source: Option<Source>,
     why: Why,
     logged: String,
+    /// Every program the last look counted as a game, with its evidence (for `--detect-watch`).
+    cands: Vec<gamedetect::Cand>,
+}
+
+/// What the last look decided, for the test tool `--detect-watch` (detectwatch.rs).
+#[derive(Clone, Debug, Default)]
+pub struct WatchView {
+    pub why: Why,
+    pub source: Option<Source>,
+    pub target: Option<Target>,
+    pub candidates: Vec<gamedetect::Cand>,
+    /// Windows whose capture gave no picture, and windows seen in exclusive fullscreen.
+    pub failed: Vec<u64>,
+    pub exclusive: Vec<u64>,
+}
+
+pub fn watch_view() -> WatchView {
+    let st = state().lock().unwrap();
+    let mut failed = st.mem.failed.clone();
+    failed.extend(st.failed.iter().copied().filter(|h| !st.mem.failed.contains(h)));
+    WatchView { why: st.why.clone(), source: st.source, target: st.target.clone(), candidates: st.cands.clone(), failed, exclusive: st.mem.exclusive.clone() }
 }
 
 /// The least of the asked range a clip taken while waiting (the game exited) must hold, in seconds.
@@ -315,6 +336,7 @@ pub fn found(core: &Core) -> Option<(String, u32, String)> {
         st.logged = key;
     }
     st.why = d.why;
+    st.cands = d.candidates;
     st.source = Some(d.source);
     if let Some(t) = &next {
         st.last = Some(t.name.clone());
