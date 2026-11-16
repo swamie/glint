@@ -1273,6 +1273,113 @@ fn run_sync_test(r: &mut Report, dir: &Path) {
         r.check("Blur's result: video as long as the audio", (vd - ad).abs() < 0.05, &format!("video {vd:.3} audio {ad:.3}"));
         r.check("Blur's result keeps three audio tracks", streams.iter().filter(|s| s.0 == "audio").count() == 3, "");
     }
+    render_sync_checks(r, &ffmpeg, &ffprobe, &cli, &s, dir);
+}
+
+/// Per frame of `file`: (time, mean grey of a 16x16 reduction).
+fn frame_lumas(ffmpeg: &Path, file: &Path) -> Vec<(f64, f64)> {
+    let Ok(out) = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-nostdin", "-i"]).arg(file).args(["-map", "0:v:0", "-vf", "scale=16:16,format=gray,showinfo", "-f", "null", "-"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output() else { return Vec::new() };
+    String::from_utf8_lossy(&out.stderr).lines().filter_map(|l| {
+        let p = l.find("pts_time:")?;
+        let m = l.find("mean:[")?;
+        Some((l[p + 9..].split_whitespace().next()?.parse().ok()?, l[m + 6..].split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()?))
+    }).collect()
+}
+
+/// Picture minus sound (seconds) at each beep of `file`: the flash's centre is the brightness-weighted centre of
+/// the frames within 0.25 s of the beep (Blur's blending smears one flash over its neighbours: its centre is
+/// what the eye takes as the moment). Positive = the picture is late.
+fn smear_offsets(ffmpeg: &Path, file: &Path) -> Vec<(f64, f64)> {
+    let frames = frame_lumas(ffmpeg, file);
+    // The beep's onset (where silence ends), not its middle: `beep_times` gives the middle, 30 ms and more
+    // into a 60 ms beep, which read as the picture 38 ms early.
+    let beeps: Vec<f64> = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-nostats", "-nostdin", "-i"]).arg(file)
+        .args(["-map", "0:a:0", "-af", "silencedetect=n=-30dB:d=0.004", "-f", "null", "-"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output()
+        .map(|o| String::from_utf8_lossy(&o.stderr).lines().filter_map(|l| l.split("silence_end:").nth(1)?.split_whitespace().next()?.parse().ok()).collect())
+        .unwrap_or_default();
+    let mut sorted: Vec<f64> = frames.iter().map(|f| f.1).collect();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let base = sorted.get(sorted.len() / 2).copied().unwrap_or(0.0);
+    beeps.iter().filter_map(|&b| {
+        let near: Vec<&(f64, f64)> = frames.iter().filter(|f| (f.0 - b).abs() < 0.25 && f.1 > base + 3.0).collect();
+        let w: f64 = near.iter().map(|f| f.1 - base).sum();
+        (w > 0.0).then(|| (b, near.iter().map(|f| f.0 * (f.1 - base)).sum::<f64>() / w - b))
+    }).collect()
+}
+
+/// 0.1.41, a user's report ("when I render some of my videos the gameplay is delayed against the sound"): the
+/// real Blur render path (`render`: Glint's hand-off, staging included) on clips with a flash and a beep each
+/// second: 60 and 30 fps, a variable frame rate, sound longer than the picture, a trim that starts between
+/// keyframes, Glint's own buffer clip; with the owner's Blur settings when they can be read, the defaults,
+/// interpolation on and off, and an output frame rate other than the source's. Each: the offsets at the start,
+/// the middle and the end (a growing one = a rate problem, a constant one = a start problem).
+fn render_sync_checks(r: &mut Report, ffmpeg: &Path, ffprobe: &Path, cli: &Path, s: &Settings, dir: &Path) {
+    let _ = ffprobe;
+    // The owner's own settings, read only (never written).
+    let owner: Option<BlurSettings> = std::env::var_os("APPDATA")
+        .map(|a| PathBuf::from(a).join("Glint").join("settings.json"))
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<Settings>(&t).ok())
+        .map(|x| x.blur);
+    let mut cfgs: Vec<(&str, BlurSettings)> = Vec::new();
+    if let Some(o) = owner.clone() {
+        cfgs.push(("the owner's settings", o));
+    } else {
+        r.line("INFO the owner's Blur settings could not be read: the defaults only");
+    }
+    let d = BlurSettings::default();
+    cfgs.push(("defaults", d.clone()));
+    let base = owner.unwrap_or_else(|| d.clone());
+    cfgs.push(("interpolation on", BlurSettings { interpolate: true, ..base.clone() }));
+    cfgs.push(("interpolation off", BlurSettings { interpolate: false, ..base.clone() }));
+    cfgs.push(("output 30 fps from a 60 fps source", BlurSettings { output_fps: 30, ..base.clone() }));
+    // The clips.
+    let mut clips: Vec<(String, PathBuf, f64)> = Vec::new();
+    for (name, fps, vfr, extra) in [("60 fps", 60u32, false, 0.0), ("30 fps", 30, false, 0.0), ("variable rate", 60, true, 0.0), ("sound longer than the picture", 60, false, 0.7)] {
+        let p = dir.join(format!("rsync {name}.mp4"));
+        if crate::editor::flash_clip(ffmpeg, &p, fps, 8.0, vfr, extra) {
+            clips.push((name.to_string(), p, fps as f64));
+        }
+    }
+    // A trim that starts between keyframes (an edit list hides the first frames): Glint's lossless cut of the 60 fps clip.
+    if let Some((_, p60, _)) = clips.first().cloned() {
+        let meta = library::register(ffmpeg, &p60, "rsync trim", "Desktop", "clip");
+        let ts = Settings { clips_dir: dir.to_string_lossy().into_owned(), game_folders: false, ..s.clone() };
+        match crate::clip::trim(&ts, &meta, 2.37, 7.9, true) {
+            Ok(m) => clips.push(("a trim starting between keyframes".into(), PathBuf::from(m.path), 60.0)),
+            Err(e) => r.line(&format!("INFO the trim was not made: {e}")),
+        }
+    }
+    if let Ok(p) = make_test_clip(ffmpeg, &dir.join("rsync-buffer")).or_else(|_| make_test_clip(ffmpeg, dir)) {
+        clips.push(("Glint's own buffer clip (144 fps, VFR)".into(), p, 144.0));
+    }
+    r.check("Blur render sync: the test clips were made", clips.len() >= 6, &format!("{} of 6", clips.len()));
+    for (cname, cfg) in &cfgs {
+        for (name, file, fps) in &clips {
+            if *cname == "output 30 fps from a 60 fps source" && (*fps - 60.0).abs() > 0.5 {
+                continue;
+            }
+            let out = dir.join(format!("rsync out {cname} {name}.mp4").replace(' ', "_"));
+            let t0 = Instant::now();
+            let res = render(cli, file, &out, cfg, |_| {});
+            if let Err(e) = res {
+                r.check(&format!("Blur render ({cname}): {name}"), false, &e);
+                continue;
+            }
+            let offs = smear_offsets(ffmpeg, &out);
+            let frame = 1.0 / (if cfg.blur { cfg.output_fps.max(1) as f64 } else { *fps });
+            let pick = |k: usize| offs.get(k).map(|x| x.1 * 1000.0).unwrap_or(f64::NAN);
+            let (a, m, z) = (pick(0), pick(offs.len() / 2), pick(offs.len().saturating_sub(1)));
+            let worst = offs.iter().fold(0.0f64, |w, x| w.max(x.1.abs()));
+            let ok = offs.len() >= 4 && worst <= frame + 0.004;
+            r.check(
+                &format!("Blur render ({cname}), {name}: the flash's centre on its beep within a frame, start to end"),
+                ok,
+                &format!("{} beeps; start {a:+.1} ms, middle {m:+.1} ms, end {z:+.1} ms ({:+.2} / {:+.2} / {:+.2} frames at {:.0} fps) in {:.0} s", offs.len(), a / 1000.0 / frame, m / 1000.0 / frame, z / 1000.0 / frame, 1.0 / frame, t0.elapsed().as_secs_f64()),
+            );
+            let _ = fs::remove_file(&out);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

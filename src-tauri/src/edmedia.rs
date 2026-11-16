@@ -283,8 +283,9 @@ pub(super) fn layer_input_args(l: &Layers, masks: &[Option<PathBuf>], rate: u32,
             a.extend(media_input_args(mp, (*from, *to), moving.is_some(), rate, total));
             continue;
         }
-        if moving.is_some() {
+        if moving.as_ref().is_some_and(|m| m.size_moves()) {
             // A frame `rate` times a second for the whole result (the overlay ends with the picture: `shortest`).
+            // 0.1.44: only when its size changes; one that only moves is one still picture (`layer_chain`).
             a.extend(["-loop".to_string(), "1".into(), "-framerate".into(), rate.to_string(), "-t".into(), format!("{:.3}", total + 1.0)]);
         }
         // One still picture each; `pattern_type none` so no character of the path is read as a frame number pattern.

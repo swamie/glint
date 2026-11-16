@@ -14,6 +14,18 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.44", date: "2026-11-16",
+    improved: [
+      t("Cuts in an export land exactly on a frame. Every cut, for picture and sound together, moves to the nearest frame of the clip, by half a frame at most, so no frame is shown short and none is skipped at a cut."),
+      t("Montages with a great many cuts export. A clip cut into 150 pieces is tested on every build; before, a montage with that many pieces was refused as too long a command."),
+      t("Exports with pictures or text on them are faster: an overlay that keeps its size is read once, not once per frame."),
+    ],
+    fixed: [
+      t("An export could come out one frame short (two with a slowed last clip), and at a cut after a sped-up clip one frame could be dropped and the next shown late."),
+      t("A video whose clips run at different speeds could end before its last frame."),
+    ],
+  },
+  {
     version: "0.1.43", date: "2026-11-16",
     fixed: [
       t("A project's card showed the length of all its footage (10:27 for a montage of 3:36). It now shows the length of the edit."),

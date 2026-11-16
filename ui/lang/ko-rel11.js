@@ -280,4 +280,9 @@ glintAddLanguage("ko", "한국어", {
   "Exporting a project made before 0.1.38, after clips were added to it in 0.1.41, said a clip was missing although it was right there in the editor. The export now uses exactly the sources the editor shows.": "0.1.38 이전에 만든 프로젝트에 0.1.41에서 클립을 추가한 뒤 내보내면, 편집기에 그대로 있는 클립이 없다고 나왔어요. 이제 내보내기가 편집기에 보이는 것과 똑같은 원본을 써요.",
   "A project's card showed the length of all its footage (10:27 for a montage of 3:36). It now shows the length of the edit.": "프로젝트 카드에 모든 영상의 길이가 나왔어요(3분 36초 몽타주인데 10분 27초). 이제 편집한 결과의 길이가 나와요.",
   "Tags on thumbnails such as “Exported” are set tighter, and the game menu's heading uses the same type as the rest of the menu.": "“내보냄” 같은 썸네일 태그의 글자 간격을 좁혔고, 게임 메뉴의 제목은 메뉴의 나머지와 같은 글꼴을 써요.",
+  "Cuts in an export land exactly on a frame. Every cut, for picture and sound together, moves to the nearest frame of the clip, by half a frame at most, so no frame is shown short and none is skipped at a cut.": "내보낸 영상의 컷이 프레임에 정확히 맞아요. 모든 컷이 화면과 소리 함께 클립의 가장 가까운 프레임으로 옮겨져요(많아야 반 프레임). 컷에서 짧게 보이는 프레임도, 건너뛰는 프레임도 없어요.",
+  "Montages with a great many cuts export. A clip cut into 150 pieces is tested on every build; before, a montage with that many pieces was refused as too long a command.": "컷이 아주 많은 몽타주도 내보낼 수 있어요. 한 클립을 150조각으로 자른 편집을 빌드마다 시험해요. 전에는 조각이 그만큼 많으면 명령이 너무 길다며 거부됐어요.",
+  "Exports with pictures or text on them are faster: an overlay that keeps its size is read once, not once per frame.": "사진이나 글자를 올린 영상의 내보내기가 빨라졌어요. 크기가 변하지 않는 오버레이는 프레임마다가 아니라 한 번만 읽어요.",
+  "An export could come out one frame short (two with a slowed last clip), and at a cut after a sped-up clip one frame could be dropped and the next shown late.": "내보낸 영상이 한 프레임 짧게 나올 수 있었어요(마지막 클립이 느리면 두 프레임). 빠르게 한 클립 뒤의 컷에서는 한 프레임이 빠지고 다음 프레임이 늦게 나올 수 있었어요.",
+  "A video whose clips run at different speeds could end before its last frame.": "클립마다 속도가 다른 영상이 마지막 프레임 전에 끝날 수 있었어요.",
 });

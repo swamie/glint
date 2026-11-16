@@ -593,6 +593,25 @@ if (has141 && has139) {
     }
     files.push({ name: "montage like the owner's: 19 pieces, one out of order, a gap, sound mixed, two pictures", checks, opts: em.emToOpts(m), expect: expect(layout, { tones: [heard(D, 0.15, 11.85), quiet(D, 12.2, 12.8), heard(D, 13.15, 19.85), heard(CLIP.song.freq, 3.15, 8.85)] }), overlay_pngs: [{ from: 2.0, to: 4.0 }, { from: 9.0, to: 11.0 }], model: modelName() });
   }
+  // 0.1.42: a long montage, 150 pieces (past the old wall of one input per range on a 32767-character command
+  // line): the 30 fps clip cut every 4 frames, every other piece at 0.5x (the first, not the last), so no two neighbours merge.
+  {
+    const checks = [];
+    const check = (name, ok, detail = "") => checks.push({ name, ok: !!ok, detail: String(detail) });
+    const m = one();
+    const F = 1 / CLIP.fps;
+    let splits = 0;
+    for (let c = 1; c < 150; c++) if (em.emSplitAt(m, c * 4 * F)) splits++;
+    check("149 splits", splits === 149, splits);
+    let slow = 0;
+    for (let c = 0; c < 150; c += 2) if (em.emSetPieceSpeed(m, c, 0.5) !== false) slow++;
+    check("75 pieces at 0.5x", slow === 75, slow);
+    const opts = em.emToOpts(m);
+    check("150 ranges are sent", opts.segments.length === 150, opts.segments.length);
+    const layout = [];
+    for (let c = 0; c < 150; c++) layout.push(c % 2 === 0 ? { src: +(c * 4 * F).toFixed(6), len: +(8 * F).toFixed(6), speed: 0.5 } : { src: +(c * 4 * F).toFixed(6), len: +(4 * F).toFixed(6) });
+    files.push({ name: "0.1.42 long montage: 150 pieces of one clip", checks, opts, expect: expect(layout, { tones: [heard(D, 0.15, 29.85)] }), model: modelName() });
+  }
 } else {
   files.push({ name: "0.1.41 scenarios (speed per piece, montage)", checks: [{ name: "the model has emSetPieceSpeed", ok: false, detail: "missing" }], opts: null, expect: null, model: modelName() });
 }// F1 (0.1.41): an old project's draft as its first source (its picture's colour tags change at 4 s) and one
