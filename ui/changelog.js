@@ -14,6 +14,12 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.42", date: "2026-11-16", gold: true,
+    fixed: [
+      t("Exporting a project made before 0.1.38, after clips were added to it in 0.1.41, said a clip was missing although it was right there in the editor. The export now uses exactly the sources the editor shows."),
+    ],
+  },
+  {
     version: "0.1.41", date: "2026-11-16", gold: true,
     new: [
       t("Speed for each clip. Select a clip and set 0.25x to 4x in the Speed section, or right-click it. Its own sound follows, and the whole-video speed still works on top."),

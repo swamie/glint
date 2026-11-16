@@ -1441,6 +1441,24 @@ fn run_self_test(r: &mut Report) {
     r.check("F1: the next add is instant too, after the others", matches!(&a5b, Ok(Added::Now(v)) if v["starts"] == json!([d5.duration + mb.duration])) && get(&core, &p5.id).is_some_and(|p| p.virt && p.clips.len() == 4), &format!("{a5b:?}"));
     let lj5 = serde_json::to_value(get(&core, &p5.id)).unwrap_or_default();
     r.check("F1: listed as virtual with what project_open returns", lj5["virtual"] == true && lj5["clip"] == open(&core, &p5.id).unwrap_or_default(), "");
+    // 0.1.42: the export takes its sources from project_open. 0.1.41 walked the clip list and took the clips INSIDE
+    // the draft for library clips: "The clip … of this project is missing" as soon as one of them had left the library.
+    let same_sources = |what: &str, r: &mut Report| {
+        let o = open(&core, &p5.id).unwrap_or_default();
+        let os = o["sources"].as_array().cloned().unwrap_or_default();
+        let ex = crate::projexport::sources_of(&core, &p5.id).map(|(_, s)| s).unwrap_or_default();
+        r.check(
+            what,
+            ex.len() == os.len() && ex.len() == 3 && ex[0].path == d5.path && ex[0].clip == p5.id && ex.iter().zip(&os).all(|(e, s)| s["clip"] == e.clip.as_str() && s["start"].as_f64() == Some(e.start) && s["duration"].as_f64() == Some(e.duration) && s["path"] == e.path.as_str() && !e.missing),
+            &format!("{:?}", ex.iter().map(|e| (e.clip.clone(), e.start, e.duration, e.missing)).collect::<Vec<_>>()),
+        );
+    };
+    same_sources("F1: export_project's sources are project_open's: the draft as source 0, then the added clips, none missing", &mut *r);
+    let inner_gone = core.lib.lock().unwrap().remove(&a);
+    same_sources("F1: a clip that is only INSIDE the draft may be gone from the library: the export still has every source", &mut *r);
+    if let Some(m) = inner_gone {
+        core.lib.lock().unwrap().add(m);
+    }
     let p6 = create_legacy(&core, "Old empty");
     let files6 = n_files();
     let a6 = add(&core, &p6.id, vec![c.clone()]);

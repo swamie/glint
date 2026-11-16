@@ -189,6 +189,12 @@ fn main() {
         speedtest::self_test(args.get(i + 1).map(String::as_str).unwrap_or("speed.txt"));
         return;
     }
+    if let Some(i) = args.iter().position(|a| a == "--project-check") {
+        // glint.exe --project-check <report.txt>: for every project of this data folder, what the editor opens and what
+        // the export would read (counts and lengths only, no names): they must agree. Changes nothing.
+        projexport::check_all(args.get(i + 1).map(String::as_str).unwrap_or("project-check.txt"));
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--project-test") {
         // glint.exe --project-test <report.txt>: editor projects (add, rebuild, state, rename, delete, start-up sweep) on made-up clips.
         projects::self_test(args.get(i + 1).map(String::as_str).unwrap_or("project.txt"));

@@ -423,37 +423,82 @@ pub fn leftovers() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+/// `--project-check`: every project of the data folder, as the editor opens it and as the export reads it, one line
+/// each (counts and seconds, no titles or paths). "OK" when the two agree and no source is missing.
+pub fn check_all(report_path: &str) {
+    let core = crate::core::Core::new();
+    let mut lines = Vec::new();
+    for p in crate::projects::list(&core) {
+        let v = crate::projects::open(&core, &p.id);
+        let (is_virtual, editor) = match &v {
+            Ok(v) => (v.get("virtual").and_then(|x| x.as_bool()) == Some(true), v.get("sources").and_then(|s| s.as_array()).cloned().unwrap_or_default()),
+            Err(_) => (false, Vec::new()),
+        };
+        if !is_virtual {
+            lines.push(format!("INFO {}: not a project of references ({} clips; it is exported from its own working file)", p.id, p.clips.len()));
+            continue;
+        }
+        let editor_missing = editor.iter().filter(|s| s.get("missing").and_then(|x| x.as_bool()) == Some(true)).count();
+        let editor_len: f64 = editor.iter().map(|s| s.get("duration").and_then(|x| x.as_f64()).unwrap_or(0.0)).sum();
+        match sources_of(&core, &p.id) {
+            Ok((_, ex)) => {
+                let ex_missing = ex.iter().filter(|s| s.missing).count();
+                let ex_len: f64 = ex.iter().map(|s| s.duration).sum();
+                let same = ex.len() == editor.len() && (ex_len - editor_len).abs() < 0.001 && ex.iter().zip(&editor).all(|(e, s)| s.get("start").and_then(|x| x.as_f64()).is_some_and(|a| (a - e.start).abs() < 0.001));
+                let ok = same && ex_missing == 0 && editor_missing == 0;
+                lines.push(format!(
+                    "{} {}: {} clips in the list; the editor opens {} sources ({:.1} s, {} missing); the export reads {} sources ({:.1} s, {} missing)",
+                    if ok { "OK" } else if same { "MISSING" } else { "DIFFERENT" },
+                    p.id,
+                    p.clips.len(),
+                    editor.len(),
+                    editor_len,
+                    editor_missing,
+                    ex.len(),
+                    ex_len,
+                    ex_missing
+                ));
+            }
+            Err(e) => lines.push(format!("ERROR {}: {e}", p.id)),
+        }
+    }
+    if lines.is_empty() {
+        lines.push("INFO no projects".into());
+    }
+    let _ = std::fs::write(report_path, lines.join("\n") + "\n");
+}
+
 /// The project `id` as this export needs it: its clips in order, found in the library, with their
 /// starts on project time (the sum of the library lengths before each). The only part that reads the
 /// project store (`projects.rs`, agent P's): a clip the library no longer has, or whose file is gone,
 /// is `missing`.
 pub fn sources_of(core: &crate::core::Core, id: &str) -> Result<(Target, Vec<Source>), String> {
-    let p = crate::projects::get(core, id).ok_or("Project not found")?;
-    let lib = core.lib.lock().unwrap();
-    let mut start = 0.0;
-    let mut out = Vec::new();
-    let mut first: Option<ClipMeta> = None;
-    for c in &p.clips {
-        // F1 (0.1.41): an old project's draft working file is its first source, named by the project's own id.
-        let meta = if c.id == p.id { p.clip.clone().filter(|d| Path::new(&d.path).is_file()) } else { lib.get(&c.id) };
-        // Project time is laid out from each clip's length WHEN IT WAS ADDED (projects::virtual_clip does the same for
-        // the editor), so a saved edit and the export agree even if the library's clip changed length since.
-        let duration = if c.duration > 0.0 { c.duration } else { meta.as_ref().map(|m| m.duration).unwrap_or(0.0) };
-        let missing = !meta.as_ref().is_some_and(|m| Path::new(&m.path).is_file());
-        if first.is_none() {
-            first = meta.clone();
-        }
-        out.push(Source {
-            clip: c.id.clone(),
-            title: meta.as_ref().map(|m| m.title.clone()).unwrap_or_else(|| c.title.clone()),
-            path: meta.as_ref().map(|m| m.path.clone()).unwrap_or_default(),
-            duration,
-            start,
-            fps: meta.as_ref().map(|m| m.fps).unwrap_or(0),
-            missing,
-        });
-        start += duration;
+    // 0.1.42: the sources are taken from what the EDITOR opens (`projects::open`: `virtual_clip`'s `sources`), not
+    // rebuilt from the clip list here. 0.1.41 walked the project's clips itself, and for a project made before 0.1.38
+    // that had become one of references (its draft file is source 0, the clips inside it are not sources) it took
+    // those inner clips for library clips: the export said a clip was missing (or would have laid them out wrongly),
+    // while the editor showed the project fine. One source of truth, so the two can never disagree again.
+    let v = crate::projects::open(core, id)?;
+    let list = v.get("sources").and_then(|s| s.as_array()).cloned().unwrap_or_default();
+    if v.get("virtual").and_then(|x| x.as_bool()) != Some(true) || list.is_empty() {
+        return Err("This project has no clips that can be exported this way".into());
     }
-    let target = Target { id: p.id.clone(), title: p.name.clone(), game: first.as_ref().map(|m| m.game.clone()).unwrap_or_default(), folder: first.as_ref().map(|m| m.folder.clone()).unwrap_or_default() };
+    let text = |s: &serde_json::Value, k: &str| s.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let num = |s: &serde_json::Value, k: &str| s.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let out: Vec<Source> = list
+        .iter()
+        .map(|s| {
+            let path = text(s, "path");
+            // Missing as the editor says, and also when the file has gone since the project was opened.
+            let missing = s.get("missing").and_then(|x| x.as_bool()).unwrap_or(false) || path.is_empty() || !Path::new(&path).is_file();
+            Source { clip: text(s, "clip"), title: text(s, "title"), path, duration: num(s, "duration").max(0.0), start: num(s, "start").max(0.0), fps: num(s, "fps").max(0.0) as u32, missing }
+        })
+        .collect();
+    // The result is filed where the project's first clip is (for an old project's draft source: where the draft is).
+    let folder = {
+        let lib = core.lib.lock().unwrap();
+        out.iter().find_map(|s| lib.get(&s.clip).map(|m| m.folder.clone())).unwrap_or_default()
+    };
+    let target = Target { id: id.to_string(), title: text(&v, "title"), game: text(&v, "game"), folder };
     Ok((target, out))
 }
