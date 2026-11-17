@@ -20,6 +20,25 @@ const capIsGame = () => typeof S !== "undefined" && !!S.settings && S.settings.c
 
 /** 0.1.41: what GAME mode decided and why (status.capture_why / game_menu's decision, gamedetect.rs Why). "" = nothing to say. */
 function capWhyText(why) {
+  const main = capWhyMain(why);
+  const more = main ? capWhyDetail(why.detail) : "";
+  return more ? `${main}. ${more}` : main;
+}
+
+/** Why the whole monitor is recorded instead of the game's window (gamedetect.rs Why::detail). */
+function capWhyDetail(detail) {
+  switch (detail) {
+    case "setting_dda": return t("The capture method is set to Desktop Duplication, which records whole monitors. Choose Auto or Graphics Capture under Capture to record only the game's window.");
+    case "border": return t("Windows does not let Glint hide the yellow capture border (Settings → Privacy & security → Screenshot borders), so capture method Auto uses Desktop Duplication, which records whole monitors.");
+    case "windows10": return t("Windows 10 cannot hide the capture border, so capture method Auto uses Desktop Duplication, which records whole monitors.");
+    case "no_gfxcapture": return t("This ffmpeg has no window capture. Update ffmpeg under Settings → Components.");
+    case "no_picture": return t("Its window's capture ran 12 seconds without a picture.");
+    case "refused": return t("ffmpeg could not capture its window.");
+    default: return "";
+  }
+}
+
+function capWhyMain(why) {
   if (!why || !why.code || why.code === "desktop") return "";
   const game = why.game || t("the game");
   const n = (why.monitor || 0) + 1;
@@ -151,7 +170,8 @@ function capStatusText(st) {
       : "";
     const dot = st.capture_target === "waiting" ? '<span class="cm-wait-dot" aria-hidden="true"></span>' : "";
     const info = st.capture_target === "screen" || st.capture_target === "screen_failed" ? ` · ${st.width}×${st.height} @ ${st.fps} fps` : "";
-    return `${dot}<b>${capEsc(capWhyText(why))}</b>${hint ? ` · ${capEsc(hint)}` : ""}${info}`;
+    const more = capWhyDetail(why.detail);
+    return `${dot}<b>${capEsc(capWhyMain(why))}</b>${more ? ` · ${capEsc(more)}` : ""}${hint ? ` · ${capEsc(hint)}` : ""}${info}`;
   }
   if (st.capture_target === "waiting") {
     const hint = S.settings && !S.settings.game_auto && !S.settings.game_pick

@@ -667,11 +667,37 @@ pub struct Why {
     pub monitor: u32,
     /// The evidence of the target ("pick", "library:steam", "fullscreen", ...).
     pub evidence: Vec<String>,
+    /// Why the whole monitor is recorded instead of the window, so a user's log and screenshot say
+    /// it: for "no_window_capture" `method_detail`'s codes ("setting_dda", "border", "windows10",
+    /// "no_gfxcapture", "no_ffmpeg"), for "window_failed" "no_picture" (a capture ran
+    /// FIRST_FRAME_SECS without a frame) or "refused" (ffmpeg could not capture the window). Set by
+    /// capmode.rs after `decide`; "" otherwise.
+    pub detail: String,
+}
+
+/// The words for a `Why::detail` code (the log's, English).
+pub fn detail_text(detail: &str) -> &'static str {
+    match detail {
+        "setting_dda" => "the capture method is set to Desktop Duplication, which records whole monitors",
+        "border" => "Windows' \"Screenshot borders\" setting does not let apps hide the yellow border, so capture method Auto uses Desktop Duplication",
+        "windows10" => "Windows 10 cannot hide the capture border, so capture method Auto uses Desktop Duplication",
+        "no_gfxcapture" => "this ffmpeg has no window capture (gfxcapture, ffmpeg 8 or newer)",
+        "no_ffmpeg" => "no ffmpeg was found",
+        "no_picture" => "its capture ran 12 s without one frame",
+        "refused" => "ffmpeg could not capture the window, twice in a row",
+        _ => "",
+    }
 }
 
 impl Why {
     /// The log's line (English).
     pub fn line(&self) -> String {
+        let d = detail_text(&self.detail);
+        let detail = if d.is_empty() { String::new() } else { format!(": {d}") };
+        format!("{}{detail}", self.line_plain())
+    }
+
+    fn line_plain(&self) -> String {
         let g = if self.game.is_empty() { "the game" } else { &self.game };
         let ev = if self.evidence.is_empty() { String::new() } else { format!(" [{}]", self.evidence.join(", ")) };
         let m = self.monitor + 1;
@@ -908,7 +934,10 @@ pub fn decide(wins: &[WinInfo], lib: &Library, p: &Prefs, env: &Env, mem: &mut M
     // or the first decision. So a game alt-tabbed every second does not restart the capture each time.
     let mut source = want;
     let mut code = code;
-    match mem.source.filter(|_| !new_target) {
+    // A window capture that failed records nothing: leaving it is not held either (the capture list
+    // already leaves it on the same look, and the reason given must say so at once).
+    let window_broken = mem.source == Some(Source::Window) && mem.failed.contains(&w.hwnd);
+    match mem.source.filter(|_| !new_target && !window_broken) {
         Some(prev) if prev != want && want != Source::Park && prev != Source::Wait => {
             let held = match &mem.pending_source {
                 Some((h, s, _, since)) if *h == w.hwnd && *s == want => now - since >= HOLD_SECS,
@@ -932,7 +961,7 @@ pub fn decide(wins: &[WinInfo], lib: &Library, p: &Prefs, env: &Env, mem: &mut M
     mem.source = Some(source);
     mem.code = code.clone();
     let monitor = w.monitor;
-    Decision { window: Some(i), source, why: Why { code, game: name, monitor, evidence }, candidates }
+    Decision { window: Some(i), source, why: Why { code, game: name, monitor, evidence, detail: String::new() }, candidates }
 }
 
 /// The name a window's game is filed under: the known table and games seen before first (clip
@@ -1136,7 +1165,8 @@ fn test_scenarios(check: &mut dyn FnMut(&str, bool, String)) {
     m.failed.push(fs.hwnd);
     let d1 = run(&[fs.clone()], &Prefs::none(), &env(14.0), &mut m);
     let d2 = run(&[fs.clone()], &Prefs::none(), &env(18.5), &mut m);
-    check("scenario: a fullscreen window whose capture gave no picture becomes exclusive: Desktop Duplication (after the hold)", d0.source == Source::Window && d1.source == Source::Window && d2.source == Source::MonitorDda && d2.why.code == "exclusive", format!("{:?} {:?} {:?}", d0.source, d1.source, d2.source));
+    // (Until the laptop session this waited the hold, recording nothing; a failed capture is left at once.)
+    check("scenario: a fullscreen window whose capture gave no picture becomes exclusive: Desktop Duplication, at once", d0.source == Source::Window && d1.source == Source::MonitorDda && d2.source == Source::MonitorDda && d2.why.code == "exclusive", format!("{:?} {:?} {:?}", d0.source, d1.source, d2.source));
     // 12. A windowed game whose window capture is refused: its monitor, said so, only while in front.
     let windowed = WinInfo { foreground: true, width: 1600, height: 900, ..valo.clone() };
     let mut m = Memory { failed: vec![windowed.hwnd], ..Default::default() };
@@ -1250,6 +1280,18 @@ fn test_scenarios(check: &mut dyn FnMut(&str, bool, String)) {
     let g1 = decide(&[tml(1920, 1200, true)], &tml_lib, &Prefs::none(), &env(4.0), &mut m, &alive);
     let g2 = decide(&[tml(1920, 1200, true)], &tml_lib, &Prefs::none(), &env(8.5), &mut m, &alive);
     check("laptop: a failed window gets another chance once it changes mode (its window again, not its monitor for life)", f1.why.code == "window_failed" && f2.source == Source::Monitor && kept && m.failed.is_empty() && m.exclusive.is_empty() && g1.source != Source::Window && g2.source == Source::Window && g2.why.code == "window", format!("{:?} {:?} {:?} {:?}", f1.source, f2.source, g1.source, g2.source));
+    // tModLoader again: the window recorded, then its capture failed. The reason and the source change
+    // on the same look as the capture list does (it read "window" for 4 s while its monitor was recorded).
+    let mut m = Memory::default();
+    let _ = decide(&[tml(800, 720, false)], &tml_lib, &Prefs::none(), &env(0.0), &mut m, &alive);
+    m.failed.push(0x17045a);
+    let now_fg = decide(&[tml(800, 720, false)], &tml_lib, &Prefs::none(), &env(2.0), &mut m, &alive);
+    let mut m2 = Memory::default();
+    let _ = decide(&[tml(800, 720, false)], &tml_lib, &Prefs::none(), &env(0.0), &mut m2, &alive);
+    m2.failed.push(0x17045a);
+    let away = WinInfo { foreground: false, ..tml(800, 720, false) };
+    let now_bg = decide(std::slice::from_ref(&away), &tml_lib, &Prefs::none(), &env(2.0), &mut m2, &alive);
+    check("laptop: a failed window capture is left at once, its reason with it (its monitor in front, paused away)", now_fg.source == Source::Monitor && now_fg.why.code == "window_failed" && now_bg.source == Source::Park && now_bg.why.code == "paused_away", format!("{:?} {} / {:?} {}", now_fg.source, now_fg.why.code, now_bg.source, now_bg.why.code));
     // A dotnet.exe with no library, folder or user evidence is no game: only the install makes it one.
     let other_dotnet = WinInfo { exe: r"C:\Program Files\dotnet\dotnet.exe".into(), class: "HwndWrapper".into(), ..w(0x5150, 77, r"C:\Program Files\dotnet\dotnet.exe") };
     check("laptop: tModLoader's dotnet.exe is a game by its install; another dotnet.exe is not", decide(&[tml(800, 720, false)], &tml_lib, &Prefs::none(), &env(0.0), &mut Memory::default(), &alive).why.game == "tModLoader" && decide(std::slice::from_ref(&other_dotnet), &tml_lib, &Prefs::none(), &env(0.0), &mut Memory::default(), &alive).window.is_none(), String::new());
