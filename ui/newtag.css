@@ -1,0 +1,16 @@
+/* newtag (newtag.js): the small red "New" tag beside a new feature. The app's own font, sentence case, no
+   letter spacing, no glow, no animation, no shadow. --danger is not a theme color (themes.js), so the dark
+   ink on it reads the same in every theme. */
+.nt-tag {
+  display: inline-block; flex: none; margin-left: 6px; padding: 0 6px; border-radius: 999px;
+  background: var(--danger, #f2777a); color: #2a0608;
+  font: 600 10.5px/16px var(--sans); letter-spacing: 0; text-transform: none; font-style: normal;
+  white-space: nowrap; vertical-align: 1px; pointer-events: none; user-select: none;
+}
+/* At the start of a line of text (What's new): the space is after it. */
+.wn-txt > .nt-tag { margin: 0 6px 0 0; }
+/* On the top right corner of its element (a button in a full row), so nothing moves or wraps. A static host
+   gets .nt-host; the editor's tab strip is sticky, and its tag sits inside its top padding instead. */
+.nt-host { position: relative; }
+.nt-tag.nt-corner { position: absolute; top: -7px; right: -6px; margin: 0; line-height: 14px; font-size: 10px; z-index: 1; }
+.ws-tabs > .nt-tag.nt-corner { top: 2px; right: 4px; }

@@ -51,7 +51,7 @@ if (!window.__TAURI__) {
       toast: true, toast_pos: "tr", toast_opacity: 96, toast_scale: 100, toast_secs: 3.5, toast_length: true, toast_game: true, toast_mic: true,
       ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", icon_theme: false, icon_accent: "", icon_accent_2: "", card_tags: [], nav_opacity: 60, theme_order: [], gif: { width: 480, fps: 20, max_mb: 0, copy: false }, upscale: { height: 2160, filter: "sharp", quality: "high", encoder: "auto" }, rules: [], rules_after_export: "", canvas_presets: [], discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true, update_check: true, polls: true /* polls */, update_auto: true,
       compress_mb: 10, ui_sounds: false, ui_sounds_hover: false, ui_sounds_volume: 50,
-      compress: { sizes: [10, 20, 50, 500], preset: "veryfast", audio_kbps: 0, max_height: 0, max_fps: 0, audio: "first", dest: "beside", dest_dir: "", copy: true }, theme_colors: {}, theme_presets: [{ id: "tp-mock1", name: "Night pink", base: "midnight", colors: { accent: "#ff7ab8" }, css: "" }], theme_preset: "", folder_colors: { "Best of": "#e5484d" },
+      compress: { sizes: [10, 20, 50, 500], preset: "veryfast", audio_kbps: 0, max_height: 0, max_fps: 0, audio: "first", dest: "beside", dest_dir: "", copy: true }, theme_colors: {}, theme_presets: [{ id: "tp-mock1", name: "Night pink", base: "midnight", colors: { accent: "#ff7ab8" }, css: "" }], theme_preset: "", backdrop: "" /* backdrop */, hw_decode: "off", folder_colors: { "Best of": "#e5484d" },
       ffmpeg_path: "", blur_path: "",
       keybinds: [
         { id: "a", ctrl: false, shift: false, alt: false, win: false, key: "F8", action: "clip", seconds: 30, monitor: -1 },
@@ -403,6 +403,37 @@ if (!window.__TAURI__) {
     }
     window.__mockEmit("jobs-changed", jobs.map((x) => ({ ...x })));
   };
+  // 0.1.46 (U3's proof): `await __mockTicks(40, 100)` sends `n` progress ticks `ms` apart, as a render does: a Blur
+  // render's "blur-progress" and "jobs-changed" for clip `clip` (default the first), an export's "export-progress"
+  // for `exportId` (default the open clip, if any) and a "status-changed". Nothing is made; the pretend job is
+  // gone from the list at the end ("cancelled"). Resolves when the last tick is sent.
+  // `extra`: more pretend jobs that tick along in "jobs-changed", e.g. { id, kind: "join", result_id: projectId } (a busy
+  // project on the Editor page) or { id, kind: "compress", clip_id } (a row of the Compress page). `imports`: also
+  // "import-progress"; `deps`: also "deps-progress" (Settings → Components); `update`: also "update-progress".
+  // `end`: false leaves the jobs running at the end (default: they end "cancelled").
+  window.__mockTicks = async (n = 40, ms = 100, { clip = clips[0]?.id, exportId, extra = [], imports = false, deps = false, update = false, end = true } = {}) => {
+    const job = { id: "tick-" + Date.now(), kind: "blur", clip_id: clip, title: "Ticks (mock)", state: "running", pct: 0, message: "", stage: "", queued: Date.now() };
+    const more = extra.map((x, k) => ({ title: "Ticks (mock)", message: "", stage: "", queued: Date.now() + k + 1, ...x, state: "running", pct: 0 }));
+    const list = () => [...jobs.map((x) => ({ ...x })), { ...job }, ...more.map((x) => ({ ...x }))];
+    const ex = exportId ?? (typeof S !== "undefined" ? S.open : null);
+    for (let i = 1; i <= n; i++) {
+      job.pct = Math.min(99, Math.round((i * 100) / (n + 1)));
+      for (const x of more) x.pct = job.pct;
+      window.__mockEmit("blur-progress", { id: clip, pct: job.pct, state: "running", message: "" });
+      window.__mockEmit("jobs-changed", list());
+      if (ex) window.__mockEmit("export-progress", { id: ex, pct: job.pct, stage: "export" });
+      if (imports) window.__mockEmit("import-progress", { done: i, total: n, title: "Ticks (mock)" });
+      if (deps) window.__mockEmit("deps-progress", { id: "blur", phase: "download", done: i, total: n, error: "" });
+      if (update) window.__mockEmit("update-progress", { pct: job.pct });
+      window.__mockEmit("status-changed", null);
+      await new Promise((r) => setTimeout(r, ms));
+    }
+    if (!end) return;
+    job.state = "cancelled";
+    for (const x of more) x.state = "cancelled";
+    window.__mockEmit("blur-progress", { id: clip, pct: 0, state: "cancelled", message: "" });
+    window.__mockEmit("jobs-changed", [...jobs.map((x) => ({ ...x })), ...more.map((x) => ({ ...x }))]);
+  };
   // Settings → Components: what deps.rs reports, and a pretend 3 s download for "install_dep".
   const NOT_FOUND = "ffmpeg.exe was not found. Install ffmpeg or set its path in Settings.";
   const mockDeps = {
@@ -479,6 +510,14 @@ if (!window.__TAURI__) {
           // 0.1.41 (F2/F3): window.__mockSlow = ms makes each source's tracks, waveforms and film strip take that long.
           case "editor_prep_cancel": return null;
           // 0.1.41 (item T): the mock's clips have no thumbnail files; window.__mockThumbArrives = true: one appears.
+          // thumbs-refresh: the missing ones (or all) "made" in a second; window.__mockThumbFail = n: n of them fail.
+          case "thumbs_refresh": {
+            const list = clips.filter((c) => args.all || !c.thumb);
+            if (!list.length) return { job: null, count: 0 };
+            const failN = Math.min(list.length, +window.__mockThumbFail || 0);
+            setTimeout(() => window.__mockEmit("thumbs-done", { all: !!args.all, total: list.length, made: list.length - failN, failed: failN, reasons: failN ? [["the file is missing", failN]] : [], cancelled: false }), 1000);
+            return { job: null, count: list.length };
+          }
           case "thumb_retry": {
             const c = clips.find((x) => x.id === args.id);
             if (c && window.__mockThumbArrives && !c.thumb) {
@@ -879,7 +918,9 @@ if (!window.__TAURI__) {
           case "delete_clips": { const n = clips.length; clips = clips.filter((c) => !args.ids.includes(c.id)); return n - clips.length; }
           case "copy_clips": return args.ids.length;
           case "set_favorites": clips.forEach((c) => { if (args.ids.includes(c.id)) c.favorite = args.favorite; }); return null;
-          case "get_state": mockDeps.sync(); state.monitors = mockMons(); syncCaptures(); return state;
+          case "get_state": mockDeps.sync(); state.monitors = mockMons(); syncCaptures(); try { state.version = localStorage.getItem("mock.version") || state.version; } catch {} return state; // newtag: localStorage["mock.version"] plays an update
+          // newtag: one id per run (app.rs launch_id). localStorage["mock.launch"] = "2" and a reload plays a restart of Glint; a plain reload is a window reopened from the tray.
+          case "launch_id": try { return "mock-run-" + (localStorage.getItem("mock.launch") || "1"); } catch { return "mock-run-1"; }
           // The monitor picker's live picture (monprev.rs): a colored test picture per monitor.
           case "monitor_preview": return mockPreview(args.index, args.width);
           case "auto_info": return state.auto;

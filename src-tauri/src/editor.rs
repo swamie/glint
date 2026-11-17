@@ -28,6 +28,9 @@ use std::time::{Duration, SystemTime};
 // Pictures, GIFs and clips on the picture; round / soft blur boxes (0.1.35).
 #[path = "edmedia.rs"]
 mod edmedia;
+// Smart rendering of cuts-only exports (0.1.46).
+#[path = "smartcut.rs"]
+mod smartcut;
 pub use edmedia::{media_info, MediaInfo, MediaSrc, MEDIA_EXT};
 
 /// One audio track of a clip, extracted to its own file so the editor can play
@@ -945,6 +948,9 @@ fn run_watched(mut cmd: std::process::Command, expected: f64, progress: &mut dyn
         }
         if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
             stopped = Some(CANCELLED.to_string());
+        } else if last >= 40.0 && HW_RUN.with(|h| h.get()) && HW_TEST.with(|t| t.get()) == 2 {
+            // Test (0.1.46): the graphics card's decoding stops part way.
+            stopped = Some("test: the hardware decoder stopped at 40 %".to_string());
         } else if moved.elapsed() >= stall {
             let pct = if expected > 0.0 { ((out_us.max(0.0) / 1e6 / expected) * 100.0).clamp(0.0, 99.0).floor() } else { 0.0 };
             stopped = Some(format!("The export stopped making progress at {pct:.0} %. ffmpeg made no new frame for {} seconds, so it was ended. The log has its last words.", stall.as_secs().max(1)));
@@ -955,9 +961,10 @@ fn run_watched(mut cmd: std::process::Command, expected: f64, progress: &mut dyn
         }
     }
     let status = child.wait().map_err(|e| format!("ffmpeg failed: {e}"))?;
+    LAST_CPU.with(|l| l.set(util::child_cpu_secs(&child).unwrap_or(f64::NAN)));
     let stderr = err_reader.and_then(|h| h.join().ok()).unwrap_or_default();
     if let Some(why) = stopped {
-        if why != CANCELLED {
+        if why.starts_with("The export stopped") {
             util::log(&format!("export: stalled at {:.1} s of output; ffmpeg said: {}", out_us.max(0.0) / 1e6, util::last_lines(&stderr, 4)));
         }
         return Err(why);
@@ -2338,7 +2345,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             let trim = if first.3 { String::new() } else { format!("trim=end={:.6},", first.2 - seek - 0.0005) };
             let x = first.1 - seek;
             let one = if same(first.6, 1.0) { format!("if(eq(N,0),0,max(0,T-{x:.6}))") } else { format!("if(eq(N,0),0,max(0,T-{x:.6}))/{:.6}", first.6) };
-            graph.push(format!("[{g}:v:0]{trim}setpts='({:.6}+{one})/{speed:.6}/TB'{}{look}[{label}]", first.5, if g + 1 == groups.len() && tail == 0.0 && needs_end { END_PAD } else { "" }));
+            graph.push(format!("[{g}:v:0]{HWDL}{trim}setpts='({:.6}+{one})/{speed:.6}/TB'{}{look}[{label}]", first.5, if g + 1 == groups.len() && tail == 0.0 && needs_end { END_PAD } else { "" }));
             continue;
         }
         // Several ranges from one input: range j keeps [its on-screen frame, its end - 0.5 ms).
@@ -2356,7 +2363,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             sel.push(cond("t"));
             pts.push(format!("{}*({:.6}+{})", cond("T"), c.5, rel(c)));
         }
-        graph.push(format!("[{g}:v:0]select='{}',setpts='if(eq(N,0),{:.6},{})/{speed:.6}/TB'{}{look}[{label}]", sel.join("+"), first.5, pts.join("+"), if g + 1 == groups.len() && tail == 0.0 && needs_end { END_PAD } else { "" }));
+        graph.push(format!("[{g}:v:0]{HWDL}select='{}',setpts='if(eq(N,0),{:.6},{})/{speed:.6}/TB'{}{look}[{label}]", sel.join("+"), first.5, pts.join("+"), if g + 1 == groups.len() && tail == 0.0 && needs_end { END_PAD } else { "" }));
     }
     if n_in > 1 {
         let labels: String = (0..n_in).map(|k| format!("[v{k}]")).collect();
@@ -2613,18 +2620,24 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     }
     // Keyframe tracks can make the graph long; Windows cuts a command line at 32767 characters, so a
     // long graph goes to a file (`-/filter_complex`, ffmpeg 7+). Short ones stay on the line as before.
-    let graph_text = graph.join(";");
+    let graph_joined = graph.join(";");
     let mut _graph_file = OverlayFiles(Vec::new());
-    let graph_arg: [String; 2] = if graph_text.len() > 24_000 {
-        let dir = overlay_dir();
-        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let path = dir.join(format!("{}.txt", util::new_id()));
-        fs::write(&path, &graph_text).map_err(|e| e.to_string())?;
-        _graph_file.0.push(path.clone());
-        ["-/filter_complex".into(), path.to_string_lossy().into_owned()]
-    } else {
-        ["-filter_complex".into(), graph_text]
-    };
+    // 0.1.46: the graph twice, for decoding on the CPU (as before) and on the graphics card (each range input's
+    // frames first brought back to memory: `hwdownload`, as NV12, the same pixels as the CPU's yuv420p).
+    let mut graph_args: Vec<[String; 2]> = Vec::new();
+    for dl in ["", "hwdownload,format=nv12,"] {
+        let graph_text = graph_joined.replace(HWDL, dl);
+        graph_args.push(if graph_text.len() > 24_000 {
+            let dir = overlay_dir();
+            fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let path = dir.join(format!("{}.txt", util::new_id()));
+            fs::write(&path, &graph_text).map_err(|e| e.to_string())?;
+            _graph_file.0.push(path.clone());
+            ["-/filter_complex".into(), path.to_string_lossy().into_owned()]
+        } else {
+            ["-filter_complex".into(), graph_text]
+        });
+    }
 
     let title = format!("{} (edit)", src.title);
     // Beside the source; from a draft, into its folder in the clips folder.
@@ -2632,9 +2645,16 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     let out = util::unique_path(&dir, &util::sanitize_filename(&title), "mp4");
     let src_s = src_path.to_string_lossy().into_owned();
 
-    let build = |enc: &str| -> Vec<String> {
+    let build_with = |enc: &str, hw: bool| -> Vec<String> {
         let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error", "-nostdin", "-nostats", "-y"].map(String::from).to_vec();
         for (seek, len) in &video_inputs {
+            if hw {
+                // 0.1.46 (S: CPU -44 to -68 %): the range's decoding on the graphics card.
+                a.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"].map(String::from));
+                if HW_TEST.with(|t| t.get()) == 1 {
+                    a.extend(["-hwaccel_device", "9"].map(String::from)); // test: a card that is not there
+                }
+            }
             if video_inputs.len() > 4 {
                 // Every range has its own decoder, all open at once; fewer
                 // threads each keeps memory in check on a 1440p clip.
@@ -2668,7 +2688,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         }
         // The overlay pictures, media items and masks (edmedia::layer_input_args).
         a.extend(layer_args.iter().cloned());
-        a.extend(graph_arg.iter().cloned());
+        a.extend(graph_args[hw as usize].iter().cloned());
         a.extend(maps.iter().cloned());
         a.extend(video_codec_args(enc));
         if speeds.iter().any(|x| !same(*x, 1.0)) {
@@ -2706,6 +2726,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         a
     };
 
+    let build = |enc: &str| build_with(enc, false);
     let expected = out_total;
     if DRY_RUN.with(|d| d.borrow().is_some()) {
         // `--editor-test`: the command (libx264, paths as placeholders) instead of an encode.
@@ -2742,7 +2763,63 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             progress(p);
         }
     };
-    let mut result = run_with_progress(&ffmpeg, &build(&enc), expected, &mut forward);
+    // 0.1.46: the pieces decoded on the graphics card when it can (NVIDIA: the encoder is NVENC; the setting not
+    // "off"; H.264 / HEVC 8-bit 4:2:0; at most HW_MAX_INPUTS decoders), else on the CPU as before. Any failure of
+    // that run (at its start, part way, a card without the decoder) is retried at once on the CPU: one log line.
+    let hw = match hw_decode_plan(&ffmpeg, s, &enc, &src_path, video_inputs.len()) {
+        Ok(()) => true,
+        Err(why) => {
+            if s.hw_decode != "off" && enc == "nvenc" {
+                util::log(&format!("export: decoding on the CPU ({why})"));
+            }
+            false
+        }
+    };
+    // 0.1.46, smart rendering: a cuts-only export of one clip whose packets allow it re-encodes only each range's
+    // head and copies the rest (`smartcut`). Any refusal or failure: the full re-encode below, one log line.
+    let cuts_only = k_count >= 2 && same(speed, 1.0) && speeds.iter().all(|x| same(*x, 1.0)) && plain && opts.tracks.is_empty() && opts.audio.is_empty() && layers.is_none() && opts.canvas.is_none() && tail == 0.0 && gap_total == 0.0;
+    let mut smart_done = false;
+    if cuts_only && (SMART_READY || SMART_TRY.with(|x| x.get())) && s.smart_cuts != "off" && !SMART_OFF.with(|x| x.get()) {
+        match smartcut::eligible(&ffmpeg, &src_path, &enc) {
+            Ok(()) => {
+                let t0 = std::time::Instant::now();
+                match smartcut::export(&ffmpeg, &src_path, &ranges, &titles, &title, &out, &mut forward) {
+                    Ok((heads, copied)) => {
+                        util::log(&format!("export: smart render, {heads} heads encoded, {copied} frames copied, in {:.1} s", t0.elapsed().as_secs_f64()));
+                        smart_done = true;
+                    }
+                    Err(e) if e == CANCELLED => return Err(e),
+                    Err(e) => {
+                        let _ = fs::remove_file(&out);
+                        util::log(&format!("export: smart render failed ({e}), re-encoding all"));
+                    }
+                }
+            }
+            Err(why) => util::log(&format!("export: no smart render ({why})")),
+        }
+    }
+    SMART_USED.with(|x| x.set(smart_done));
+    LAST_HW.with(|l| l.set(false));
+    let mut result = if smart_done {
+        Ok(())
+    } else if hw {
+        HW_RUN.with(|h| h.set(true));
+        let r0 = run_with_progress(&ffmpeg, &build_with(&enc, true), expected, &mut forward);
+        HW_RUN.with(|h| h.set(false));
+        LAST_HW.with(|l| l.set(r0.is_ok()));
+        match r0 {
+            Err(e) if e != CANCELLED => {
+                util::log(&format!("export: decoding on the graphics card failed ({}), decoding on the CPU", e.lines().next().unwrap_or("")));
+                let _ = fs::remove_file(&out);
+                let base_pct = top.get();
+                let mut again = |p: f32| forward(base_pct + (99.0 - base_pct) * p / 100.0);
+                run_with_progress(&ffmpeg, &build(&enc), expected, &mut again)
+            }
+            r => r,
+        }
+    } else {
+        run_with_progress(&ffmpeg, &build(&enc), expected, &mut forward)
+    };
     if let Err(e) = &result {
         if enc != "x264" && e != CANCELLED && !e.starts_with("The export stopped") {
             // A hardware encoder can be busy (the recorder and a game may hold its sessions); the CPU always works.
@@ -2912,6 +2989,18 @@ fn run_self_test(r: &mut Report) {
     s.encoder = "auto".into();
     let encoder = pick_encoder(&ffmpeg, &s.encoder);
     r.line(&format!("INFO encoder={encoder}"));
+    if std::env::var("GLINT_EDITOR_ONLY").is_ok_and(|v| v == "smart") {
+        smart_checks(r, &ffmpeg, &s, &dir);
+        return;
+    }
+    if std::env::var("GLINT_EDITOR_ONLY").is_ok_and(|v| v == "hwbench") {
+        hw_bench(r, &ffmpeg, &s, &dir);
+        return;
+    }
+    if std::env::var("GLINT_EDITOR_ONLY").is_ok_and(|v| v == "hw") {
+        hw_checks(r, &ffmpeg, &s, &dir);
+        return;
+    }
     if std::env::var("GLINT_EDITOR_ONLY").is_ok_and(|v| v == "looks") {
         // A quick run of only the limiter and look checks (0.1.45), while working on them.
         let clip = dir.join("lk.mp4");
@@ -4567,6 +4656,75 @@ fn group_checks_as_asked(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path
     }
 }
 
+/// Smart rendering (0.1.46, `smartcut`) is unfinished: one frame short against the full encode on the test clips.
+/// Until its checks pass it never runs in the app, whatever the setting says.
+const SMART_READY: bool = false;
+
+/// Where a range input's chain gets `hwdownload` when it is decoded on the graphics card (0.1.46).
+const HWDL: &str = "\u{1}hwdl\u{1}";
+/// The most range inputs decoded on the graphics card at once (each is a decoder session and its frames in video
+/// memory); past it the CPU decodes.
+const HW_MAX_INPUTS: usize = 16;
+
+thread_local! {
+    /// Test hook (0.1.46): 1 = the card's decoding fails at its start, 2 = it stops part way, 3 = no decoder.
+    pub(crate) static HW_TEST: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    /// True while an export runs with the graphics card decoding (for `HW_TEST` 2).
+    static HW_RUN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test hook (0.1.46): true = smart rendering may run although `SMART_READY` is false (its own checks only).
+    pub(crate) static SMART_TRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test hook (0.1.46): true = no smart render (the full re-encode, to compare with).
+    pub(crate) static SMART_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test hook: whether the last export was smart-rendered.
+    pub(crate) static SMART_USED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Bench (0.1.46): the CPU seconds of the last ffmpeg `run_watched` ran.
+    pub(crate) static LAST_CPU: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+    /// Test hook: whether the last export's pieces were decoded on the graphics card (to the end).
+    pub(crate) static LAST_HW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this export's pieces are decoded on the graphics card, else why not.
+fn hw_decode_plan(ffmpeg: &Path, s: &Settings, enc: &str, file: &Path, inputs: usize) -> Result<(), String> {
+    if s.hw_decode == "off" {
+        return Err("the setting is off".into());
+    }
+    if enc != "nvenc" {
+        return Err(format!("the encoder is {enc}, not NVENC"));
+    }
+    if inputs > HW_MAX_INPUTS {
+        return Err(format!("{inputs} inputs, over {HW_MAX_INPUTS}"));
+    }
+    let probe = library::ffprobe_for(ffmpeg).ok_or("no ffprobe")?;
+    let out = util::hidden_cmd(&probe).args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,pix_fmt", "-of", "csv=p=0"]).arg(file).stdin(Stdio::null()).stderr(Stdio::null()).output().map_err(|e| e.to_string())?;
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let mut it = line.split(',');
+    let (codec, pix) = (it.next().unwrap_or(""), it.next().unwrap_or(""));
+    if !matches!(codec, "h264" | "hevc") || !matches!(pix, "yuv420p" | "yuvj420p") {
+        return Err(format!("the clip is {codec} {pix}"));
+    }
+    if HW_TEST.with(|t| t.get()) == 3 || !hw_decoder_works(ffmpeg) {
+        return Err("this PC's graphics card does not decode it".into());
+    }
+    Ok(())
+}
+
+/// Whether ffmpeg decodes H.264 on the graphics card here (once per run: a 4-frame clip made and decoded).
+fn hw_decoder_works(ffmpeg: &Path) -> bool {
+    static CACHE: Mutex<Option<bool>> = Mutex::new(None);
+    if let Some(v) = CACHE.lock().ok().and_then(|c| *c) {
+        return v;
+    }
+    let p = util::tmp_dir().join(format!("hwcheck-{}.mp4", util::new_id()));
+    let _ = fs::create_dir_all(util::tmp_dir());
+    let made = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=30:d=0.2", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", &p.to_string_lossy()]).is_ok();
+    let ok = made && run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-i", &p.to_string_lossy(), "-vf", "hwdownload,format=nv12", "-f", "null", "-"]).is_ok();
+    let _ = fs::remove_file(&p);
+    if let Ok(mut c) = CACHE.lock() {
+        *c = Some(ok);
+    }
+    ok
+}
+
 /// The limiter at the end of a mix that can pass full scale (0.1.45): ceiling -1 dBFS in the FILE. The AAC encoder
 /// rebuilds a limited tone up to 0.5 dB over the limiter's level (0.891 gave -0.6 dBFS peaks), so the limiter holds
 /// 0.85 (-1.4 dBFS) and the encoded file peaks at -1.1. 5 ms lookahead /
@@ -4631,6 +4789,238 @@ fn sharp_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta) {
             let _ = fs::remove_file(&m.path);
         }
         Err(e) => r.check("sharpness: the sharpened range", false, &e),
+    }
+}
+
+/// 0.1.46: the pieces decoded on the graphics card (NVIDIA). The same decoded frames (framemd5) as decoding on the
+/// CPU: three ranges of a frame-counter clip (one with a colour), and a file whose colour tags change half way (the
+/// owner's joined drafts); and every failure ends in a finished, identical export by the CPU with one log line: the
+/// card's decoding failing at its start, stopping part way (40 %), and a PC without the decoder. Skipped (with a
+/// line) on a PC without NVENC or without the card's decoder.
+fn hw_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path) {
+    // The setting on (its default is "off" since the 0.1.46 measurement).
+    let on = Settings { hw_decode: "auto".into(), ..s.clone() };
+    let s = &on;
+    if pick_encoder(ffmpeg, &s.encoder) != "nvenc" || !hw_decoder_works(ffmpeg) {
+        r.line("SKIP hardware decode: this PC has no NVENC or no NVIDIA decoder; the checks need one");
+        return;
+    }
+    let md5s = |p: &Path| -> Vec<String> {
+        let Ok(out) = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-loglevel", "error", "-nostdin", "-i"]).arg(p).args(["-map", "0:v:0", "-f", "framemd5", "-"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).output() else { return Vec::new() };
+        String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.starts_with('#')).map(|l| { let f: Vec<&str> = l.split(',').map(str::trim).collect(); format!("{} {}", f.get(2).unwrap_or(&""), f.last().unwrap_or(&"")) }).collect()
+    };
+    let log_file = util::data_dir().join("glint.log");
+    let log_len = || fs::read_to_string(&log_file).map(|t| t.len()).unwrap_or(0);
+    let log_since = |from: usize| fs::read_to_string(&log_file).map(|t| t.get(from..).unwrap_or("").to_string()).unwrap_or_default();
+    let clip = dir.join("hw counter.mp4");
+    let tagged = dir.join("hw tags.mp4");
+    let made = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=640x360:r=60:d=8,geq=lum='if(lt(X,W/2),mod(N*3,200)+20,100)':cb=128:cr=128", "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", "-g", "120", "-pix_fmt", "yuv420p", &clip.to_string_lossy()]).is_ok();
+    // Colour tags that change half way (two encodes with other tags, joined by a stream copy at a keyframe).
+    let (ta, tb, list) = (dir.join("hw ta.mp4"), dir.join("hw tb.mp4"), dir.join("hw list.txt"));
+    let enc_tags = |p: &Path, tags: [&str; 3]| run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=6", "-c:v", "libx264", "-preset", "ultrafast", "-g", "30", "-pix_fmt", "yuv420p", "-colorspace", tags[0], "-color_primaries", tags[1], "-color_trc", tags[2], &p.to_string_lossy()]).is_ok();
+    let tag_ok = enc_tags(&ta, ["bt709", "bt709", "bt709"]) && enc_tags(&tb, ["bt470bg", "bt709", "iec61966-2-1"])
+        && fs::write(&list, format!("file '{}'\noutpoint 3\nfile '{}'\ninpoint 3\n", ta.to_string_lossy().replace('\\', "/"), tb.to_string_lossy().replace('\\', "/"))).is_ok()
+        && run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", &list.to_string_lossy(), "-c", "copy", &tagged.to_string_lossy()]).is_ok();
+    if !made || !tag_ok {
+        r.check("hardware decode: test clips made", false, &format!("{made} {tag_ok}"));
+        return;
+    }
+    let seg = |a: f64, b: f64, c: Option<Color>| Range { start: a, end: b, color: c, ..Default::default() };
+    let cases: Vec<(&str, PathBuf, ExportOpts)> = vec![
+        ("three ranges, one coloured", clip.clone(), ExportOpts { segments: vec![seg(0.5, 2.0, None), seg(3.0, 4.5, Some(Color { brightness: 1.2, ..Default::default() })), seg(5.0, 7.0, None)], ordered: true, ..Default::default() }),
+        ("colour tags that change half way", tagged.clone(), ExportOpts { segments: vec![seg(1.0, 2.5, None), seg(2.5, 4.5, None), seg(4.5, 5.5, None)], ordered: true, ..Default::default() }),
+    ];
+    let off = Settings { hw_decode: "off".into(), ..s.clone() };
+    for (name, file, opts) in &cases {
+        let src = ClipMeta { fps: 60, ..library::register(ffmpeg, file, "HW", "Test Game", "clip") };
+        let cpu = export(&off, &src, opts, &mut |_| {});
+        let from = log_len();
+        let gpu = export(s, &src, opts, &mut |_| {});
+        let used = LAST_HW.with(|l| l.get());
+        match (cpu, gpu) {
+            (Ok(a), Ok(b)) => {
+                let (ma, mb) = (md5s(Path::new(&a.path)), md5s(Path::new(&b.path)));
+                let differ = ma.iter().zip(&mb).filter(|(x, y)| x != y).count();
+                r.check(&format!("hardware decode, {name}: decoded on the card, the same frames as on the CPU"), used && ma.len() > 60 && ma.len() == mb.len() && differ == 0 && !log_since(from).contains("decoding on the CPU"), &format!("{} vs {} frames, {differ} differ; card used {used}", ma.len(), mb.len()));
+                let _ = fs::remove_file(&a.path);
+                let _ = fs::remove_file(&b.path);
+            }
+            (a, b) => r.check(&format!("hardware decode, {name}"), false, &format!("{:?} / {:?}", a.err(), b.err())),
+        }
+    }
+    // Time on 1440p60 (10 s, three ranges): wall seconds and this process's children's CPU are not separated here,
+    // so the wall time is what is reported.
+    let big = dir.join("hw big.mp4");
+    if run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=2560x1440:r=60:d=10", "-c:v", "h264_nvenc", "-preset", "p4", "-g", "60", "-bf", "0", "-pix_fmt", "yuv420p", &big.to_string_lossy()]).is_ok() {
+        let bsrc = ClipMeta { fps: 60, ..library::register(ffmpeg, &big, "HW big", "Test Game", "clip") };
+        let o = ExportOpts { segments: vec![seg(0.5, 3.5, None), seg(4.0, 7.0, None), seg(7.5, 9.9, None)], ordered: true, ..Default::default() };
+        let time = |st: &Settings| -> Option<f64> { let t0 = std::time::Instant::now(); let m = export(st, &bsrc, &o, &mut |_| {}).ok()?; let x = t0.elapsed().as_secs_f64(); let _ = fs::remove_file(&m.path); Some(x) };
+        let (c1, g1) = (time(&off), time(s));
+        r.line(&format!("INFO hardware decode on 10 s of 1440p60, three ranges: {c1:?} s on the CPU, {g1:?} s on the card"));
+    }
+    // The fallbacks: each ends in a finished export, frame for frame the CPU's, with one log line saying why.
+    let (_, file, opts) = &cases[0];
+    let src = ClipMeta { fps: 60, ..library::register(ffmpeg, file, "HW", "Test Game", "clip") };
+    let reference = export(&off, &src, opts, &mut |_| {}).map(|m| { let v = md5s(Path::new(&m.path)); let _ = fs::remove_file(&m.path); v }).unwrap_or_default();
+    for (code, name) in [(1u8, "the card fails at the start"), (2, "the card stops part way (40 %)"), (3, "a PC without the decoder")] {
+        HW_TEST.with(|t| t.set(code));
+        let from = log_len();
+        let res = export(s, &src, opts, &mut |_| {});
+        HW_TEST.with(|t| t.set(0));
+        let said: Vec<String> = log_since(from).lines().filter(|l| l.contains("decoding on the CPU")).map(|l| l.split("export: ").nth(1).unwrap_or(l).to_string()).collect();
+        match res {
+            Ok(m) => {
+                let got = md5s(Path::new(&m.path));
+                r.check(&format!("hardware decode fallback, {name}: a finished export, the CPU's frames, one log line"), !reference.is_empty() && got == reference && said.len() == 1, &format!("{} frames (CPU {}); log: {said:?}", got.len(), reference.len()));
+                let _ = fs::remove_file(&m.path);
+            }
+            Err(e) => r.check(&format!("hardware decode fallback, {name}"), false, &e),
+        }
+    }
+}
+
+/// 0.1.46, smart rendering (`smartcut`): against the full re-encode of the same cuts, on a clip recorded as Glint's
+/// recorder records with NVENC (p4, hq, no B-frames, a keyframe a second) and on a draft joined from two of them by a
+/// stream copy: the same number of frames, at the same times (0.2 ms), in the same order by the burned-in counter,
+/// a clean decode (`-xerror`), flash and beep together, packets with rising, non-negative times, `+faststart` kept.
+/// A libx264 recording (other SPS) and a source with B-frames are refused and exported in full. Skipped without NVENC.
+fn smart_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path) {
+    if pick_encoder(ffmpeg, &s.encoder) != "nvenc" {
+        r.line("SKIP smart rendering: this PC has no NVENC (the heads must match the clip's encoder)");
+        return;
+    }
+    let s = &Settings { smart_cuts: "auto".into(), ..s.clone() };
+    SMART_TRY.with(|x| x.set(true));
+    // The picture: left half a counter (16 grey levels, one step a frame), right half a white flash at k + 0.5 s.
+    let video = "color=c=gray:s=1280x720:r=60:d=12,geq=lum='if(lt(X,W/2),mod(N,16)*12+40,if(lt(mod(T-0.5+0.004,1),0.014),235,30))':cb=128:cr=128";
+    let beep = "if(lt(mod(t-0.5,1),0.06)*gte(t,0.5),0.8*sin(2*PI*1000*t),0)";
+    let make = |p: &Path, enc: &[&str]| -> bool {
+        let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", video, "-f", "lavfi", "-i"].map(String::from).to_vec();
+        a.push(format!("aevalsrc='{beep}|{beep}':s=48000:d=12"));
+        a.extend(["-f", "lavfi", "-i"].map(String::from));
+        a.push(format!("aevalsrc='{beep}|{beep}':s=48000:d=12"));
+        a.extend(["-map", "0:v", "-map", "1:a", "-map", "2:a"].map(String::from));
+        a.extend(enc.iter().map(|x| x.to_string()));
+        a.extend(["-force_key_frames", "expr:gte(t,n_forced*1)", "-c:a", "aac", "-b:a", "160k", "-metadata:s:a:0", "title=Mix", "-metadata:s:a:1", "title=Desktop"].map(String::from));
+        a.push(p.to_string_lossy().into_owned());
+        let args: Vec<&str> = a.iter().map(String::as_str).collect();
+        run_ffmpeg(ffmpeg, &args).is_ok()
+    };
+    let nv: &[&str] = &["-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq", "-bf", "0", "-rc", "vbr", "-cq", "23", "-b:v", "0", "-maxrate", "20000000", "-bufsize", "40000000", "-forced-idr", "1", "-pix_fmt", "yuv420p"];
+    let rec = dir.join("smart rec.mp4");
+    let x264 = dir.join("smart x264.mp4");
+    let bfr = dir.join("smart bframes.mp4");
+    let ok = make(&rec, nv) && make(&x264, &["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"]) && make(&bfr, &["-c:v", "libx264", "-preset", "veryfast", "-bf", "3", "-pix_fmt", "yuv420p"]);
+    // A draft: two recordings joined by a stream copy (as a project's old working file).
+    let rec2 = dir.join("smart rec2.mp4");
+    let draft = dir.join("smart draft.mp4");
+    let list = dir.join("smart list.txt");
+    let ok = ok && make(&rec2, nv) && fs::write(&list, format!("file '{}'\nfile '{}'\n", rec.to_string_lossy().replace('\\', "/"), rec2.to_string_lossy().replace('\\', "/"))).is_ok() && run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", &list.to_string_lossy(), "-map", "0", "-c", "copy", &draft.to_string_lossy()]).is_ok();
+    if !ok {
+        r.check("smart rendering: test clips made", false, "");
+        return;
+    }
+    let tv = |v: f64| v * 219.0 / 255.0 + 16.0;
+    let frames = |file: &Path| -> Vec<(f64, i64, bool)> {
+        let half = |crop: &str| -> Vec<(f64, f64)> {
+            let Ok(out) = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-nostdin", "-i"]).arg(file).args(["-vf", &format!("{crop},format=gray,showinfo"), "-f", "null", "-"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output() else { return Vec::new() };
+            String::from_utf8_lossy(&out.stderr).lines().filter_map(|l| { let p = l.find("pts_time:")?; let m = l.find("mean:[")?; Some((l[p + 9..].split_whitespace().next()?.parse().ok()?, l[m + 6..].split(|c: char| !c.is_ascii_digit() && c != '.').next()?.parse().ok()?)) }).collect()
+        };
+        let (l, rr) = (half("crop=iw/2:ih:0:0"), half("crop=iw/2:ih:iw/2:0"));
+        l.iter().zip(&rr).map(|(a, b)| (a.0, ((tv(a.1) - 40.0) / 12.0).round() as i64, b.1 > 128.0)).collect()
+    };
+    let clean = |file: &Path| util::hidden_cmd(ffmpeg).args(["-hide_banner", "-loglevel", "error", "-xerror", "-nostdin", "-i"]).arg(file).args(["-f", "null", "-"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().is_ok_and(|o| o.status.success() && o.stderr.is_empty());
+    let packets_sane = |file: &Path| -> bool {
+        let Some(fp) = library::ffprobe_for(ffmpeg) else { return false };
+        let out = util::hidden_cmd(&fp).args(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=dts_time", "-of", "csv=p=0"]).arg(file).stdin(Stdio::null()).stderr(Stdio::null()).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        let d: Vec<f64> = out.lines().filter_map(|l| l.trim().trim_end_matches(',').parse().ok()).collect();
+        !d.is_empty() && d[0] >= -1e-6 && d.windows(2).all(|w| w[1] > w[0])
+    };
+    let faststart = |file: &Path| fs::read(file).ok().and_then(|b| { let f = |tag: &[u8]| b.windows(4).position(|w| w == tag); Some(f(b"moov")? < f(b"mdat")?) }).unwrap_or(false);
+    // Mid-GOP starts, one on a keyframe (3.0), one inside one second (6.2 .. 6.7), mid-frame asks (snapped).
+    let segs = vec![(0.53, 2.41), (3.0, 4.27), (6.2, 6.7), (7.61, 9.99), (10.4, 11.9)];
+    let opts = ExportOpts { segments: segs.iter().map(|&(a, b)| Range { start: a, end: b, ..Default::default() }).collect(), ordered: true, ..Default::default() };
+    for (name, file) in [("a recording (NVENC)", &rec), ("a draft joined from two recordings", &draft)] {
+        let src = ClipMeta { fps: 60, ..library::register(ffmpeg, file, "Smart", "Test Game", "clip") };
+        SMART_OFF.with(|x| x.set(true));
+        let t0 = std::time::Instant::now();
+        let full = export(s, &src, &opts, &mut |_| {});
+        let t_full = t0.elapsed().as_secs_f64();
+        SMART_OFF.with(|x| x.set(false));
+        let t1 = std::time::Instant::now();
+        let smart = export(s, &src, &opts, &mut |_| {});
+        let t_smart = t1.elapsed().as_secs_f64();
+        let used = SMART_USED.with(|x| x.get());
+        match (full, smart) {
+            (Ok(a), Ok(b)) => {
+                let (pa, pb) = (Path::new(&a.path), Path::new(&b.path));
+                let (fa, fb) = (frames(pa), frames(pb));
+                let bad: Vec<String> = fa.iter().zip(&fb).filter(|(x, y)| (x.0 - y.0).abs() > 0.0002 || x.1 != y.1 || x.2 != y.2).take(3).map(|(x, y)| format!("{x:?} vs {y:?}")).collect();
+                r.check(&format!("smart rendering, {name}: smart, the same frames at the same times in the same order as the full encode"), used && fa.len() > 300 && fa.len() == fb.len() && bad.is_empty(), &format!("{} vs {} frames; differences {bad:?}; {t_full:.1} s full, {t_smart:.1} s smart", fa.len(), fb.len()));
+                let (fl, be) = (flash_times(ffmpeg, pb), beep_times(ffmpeg, pb));
+                let offs: Vec<f64> = fl.iter().filter_map(|f| be.iter().map(|x| f - x).min_by(|x, y| x.abs().total_cmp(&y.abs()))).collect();
+                let worst = offs.iter().fold(0.0f64, |w, x| w.max(x.abs()));
+                r.check(&format!("smart rendering, {name}: a clean decode, flash on beep, rising packet times, faststart"), clean(pb) && fl.len() >= 7 && worst < 0.002 && packets_sane(pb) && faststart(pb), &format!("clean {}, {} flashes worst {:.1} ms, packets {}, faststart {}", clean(pb), fl.len(), worst * 1000.0, packets_sane(pb), faststart(pb)));
+                let _ = fs::remove_file(pa);
+                let _ = fs::remove_file(pb);
+            }
+            (a, b) => r.check(&format!("smart rendering, {name}"), false, &format!("{:?} / {:?}", a.err(), b.err())),
+        }
+    }
+    for (name, file) in [("a libx264 recording (another SPS)", &x264), ("a clip with B-frames", &bfr)] {
+        let src = ClipMeta { fps: 60, ..library::register(ffmpeg, file, "Smart", "Test Game", "clip") };
+        let res = export(s, &src, &opts, &mut |_| {});
+        let used = SMART_USED.with(|x| x.get());
+        r.check(&format!("smart rendering refused for {name}: exported in full"), res.is_ok() && !used, &format!("{:?}, smart {used}", res.as_ref().err()));
+        if let Ok(m) = res {
+            let _ = fs::remove_file(&m.path);
+        }
+    }
+}
+
+/// 0.1.46, deciding the default of `hw_decode`: 30 s of 1440p60 in 6 ranges, plain and with a still overlay and a
+/// colour on two ranges, exported 3 times each way, alternating (CPU, card, CPU, ...): wall and ffmpeg CPU seconds,
+/// medians. Only with GLINT_EDITOR_ONLY=hwbench.
+fn hw_bench(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path) {
+    let big = dir.join("bench 1440.mp4");
+    if run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=2560x1440:r=60:d=32", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=32", "-map", "0:v", "-map", "1:a", "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23", "-g", "60", "-bf", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", &big.to_string_lossy()]).is_err() {
+        r.check("bench clip made", false, "");
+        return;
+    }
+    let src = ClipMeta { fps: 60, ..library::register(ffmpeg, &big, "Bench", "Test Game", "clip") };
+    let png = overlay_dir().join("bench-still.png");
+    let _ = fs::create_dir_all(overlay_dir());
+    let seg = |a: f64, c: Option<Color>| Range { start: a, end: a + 5.0, color: c, ..Default::default() };
+    let warm = Some(Color { brightness: 1.05, saturation: 1.2, ..Default::default() });
+    let plain = ExportOpts { segments: (0..6).map(|k| seg(0.5 + 5.2 * k as f64, None)).collect(), ordered: true, ..Default::default() };
+    let rich = |png: String| ExportOpts { segments: (0..6).map(|k| seg(0.5 + 5.2 * k as f64, if k == 1 || k == 4 { warm.clone() } else { None })).collect(), ordered: true, overlays: vec![Overlay { png, from: 2.0, to: 26.0, x: 0.05, y: 0.05, w: 0.3, h: 0.15, track: Vec::new(), media: None }], ..Default::default() };
+    let off = Settings { hw_decode: "off".into(), ..s.clone() };
+    let on = Settings { hw_decode: "auto".into(), ..s.clone() };
+    let median = |mut v: Vec<f64>| { v.sort_by(|a, b| a.total_cmp(b)); v.get(v.len() / 2).copied().unwrap_or(f64::NAN) };
+    for case in ["plain", "a still overlay and a colour on two ranges"] {
+        let (mut cw, mut cc, mut gw, mut gc) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut card_used = true;
+        for run in 0..6 {
+            let card = run % 2 == 1;
+            let o = if case == "plain" { plain.clone() } else {
+                let _ = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=white@0.6:s=768x216,format=rgba", "-frames:v", "1", &png.to_string_lossy()]);
+                rich(png.to_string_lossy().into_owned())
+            };
+            let t0 = std::time::Instant::now();
+            let m = export(if card { &on } else { &off }, &src, &o, &mut |_| {});
+            let wall = t0.elapsed().as_secs_f64();
+            let cpu = LAST_CPU.with(|l| l.get());
+            if card {
+                card_used &= LAST_HW.with(|l| l.get());
+            }
+            r.line(&format!("INFO bench {case}, run {}: {} wall {wall:.2} s, ffmpeg CPU {cpu:.2} s{}", run + 1, if card { "card" } else { "CPU " }, if m.is_err() { " (FAILED)" } else { "" }));
+            if let Ok(m) = m {
+                let _ = fs::remove_file(&m.path);
+            }
+            if card { gw.push(wall); gc.push(cpu) } else { cw.push(wall); cc.push(cpu) }
+        }
+        let (a, b, c2, d) = (median(cw), median(gw), median(cc), median(gc));
+        r.line(&format!("RESULT bench {case}: wall CPU {a:.2} s / card {b:.2} s ({:+.1} %); ffmpeg CPU seconds CPU {c2:.2} / card {d:.2} ({:+.1} %); card used every time: {card_used}", (b / a - 1.0) * 100.0, (d / c2 - 1.0) * 100.0));
     }
 }
 
@@ -5218,6 +5608,8 @@ fn timeline_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, 
     shared_audio_checks(r, ffmpeg, s, src, dir);
     limiter_checks(r, ffmpeg, s, src, dir);
     look_tg_checks(r, ffmpeg, s, dir);
+    hw_checks(r, ffmpeg, s, dir);
+    // smart_checks: not in the full run while smart rendering is unfinished (GLINT_EDITOR_ONLY=smart runs them).
     watchdog_checks(r, ffmpeg);
     tag_change_checks(r, ffmpeg, s, dir);
     sync_checks(r, ffmpeg, s, dir);

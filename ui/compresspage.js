@@ -242,21 +242,39 @@ async function cpgStart() {
 
 function cpgJobsChanged() {
   if (S.page !== "compress") return;
-  // Progress alone: update the bars in place. A state change: redraw.
+  // 0.1.46 (U3): progress updates the bar and its text in place; a state change (a job starts or ends) replaces only
+  // that row and brings the Compress button up to date. Was a render() of the whole page on every state change.
+  let changed = false;
   for (const it of CPG.items) {
     const j = cpgJobOf(it.key);
     const el = document.querySelector(`.cpg-item[data-cpg-key="${CSS.escape(it.key)}"]`);
     if (!j || !el) continue;
     const bar = el.querySelector(".cpg-job .progress i");
     if (j.state === "running" && bar) {
-      const pct = Math.floor(+j.pct || 0);
-      bar.style.width = `${pct}%`;
-      el.querySelector(".cpg-state").textContent = t("Compressing {pct} %", { pct });
+      const pct = Math.floor(+j.pct || 0), w = `${pct}%`, line = t("Compressing {pct} %", { pct });
+      if (bar.style.width !== w) bar.style.width = w;
+      const st = el.querySelector(".cpg-state");
+      if (st && st.textContent !== line) { if (st.firstChild && st.firstChild.nodeType === 3 && st.childNodes.length === 1) st.firstChild.data = line; else st.textContent = line; }
     } else if (el.dataset.cpgState !== j.state) {
-      el.dataset.cpgState = j.state;
-      return cpgRedraw();
+      const tpl = document.createElement("template");
+      tpl.innerHTML = cpgItemHtml(it, cpgMb()).trim();
+      if (tpl.content.firstElementChild) el.replaceWith(tpl.content.firstElementChild);
+      changed = true;
     }
   }
+  if (changed) cpgStartPaint();
+}
+
+/** The Compress button's count and whether it can be pressed, on the button already there. */
+function cpgStartPaint() {
+  const btn = document.querySelector("#view [data-cpg-start]");
+  if (!btn) return;
+  const startable = CPG.items.filter((it) => cpgCanStart(it)).length;
+  if (btn.disabled !== !startable) btn.disabled = !startable;
+  const label = startable > 1 ? t("Compress {clips}", { clips: plural(startable) }) : t("Compress");
+  const last = btn.lastChild;
+  if (last && last.nodeType === 3) { if (last.data !== label) last.data = label; }
+  else btn.append(label);
 }
 
 /** "clip-compressed": { clip|null, mb, size, copied, secs, path, job_id, source }. Only jobs started here are listed. */

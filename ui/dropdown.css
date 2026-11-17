@@ -46,6 +46,6 @@ select.dd-src:focus + .dd-btn, .dd-btn.dd-open { border-color: var(--accent); }
 .dd-opt[aria-disabled="true"].act { background: none; }
 .dd-opt.in-group { padding-left: 17px; }
 /* An <optgroup> label: drawn like the menu's header (.menu-head). */
-.dd-group { flex: none; height: 26px; margin: 2px 4px 3px; padding: 0 5px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 26px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dd-group { flex: none; height: 26px; margin: 2px 4px 3px; padding: 0 5px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 26px; font-weight: 700; letter-spacing: 0; text-transform: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dd-group:first-child { margin-top: 0; }
 @media (prefers-reduced-motion: reduce) { .dd-list { animation: none; } .dd-btn::after { transition: none; } }

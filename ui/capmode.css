@@ -26,18 +26,30 @@
 .cm-half[aria-checked="true"] { color: var(--accent-ink); cursor: default; }
 .cm-half:not([aria-checked="true"]):hover { color: var(--text); }
 .cm-half:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.cm-half svg { display: none; width: 15px; height: 15px; }
+/* 0.1.46: icons only, at every width (a game pad, a monitor); the word stays for screen readers, visually hidden. */
+.cm-half { width: 30px; padding: 0; }
+.cm-half svg { display: block; width: 16px; height: 16px; }
+.cm-half .cm-label { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
 /* Waiting for a game: the thumb breathes. */
 .cm-pill.waiting .cm-thumb { animation: cm-breathe 1.8s ease-in-out infinite; }
 @keyframes cm-breathe { 50% { opacity: .55; } }
-@media (max-width: 920px) {
-  .cm-half { padding: 0 6px; }
-  .cm-half svg { display: block; }
-  .cm-half .cm-label { display: none; }
-}
+/* The switch's own tooltip (capmode.js capTipShow): tiny, one line ("Game"), a second for the reason while GAME waits
+   or carries the mark. Never takes the pointer. */
+.cm-tip { position: fixed; z-index: 9000; display: flex; flex-direction: column; align-items: center; gap: 2px; max-width: 260px;
+  padding: 3px 7px; border-radius: 5px; background: var(--raised-2, var(--raised)); color: var(--text); border: 1px solid var(--line-2);
+  box-shadow: 0 4px 14px rgb(0 0 0 / .3); font: 600 11px/1.25 var(--sans); white-space: nowrap; pointer-events: none; user-select: none;
+  animation: cm-tip-in .12s ease-out; }
+.cm-tip[hidden] { display: none; }
+.cm-tip .cm-tip-why { max-width: 246px; color: var(--muted); font-weight: 500; font-size: 10.5px; white-space: normal; text-align: center; }
+.cm-tip.cm-tip-warn .cm-tip-why { color: var(--warn); }
+@keyframes cm-tip-in { from { opacity: 0; transform: translateY(-2px); } }
+/* The menu's head: what each mode records, the chosen one first and brighter. */
+.cm-menu .cm-modes { display: flex; flex-direction: column; gap: 3px; padding: 0 9px 6px; font-size: 11px; line-height: 1.35; white-space: normal; }
+.cm-menu .cm-modes .cm-mode-on { color: var(--text); }
 @media (prefers-reduced-motion: reduce) {
   .cm-thumb, .cm-half { transition: none; }
   .cm-pill.waiting .cm-thumb { animation: none; }
+  .cm-tip { animation: none; }
 }
 
 /* The status bar while waiting for a game (redrawn every second, so it does not animate). */
@@ -51,7 +63,7 @@
 .cm-menu .cm-list { display: flex; flex-direction: column; max-height: 290px; overflow-y: auto; }
 .cm-menu .cm-prog span { min-width: 0; }
 .cm-menu .cm-prog.cm-not span { opacity: .55; }
-.cm-menu .cm-tag { flex: none; margin-left: auto; padding: 2px 7px; border-radius: 999px; font: 700 10px/1.2 var(--sans); font-style: normal; letter-spacing: .03em;
+.cm-menu .cm-tag { flex: none; margin-left: auto; padding: 2px 7px; border-radius: 999px; font: 700 10px/1.2 var(--sans); font-style: normal; letter-spacing: 0;
   color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 
 /* 0.1.41: GAME is not recording the game's own window (exclusive fullscreen, refused, paused, waiting for the

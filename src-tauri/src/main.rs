@@ -36,6 +36,7 @@ mod projects;
 mod projexport;
 mod recorder;
 mod rules;
+mod session;
 mod settings;
 mod sound;
 mod speedtest;
@@ -46,12 +47,23 @@ mod util;
 mod win;
 
 fn main() {
+    session::quiet_errors(); // 0.1.46: no Windows error box from Glint or any child it starts (0xc0000142 at restart)
     util::now_secs(); // start the app clock
     if deps::fake_ffmpeg() {
         return; // --deps-test's stand-in for an old ffmpeg (only as ffmpeg.exe with GLINT_FAKE_FFMPEG=1)
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     update::wait_for_old_copy(&args); // started by the copy an update just replaced: let it end first
+    if let Some(i) = args.iter().position(|a| a == "--errmode-child") {
+        // Test-only (--session-test's child): write this process's error mode.
+        session::errmode_child(args.get(i + 1).map(String::as_str).unwrap_or("errmode.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--session-test") {
+        // glint.exe --session-test <report.txt>: the end of the Windows session, the spawn gate, the error mode; shuts nothing down.
+        session::self_test(args.get(i + 1).map(String::as_str).unwrap_or("session.txt"));
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--deps-test") {
         // glint.exe --deps-test <report.txt>: Check and repair (downloads ffmpeg once into a scratch folder).
         deps::self_test(args.get(i + 1).map(String::as_str).unwrap_or("deps.txt"));

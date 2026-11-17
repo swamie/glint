@@ -753,6 +753,14 @@ function emRemovePiece(m, i, leaveGap) {
  * that what follows moves later; nothing is overwritten. Returns the piece's new { at, len, src }, or null.
  * Does not snapshot.
  */
+/** 0.1.46: the frame a trim handle shows while it is dragged. `r`: the piece as trimmed now ({ at, src, len }, as
+ *  emTrimPiece returns it), `speed` its own speed, `frame` one timeline frame. The start shows the piece's new first
+ *  frame, the end its new last one. Returns { at: timeline second to seek to, src: the source second it shows }. */
+function emTrimPeek(r, side, speed, frame) {
+  const sp = speed > 0 ? speed : 1;
+  const off = side === "end" ? Math.max(0, r.len - Math.max(0, frame || 0)) : 0;
+  return { at: r.at + off, src: r.src + off * sp };
+}
 function emTrimPiece(m, i, side, time) {
   emPiecify(m);
   const L = emPieceList(m), p = L[i];
@@ -2380,7 +2388,7 @@ function emLayerOpts(m) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { EM_MIN_SEG, EM_MAX_GAIN, EM_EPS, emNew, emSegments, emSegmentAt, emSnapshot, emUndo, emRedo, emSplit, emJoin, emMoveCut, emSetRemoved, emTrimStart, emTrimEnd, emTrimBounds, emSameSeg, emSetTrimStart, emSetTrimEnd, emSegCopy, emSegPaste, emResetCuts, emKept, emKeptDuration, emOutDuration, emSrcToOut, emOutToSrc, emPlayable, EM_COLOR_KEYS, emNoColor, emSameColor, emColorAt, emBlankAt, emSetColor, emSetBlank, emPieces, EM_MARK_GAP, EM_MARK_BACK, emAddMark, emRemoveMark, emSetMarks, emMarkNear, emNextMark, emPrevMark, emRow, emRowCovers, emTrackRow, emGameHidden, emRowHint, emGainAt, emSetGain, emIsSolo, emSolo, emAddFile, emRemoveRow, emPlaceFile, emAudioUntouched, emIsPlainCut, emChanged, emToOpts,
     emSetParts, emParts, emPartAt, emToSrc, emFromSrc, emSrcSpans, emMovePart, emCutLocked, emLockedTimes, emPartSegs, emPartRemoved, emSetPartRemoved, emReordered, emState, emRestore,
-    emAddParts, emNewParts, emStateSave, emStateOk, emStateLoad, EM_STATE_V,
+    emAddParts, emNewParts, emStateSave, emStateOk, emStateLoad, EM_STATE_V, emTrimPeek,
     emSourceAt, emProjToFile, emFileToProj, emPieceSource, emShownTracks, emTrackTitles, emJoinPeaks,
     emPieceList, emPieceAt, emSplitAt, emRemovePiece, emTrimPiece, emPieceToItem, emPiecify, emNeedsPieces, emClipBounds, emLimits,
     emHasGaps, emGapAt, emSegIsGap, emKeepSource, emEnsureParts, emSplitPartAt, emPlacePart, emPutBeside, emCloseGap, emCloseGaps, emSetGapLen, emInsertGap, emLiftSeg, emSplitOverlay, emKeyAt, emGroups, emNormGroups, emLayGroups,

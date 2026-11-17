@@ -427,6 +427,65 @@ document.addEventListener("fullscreenchange", () => {
   // Watching a clip fullscreen: #modal is the fullscreen element (see P.fullscreen); editor.css styles it by this class.
   document.getElementById("modal")?.classList.toggle("fs", document.fullscreenElement?.id === "modal");
 });
+/* 0.1.46: the Color section's looks dropdown (a <select> that dropdown.js draws). The open editor sets `edLookHook`
+   ({ sel(), key(e), act(k), closed(), del(name) }). These listeners are registered at load, before dropdown.js and
+   app.js add theirs, so Up / Down on the closed dropdown change the look here instead of opening the list. */
+let edLookHook = null;
+let edLookKeyAt = -1e9; // the last key press: a row made active just after it was reached with the keyboard
+const edLookOpen = () => typeof DD !== "undefined" && DD.list && edLookHook && DD.sel === edLookHook.sel();
+window.addEventListener("keydown", (e) => {
+  edLookKeyAt = performance.now();
+  const s = edLookHook?.sel();
+  if (!s || e.target !== s || s.disabled || (typeof DD !== "undefined" && DD.list)) return;
+  if ((e.code !== "ArrowDown" && e.code !== "ArrowUp") || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  try { edLookHook.key(e); } catch (err) { console.error("Glint: look step failed", err); }
+}, true);
+// The delete x in a saved look's row: deletes it, never picks it (before dropdown.js's click, which picks the row).
+window.addEventListener("click", (e) => {
+  const x = e.target.closest?.(".e-look-x");
+  if (!x || !edLookOpen() || !DD.list.contains(x)) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  const name = x.dataset.name;
+  ddClose(true);
+  edLookHook.del(name);
+}, true);
+/** Draws the looks list's extras: no "Custom" row, the divider, a delete x on each saved look. */
+function edLookDecorate(list) {
+  for (const r of DD.rows) {
+    const o = r.__ddOpt;
+    if (!o.value) { r.style.display = "none"; continue; }
+    if (o.dataset.name && !r.querySelector(".e-look-x")) {
+      const name = o.dataset.name;
+      r.insertAdjacentHTML("beforeend", `<button type="button" tabindex="-1" class="e-x e-look-x" data-name="${esc(name)}" aria-label="${esc(t("Delete preset {name}", { name }))}" title="${esc(t("Delete preset"))}">${ICON.x}</button>`);
+    }
+  }
+  // (Only when missing: classList.add rewrites the attribute, which would wake the observer below again, for ever.)
+  if (!list.classList.contains("e-looks-list")) list.classList.add("e-looks-list");
+}
+let edLookWatch = null;
+if (typeof MutationObserver !== "undefined" && typeof document !== "undefined" && document.body) {
+  new MutationObserver(() => {
+    const list = edLookOpen() ? DD.list : null;
+    if (list === edLookWatch?.list) return;
+    if (edLookWatch) { edLookWatch.mo.disconnect(); edLookWatch = null; try { edLookHook?.closed(); } catch (err) { console.error(err); } }
+    if (!list) return;
+    edLookDecorate(list);
+    let act = DD.rows[DD.act] || null;
+    const mo = new MutationObserver(() => {
+      if (DD.list !== list) return;
+      edLookDecorate(list);
+      const now = DD.rows[DD.act] || null;
+      if (now === act) return;
+      act = now;
+      if (now && performance.now() - edLookKeyAt < 150) { try { edLookHook?.act(now.__ddOpt.value); } catch (err) { console.error("Glint: look preview failed", err); } }
+    });
+    mo.observe(list, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    edLookWatch = { list, mo };
+  }).observe(document.body, { childList: true });
+}
 /** Set while the viewer goes to the previous or next clip in fullscreen: the player being replaced must not leave fullscreen. */
 let edKeepFull = false;
 
@@ -1843,6 +1902,29 @@ function mountPlayer(root, c) {
     paint();
     wake();
   };
+  /** 0.1.46: show timeline second `sec` while a trim handle is dragged: the playhead goes there and the video stands.
+   *  At most one seek is in flight; a newer position waits for it to land, and the last one always wins. */
+  let peekWant = null, peekBusy = false;
+  P.peek = (sec) => {
+    if (!Number.isFinite(sec)) return;
+    peekWant = sec;
+    if (!peekBusy) peekRun();
+  };
+  function peekRun() {
+    const m = ed();
+    if (dead || peekWant === null || !m) { peekBusy = false; peekWant = null; return; }
+    const at = clamp(peekWant, 0, m.duration);
+    peekWant = null;
+    peekBusy = true;
+    go(at, false);
+    paint();
+    const el = v, done = () => { peekBusy = false; if (peekWant !== null) peekRun(); };
+    if (aft || vpend || !el.seeking) { setTimeout(done, 16); return; } // (not requestAnimationFrame: it waits while the window is hidden)
+    let to = 0;
+    const landed = () => { clearTimeout(to); el.removeEventListener("seeked", landed); done(); };
+    el.addEventListener("seeked", landed);
+    to = setTimeout(landed, 400); // a seek that never reports back does not hold the next one forever
+  }
   /** The playhead: timeline time while editing (see tlNow). */
   P.time = () => tlNow();
   const leaveFull = () => (document.fullscreenElement ? document.exitFullscreen().catch((e) => console.warn("Glint: exitFullscreen failed", e)) : Promise.resolve());
@@ -2297,6 +2379,8 @@ function mountPlayer(root, c) {
         game: c.game, // names the Game row ("Overwatch audio")
         getTime: () => tlNow(),
         onSeek: (sec, exact) => P.seek(sec, false, !!exact), // exact: onto a bookmark, even inside a cut-out part
+        // 0.1.46: a piece's end being dragged: the preview shows the frame under it (P.peek, throttled).
+        onTrimPeek: (r, side, speed) => P.peek(emTrimPeek(r, side, speed, frame).at),
         onChange: (what) => P.edSync(what),
         onMarks: () => saveMarks(),
         // sel: the primary piece { row, seg } or null; sels: every selected piece (older timelines pass only sel).
@@ -2545,6 +2629,13 @@ function mountPlayer(root, c) {
   P.openKeys = () => edOpenKeys(root);
 
   /** Runs one editor shortcut (an ED_KEYS cmd). */
+  /** 0.1.46: after O, the playhead stood on the first frame cut away (the new end): it goes back one frame, onto the
+   *  piece's new last frame (I needs nothing: the playhead is on the new first frame already). */
+  function trimEndPeek(at) {
+    const m = P.model;
+    const p = m && emPieceList(m).find((q) => !q.gap && Math.abs(q.at + q.len - at) < 0.02);
+    if (p) P.peek(emTrimPeek(p, "end", p.speed, frame).at);
+  }
   P.command = (cmd) => {
     const now = tlNow();
     // Delete and Esc first go to the overlays (a selected text or shape, a drawing tool, a text being typed).
@@ -2585,6 +2676,7 @@ function mountPlayer(root, c) {
       try { ok = !!P.tl.run(cmd); } catch (e) { threw = true; console.error(`Glint: timeline run(${cmd}) failed, using the editor's own code`, e); }
       if (!threw) {
         if (ok) {
+          if (cmd === "trimEnd") trimEndPeek(now);
           if (cmd === "mark") flash((m.marks || []).length > marksBefore ? t("Bookmark added") : t("Bookmark removed"));
           if (cmd === "louder" || cmd === "quieter") {
             const sel = P.selection().sel || before, row = sel && sel.row !== "video" ? emRow(P.model, sel.row) : null;
@@ -2629,7 +2721,9 @@ function mountPlayer(root, c) {
       // Without the timeline's run(): the same model functions as its trim brackets.
       case "trimStart": case "trimEnd":
         if (edTrimRefused(m, cmd, now)) return flash(t("Nothing would be left to keep"));
-        return P.edit("trim", (mm) => (cmd === "trimStart" ? emSetTrimStart(mm, now, true) : emSetTrimEnd(mm, now, true)));
+        if (!P.edit("trim", (mm) => (cmd === "trimStart" ? emSetTrimStart(mm, now, true) : emSetTrimEnd(mm, now, true)))) return false;
+        if (cmd === "trimEnd") trimEndPeek(now);
+        return true;
       case "undo": if (emUndo(m)) { tl((h) => h.refresh()); P.edSync("undo"); } else flash(t("Nothing to undo")); return;
       case "redo": if (emRedo(m)) { tl((h) => h.refresh()); P.edSync("redo"); } else flash(t("Nothing to redo")); return;
     }
@@ -2876,12 +2970,14 @@ function mountEditor(root, c, P) {
   function renderColor() {
     const user = edUserPresets(), col = color(), off = model() ? "" : "disabled";
     $(".e-color", pane).innerHTML = `
-      <div class="e-title">${esc(t("Color"))} <span class="e-tag" hidden>${esc(t("Custom"))}</span></div>
+      <div class="e-title">${esc(t("Color"))}</div>
       <div class="e-target"></div>
-      <div class="e-chips">
-        ${ED_PRESETS.map((p, i) => `<button type="button" class="e-chip" data-e-chip="b${i}" data-e-preset="b${i}" ${off}>${esc(t(p.name))}</button>`).join("")}
-        ${user.map((p, i) => `<span class="e-chip e-user" data-e-chip="u${i}"><button type="button" data-e-preset="u${i}" ${off}>${esc(p.name)}</button><button type="button" class="e-x" data-e-delpreset="${esc(p.name)}" aria-label="${esc(t("Delete preset {name}", { name: p.name }))}" title="${esc(t("Delete preset"))}">${ICON.x}</button></span>`).join("")}
-      </div>
+      ${/* 0.1.46: the looks are one dropdown (dropdown.js draws it; edLookList adds the divider and the delete x). */ ""}
+      <div class="e-look-row"><select class="field e-looks" id="e-looks" aria-label="${esc(t("Look"))}" ${off}>
+        <option value="" disabled>${esc(t("Custom"))}</option>
+        ${ED_PRESETS.map((p, i) => `<option value="b${i}">${esc(t(p.name))}</option>`).join("")}
+        ${user.length ? `<optgroup label="">${user.map((p, i) => `<option value="u${i}" data-name="${esc(p.name)}">${esc(p.name)}</option>`).join("")}</optgroup>` : ""}
+      </select></div>
       <div class="e-sliders">
         ${ED_SLIDERS.map(([k, label, min, max]) => `<label class="e-slider"><span>${esc(t(label))}</span><input type="range" min="${min}" max="${max}" step="0.01" value="${edCol(col, k)}" data-e-color="${k}" ${off}><output data-e-val="${k}">${edFmtVal(k, edCol(col, k))}</output>${k === "temperature" ? `<span class="e-ends" aria-hidden="true"><span>${esc(t("Cool"))}</span><span>${esc(t("Warm"))}</span></span>` : ""}</label>`).join("")}
       </div>
@@ -2903,10 +2999,65 @@ function mountEditor(root, c, P) {
   function markPreset() {
     const col = color();
     const hit = presetList().find(([, p]) => edSameColor(p, col))?.[0];
-    for (const x of $$("[data-e-chip]", pane)) x.classList.toggle("on", x.dataset.eChip === hit);
-    const tag = $(".e-tag", pane);
-    if (tag) tag.hidden = !!hit;
+    const sel = $("#e-looks", pane);
+    // Not while the open list previews a look: the select keeps the look it had, so Enter on another one is a change.
+    if (sel && !lookPv && sel.value !== (hit || "")) sel.value = hit || "";
+    if (sel) sel.disabled = !model();
   }
+
+  /* 0.1.46: the looks dropdown. While its list is open, a row reached with the keyboard is shown on the preview
+     (the model's colors are put back when the list closes without a pick); a pick is one edit, one undo step.
+     With the list closed and the dropdown focused, Up / Down pick the previous / next look; a run of them is one
+     undo step. */
+  let lookPv = null;      // { orig: the colors before the preview, segs }
+  let lookRun = { at: -1e9, len: -1 }; // the last Up / Down pick: when, and the undo length it left
+  const lookSel = () => $("#e-looks", pane);
+  const lookOf = (k) => presetList().find(([key]) => key === k)?.[1];
+  const putColors = (m, list) => m.colors.forEach((col, i) => { for (const k of Object.keys(col)) delete col[k]; Object.assign(col, list[i]); });
+  function lookPreview(k) {
+    const m = model(), p = lookOf(k);
+    if (!m || !p) return;
+    if (!lookPv) lookPv = { orig: structuredClone(m.colors), segs: target().segs };
+    putColors(m, structuredClone(lookPv.orig));
+    emSetColor(m, lookPv.segs, { ...ED_LOOK_ZERO, ...p });
+    P.applyColor();
+    syncSliders();
+  }
+  function lookUnpreview(apply) {
+    if (!lookPv) return;
+    const m = model(), pv = lookPv;
+    lookPv = null;
+    if (!m) return;
+    putColors(m, pv.orig);
+    if (apply) { P.applyColor(); syncSliders(); markPreset(); }
+  }
+  function lookPick(k, run) {
+    const p = lookOf(k), m = model(), segs = target().segs;
+    if (!p || !m) return;
+    const n0 = m.undo.length, now = performance.now();
+    const merge = run && now - lookRun.at < 1500 && n0 === lookRun.len;
+    if (!P.edit("color", (mm) => emSetColor(mm, segs, { ...ED_LOOK_ZERO, ...p }))) return; // a preset without Sharpness, Temperature or Glow (older, or a look) sets them to 0
+    if (merge && m.undo.length > n0) m.undo.splice(n0, 1);
+    lookRun = run ? { at: now, len: m.undo.length } : { at: -1e9, len: -1 };
+  }
+  pane.addEventListener("change", (e) => {
+    if (e.target !== lookSel()) return;
+    const k = e.target.value;
+    lookUnpreview(false);
+    lookPick(k, false);
+    markPreset();
+  });
+  edLookHook = {
+    sel: lookSel,
+    key(e) { // a key on the closed, focused dropdown
+      const keys = presetList().map(([k]) => k), cur = keys.indexOf(lookSel().value);
+      const next = e.code === "ArrowDown" ? (cur < 0 ? 0 : Math.min(keys.length - 1, cur + 1)) : (cur < 0 ? keys.length - 1 : Math.max(0, cur - 1));
+      if (next !== cur) { lookPick(keys[next], true); markPreset(); }
+    },
+    act(k) { if (k) lookPreview(k); },
+    closed() { lookUnpreview(true); },
+    del(name) { deletePreset(name).catch(fail); },
+  };
   async function savePreset() {
     const m = model();
     if (!m) return;
@@ -2964,18 +3115,20 @@ function mountEditor(root, c, P) {
     // Replace instead of saving beside the original. A project asks which of its clips go when it is exported.
     const rep = edReplaceOn();
     const repNote = !rep ? "" : c.draft ? t("You choose which clips go to the Recycle Bin when you export.") : t("The original goes to the Recycle Bin. The export takes its name and its place.");
+    // 0.1.46 (workspace.js): the summary, the progress and the two buttons are the pane's footer on every tab;
+    // what has `e-exp-opt` shows on the Export tab only.
     const html = `<div class="e-title">${esc(t("Export"))}</div>
-      <div class="small">${lines.map(esc).join(" ")}</div>
-      ${audioNotes().map((n) => `<div class="small e-note">${esc(n)}</div>`).join("")}
-      <label class="check e-replace"><input type="checkbox" data-e-replace ${rep ? "checked" : ""} ${job ? "disabled" : ""}><span>${esc(c.draft ? t("Replace clips of the project") : t("Replace the original clip"))}</span></label>
-      ${repNote ? `<div class="small e-replace-note">${esc(repNote)}</div>` : ""}
+      <div class="small e-exp-sum">${lines.map(esc).join(" ")}</div>
+      ${audioNotes().map((n) => `<div class="small e-note e-exp-opt">${esc(n)}</div>`).join("")}
+      <label class="check e-replace e-exp-opt"><input type="checkbox" data-e-replace ${rep ? "checked" : ""} ${job ? "disabled" : ""}><span>${esc(c.draft ? t("Replace clips of the project") : t("Replace the original clip"))}</span></label>
+      ${repNote ? `<div class="small e-replace-note e-exp-opt">${esc(repNote)}</div>` : ""}
       ${/* P 0.1.41 (projects.js): the bar with what it does and Cancel; after a failed or stalled export its message and "Show the log". */
         job ? (typeof projExpProgHtml === "function" ? projExpProgHtml(job, c.id) : `<div class="e-prog"><div class="small e-prog-txt">${esc(t("Exporting… {pct}%", { pct: job.pct.toFixed(0) }))}</div><div class="progress"><i style="width:${job.pct}%"></i></div></div>`)
           : typeof projExpFailHtml === "function" ? projExpFailHtml(c.id) : ""}
       <button class="btn primary wide" data-v="export" ${job || !changed ? "disabled" : ""}><span>${esc(rep && !c.draft ? t("Export and replace") : t("Export"))}</span></button>
       <button class="btn wide" data-v="export-blur" ${job || !S.blur || !m ? "disabled" : ""}>${ICON.blur}<span>${esc(changed ? t("Export and render with Blur") : t("Render with Blur"))}</span></button>
-      ${typeof rulesExportHtml === "function" ? rulesExportHtml(c, !!job) : "" /* rules.js: "then run a render rule" */}
-      ${S.blur ? "" : `<div class="small">${esc(t("blur-cli.exe not found. Set its path under Blur."))}</div>`}`;
+      <div class="e-exp-opt e-exp-rules">${typeof rulesExportHtml === "function" ? rulesExportHtml(c, !!job) : "" /* rules.js: "then run a render rule" */}</div>
+      ${S.blur ? "" : `<div class="small e-exp-opt">${esc(t("blur-cli.exe not found. Set its path under Blur."))}</div>`}`;
     if (html === lastExport) return;
     lastExport = html;
     $(".e-export", pane).innerHTML = html;
@@ -2985,7 +3138,8 @@ function mountEditor(root, c, P) {
     const bar = $(".e-prog i", pane), txt = $(".e-prog-txt", pane);
     if (!job || !bar || !txt) return renderExport();
     bar.style.width = `${job.pct}%`;
-    txt.textContent = typeof projExpText === "function" ? projExpText(job) : t("Exporting… {pct}%", { pct: job.pct.toFixed(0) }); // P 0.1.41
+    const line = typeof projExpText === "function" ? projExpText(job) : t("Exporting… {pct}%", { pct: job.pct.toFixed(0) }); // P 0.1.41
+    if (typeof chromeText === "function") chromeText(txt, line); else txt.textContent = line; // 0.1.46: the text node's data, no node replaced
   }
 
   pane.addEventListener("change", (e) => {
@@ -3017,14 +3171,11 @@ function mountEditor(root, c, P) {
     P.edSync("color");
   });
   pane.addEventListener("click", async (e) => {
-    const btn = e.target.closest("[data-e-preset],[data-e-delpreset],[data-e-act],.e-speed");
+    const btn = e.target.closest("[data-e-delpreset],[data-e-act],.e-speed");
     if (!btn) return;
     const d = btn.dataset;
     try {
-      if ("ePreset" in d) {
-        const p = presetList().find(([k]) => k === d.ePreset)?.[1], segs = target().segs;
-        if (p) P.edit("color", (m) => emSetColor(m, segs, { ...ED_LOOK_ZERO, ...p })); // a preset without Sharpness, Temperature or Glow (older, or a look) sets them to 0
-      } else if (d.eAct === "color-all") {
+      if (d.eAct === "color-all") {
         const shown = { ...ED_LOOK_ZERO, ...color() }; // its Sharpness, Temperature, Glow too, also when off (0.1.41, 0.1.45)
         P.edit("color", (m) => emSetColor(m, null, shown));
       } else if ("eDelpreset" in d) await deletePreset(d.eDelpreset);

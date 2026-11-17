@@ -390,6 +390,16 @@ struct Tries {
     day: u64,
     count: u32,
     no_picture: bool,
+    /// thumbs-refresh (0.1.46): the file's size and time when it was found to have no picture. A file that has
+    /// changed since (it was still being written, or replaced) is looked at again: one reading of a file that was
+    /// not all there yet no longer marks it for good. An entry from 0.1.41-0.1.45 (0, 0) is looked at again once.
+    seen_size: u64,
+    seen_ms: u64,
+}
+
+/// A file's (size, modified ms).
+fn file_stamp(p: &Path) -> (u64, u64) {
+    std::fs::metadata(p).map(|m| (m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64).unwrap_or(0))).unwrap_or((0, 0))
 }
 
 static TRIES_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -423,25 +433,42 @@ pub enum Retried {
     Failed,
 }
 
-/// True if clip `c` shows no thumbnail (none, or its file is gone).
+/// True if clip `c` shows no thumbnail: none, its file is gone, or (thumbs-refresh, 0.1.46) its file is empty or
+/// not a JPEG (an ffmpeg ended while writing it): such a file used to count as "there", so it was never redone.
 pub fn thumb_missing(c: &library::ClipMeta) -> bool {
-    !c.draft && (c.thumb.trim().is_empty() || !Path::new(&c.thumb).is_file())
+    if c.draft {
+        return false;
+    }
+    if c.thumb.trim().is_empty() {
+        return true;
+    }
+    let mut head = [0u8; 2];
+    let ok = std::fs::File::open(&c.thumb).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head)).is_ok();
+    !(ok && head == [0xFF, 0xD8])
 }
 
 /// Try clip `id`'s missing thumbnail again (the rules above). `now_ms` is the clock (the self-test moves it).
 pub fn retry_thumb(core: &Core, ffmpeg: &Path, id: &str, now_ms: u64) -> Retried {
+    retry_thumb_as(core, ffmpeg, id, now_ms, false)
+}
+
+/// `retry_thumb`; `broken`: the window could not show the thumbnail it has (thumbs-refresh, 0.1.46: a picture the
+/// window refuses is made again, whatever is on disk).
+pub fn retry_thumb_as(core: &Core, ffmpeg: &Path, id: &str, now_ms: u64, broken: bool) -> Retried {
     let Some(c) = core.lib.lock().unwrap().get(id) else { return Retried::Nothing };
-    if !thumb_missing(&c) || !Path::new(&c.path).is_file() || crate::import::thumb_pending(id) {
+    if c.draft || !(broken || thumb_missing(&c)) || !Path::new(&c.path).is_file() || crate::import::thumb_pending(id) {
         return Retried::Nothing;
     }
     let day = now_ms / 86_400_000;
+    let stamp = file_stamp(Path::new(&c.path));
     {
         let _g = TRIES_LOCK.lock().unwrap();
         let mut m = load_tries();
         let t = m.entry(id.to_string()).or_default();
-        if t.no_picture {
+        if t.no_picture && (t.seen_size, t.seen_ms) == stamp {
             return Retried::NoPicture;
         }
+        t.no_picture = false; // the file changed since (or an old entry): looked at again
         if t.day != day {
             t.day = day;
             t.count = 0;
@@ -456,9 +483,11 @@ pub fn retry_thumb(core: &Core, ffmpeg: &Path, id: &str, now_ms: u64) -> Retried
     if p.as_ref().is_some_and(|p| p.duration > 0.0 && p.video_streams == 0) {
         let _g = TRIES_LOCK.lock().unwrap();
         let mut m = load_tries();
-        m.entry(id.to_string()).or_default().no_picture = true;
+        let t = m.entry(id.to_string()).or_default();
+        t.no_picture = true;
+        (t.seen_size, t.seen_ms) = stamp;
         save_tries(&m);
-        util::log(&format!("thumbnail: clip {id} has no picture; it keeps its card"));
+        util::log(&format!("thumbnail: clip {id} ({}) has no video stream; it keeps its card", library::file_name(Path::new(&c.path))));
         return Retried::NoPicture;
     }
     let dur = p.as_ref().map(|p| p.duration).filter(|d| *d > 0.0).unwrap_or(c.duration);
@@ -511,6 +540,129 @@ pub fn spawn_thumb_retry(core: Arc<Core>) {
         let made = ids.iter().filter(|id| retry_thumb(&core, &ffmpeg, id, util::unix_ms()) == Retried::Made).count();
         util::log(&format!("thumbnails: {made} of {} missing ones made at start", ids.len()));
     });
+}
+
+/* ---------- thumbs-refresh (0.1.46): the user makes thumbnails again (F5 / Ctrl+F5 in the Library) ----------
+ * `thumbs_refresh { all }` queues a job (kind "thumbs", one at a time, cancellable, progress in the jobs list):
+ * all = false makes every MISSING thumbnail again (thumb_missing), ignoring the per-day limit and the "no picture"
+ * memory; all = true makes every one again (wrong or black pictures). One ffmpeg at a time, below normal priority
+ * (library::make_thumb_full). Each picture is announced with "clips-changed" as it arrives; at the end
+ * "thumbs-done" { all, total, made, failed, reasons: [[reason, count]], cancelled }. Every failure is written to
+ * glint.log with the clip's file name (never its folder), ffmpeg's exit code and its last line. */
+
+/// What a refresh did.
+#[derive(serde::Serialize, Debug, Default, Clone, PartialEq)]
+pub struct Refreshed {
+    pub all: bool,
+    pub total: usize,
+    pub made: usize,
+    pub failed: usize,
+    /// Why they failed, most frequent first: (reason, how many).
+    pub reasons: Vec<(String, usize)>,
+    pub cancelled: bool,
+}
+
+/// The clips a refresh does: every clip (all) or those without a thumbnail.
+pub fn refresh_ids(core: &Core, all: bool) -> Vec<String> {
+    core.lib.lock().unwrap().clips.iter().filter(|c| !c.draft && (all || thumb_missing(c))).map(|c| c.id.clone()).collect()
+}
+
+/// The reason a refresh reports for a thumbnail that could not be made.
+fn refresh_reason(t: &library::Thumb) -> String {
+    if t.timed_out {
+        return format!("the file did not answer within {} s", library::THUMB_TIMEOUT.as_secs());
+    }
+    let e = t.error.trim();
+    if e.starts_with("the ") || e.starts_with("ffmpeg could not be started") || e == "no picture came out" {
+        return e.to_string();
+    }
+    format!("ffmpeg could not read the video: {}", e.lines().next().unwrap_or(""))
+}
+
+/// Make the thumbnails of clips `ids` again, one after the other (`ffmpeg` None: none can be made).
+pub fn refresh_run(core: &Core, ffmpeg: Option<&Path>, ids: &[String], all: bool, cancel: &std::sync::atomic::AtomicBool, progress: &mut dyn FnMut(f32)) -> Refreshed {
+    let mut r = Refreshed { all, total: ids.len(), ..Default::default() };
+    let mut reasons: Vec<(String, usize)> = Vec::new();
+    let mut fail = |reason: String, file: &str, detail: &str, r: &mut Refreshed| {
+        r.failed += 1;
+        util::log(&format!("thumbnails refresh: {file}: {detail}"));
+        match reasons.iter_mut().find(|(x, _)| *x == reason) {
+            Some(e) => e.1 += 1,
+            None => reasons.push((reason, 1)),
+        }
+    };
+    for (k, id) in ids.iter().enumerate() {
+        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+            r.cancelled = true;
+            break;
+        }
+        progress(100.0 * k as f32 / ids.len().max(1) as f32);
+        let Some(c) = core.lib.lock().unwrap().get(id) else { r.total -= 1; continue };
+        let file = library::file_name(Path::new(&c.path));
+        if !Path::new(&c.path).is_file() {
+            fail("the file is missing".into(), &file, "the file is missing", &mut r);
+            continue;
+        }
+        let Some(ffmpeg) = ffmpeg else {
+            fail("ffmpeg was not found".into(), &file, "ffmpeg was not found", &mut r);
+            continue;
+        };
+        let p = library::probe(ffmpeg, Path::new(&c.path), false);
+        if p.as_ref().is_some_and(|p| p.duration > 0.0 && p.video_streams == 0) {
+            fail("the file has no video stream".into(), &file, "no video stream (ffprobe)", &mut r);
+            continue;
+        }
+        let dur = p.as_ref().map(|p| p.duration).filter(|d| *d > 0.0).unwrap_or(c.duration);
+        let t = library::make_thumb_full(ffmpeg, Path::new(&c.path), &format!("{id}-f{}", util::unix_ms()), library::thumb_at(dur));
+        if t.path.is_empty() {
+            fail(refresh_reason(&t), &file, &t.log_line(), &mut r);
+            continue;
+        }
+        let old = c.thumb.clone();
+        let th = t.path.clone();
+        if core.lib.lock().unwrap().update(id, |m| m.thumb = th.clone()).is_none() {
+            let _ = std::fs::remove_file(&th);
+            r.total -= 1;
+            continue;
+        }
+        if !old.is_empty() && old != th {
+            let _ = std::fs::remove_file(&old);
+        }
+        {
+            let _g = TRIES_LOCK.lock().unwrap();
+            let mut m = load_tries();
+            if m.remove(id).is_some() {
+                save_tries(&m);
+            }
+        }
+        r.made += 1;
+        core.emit("clips-changed", id.to_string());
+    }
+    progress(100.0);
+    reasons.sort_by(|a, b| b.1.cmp(&a.1));
+    r.reasons = reasons;
+    util::log(&format!("thumbnails refresh ({}): {} made, {} failed of {}{}", if all { "all" } else { "missing" }, r.made, r.failed, r.total, if r.cancelled { ", cancelled" } else { "" }));
+    r
+}
+
+/// `thumbs_refresh`: queue the refresh. Returns the job (None when there is nothing to do) and how many clips it does.
+pub fn refresh_thumbs(core: &Arc<Core>, all: bool) -> Result<(Option<crate::jobs::Job>, usize), String> {
+    let n = refresh_ids(core, all).len();
+    if n == 0 {
+        return Ok((None, 0));
+    }
+    core.jobs.connect(core);
+    let weak = Arc::downgrade(core);
+    let run: crate::jobs::Runner = Box::new(move |cancel, progress| {
+        let Some(core) = weak.upgrade() else { return Err("Glint is closing".into()) };
+        let ffmpeg = util::find_exe(&core.settings().ffmpeg_path, "ffmpeg");
+        let ids = refresh_ids(&core, all); // as they are when it starts
+        let r = refresh_run(&core, ffmpeg.as_deref(), &ids, all, cancel, progress);
+        core.emit("thumbs-done", serde_json::to_value(&r).unwrap_or_default());
+        if r.cancelled { Err("Cancelled".into()) } else { Ok(String::new()) }
+    });
+    let job = core.jobs.enqueue("thumbs:refresh", if all { "Thumbnails (all)" } else { "Missing thumbnails" }, "thumbs", run)?;
+    Ok((Some(job), n))
 }
 
 /// The `--import-test` checks of the retry (item T), on synthetic files in `dir`: (name, ok, detail).
@@ -568,6 +720,100 @@ pub fn thumb_retry_checks(core: &Core, ffmpeg: &Path, dir: &Path) -> Vec<(String
         day.iter().filter(|r| **r == Retried::Failed).count() == THUMB_TRIES_PER_DAY as usize && day.last() == Some(&Retried::Later) && next == Retried::Failed,
         format!("{day:?} {next:?}"),
     ));
+
+    // ---------- thumbs-refresh (0.1.46): the causes, each with its test ----------
+    // A file that does not answer (a sleeping network drive, a cloud placeholder): ended after the limit, so it no
+    // longer holds up every thumbnail after it.
+    let t = std::time::Instant::now();
+    let mut hang = util::hidden_cmd(ffmpeg);
+    hang.args(["-hide_banner", "-loglevel", "error", "-re", "-f", "lavfi", "-i", "testsrc=s=64x64:r=10:d=120", "-f", "null", "-"]);
+    let ran = library::run_limited(&mut hang, std::time::Duration::from_secs(1));
+    out.push(("cause: a child that does not end is ended after the time limit".into(), ran.timed_out && ran.code.is_none() && t.elapsed().as_secs_f64() < 6.0, format!("{:.1} s", t.elapsed().as_secs_f64())));
+    // The fallback chain: the wanted time, 0 s, the first key frame, a plain scale to yuvj420p.
+    let late = library::make_thumb_full(ffmpeg, &video, "tt-chain", 99.0);
+    out.push(("cause: a seek past the end (a wrong length, a very short clip): the 0 s attempt gives it".into(), !late.path.is_empty() && late.attempt == 2, format!("attempt {} {}", late.attempt, late.log_line())));
+    let ok1 = library::make_thumb_full(ffmpeg, &video, "tt-chain1", 1.5);
+    let jpeg = std::fs::read(&ok1.path).map(|b| b.starts_with(&[0xFF, 0xD8])).unwrap_or(false);
+    out.push(("cause: ffmpeg hands the JPEG to Glint, which saves it (no write by ffmpeg into the thumbnails folder)".into(), ok1.attempt == 1 && jpeg, ok1.log_line()));
+    // A path longer than 260 characters: given in the \\?\ form.
+    let mut deep = dir.to_path_buf();
+    while deep.to_string_lossy().len() < 270 {
+        deep = deep.join("a long folder name of a clip library");
+    }
+    let deep_file = deep.join("deep clip.mp4");
+    let _ = std::fs::create_dir_all(library::long_path(&deep));
+    let _ = std::fs::copy(&video, library::long_path(&deep_file));
+    let plain = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-loglevel", "error", "-i"]).arg(&deep_file).args(["-frames:v", "1", "-f", "null", "-"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    let long = library::make_thumb_full(ffmpeg, &deep_file, "tt-long", 1.5);
+    out.push((format!("cause: a path of {} characters gets its thumbnail (ffmpeg with the plain path: {})", deep_file.to_string_lossy().len(), if plain { "worked too" } else { "failed" }), !long.path.is_empty(), long.log_line()));
+    let _ = std::fs::remove_dir_all(library::long_path(&dir.join("a long folder name of a clip library")));
+    // An empty or broken thumbnail file used to count as "there", so it was never redone.
+    let empty = dir.join("tt empty.jpg");
+    let _ = std::fs::write(&empty, b"");
+    let text = dir.join("tt text.jpg");
+    let _ = std::fs::write(&text, b"not a picture");
+    let with = |p: &Path| library::ClipMeta { thumb: p.to_string_lossy().into_owned(), ..Default::default() };
+    out.push(("cause: an empty or non-JPEG thumbnail file counts as missing; a real one does not".into(), thumb_missing(&with(&empty)) && thumb_missing(&with(&text)) && !thumb_missing(&with(Path::new(&ok1.path))), String::new()));
+    // A picture the window could not show is made again when the card says so (thumb_retry broken).
+    let shown = dir.join("thumb shown.mp4");
+    let _ = std::fs::copy(&video, &shown);
+    core.lib.lock().unwrap().add(library::ClipMeta { id: "tt-shown".into(), path: shown.to_string_lossy().into_owned(), thumb: ok1.path.clone(), duration: 3.0, kind: "import".into(), ..Default::default() });
+    let b1 = retry_thumb_as(core, ffmpeg, "tt-shown", t0, false);
+    let b2 = retry_thumb_as(core, ffmpeg, "tt-shown", t0 + 1, true);
+    out.push(("cause: a thumbnail the window refuses is made again on request (broken); one that is fine is left alone".into(), b1 == Retried::Nothing && b2 == Retried::Made, format!("{b1:?} {b2:?}")));
+    // The "no picture" memory: a file found without a video stream and changed since is looked at again.
+    let _ = std::fs::copy(&video, &audio); // the same path, now a video (it was still being written, or replaced)
+    let rn = retry_thumb(core, ffmpeg, "tt-audio", t0 + 86_400_000 * 6);
+    out.push(("cause: the no-picture memory is not for good: the file changed, it is looked at again and gets its thumbnail".into(), rn == Retried::Made, format!("{rn:?}")));
+    // The per-day limit resets the next day (above), and a refresh ignores it and the memory.
+
+    // The refresh: a clip with its thumbnail, one without, an unreadable one, one whose file is gone, one with no picture.
+    let gone = dir.join("thumb gone.mp4");
+    let noaud = make("thumb only sound.m4a", &["-f", "lavfi", "-i", "sine=frequency=330:sample_rate=48000:duration=2", "-c:a", "aac"]);
+    let add = |id: &str, p: &Path, thumb: &str| core.lib.lock().unwrap().add(library::ClipMeta { id: id.into(), path: p.to_string_lossy().into_owned(), title: id.into(), thumb: thumb.into(), duration: 3.0, kind: "import".into(), ..Default::default() });
+    let have = library::make_thumb(ffmpeg, &video, "tt-r-have-old", 1.5);
+    add("tt-r-have", &video, &have);
+    add("tt-r-none", &shown, "");
+    add("tt-r-junk", &junk, "");
+    add("tt-r-gone", &gone, "");
+    add("tt-r-sound", &noaud, "");
+    {
+        let _g = TRIES_LOCK.lock().unwrap();
+        let mut m = load_tries();
+        m.insert("tt-r-none".into(), Tries { day: t0 / 86_400_000 + 100_000, count: 99, ..Default::default() }); // over the per-day limit
+        save_tries(&m);
+    }
+    let missing = refresh_ids(core, false);
+    let mine = ["tt-r-have", "tt-r-none", "tt-r-junk", "tt-r-gone", "tt-r-sound"];
+    out.push(("refresh: the missing ones are the clips without a thumbnail only".into(), ["tt-r-none", "tt-r-junk", "tt-r-gone", "tt-r-sound"].iter().all(|x| missing.iter().any(|m| m == x)) && !missing.iter().any(|m| m == "tt-r-have"), format!("{missing:?}")));
+    let ids: Vec<String> = ["tt-r-none", "tt-r-junk", "tt-r-gone", "tt-r-sound"].iter().map(|s| s.to_string()).collect();
+    let no = std::sync::atomic::AtomicBool::new(false);
+    let mut pcts: Vec<f32> = Vec::new();
+    let r = refresh_run(core, Some(ffmpeg), &ids, false, &no, &mut |p| pcts.push(p));
+    let reasons: Vec<String> = r.reasons.iter().map(|(x, n)| format!("{x} ({n})")).collect();
+    out.push((
+        "refresh (missing): 1 made (past the per-day limit), 3 failed with their reasons grouped".into(),
+        r.total == 4 && r.made == 1 && r.failed == 3 && r.reasons.len() == 3 && r.reasons.iter().any(|(x, n)| x == "the file is missing" && *n == 1) && r.reasons.iter().any(|(x, n)| x == "the file has no video stream" && *n == 1) && r.reasons.iter().any(|(x, _)| x.starts_with("ffmpeg could not read the video: ")) && pcts.last() == Some(&100.0),
+        format!("{} made, {} failed: {}", r.made, r.failed, reasons.join("; ")),
+    ));
+    out.push(("refresh: the one made points at its new picture".into(), core.lib.lock().unwrap().get("tt-r-none").is_some_and(|c| !thumb_missing(&c)), String::new()));
+    let before = core.lib.lock().unwrap().get("tt-r-have").map(|c| c.thumb).unwrap_or_default();
+    let all_ids: Vec<String> = vec!["tt-r-have".into(), "tt-r-junk".into()];
+    let ra = refresh_run(core, Some(ffmpeg), &all_ids, true, &no, &mut |_| {});
+    let after = core.lib.lock().unwrap().get("tt-r-have").map(|c| c.thumb).unwrap_or_default();
+    out.push(("refresh (all): a clip that had a thumbnail gets a new one; the old file is removed".into(), ra.made == 1 && ra.failed == 1 && after != before && Path::new(&after).is_file() && !Path::new(&before).exists(), format!("{ra:?}")));
+    let rf = refresh_run(core, None, &all_ids, true, &no, &mut |_| {});
+    out.push(("refresh: without ffmpeg every one fails with that reason".into(), rf.failed == 2 && rf.reasons == vec![("ffmpeg was not found".to_string(), 2)], format!("{rf:?}")));
+    let yes = std::sync::atomic::AtomicBool::new(true);
+    let rc = refresh_run(core, Some(ffmpeg), &all_ids, true, &yes, &mut |_| {});
+    out.push(("refresh: cancelled before it starts makes nothing".into(), rc.cancelled && rc.made == 0 && rc.failed == 0, format!("{rc:?}")));
+    for id in mine.iter().chain(["tt-shown"].iter()) {
+        if let Some(m) = core.lib.lock().unwrap().remove(id) {
+            if !m.thumb.is_empty() {
+                let _ = std::fs::remove_file(&m.thumb);
+            }
+        }
+    }
     for id in ["tt-grow", "tt-audio", "tt-junk"] {
         if let Some(m) = core.lib.lock().unwrap().remove(id) {
             if !m.thumb.is_empty() {

@@ -155,8 +155,17 @@ pub fn probe(ffmpeg: &Path, file: &Path, count_frames: bool) -> Option<Probe> {
         cmd.arg("-count_packets");
     }
     cmd.args(["-show_entries", "stream=codec_type,width,height,avg_frame_rate,nb_read_packets:format=duration", "-of", "default=nw=1"]);
-    cmd.arg(file).stdin(Stdio::null()).stderr(Stdio::null());
-    let out = cmd.output().ok()?;
+    // thumbs-refresh (0.1.46): a long path gets the \\?\ form, and a file that does not answer (a sleeping network
+    // drive, a cloud placeholder) ends the probe after PROBE_TIMEOUT instead of holding up everything after it.
+    cmd.arg(long_path(file));
+    let out = run_limited(&mut cmd, PROBE_TIMEOUT);
+    if out.start_error.is_some() {
+        return None;
+    }
+    if out.timed_out {
+        util::log(&format!("probe: {} did not answer within {} s", file_name(file), PROBE_TIMEOUT.as_secs()));
+        return None;
+    }
     let text = String::from_utf8_lossy(&out.stdout);
     let mut p = Probe::default();
     let mut in_video = false;
@@ -209,55 +218,172 @@ pub fn make_thumb(ffmpeg: &Path, video: &Path, id: &str, at: f64) -> String {
 static THUMB_LOGGED: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
 
 /// `make_thumb`, with ffmpeg's last words when every attempt failed: (jpg path or "", error).
-///
-/// 0.1.41 (item T): several attempts, software decoding only, each a fresh file: the frame at `at` (the middle);
-/// 10 % in; the first frame that decodes (no seek: a seek into a file whose index is odd lands nowhere); that again
-/// with the picture made a full-range 4:2:0 JPEG may take (`yuvj420p`, `-strict unofficial`). Measured on synthetic
-/// files with ffmpeg 9 (h264 / hevc 8 and 10-bit / PQ tags / av1 / vp9 / prores / rotation / 0.3 s / one key frame /
-/// odd file names): the first attempt already works for every one of them; what fails is a file that is not all
-/// there yet (still being copied or written) and a file with no picture. Those come back to `polish::retry_thumbs`.
 pub fn make_thumb_why(ffmpeg: &Path, video: &Path, id: &str, at: f64) -> (String, String) {
-    let out = thumbs_dir().join(format!("{id}.jpg"));
-    let at = if at.is_finite() && at > 0.0 { at } else { 0.0 };
-    let pos = |x: f64| format!("{x:.2}");
-    // (seek before the input, extra output options)
-    let tries: Vec<(Option<String>, &[&str])> = vec![
-        (Some(pos(at)), &[]),
-        (if at > 0.0 { Some(pos(at * 0.2)) } else { None }, &[]),
-        (None, &[]),
-        (None, &["-pix_fmt", "yuvj420p", "-strict", "unofficial"]),
-    ];
-    let mut last = String::new();
-    for (seek, extra) in tries {
-        let _ = std::fs::remove_file(&out);
-        let mut cmd = util::hidden_cmd(ffmpeg);
-        cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
-        if let Some(s) = &seek {
-            cmd.args(["-ss", s]);
+    let t = make_thumb_full(ffmpeg, video, id, at);
+    if t.path.is_empty() {
+        let first = THUMB_LOGGED.lock().map(|mut g| g.get_or_insert_with(Default::default).insert(id.split("-r").next().unwrap_or(id).to_string())).unwrap_or(true);
+        if first {
+            util::log(&format!("thumbnail: none for clip {id} ({}): {}", file_name(video), t.log_line()));
         }
-        cmd.arg("-i").arg(video).args(["-frames:v", "1", "-vf", THUMB_VF]).args(extra).args(["-q:v", "5"]).arg(&out);
-        match cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output() {
-            Ok(o) => {
-                if out.is_file() && std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false) {
-                    return (out.to_string_lossy().into_owned(), String::new());
-                }
-                let e = util::last_lines(&o.stderr, 2);
-                if !e.trim().is_empty() {
-                    last = e;
-                }
+    }
+    (t.path, t.error)
+}
+
+/* ---------- thumbs-refresh (0.1.46): a thumbnail that cannot hang, and says why it failed ---------- */
+
+/// Longest an ffprobe run may take (a sleeping network drive, a cloud placeholder file: it is ended after that).
+pub const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Longest one thumbnail attempt may take.
+pub const THUMB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What `run_limited` got from a child process.
+#[derive(Debug, Default)]
+pub struct Ran {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    /// The exit code (None: killed after the time limit, or never started).
+    pub code: Option<i32>,
+    pub timed_out: bool,
+    pub start_error: Option<String>,
+}
+
+/// Run `cmd` (stdin closed, stdout and stderr read) and end it if it is not done within `limit`.
+/// A hanging ffmpeg or ffprobe used to hold up every thumbnail after it (they are made one at a time).
+pub fn run_limited(cmd: &mut std::process::Command, limit: std::time::Duration) -> Ran {
+    use std::io::Read;
+    let mut child = match cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        Ok(c) => c,
+        Err(e) => return Ran { start_error: Some(e.to_string()), ..Default::default() },
+    };
+    let mut so = child.stdout.take();
+    let mut se = child.stderr.take();
+    let t_out = std::thread::spawn(move || { let mut b = Vec::new(); if let Some(s) = so.as_mut() { let _ = s.read_to_end(&mut b); } b });
+    let t_err = std::thread::spawn(move || { let mut b = Vec::new(); if let Some(s) = se.as_mut() { let _ = s.read_to_end(&mut b); } b });
+    let until = std::time::Instant::now() + limit;
+    let mut timed_out = false;
+    let code = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st.code(),
+            Ok(None) if std::time::Instant::now() >= until => {
+                let _ = child.kill();
+                let _ = child.wait();
+                timed_out = true;
+                break None;
             }
-            Err(e) => last = format!("could not start ffmpeg: {e}"),
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(15)),
+            Err(_) => break None,
+        }
+    };
+    Ran { stdout: t_out.join().unwrap_or_default(), stderr: t_err.join().unwrap_or_default(), code, timed_out, start_error: None }
+}
+
+/// A path ffmpeg can open even when it is longer than Windows' old 260-character limit: such a path is given in
+/// the `\\?\` form (ffmpeg opens files with the wide Windows calls, which take it). Short paths stay as they are.
+pub fn long_path(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if s.len() < 240 || s.starts_with(r"\\?\") || !p.is_absolute() {
+        return p.to_path_buf();
+    }
+    match s.strip_prefix(r"\\") {
+        Some(unc) => PathBuf::from(format!(r"\\?\UNC\{unc}")),
+        None => PathBuf::from(format!(r"\\?\{}", s.replace('/', "\\"))),
+    }
+}
+
+/// A file's name without its folders (what the log may say about a clip).
+pub fn file_name(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// What `make_thumb_full` did.
+#[derive(Debug, Default, Clone)]
+pub struct Thumb {
+    /// The jpg ("" when none could be made).
+    pub path: String,
+    /// Why not: the last line ffmpeg said (or Glint's own reason).
+    pub error: String,
+    /// ffmpeg's exit code of the last attempt (None: killed after THUMB_TIMEOUT, or not started).
+    pub exit: Option<i32>,
+    pub timed_out: bool,
+    /// The attempt that worked (1..=4), 0 when none did.
+    pub attempt: usize,
+}
+
+impl Thumb {
+    /// For glint.log: "exit 1: <last line>", "timed out after 30 s", ...
+    pub fn log_line(&self) -> String {
+        if self.timed_out {
+            return format!("timed out after {} s", THUMB_TIMEOUT.as_secs());
+        }
+        match self.exit {
+            Some(c) => format!("ffmpeg exit {c}: {}", self.error),
+            None => self.error.clone(),
         }
     }
-    let _ = std::fs::remove_file(&out);
-    if last.trim().is_empty() {
-        last = "no picture came out".into();
+}
+
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+
+/// The thumbnail of `video` (the frame at `at` seconds) as `<thumbs>\<id>.jpg`.
+///
+/// The fallback chain, each attempt software decoding only, at below-normal priority, ended after THUMB_TIMEOUT:
+/// 1. the wanted time (`-ss at` before the input);
+/// 2. 0 s (a wrong length, a seek that lands past the end of a very short or still-growing file);
+/// 3. the first key frame (`-skip_frame nokey`: only key frames are decoded, so a broken stretch is stepped over);
+/// 4. a plain `scale` and `format=yuvj420p` (the 4:2:0 full-range picture every JPEG encoder takes, for a source
+///    whose pixel format, colour tags or odd size trip the usual filter).
+/// ffmpeg writes the JPEG to Glint through a pipe and Glint saves it: a thumbnails folder ffmpeg itself may not
+/// write to (a security tool that blocks unknown programs from AppData) or an odd folder name no longer matters.
+pub fn make_thumb_full(ffmpeg: &Path, video: &Path, id: &str, at: f64) -> Thumb {
+    use std::os::windows::process::CommandExt;
+    let dir = thumbs_dir();
+    if !dir.is_dir() {
+        return Thumb { error: format!("the thumbnails folder could not be made ({})", dir.display()), ..Default::default() };
     }
-    let first = THUMB_LOGGED.lock().map(|mut g| g.get_or_insert_with(Default::default).insert(id.split("-r").next().unwrap_or(id).to_string())).unwrap_or(true);
-    if first {
-        util::log(&format!("thumbnail: none for clip {id}: {}", last.trim()));
+    let out = dir.join(format!("{id}.jpg"));
+    let at = if at.is_finite() && at > 0.0 { at } else { 0.0 };
+    let input = long_path(video);
+    let plain_vf = "scale=640:640:force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuvj420p";
+    // (input options, filter, extra output options)
+    let tries: [(Vec<String>, &str, &[&str]); 4] = [
+        (vec!["-ss".into(), format!("{at:.3}")], THUMB_VF, &[]),
+        (vec![], THUMB_VF, &[]),
+        (vec!["-skip_frame".into(), "nokey".into()], THUMB_VF, &[]),
+        (vec![], plain_vf, &["-strict", "unofficial"]),
+    ];
+    let mut last = Thumb::default();
+    for (k, (pre, vf, extra)) in tries.iter().enumerate() {
+        if k == 1 && at <= 0.0 {
+            continue; // the first attempt was 0 s already
+        }
+        let mut cmd = std::process::Command::new(ffmpeg);
+        cmd.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
+        cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-hwaccel", "none"]).args(pre).arg("-i").arg(&input);
+        cmd.args(["-map", "0:v:0", "-frames:v", "1", "-vf", vf]).args(*extra).args(["-c:v", "mjpeg", "-q:v", "5", "-f", "image2pipe", "pipe:1"]);
+        let ran = run_limited(&mut cmd, THUMB_TIMEOUT);
+        if let Some(e) = ran.start_error {
+            return Thumb { error: format!("ffmpeg could not be started ({e})"), ..Default::default() };
+        }
+        let jpeg = ran.stdout.len() > 100 && ran.stdout.starts_with(&[0xFF, 0xD8]);
+        if jpeg {
+            let part = out.with_extension("part");
+            let saved = fs::write(&part, &ran.stdout).and_then(|_| fs::rename(&part, &out));
+            return match saved {
+                Ok(()) => Thumb { path: out.to_string_lossy().into_owned(), attempt: k + 1, exit: ran.code, ..Default::default() },
+                Err(e) => {
+                    let _ = fs::remove_file(&part);
+                    Thumb { error: format!("the picture could not be saved in the thumbnails folder ({e})"), exit: ran.code, ..Default::default() }
+                }
+            };
+        }
+        let line = String::from_utf8_lossy(&ran.stderr).lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or("").to_string();
+        last = Thumb { error: if line.is_empty() { "no picture came out".into() } else { line }, exit: ran.code, timed_out: ran.timed_out, ..Default::default() };
+        if ran.timed_out {
+            break; // a file that does not answer will not answer the next attempt either
+        }
     }
-    (String::new(), last)
+    last
 }
 
 /// Build a library entry for a video file that already exists on disk.

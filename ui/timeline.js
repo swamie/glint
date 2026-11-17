@@ -2819,6 +2819,9 @@ function mountTimeline(host, opts) {  const m = opts.model;
       const edgeT = d.side === "end" ? r.at + r.len : r.at;
       showTip(edgeT, limit ? t("No more footage") : `${tlFmtPrecise(toV(edgeT))} · ${tlFmtLen(r.len)} s`);
       changed("trim");
+      // 0.1.46: the preview shows the frame under the handle, live (the new first frame, or the new last one).
+      // Was: nothing seeked during the drag, so the picture kept the frame the playhead stood on before it.
+      opts.onTrimPeek?.({ at: r.at, src: r.src, len: r.len }, d.side, sp);
       return;
     }
     if (d.type === "gap-edge") {

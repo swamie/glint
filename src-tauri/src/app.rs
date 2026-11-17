@@ -197,6 +197,13 @@ fn get_status(core: St) -> Status {
     core.status()
 }
 
+/// newtag (ui/newtag.js): a string made once per process start. A window reopened from the tray gets the same one.
+#[tauri::command]
+fn launch_id() -> String {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0))).clone()
+}
+
 #[tauri::command(async)]
 fn toggle_recording(core: St) -> Status {
     core.toggle_recording();
@@ -468,15 +475,24 @@ fn trim_clip(core: St, id: String, start: f64, end: f64, include_mic: bool) -> R
 /// (polish.rs `retry_thumb`: a few times a day at most, never for a file with no picture). "clips-changed" follows
 /// when one arrives. False when ffmpeg is not there.
 #[tauri::command]
-fn thumb_retry(core: St, id: String) -> bool {
+fn thumb_retry(core: St, id: String, broken: Option<bool>) -> bool {
     static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let Some(ffmpeg) = crate::util::find_exe(&core.settings().ffmpeg_path, "ffmpeg") else { return false };
     let c = core.inner().clone();
     std::thread::spawn(move || {
         let _g = ONE_AT_A_TIME.lock();
-        crate::polish::retry_thumb(&c, &ffmpeg, &id, crate::util::unix_ms());
+        // thumbs-refresh (0.1.46): `broken` = the window could not show the picture it has: it is made again.
+        crate::polish::retry_thumb_as(&c, &ffmpeg, &id, crate::util::unix_ms(), broken.unwrap_or(false));
     });
     true
+}
+
+/// thumbs-refresh (0.1.46): make thumbnails again as a job (polish.rs `refresh_thumbs`): the missing ones (`all`
+/// false) or all of them. Answers { job, count } (job null when there is nothing to do); "thumbs-done" ends it.
+#[tauri::command]
+fn thumbs_refresh(core: St, all: bool) -> Result<serde_json::Value, String> {
+    let (job, count) = crate::polish::refresh_thumbs(core.inner(), all)?;
+    Ok(serde_json::json!({ "job": job, "count": count }))
 }
 
 /// The editor closed or opened something else (0.1.41, edcache.rs): track, waveform and film-strip preparations
@@ -964,6 +980,7 @@ pub fn run(minimized: bool) {
             get_state,
             save_settings,
             get_status,
+            launch_id, // newtag
             toggle_recording,
             clip_now,
             list_clips,
@@ -1001,6 +1018,7 @@ pub fn run(minimized: bool) {
             editor_audio_tracks,
             editor_prep_cancel,
             thumb_retry,
+            thumbs_refresh,
             editor_waveforms,
             editor_thumbs,
             editor_audio_info,

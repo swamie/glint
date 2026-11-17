@@ -6,78 +6,123 @@
 // All names here start with `wn` / `WN_`; markup uses `wn-` classes. While a `.wn-dlg` exists the
 // app's own key handlers stand aside (app.js; the editor's copy of that line needs it too); this
 // file's capture-phase listener handles Esc, and the dialog keeps Tab inside itself.
+//
+// HOW TO ADD A RELEASE (0.1.46 shape). Put a new object at the top of the list below, newest first (in this comment
+// every t is written with a space before its bracket so tools/i18n-check.js skips it; write them without):
+//
+//   {
+//     version: "0.1.47", date: "2026-11-20",            // add  gold: true  for a landmark release
+//     new: [
+//       { title: t ("Short name"), text: t ("What you can do now, and where."), go: "settings:backdrop", label: t ("Open the setting") },
+//       t ("A plain sentence with no title and no link."),
+//     ],
+//     improved: [ t ("…") ],                             // shown as "Better"
+//     fixed: [ t ("…") ],                                // shown as "Fixed"
+//   },
+//
+// - Every text is a t ("…") call with plain double quotes, so tools/i18n-check.js finds it. No {name}
+//   placeholders. Add its Korean and Greek to ui/lang/ko-rel11.js and ui/lang/el-rel11.js.
+// - Write for players who never edited video: short sentences, what they can now do and where, no
+//   internal words (program, codec, file or function names). Merge fixes nobody would notice into
+//   t ("Smaller fixes in the editor and exports.") or leave them out.
+// - `title` and `go` / `label` are optional. `go` is where the link takes the user (see wnTarget):
+//   a page ("library", "editor", "capture", "keybinds", "compress", "rules", "blur", "settings"), a
+//   Settings category ("settings:look", "settings:general", "settings:audio", "settings:overlay",
+//   "settings:program"), a spot from WN_SPOTS ("settings:backdrop", "settings:polls", "library:thumbs",
+//   "capmode"), or a web address ("https://…"). A target this build does not have renders no link.
+// - A new feature's red "New" tag is one line in GLINT_NEW (ui/newtag.js); this dialog tags the items
+//   of the installed release's "New" group by itself.
 
 /**
- * The releases, newest first: { version, date, new, improved, fixed }. A function, so the texts
- * are translated in the language in use when the dialog opens. Written for users: what they can
- * now do. Only the newest two releases have Korean and Greek texts; older ones stay English.
+ * The releases, newest first: { version, date, gold?, new, improved, fixed }. A function, so the texts
+ * are translated in the language in use when the dialog opens. An item is a translated string or
+ * { title?, text, go?, label? }. Releases up to 0.1.40 keep their old texts.
  */
 const wnReleases = () => [
   {
-    version: "0.1.45", date: "2026-11-17",
+    version: "0.1.46", date: "2026-11-17", gold: true,
     new: [
-      t("Fewer audio rows. A project now shows its sound by what it is: Desktop, Mic, Game and Clip audio, whatever each recorder named its tracks, and a ready-made mix is no longer played on top of its own tracks. An edit you already made opens as it was, with an offer to simplify its rows; “Every track” brings all rows back."),
-      t("Temperature and Glow in Color. Temperature goes from cool to warm; Glow lets the bright parts of the picture bleed light. Glow makes an export take longer."),
-      t("Six new looks: Dark fantasy (darker, cool, with glowing lights), Dreamy, Neon night, Cold, Golden hour and Faded film."),
-      t("Polls from the developer. Now and then a small card asks a short question about where Glint should go next. Answering sends only your answer and a random number made for this install. Turn it off under Settings, Updates."),
+      { title: t("Animated backdrops."), text: t("Five quiet moving backgrounds for Glint's pages: Snowfall, Aurora, Starfield, Fireflies and Drift. Pick one in Settings. They are off until you choose one, and they pause when Glint is not the window in front."), go: "settings:backdrop", label: t("Open the setting") },
+      { title: t("Refresh thumbnails."), text: t("In the Library, press F5 to make missing clip pictures again, or Ctrl+F5 to make all of them again. The picture button beside “Rescan folder” does the same."), go: "library:thumbs", label: t("Open the Library") },
+      { title: t("Tidier editor panels."), text: t("The right side of the editor has tabs: Clip, Color, Overlays and Export. The Export button is always in view, and the looks are in one list."), go: "editor", label: t("Open the Editor") },
+      { title: t("This page."), text: t("What's new is easier to read, with links that take you to the new things. New features wear a small “New” tag until you next start Glint.") },
     ],
     improved: [
-      t("Volume over 100 percent no longer distorts. A limiter in the preview and in the export holds loud sound just under the maximum instead of cutting it flat, so 200 percent is louder without the crackle."),
-      t("Many audio clips cut from the same file no longer make an export too long to start."),
+      { text: t("The GAME / DESKTOP switch shows a controller and a screen, so you see the mode at a glance."), go: "capmode", label: t("Show me") },
+      t("Drag the top edge of the timeline to make it taller or shorter, however many sound rows it has. Double-click the edge to fit all the rows."),
+      t("While you drag the start or the end of a clip on the timeline, the picture shows the frame you are cutting at."),
+      { text: t("In GAME mode, a second monitor with its own clip key keeps recording."), go: "keybinds", label: t("Open Keybinds") },
+      { text: t("Clip pictures are made more reliably, and one stuck clip no longer holds up the others."), go: "library", label: t("Open the Library") },
+      t("A new choice in Settings, under Capture, lets an NVIDIA graphics card read the video while the editor exports. Exports are not faster, but your processor has less to do."),
+    ],
+    fixed: [
+      t("Menus and dropdowns no longer close and open again while something is rendering."),
+      t("Clicking a menu's arrow a second time closes the menu."),
+      t("The poll card no longer covers the Export button in the editor."),
+      t("An error box could pop up while your PC was restarting."),
+    ],
+  },
+  {
+    version: "0.1.45", date: "2026-11-17",
+    new: [
+      { title: t("Simpler sound rows."), text: t("The editor names a clip's sound rows by what they hold: Desktop, Mic, Game and Clip audio, and you no longer hear the same sound twice. Edits you already made open as they were, with an offer to tidy their rows. “Every track” shows all the rows again.") },
+      { title: t("Temperature and Glow."), text: t("Two new sliders in the editor's Color section. Temperature makes the picture cooler or warmer; Glow lets bright parts shine softly. Glow makes an export take longer.") },
+      { title: t("Six new looks."), text: t("Dark fantasy, Dreamy, Neon night, Cold, Golden hour and Faded film, with the other looks in the editor.") },
+      { title: t("Polls."), text: t("Now and then a small card asks a short question about what Glint should do next. Only your answer is sent, with a random number that stands for this copy of Glint. You can turn polls off in Settings."), go: "settings:polls", label: t("Open the setting") },
+    ],
+    improved: [
+      t("Volume above 100 percent no longer crackles: loud parts get louder without breaking up."),
+      t("Smaller fixes in the editor and exports."),
     ],
   },
   {
     version: "0.1.44", date: "2026-11-16",
     improved: [
-      t("Cuts in an export land exactly on a frame. Every cut, for picture and sound together, moves to the nearest frame of the clip, by half a frame at most, so no frame is shown short and none is skipped at a cut."),
-      t("Montages with a great many cuts export. A clip cut into 150 pieces is tested on every build; before, a montage with that many pieces was refused as too long a command."),
-      t("Exports with pictures or text on them are faster: an overlay that keeps its size is read once, not once per frame."),
+      t("Cuts in an exported video are clean: no picture at a cut is shown too briefly and none is skipped."),
+      t("Videos cut into a great many pieces can be exported. Before, a montage with that many cuts was refused."),
+      t("Exports with pictures or text on them are faster."),
     ],
     fixed: [
-      t("An export could come out one frame short (two with a slowed last clip), and at a cut after a sped-up clip one frame could be dropped and the next shown late."),
-      t("A video whose clips run at different speeds could end before its last frame."),
+      t("An exported video could lose a frame at its end or at a cut, mostly with sped-up or slowed-down clips."),
     ],
   },
   {
     version: "0.1.43", date: "2026-11-16",
     fixed: [
-      t("A project's card showed the length of all its footage (10:27 for a montage of 3:36). It now shows the length of the edit."),
-      t("Tags on thumbnails such as “Exported” are set tighter, and the game menu's heading uses the same type as the rest of the menu."),
+      t("A project's card shows how long the edited video is, not the length of all the footage in it."),
     ],
   },
   {
     version: "0.1.42", date: "2026-11-16", gold: true,
     fixed: [
-      t("Exporting a project made before 0.1.38, after clips were added to it in 0.1.41, said a clip was missing although it was right there in the editor. The export now uses exactly the sources the editor shows."),
+      t("An older project with newly added clips could refuse to export and say a clip was missing, although it was right there in the editor. It exports again."),
     ],
   },
   {
     version: "0.1.41", date: "2026-11-16", gold: true,
     new: [
-      t("Speed for each clip. Select a clip and set 0.25x to 4x in the Speed section, or right-click it. Its own sound follows, and the whole-video speed still works on top."),
-      t("Zoom with keyframes. Set a zoom in the Zoom section and add keyframes, or right-click the picture: “Zoom in here” and “Zoom out”. Drag on the picture to move the zoom."),
-      t("Sharpness in Color, next to brightness, contrast and saturation."),
-      t("Cancel a running export. An export that stops moving now ends by itself after a minute and says why, with a button to see the log."),
-      t("Game detection is rebuilt. Glint reads your installed Steam, Epic, Riot, Xbox, GOG, Ubisoft, Battle.net and EA libraries, a game you pick stays picked, and when a game cannot be recorded as a window Glint says why instead of quietly recording your screen."),
-      t("Wherever you pick a monitor, Glint shows your monitors as they are arranged, with a live picture of each."),
+      { title: t("Speed for each clip."), text: t("Make one clip slower or faster, from a quarter of its speed to four times, in the Speed section or with a right-click. Its sound follows.") },
+      { title: t("Zoom."), text: t("Zoom into the picture and let the zoom move over time. Right-click the picture for “Zoom in here” and “Zoom out”, and drag the picture to move the zoom.") },
+      { title: t("Sharpness."), text: t("A Sharpness slider in Color, next to brightness, contrast and saturation.") },
+      { title: t("Stop an export."), text: t("Cancel an export while it runs. One that gets stuck stops by itself after a minute and tells you why.") },
+      { title: t("Better game detection."), text: t("Glint finds the games you installed from Steam, Epic, Riot, Xbox, GOG, Ubisoft, Battle.net and EA. A game you pick stays picked, and when a game cannot be recorded on its own, Glint tells you instead of quietly recording your whole screen.") },
+      { title: t("See your monitors."), text: t("Wherever you pick a monitor, Glint shows your monitors the way they are arranged, with a live picture of each.") },
     ],
     improved: [
-      t("The editor opens at once. Projects and clips are playable right away; their sound tracks, waveforms and film strips fill in after, nearest the playhead first, and are remembered for next time."),
-      t("Adding clips is instant, also to projects made before 0.1.38: they no longer rebuild their working file on every add. Dropped files appear right away and are copied in the background."),
-      t("A project can hold up to 500 clips and 4 hours of footage. The old limit was 20 clips and 30 minutes."),
-      t("Cuts play without a hitch in the preview, and the color of the next clip starts on its first frame, not a frame early."),
-      t("Split cuts only what is selected. Cutting the video no longer cuts an added song, and a song has its own mute and level."),
-      t("Everything selected together moves together when you drag one of them. Alt+Left and Alt+Right nudge the selection by a frame."),
-      t("Closing a single clip with an unsaved edit asks first, and Esc in a number box no longer closes the editor."),
+      t("The editor opens right away. Sound waves and clip pictures fill in a moment later."),
+      t("Adding clips to a project is instant, also in older projects."),
+      t("A project can hold up to 500 clips and 4 hours of video. It used to be 20 clips and 30 minutes."),
+      t("Cuts play smoothly in the preview."),
+      t("Split cuts only what is selected: an added song is no longer cut with the video, and it has its own mute and volume."),
+      t("Clips you selected move together when you drag one of them. Alt+Left and Alt+Right move them by one frame."),
+      t("Closing a clip with unsaved changes asks first."),
     ],
     fixed: [
-      t("Big montages froze at about 48 percent while exporting. The cause was clips recorded with different color settings in one project; exports of such projects now finish."),
-      t("An export left running when Glint closed kept running in the background. Glint now ends everything it started."),
-      t("A project could reopen empty and lose its edit: after an end was pulled out over footage used twice, after I or O on a clip border, or when the saved edit failed to load once. All three are fixed, and an edit that fails to load is never overwritten."),
-      t("A long song could not be clicked: only a sliver at the end of the last clip was selected."),
-      t("Nudging a clip onto its neighbour made a clip-long gap; a grouped clip and its sound could drift apart; Delete could remove the wrong clip after a drag; the first color slider drag changed every clip."),
-      t("Exports: a black frame flashed one frame early at a gap; a single clip with its own speed kept its sound at normal speed; a montage with pictures on it could run a second past its sound; a trimmed export could lose its audio track names; text on a project that keeps only a clip of another size came out stretched."),
-      t("Imported clips that showed only a letter instead of a picture: the thumbnail is now tried several times and again later."),
+      t("Big montages no longer freeze halfway through an export."),
+      t("An export no longer keeps running in the background after Glint is closed."),
+      t("A project could open empty and lose its edit. That is fixed, and an edit that fails to open is never overwritten."),
+      t("A long song on the timeline can be clicked anywhere, not only at its very end."),
+      t("Smaller fixes in the editor and exports."),
     ],
   },
   {
@@ -596,8 +641,10 @@ const wnReleases = () => [
 ];
 
 const WN_X = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>';
+const WN_CHEV = '<svg class="wn-chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>';
 let wnCur = null;      // the open dialog: { root, back, onKey, onFocus, downOnBack }
 let wnStarted = false; // wnStartup ran
+let wnPrevSeen;        // glint.seenVersion as it was before this page stored the version (newtag.js reads it); undefined until wnStartup ran
 
 /** A release date ("2026-11-13") the way the language in use writes it, e.g. "Nov 13, 2026". */
 function wnDate(iso) {
@@ -606,17 +653,94 @@ function wnDate(iso) {
   try { return d.toLocaleDateString(document.documentElement.lang || undefined, { year: "numeric", month: "short", day: "numeric" }); } catch { return iso; }
 }
 
+/** The sidebar's pages a link may open ("capture" is the Capture page, S.page "recording"). */
+const WN_PAGES = { library: "library", favorites: "favorites", rendered: "rendered", editor: "editor", compress: "compress", rules: "rules", keybinds: "keybinds", capture: "recording", recording: "recording", blur: "blur", settings: "settings" };
+/** Named spots: a page (and Settings category) plus the element to scroll to and flash. `ok` says whether this build has it. */
+const WN_SPOTS = {
+  "settings:backdrop": { page: "settings", cat: "look", find: () => $("#view .bd-pick"), ok: () => typeof bdPickerHtml === "function" },
+  "settings:polls": { page: "settings", cat: "program", find: () => $('#view [data-set="polls"]')?.closest(".row"), ok: () => typeof pollsSettingRow === "function" },
+  "library:thumbs": { page: "library", find: () => $('#view [data-act="thumbs-missing"]'), ok: () => typeof thrStart === "function" },
+  capmode: { find: () => $("#capmode-slot > *"), ok: () => !!$("#capmode-slot > *") }, // the GAME / DESKTOP switch in the top bar: no page change
+};
+/** The system browser's opener, if this build has one (none in 0.1.46: web links then render no link). */
+function wnUrlOpener() {
+  const tauri = window.__TAURI__;
+  const fn = tauri?.opener?.openUrl || tauri?.shell?.open;
+  return typeof fn === "function" ? fn : null;
+}
+/** Where an item's `go` leads, or null when this build has no such place (then no link is drawn). */
+function wnTarget(go) {
+  const g = String(go || "");
+  if (/^https?:\/\//i.test(g)) { const open = wnUrlOpener(); return open ? { url: g, open } : null; }
+  const spot = WN_SPOTS[g];
+  if (spot) { try { return spot.ok() ? spot : null; } catch { return null; } }
+  const [p, cat] = g.split(":");
+  const page = WN_PAGES[p];
+  if (!page || !document.querySelector(`.side [data-page="${page}"]`)) return null;
+  if (cat && !(page === "settings" && typeof setCats === "function" && setCats().some(([id]) => id === cat))) return null;
+  return { page, cat: cat || "" };
+}
+
+/** Follow a link: close the dialog (and an open clip, which may ask first), open the page, then show the spot. */
+async function wnGo(go) {
+  const tg = wnTarget(go);
+  if (!tg) return;
+  wnClose();
+  if (tg.url) { try { await tg.open(tg.url); } catch (e) { console.error("Glint: could not open", tg.url, e); } return; }
+  if (tg.page) {
+    const modal = $("#modal");
+    if (modal && !modal.hidden) {
+      if (typeof edCloseAsk === "function") await edCloseAsk(); else if (typeof closeClip === "function") closeClip();
+      if (!modal.hidden) return; // the user kept the clip open
+    }
+    goPage(tg.page, tg.cat || "");
+  }
+  if (!tg.find) return;
+  setTimeout(() => { // after the page's redraw
+    const el = tg.find();
+    if (!el) return;
+    el.scrollIntoView({ block: "center" });
+    el.classList.remove("wn-flash");
+    void el.offsetWidth; // restart the flash if it is still on
+    el.classList.add("wn-flash");
+    setTimeout(() => el.classList.remove("wn-flash"), 1800);
+  }, 0);
+}
+
+/** An item as { title, text, go, label } (a plain string is the text). */
+function wnItem(x) {
+  if (typeof x === "string") return x ? { text: x } : null;
+  return x && (x.text || x.title) ? x : null;
+}
+
+/** One line for a folded release: its titles, or the first sentence of its first item. */
+function wnSummary(r) {
+  if (r.summary) return r.summary;
+  const items = [...(r.new || []), ...(r.improved || []), ...(r.fixed || [])].map(wnItem).filter(Boolean);
+  const titles = items.filter((x) => x.title).map((x) => String(x.title).replace(/[.。]\s*$/, ""));
+  if (titles.length) return titles.join(", ");
+  return String(items[0]?.text || "").split(/(?<=[.!?。])\s/)[0];
+}
+
 function wnHtml() {
-  const group = (label, list) => (list && list.length ? `<div class="wn-grp"><div class="wn-lab">${esc(label)}</div><ul>${list.map((s) => `<li>${esc(s)}</li>`).join("")}</ul></div>` : "");
-  // `gold: true` on a release (0.1.41: the editor revamp): its version tag gets a gold accent.
-  return wnReleases().map((r) => `<section class="wn-rel${r.gold ? " wn-gold" : ""}">
-      <div class="wn-top"><span class="wn-date">${esc(wnDate(r.date))}</span><span class="wn-ver">${esc(r.version)}</span></div>
-      ${group(t("New"), r.new)}${group(t("Improved"), r.improved)}${group(t("Fixed"), r.fixed)}
-    </section>`).join("");
+  const li = (x) => {
+    const tg = x.go ? wnTarget(x.go) : null;
+    const link = tg ? ` <button type="button" class="wn-go" data-wn-go="${esc(x.go)}">${esc(x.label || t("Open"))}<span aria-hidden="true">&nbsp;→</span></button>` : "";
+    return `<li><span class="wn-txt">${x.title ? `<b class="wn-ttl">${esc(x.title)}</b> ` : ""}${esc(x.text || "")}</span>${link}</li>`;
+  };
+  const group = (kind, label, list) => {
+    const items = (list || []).map(wnItem).filter(Boolean);
+    return items.length ? `<div class="wn-grp wn-grp-${kind}"><h4 class="wn-lab">${esc(label)}</h4><ul>${items.map(li).join("")}</ul></div>` : "";
+  };
+  // The newest release is open, older ones folded to one line. `gold: true` (0.1.41, 0.1.42): a gold version tag.
+  return wnReleases().map((r, i) => `<details class="wn-rel${r.gold ? " wn-gold" : ""}" data-ver="${esc(r.version)}"${i === 0 ? " open" : ""}>
+      <summary class="wn-top"><span class="wn-line"><h3 class="wn-ver">${esc(t("Version {v}", { v: r.version }))}</h3><span class="wn-date">${esc(wnDate(r.date))}</span>${WN_CHEV}</span><span class="wn-sum">${esc(wnSummary(r))}</span></summary>
+      <div class="wn-body">${group("new", t("New"), r.new)}${group("better", t("Better"), r.improved || r.better)}${group("fixed", t("Fixed"), r.fixed)}</div>
+    </details>`).join("");
 }
 
 function wnFocusables(root) {
-  return $$('button, a[href], [tabindex]:not([tabindex="-1"])', root).filter((el) => !el.disabled && el.getClientRects().length > 0);
+  return $$('button, summary, a[href], [tabindex]:not([tabindex="-1"])', root).filter((el) => !el.disabled && el.getClientRects().length > 0);
 }
 
 /** Open the dialog, scrolled to the newest release. Does nothing while it is already open. */
@@ -651,6 +775,8 @@ function wnOpen() {
   root.addEventListener("mousedown", (e) => { dlg.downOnBack = e.target === root; });
   root.addEventListener("click", (e) => {
     if (e.target === root) { if (dlg.downOnBack) wnClose(); return; }
+    const go = e.target.closest("[data-wn-go]");
+    if (go) { wnGo(go.dataset.wnGo); return; }
     if (e.target.closest('[data-wn="close"]')) wnClose();
   });
   // In full screen only the full-screen element is drawn, so the dialog goes inside it (a <video> cannot hold it).
@@ -673,14 +799,17 @@ function wnClose() {
 
 /**
  * Once per start, after S.version is known: open What's new when Glint was updated since it was
- * last seen. A first run (nothing stored yet) only stores the version.
+ * last seen. A first run (nothing stored yet) only stores the version. Then the "New" tags decide
+ * (newtag.js), from the version seen before this one.
  */
 function wnStartup() {
   if (wnStarted || typeof S === "undefined" || !S.version) return;
   wnStarted = true;
   let seen = null;
   try { seen = localStorage.getItem("glint.seenVersion"); localStorage.setItem("glint.seenVersion", S.version); } catch { return; }
+  wnPrevSeen = seen || "";
   if (seen && seen !== S.version) wnOpen();
+  if (typeof ntStartup === "function") ntStartup();
 }
 
 // The logo is a button for the keyboard too (role="button" in index.html).

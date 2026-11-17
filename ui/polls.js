@@ -298,9 +298,15 @@ function pollsRenderList() {
 // ---- The card.
 
 /** The poll the card should show: the one it already shows, else the newest unanswered one not put off. */
+/** The clip viewer or the editor workspace is open (both live in #modal): the card would cover their buttons. */
+function pollsCovered() {
+  const m = document.getElementById("modal");
+  return !!(m && !m.hidden && m.querySelector(":scope > .viewer"));
+}
+
 function pollsCardPick() {
-  // Not over the editor's timeline, and not over Settings (where its own switch is).
-  if (!pollsOn() || S.page === "editor" || S.page === "settings") return null;
+  // Not over the editor's timeline or an open clip, and not over Settings (where its own switch is).
+  if (!pollsOn() || S.page === "editor" || S.page === "settings" || pollsCovered()) return null;
   const cur = pollsAll.find((p) => p.id === pollsCardId);
   if (cur) return cur;
   const hidden = pollsLoadHidden();
@@ -395,7 +401,7 @@ function pollsRender() {
   const ev = window.__TAURI__?.event;
   if (ev) ev.listen("polls-changed", ({ payload }) => pollsTake(payload));
   // Wait for the settings (app.js loads them), then ask what the backend already knows (no network).
-  let page = null, lang = null, on = null;
+  let page = null, lang = null, on = null, covered = null;
   const tick = async () => {
     if (!S.settings) return;
     const nowOn = pollsOn();
@@ -407,7 +413,9 @@ function pollsRender() {
       } else pollsRender();
     }
     // The card hides in the editor, and every text follows a language change.
-    if (page !== S.page || lang !== document.documentElement.lang) {
+    const cov = pollsCovered();
+    if (page !== S.page || lang !== document.documentElement.lang || covered !== cov) {
+      covered = cov;
       page = S.page;
       lang = document.documentElement.lang;
       pollsRender();

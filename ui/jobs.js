@@ -94,7 +94,8 @@ function jobsClipTitle(clipId, fallback) {
 
 /** Every row, newest first: { key, kind, title, state, pct, message, job }. */
 function jobsRows() {
-  const rows = jobsList.map((j) => ({ key: j.id, kind: ["compress", "join", "gif", "upscale", "rule"].includes(j.kind) ? j.kind : "blur", title: jobsClipTitle(j.clip_id, j.title), state: j.state, pct: +j.pct || 0, message: j.message || "", start: +j.queued || 0, job: j }));
+  // thumbs-refresh: kind "thumbs" (its title is one of two English names, translated here).
+  const rows = jobsList.map((j) => ({ key: j.id, kind: ["compress", "join", "gif", "upscale", "rule", "thumbs"].includes(j.kind) ? j.kind : "blur", title: j.kind === "thumbs" ? t(j.title) : jobsClipTitle(j.clip_id, j.title), state: j.state, pct: +j.pct || 0, message: j.message || "", start: +j.queued || 0, job: j }));
   for (const [id, x] of jobsExports) rows.push({ key: "export:" + id, kind: "export", title: jobsClipTitle(id, ""), state: x.pct >= 100 ? "exported" : "exporting", pct: x.pct, message: "", start: x.start, job: null });
   return rows.sort((a, b) => b.start - a.start);
 }
@@ -164,16 +165,24 @@ function jobsRenderButton(rows) {
   btn.classList.toggle("jobs-busy", !!active.length);
   btn.classList.toggle("jobs-new", fresh);
   btn.classList.toggle("jobs-new-bad", bad);
-  btn.querySelector(".jobs-ring-fill").setAttribute("stroke-dasharray", `${overall} 100`);
-  btn.querySelector(".jobs-label").textContent = label;
-  btn.title = tip;
-  btn.setAttribute("aria-label", tip);
-  btn.setAttribute("aria-expanded", String(open));
+  // 0.1.46: a tick changes only what differs, on these same nodes (the label's text node keeps living).
+  const set = (el, name, v) => { if (el.getAttribute(name) !== v) el.setAttribute(name, v); };
+  set(btn.querySelector(".jobs-ring-fill"), "stroke-dasharray", `${overall} 100`);
+  const lab = btn.querySelector(".jobs-label");
+  if (lab.firstChild && lab.firstChild.nodeType === 3 && lab.childNodes.length === 1) { if (lab.firstChild.data !== label) lab.firstChild.data = label; }
+  else if (lab.textContent !== label) lab.textContent = label;
+  set(btn, "title", tip);
+  set(btn, "aria-label", tip);
+  set(btn, "aria-expanded", String(open));
 }
 
 function jobsStateLine(r) {
   const pct = Math.floor(r.pct);
   const squeeze = r.kind === "compress";
+  if (r.kind === "thumbs") { // thumbs-refresh (thumbsrefresh.js)
+    if (r.state === "running") return t("Making thumbnails {pct} %", { pct });
+    if (r.state === "done") return t("Thumbnails made");
+  }
   if (r.kind === "join") { // "Edit together" (join.js)
     if (r.state === "queued") return t("Waiting to prepare for the editor");
     if (r.state === "running") return t("Preparing for the editor {pct} %", { pct });
@@ -233,8 +242,12 @@ function jobsRenderPop(rows) {
     if (el && el.jobsSig === jobsRowSig(r)) {
       if (jobsHasBar(r)) {
         const line = jobsStateLine(r), st = el.querySelector(".jobs-state");
-        if (st.textContent !== line) { st.textContent = line; st.title = line; }
-        el.querySelector(".jobs-bar i").style.width = `${r.pct.toFixed(1)}%`;
+        if (st.textContent !== line) {
+          if (st.firstChild && st.firstChild.nodeType === 3 && st.childNodes.length === 1) st.firstChild.data = line; else st.textContent = line;
+          st.title = line;
+        }
+        const w = `${r.pct.toFixed(1)}%`, bi = el.querySelector(".jobs-bar i");
+        if (bi.style.width !== w) bi.style.width = w;
         el.querySelector(".jobs-bar").classList.toggle("wait", jobsWaits(r));
       }
     } else {

@@ -183,16 +183,43 @@ pub fn cfgs(s: &Settings) -> Vec<CaptureCfg> {
         let failed = st.target.as_ref().is_some_and(|t| st.failed.contains(&t.hwnd) || st.mem.failed.contains(&t.hwnd));
         (st.target.clone(), failed, st.source)
     };
-    let Some(t) = target else { return Vec::new() };
     let mons = win::monitors();
-    let Some(m) = mons.get(t.monitor as usize).or(mons.first()) else { return Vec::new() };
-    vec![match source {
-        // Paused (minimized behind a monitor source, hidden, blocked) or no game: nothing runs, the buffer stays.
-        Some(Source::Park) | Some(Source::Wait) => return Vec::new(),
-        Some(Source::MonitorDda) => cfg_dda(s, &t, m),
-        Some(Source::Monitor) => cfg_for(s, &t, m, false),
-        Some(Source::Window) | None => cfg_for(s, &t, m, !failed && window_capture_ok(s)),
-    }]
+    let game = target.as_ref().and_then(|t| {
+        let m = mons.get(t.monitor as usize).or(mons.first())?;
+        let mut c = match source {
+            // Paused (minimized behind a monitor source, hidden, blocked) or no game: the game's capture
+            // is parked with its buffer (`Recorder::start`), the other monitors below go on.
+            Some(Source::Park) | Some(Source::Wait) => return None,
+            Some(Source::MonitorDda) => cfg_dda(s, t, m),
+            Some(Source::Monitor) => cfg_for(s, t, m, false),
+            Some(Source::Window) | None => cfg_for(s, t, m, !failed && window_capture_ok(s)),
+        };
+        c.game = true;
+        Some(c)
+    });
+    let mut out: Vec<CaptureCfg> = game.into_iter().collect();
+    out.extend(other_monitors(s, &mons, out.first()));
+    out
+}
+
+/// 0.1.46: GAME mode also buffers every other monitor a clip keybind names, as desktop mode does
+/// (same method, size and rate), so their keys keep clipping their monitors. Not the capture
+/// monitor (its keys clip the game), and not a monitor the game's capture already records whole
+/// (`game`: a monitor source; that key then clips the game's buffer). Their sound switches are the
+/// game's (`game_desktop_audio`, the microphone), so the shared audio capture stays what GAME mode
+/// records and a GAME / DESKTOP switch keeps their pictures and buffers.
+pub fn other_monitors(s: &Settings, mons: &[Monitor], game: Option<&CaptureCfg>) -> Vec<CaptureCfg> {
+    let whole = game.filter(|g| g.window == 0).map(|g| g.monitor);
+    core::capture_plan(s, mons.len())
+        .into_iter()
+        .skip(1)
+        .filter(|(m, _)| Some(*m) != whole)
+        .filter_map(|(m, secs)| mons.get(m as usize).map(|mon| core::capture_cfg_for(s, mon, secs)))
+        .map(|mut c| {
+            c.desktop_audio = s.game_desktop_audio;
+            c
+        })
+        .collect()
 }
 
 /// The game's monitor by Desktop Duplication (`ddagrab`): what an exclusive-fullscreen game is
@@ -277,7 +304,7 @@ pub fn found(core: &Core) -> Option<(String, u32, String)> {
             st.mem.failed.push(c.window);
         }
     }
-    if let Some(c) = caps.first() {
+    if let Some(c) = caps.iter().find(|c| c.game) {
         let minimized = wins.iter().find(|w| w.hwnd == c.window).map_or(true, |w| w.minimized);
         let mut silent = st.silent.take();
         if never_delivered(&mut silent, c, minimized, std::time::Instant::now()) && !st.mem.failed.contains(&c.window) {
@@ -371,12 +398,15 @@ pub fn follow(core: &Core) {
     }
     let cfgs = core::capture_cfgs(&s);
     if core.rec.current_cfgs() != cfgs {
-        let what = match cfgs.first() {
-            None => "nothing, waiting for a game".to_string(),
+        let what = match cfgs.iter().find(|c| c.game) {
+            None => "nothing of the game (waiting)".to_string(),
             Some(c) if c.window != 0 => format!("window {:#x} at {}x{} @ {} fps", c.window, c.width, c.height, c.fps),
             Some(c) => format!("the whole monitor {} at {}x{} @ {} fps", c.monitor, c.width, c.height, c.fps),
         };
-        util::log(&format!("game mode: capturing {what}"));
+        // 0.1.46: the other monitors a clip keybind names, buffered beside the game.
+        let others: Vec<String> = cfgs.iter().filter(|c| !c.game).map(|c| c.monitor.to_string()).collect();
+        let others = if others.is_empty() { String::new() } else { format!("; monitor {} for its keybind too", others.join(", ")) };
+        util::log(&format!("game mode: capturing {what}{others}"));
         core.rec.start(cfgs);
         core.emit("status-changed", ());
     }
@@ -390,7 +420,8 @@ pub fn status_of(s: &Settings, running: bool, caps: &[CapStats]) -> (String, Str
     let target = if !running {
         ""
     } else {
-        match caps.first() {
+        // The game's own capture (0.1.46: the other monitors a clip keybind names run beside it).
+        match caps.iter().find(|c| c.game) {
             None => "waiting",
             Some(c) if c.window != 0 => "window",
             Some(_) => {
@@ -607,6 +638,7 @@ pub fn self_test(report_path: &str) {
         test_detection(&mut r);
         test_targets(&mut r);
         test_rebuild(&mut r);
+        test_other_monitors(&mut r);
         test_args(&mut r);
         test_recorder(&mut r);
         test_clips(&mut r);
@@ -782,7 +814,7 @@ fn test_targets(r: &mut Report) {
     r.check("status: desktop mode", status_of(&d, true, &[]) == ("desktop".into(), String::new()), "");
     r.check("status: game mode, nothing to capture: waiting", status_of(&s, true, &[]) == ("game".into(), "waiting".into()), "");
     r.check("status: game mode paused: no target state", status_of(&s, false, &[]).1.is_empty(), "");
-    let cap = |window: u64| CapStats { id: 1, monitor: 0, window, primary: true, status: Default::default(), frames: 0, video_bytes: 0, video_disk_bytes: 0, buffer_secs: 0.0, max_secs: 35.0 };
+    let cap = |window: u64| CapStats { id: 1, monitor: 0, window, game: true, primary: true, status: Default::default(), frames: 0, video_bytes: 0, video_disk_bytes: 0, buffer_secs: 0.0, max_secs: 35.0 };
     r.check("status: the window, or the whole screen", status_of(&s, true, &[cap(5)]).1 == "window" && status_of(&s, true, &[cap(0)]).1 == "screen", "");
 
     // A window capture that never gives a picture.
@@ -866,6 +898,92 @@ fn test_rebuild(r: &mut Report) {
     r.check("menu: each program says why it is a game (known, Epic library), others nothing; hidden windows are left out", rows.len() == 2 && rows[0].why.contains(&"library:epic".to_string()) && rows[0].why.contains(&"known".to_string()) && rows[1].why.is_empty() && !rows[1].game && rows[0].path.ends_with("RocketLeague.exe"), &format!("{:?}", rows.iter().map(|x| (&x.exe, &x.why)).collect::<Vec<_>>()));
 }
 
+/// 0.1.46: "when having 2 buffers clipping 2 monitors and moving to the game mode, it stops clipping
+/// the second monitor". GAME mode keeps every other monitor a clip keybind names. Made-up monitors,
+/// a recorder without ffmpeg (nothing is captured), a synthetic picture fed by hand.
+fn test_other_monitors(r: &mut Report) {
+    use crate::recorder::Recorder;
+    let dir = util::data_dir().join("capmode-test").join("others");
+    let _ = std::fs::create_dir_all(&dir);
+    let mons = [mon(0, 2560, 1440, 144), Monitor { x: 2560, ..mon(1, 1920, 1080, 60) }];
+    let key2 = crate::settings::Keybind { id: "m2".into(), key: "F9".into(), action: "clip".into(), seconds: 60, monitor: 1, ..Default::default() };
+    let mut desk = Settings { buffer: "ram".into(), ..Default::default() };
+    desk.keybinds.push(key2);
+    let game = Settings { capture_mode: "game".into(), ..desk.clone() };
+    // No ffmpeg (nothing is ever captured), the test's own buffer folder.
+    let quiet = |mut c: CaptureCfg| {
+        c.ffmpeg = None;
+        c.buffer_dir = dir.clone();
+        c
+    };
+    let desk_cfgs: Vec<CaptureCfg> = core::capture_plan(&desk, 2).into_iter().map(|(m, secs)| quiet(core::capture_cfg_for(&desk, &mons[m as usize], secs))).collect();
+    let t = Target { hwnd: 0x10, pid: 7, exe: "g.exe".into(), name: "G".into(), monitor: 0, width: 1920, height: 1080 };
+    let gwin = |t: &Target, m: usize| quiet(CaptureCfg { game: true, ..cfg_for(&game, t, &mons[m], true) });
+    let gmon = |t: &Target, m: usize| quiet(CaptureCfg { game: true, ..cfg_dda(&game, t, &mons[m]) });
+    let others = |g: Option<&CaptureCfg>| other_monitors(&game, &mons, g).into_iter().map(quiet).collect::<Vec<_>>();
+
+    // The lists.
+    let w0 = gwin(&t, 0);
+    let o = others(Some(&w0));
+    r.check("others: the game's window, and the monitor its keybind names, as desktop mode records it", o.len() == 1 && o[0].monitor == 1 && !o[0].game && CaptureCfg { desktop_audio: desk_cfgs[1].desktop_audio, ..o[0].clone() } == desk_cfgs[1], &format!("{:?}", o.iter().map(|c| c.monitor).collect::<Vec<_>>()));
+    r.check("others: their sound switches are GAME mode's (the shared audio capture stays as it is)", o[0].desktop_audio == game.game_desktop_audio && o[0].mic == game.mic, "");
+    let t1 = Target { monitor: 1, ..t.clone() };
+    r.check("others: the game as a window on that very monitor: both run (different pictures)", others(Some(&gwin(&t1, 1))).iter().any(|c| c.monitor == 1), "");
+    r.check("others: the game recorded as that whole monitor: one capture, not two", others(Some(&gmon(&t1, 1))).is_empty(), "");
+    r.check("others: no game (waiting or parked): the monitor keeps its capture", others(None).len() == 1, "");
+    r.check("others: the capture monitor itself is the game's, never a second capture", !others(None).iter().any(|c| c.monitor == 0), "");
+    let args = |c: &CaptureCfg| crate::recorder::capture_args(c, "x264", "wgc", false, true);
+    r.check("others: the monitor's ffmpeg command is the same in both modes", args(&o[0]) == args(&desk_cfgs[1]), "");
+
+    // The recorder across a switch, a parked game, its return, and the switch back.
+    let ts = dir.join("v.ts");
+    let made = util::find_exe("", "ffmpeg").is_some_and(|f| {
+        util::hidden_cmd(&f).args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=4", "-c:v", "libx264", "-preset", "ultrafast", "-g", "30", "-pix_fmt", "yuv420p", "-f", "mpegts"]).arg(&ts).stdin(std::process::Stdio::null()).output().is_ok_and(|o| o.status.success())
+    });
+    let header = std::fs::read(&ts).unwrap_or_default();
+    let rec = Recorder::new();
+    let _ = rec.test_no_devices();
+    let id_of = |rec: &Recorder, game: bool, m: u32| rec.stats().captures.iter().find(|c| c.game == game && c.monitor == m).map(|c| c.id);
+    rec.start(desk_cfgs.clone());
+    let m1 = id_of(&rec, false, 1);
+    rec.drop_game(); // the switch to GAME (core::apply_settings)
+    rec.start([vec![w0.clone()], o.clone()].concat());
+    r.check("switch to GAME: the second monitor's capture is NOT restarted (same pipeline, its buffer kept)", m1.is_some() && id_of(&rec, false, 1) == m1, &format!("{m1:?} -> {:?}", id_of(&rec, false, 1)));
+    r.check("switch to GAME: the game's capture is new and first; the desktop's capture of the main monitor is gone", rec.stats().captures.first().is_some_and(|c| c.game && c.window == 0x10) && id_of(&rec, false, 0).is_none() && rec.stats().captures.len() == 2, "");
+    rec.test_feed(&header, util::now_secs() - 0.5, &[]); // the game's buffer (the first capture)
+    let g0 = id_of(&rec, true, 0);
+    rec.start(o.clone()); // the game minimized behind a monitor source / exited: only the others are asked for
+    let st = rec.stats();
+    r.check("game parked: its capture waits with its buffer, the other monitor goes on", st.captures.len() == 1 && st.captures[0].monitor == 1 && !st.captures[0].game && rec.buffered_cfgs().len() == 2 && !rec.game_capturing() && id_of(&rec, false, 1) == m1, &format!("{} running, {} kept", st.captures.len(), rec.buffered_cfgs().len()));
+    r.check("game parked: status says waiting (the other monitor's capture is not the game's)", status_of(&game, true, &st.captures).1 == "waiting", "");
+    let gs = rec.snapshot_game(30.0);
+    r.check("game parked: the game's key still saves what the game's buffer holds", made && gs.as_ref().is_ok_and(|v| v.3.game && v.0.duration > 3.0), &format!("{:?}", gs.as_ref().map(|v| v.0.duration).err()));
+    r.check("game parked: the other monitor's key clips its own buffer, not the game's", rec.snapshot(30.0, Some(1)).map(|v| v.3.game).unwrap_or(false) == false, "");
+    rec.start([vec![w0.clone()], o.clone()].concat());
+    r.check("the game comes back: the same game capture resumes, the other monitor untouched", id_of(&rec, true, 0) == g0 && rec.game_capturing() && id_of(&rec, false, 1) == m1, "");
+    // The game recorded as that monitor (exclusive fullscreen on monitor 2): one capture of it.
+    let gm1 = gmon(&t1, 1);
+    rec.start([vec![gm1.clone()], others(Some(&gm1))].concat());
+    rec.test_feed(&header, util::now_secs() - 0.5, &[]);
+    let st = rec.stats();
+    let snap1 = rec.snapshot(30.0, Some(1));
+    r.check("the game as monitor 2: one capture of monitor 2, and monitor 2's key clips the game's buffer", st.captures.iter().filter(|c| c.monitor == 1).count() == 1 && made && snap1.as_ref().is_ok_and(|v| v.3.game && v.3.method == "dda"), &format!("{} captures", st.captures.len()));
+    // Back to the window, and the switch back to DESKTOP.
+    rec.start([vec![w0.clone()], o.clone()].concat());
+    let m1b = id_of(&rec, false, 1);
+    rec.drop_game();
+    rec.start(desk_cfgs.clone());
+    r.check("switch back to DESKTOP: monitor 2 keeps its capture, the game's capture and buffer are gone", m1b.is_some() && id_of(&rec, false, 1) == m1b && rec.stats().captures.iter().all(|c| !c.game) && rec.snapshot_game(5.0).is_err(), "");
+    rec.drop_game();
+    rec.start(o.clone());
+    r.check("GAME with no game since the switch: the game's key finds no game; monitor 2 records", rec.snapshot_game(5.0).err().as_deref() == Some("No game is running") && id_of(&rec, false, 1) == m1b, "");
+    // Desktop mode is unchanged: only the capture monitor and the keybinds' monitors, none a game's.
+    r.check("desktop mode: its list is as before (no game capture)", desk_cfgs.len() == 2 && desk_cfgs.iter().all(|c| !c.game), "");
+    rec.stop();
+    *state().lock().unwrap() = State::default();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn test_args(r: &mut Report) {
     use crate::recorder::capture_args;
     let base = CaptureCfg {
@@ -888,6 +1006,7 @@ fn test_args(r: &mut Report) {
         buffer_ram_secs: 30.0,
         buffer_dir: util::tmp_dir(),
         window: 0,
+        game: false,
     };
     let filter = |c: &CaptureCfg, method: &str| -> String {
         let a = capture_args(c, "nvenc", method, false, true);
@@ -936,6 +1055,7 @@ fn test_recorder(r: &mut Report) {
         buffer_ram_secs: 30.0,
         buffer_dir: dir.clone(),
         window,
+        game: false,
     };
     let rec = Recorder::new();
     let ids = |rec: &Recorder| rec.stats().captures.iter().map(|c| (c.id, c.window)).collect::<Vec<_>>();
@@ -977,7 +1097,7 @@ fn test_recorder(r: &mut Report) {
     r.check("game mode with a game: one capture, its window when this PC can capture one", gc.len() == 1 && !gc[0].desktop_audio && (if wok { gc[0].window == 0x99 && (gc[0].width, gc[0].height) == (1600, 900) } else { gc[0].window == 0 }), &format!("window capture {}, {} monitors", if wok { "available" } else { "not available" }, mons.len()));
     state().lock().unwrap().failed.push(0x99);
     r.check("game mode: a window that failed twice is recorded as its monitor", core::capture_cfgs(&g).first().is_some_and(|c| c.window == 0), "");
-    let caps = vec![CapStats { id: 1, monitor: 0, window: 0, primary: true, status: Default::default(), frames: 0, video_bytes: 0, video_disk_bytes: 0, buffer_secs: 0.0, max_secs: 35.0 }];
+    let caps = vec![CapStats { id: 1, monitor: 0, window: 0, game: true, primary: true, status: Default::default(), frames: 0, video_bytes: 0, video_disk_bytes: 0, buffer_secs: 0.0, max_secs: 35.0 }];
     r.check("status: that is told apart from no window capture", status_of(&g, true, &caps).1 == "screen_failed", "");
     *state().lock().unwrap() = State::default();
     let _ = std::fs::remove_dir_all(util::data_dir().join("capmode-test"));
@@ -1156,6 +1276,7 @@ fn test_switch(r: &mut Report, ts: &[u8]) {
         buffer_ram_secs: 30.0,
         buffer_dir: dir.clone(),
         window: 0x10,
+        game: false,
     };
     let rec = Recorder::new();
     let starts0 = rec.test_no_devices();
@@ -1208,6 +1329,7 @@ fn test_waiting(r: &mut Report, ffmpeg: &std::path::Path, ts: &[u8], s: &Setting
         buffer_ram_secs: 30.0,
         buffer_dir: dir.clone(),
         window,
+        game: false,
     };
     let rec = Recorder::new();
     rec.start(vec![cfg(0x10, 320, 180)]);

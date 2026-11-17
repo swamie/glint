@@ -101,6 +101,7 @@ fn lane_of(kind: &str) -> usize {
     match kind {
         "compress" | "gif" | "upscale" | "rule" => 1,
         "join" => 2,
+        "thumbs" => 2, // thumbs-refresh (0.1.46): never waits behind a Blur render or a compress
         _ => 0,
     }
 }
@@ -201,7 +202,7 @@ impl Jobs {
                 return Err("Glint is closing".into());
             }
             if st.list.iter().any(|j| j.clip_id == clip_id && j.kind == kind && !j.ended()) {
-                return Err(match kind { "compress" => "That clip is already being compressed", "gif" => "A GIF of that clip is already being made", "upscale" => "That clip is already being upscaled", "rule" => "That clip is already going through a render rule", _ => "That clip is already rendering" }.into());
+                return Err(match kind { "compress" => "That clip is already being compressed", "gif" => "A GIF of that clip is already being made", "upscale" => "That clip is already being upscaled", "rule" => "That clip is already going through a render rule", "thumbs" => "Thumbnails are already being made", _ => "That clip is already rendering" }.into());
             }
             let job = Job { id: util::new_id(), clip_id: clip_id.into(), title: title.into(), kind: kind.into(), state: "queued".into(), queued: util::unix_ms(), ..Default::default() };
             st.tasks.insert(job.id.clone(), Task { cancel: Arc::new(AtomicBool::new(false)), run: Some(run), last_emit: None });

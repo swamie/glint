@@ -50,6 +50,10 @@ pub struct CaptureCfg {
     /// Game mode (capmode.rs): the game's window handle, captured instead of the monitor
     /// (Graphics Capture only); `width` x `height` is then its client area. 0 = the monitor `monitor`.
     pub window: u64,
+    /// 0.1.46: this is GAME mode's capture of the game (its window, or its monitor as a fallback). Its
+    /// capture is never reused for a monitor's own capture or the other way round, and while no game
+    /// is recorded it is parked (buffer kept) while the other monitors' captures go on (`Recorder::start`).
+    pub game: bool,
 }
 
 impl CaptureCfg {
@@ -484,6 +488,8 @@ pub struct CapStats {
     pub monitor: u32,
     /// The window it captures (game mode), 0 = the monitor.
     pub window: u64,
+    /// 0.1.46: it is GAME mode's capture of the game (`CaptureCfg::game`).
+    pub game: bool,
     /// It is the capture monitor (`Settings::monitor`).
     pub primary: bool,
     pub status: RecStatus,
@@ -631,6 +637,7 @@ impl Pipe {
             id: self.id,
             monitor: self.cfg.monitor,
             window: self.window.load(Ordering::SeqCst),
+            game: self.cfg.game,
             primary,
             status,
             frames: ring.frames,
@@ -995,18 +1002,31 @@ impl Recorder {
                 }
             }
         }
-        let (keep, stale): (Vec<_>, Vec<_>) = old.into_iter().partition(|p| p.alive() && cfgs.contains(&p.cfg_now()));
-        // A parked capture asked for again resumes on its buffer (a new epoch). Never in desktop mode.
-        for p in keep.iter().filter(|p| p.is_parked()) {
-            p.parked.store(false, Ordering::SeqCst);
+        // GAME mode while no game is recorded (0.1.46): the list holds only the other monitors a clip
+        // keybind names; the game's capture is parked with its buffer, as `wait` parks it, and they go on.
+        let no_game = !cfgs.iter().any(|c| c.game);
+        let (keep, stale): (Vec<_>, Vec<_>) = old.into_iter().partition(|p| p.alive() && (cfgs.contains(&p.cfg_now()) || (no_game && p.cfg.game)));
+        for p in &keep {
+            if no_game && p.cfg.game {
+                if !p.is_parked() {
+                    p.park();
+                }
+            } else if p.is_parked() {
+                // A parked capture asked for again resumes on its buffer (a new epoch). Never in desktop mode.
+                p.parked.store(false, Ordering::SeqCst);
+            }
         }
         // Old captures go first, so a monitor never has two ffmpegs at once.
         for p in &stale {
             p.halt();
         }
-        if keep.len() < cfgs.len() {
+        if keep.iter().filter(|p| !p.is_parked()).count() < cfgs.len() {
             // Whatever the mode is now: a crashed Glint may have left files from an earlier one.
             spill::clean(&cfgs[0].buffer_dir);
+        }
+        // The parked game first, so the game's capture keeps its place ahead of the monitors.
+        for p in keep.iter().filter(|p| no_game && p.cfg.game) {
+            pipes.push(p.clone());
         }
         for cfg in &cfgs {
             match keep.iter().find(|p| p.cfg_now() == *cfg) {
@@ -1127,7 +1147,9 @@ impl Recorder {
             let pipes = self.inner.pipes.lock().unwrap();
             match monitor {
                 None => pipes.first().cloned(),
-                Some(m) => pipes.iter().find(|p| p.cfg.monitor == m).cloned(),
+                // A monitor's own capture first; else (GAME mode) the game's capture when it records
+                // that whole monitor (0.1.46: one capture, not two of the same screen).
+                Some(m) => pipes.iter().find(|p| p.cfg.monitor == m && !p.cfg.game).or_else(|| pipes.iter().find(|p| p.cfg.game && p.cfg.monitor == m && p.cfg_now().window == 0)).cloned(),
             }
         };
         let Some(pipe) = pipe else {
@@ -1146,6 +1168,34 @@ impl Recorder {
         let desk = self.inner.desk.lock().unwrap().plan(&snap.segments);
         let mic = self.inner.mic.lock().unwrap().plan(&snap.segments);
         Ok((snap, desk.map(Plan::read), mic.map(Plan::read), pipe.cfg_now()))
+    }
+
+    /// GAME mode's clip of the game (0.1.46): the game's capture only, parked or not; never another
+    /// monitor's. An error when there is none (no game was recorded since GAME was switched on).
+    pub fn snapshot_game(&self, secs: f64) -> Result<(Snapshot, Option<Pcm>, Option<Pcm>, CaptureCfg), String> {
+        let first_game = self.inner.pipes.lock().unwrap().iter().position(|p| p.cfg.game);
+        match first_game {
+            Some(0) => self.snapshot(secs, None),
+            Some(_) => Err("The game's capture is not the first one".into()), // never: `start` puts it first
+            None => Err("No game is running".into()),
+        }
+    }
+
+    /// GAME mode: the game's capture is running now (not parked, not absent).
+    pub fn game_capturing(&self) -> bool {
+        self.inner.pipes.lock().unwrap().iter().any(|p| p.cfg.game && !p.is_parked())
+    }
+
+    /// The GAME / DESKTOP switch was flipped by hand: the game's capture and its buffer go (a desktop
+    /// clip must never hold the game's window, nor a game clip the desktop). The monitors' own
+    /// captures that stay the same keep running with their buffers (0.1.46; everything restarted before).
+    pub fn drop_game(&self) {
+        let mut pipes = self.inner.pipes.lock().unwrap();
+        let (game, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *pipes).into_iter().partition(|p| p.cfg.game);
+        for p in &game {
+            p.halt();
+        }
+        *pipes = rest;
     }
 
     pub fn stats(&self) -> RecStats {
@@ -1194,6 +1244,10 @@ fn supervise(pipe: Arc<Pipe>) {
     let mon = cfg.monitor;
     let mut backoff = 1u64;
     let mut quick_fails = 0u32;
+    // 0.1.46: a capture whose ffmpeg will not start (0xC0000142 at a restart, a missing DLL) is retried
+    // slowly (session::retry_delay), with one log line per change of state.
+    let mut start_fails = 0u32;
+    let mut fail_state: Option<(Option<i32>, u64)> = None;
 
     let no_border = gfx_caps(&ffmpeg).1;
     while pipe.alive() {
@@ -1204,6 +1258,12 @@ fn supervise(pipe: Arc<Pipe>) {
         }
         if !pipe.alive() {
             return;
+        }
+        // The Windows session is ending (session.rs): start nothing (a process started now fails with
+        // 0xC0000142 and Windows shows a box for it). Wait; a cancelled shutdown carries on by itself.
+        if crate::session::ending() {
+            thread::sleep(Duration::from_millis(500));
+            continue;
         }
         {
             let mut st = pipe.status.lock().unwrap();
@@ -1231,6 +1291,7 @@ fn supervise(pipe: Arc<Pipe>) {
         let frames_before = pipe.ring.lock().unwrap().frames;
         let spawned = util::hidden_cmd_prio(&ffmpeg).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
         let started = Instant::now();
+        let mut exit_code: Option<i32> = None;
         let mut got_data = false;
         let mut border_noted = false;
         match spawned {
@@ -1324,10 +1385,37 @@ fn supervise(pipe: Arc<Pipe>) {
                 pipe.ring.lock().unwrap().end_epoch();
                 if let Some(mut c) = pipe.child.lock().unwrap().take() {
                     let _ = c.kill();
-                    let _ = c.wait();
+                    exit_code = c.wait().ok().and_then(|s| s.code());
                 }
                 pipe.status.lock().unwrap().pid = 0;
             }
+        }
+        // Windows ended ffmpeg because the session is ending: nothing failed; the gate above waits.
+        if crate::session::ending() {
+            continue;
+        }
+        let mut slow = 0u64;
+        let moved = pipe.window.load(Ordering::SeqCst) != window || pipe.is_parked(); // ended by us, not a failure
+        if !moved && !got_data && crate::session::start_failure(exit_code, started.elapsed().as_millis()) {
+            start_fails += 1;
+            slow = crate::session::retry_delay(start_fails);
+            if fail_state != Some((exit_code, slow)) {
+                let why = crate::session::exit_text(exit_code);
+                util::log(&format!("capture {mon}: ffmpeg did not start (exit {}{}); trying again in {slow} s", crate::session::code_hex(exit_code), if why.is_empty() { String::new() } else { format!(": {why}") }));
+                fail_state = Some((exit_code, slow));
+            }
+            // The loader's own codes say nothing about the encoder or the method: no step-down for them.
+            if crate::session::start_failure(exit_code, u128::MAX) {
+                let until = Instant::now() + Duration::from_secs(slow);
+                while Instant::now() < until && pipe.alive() && !pipe.is_parked() {
+                    thread::sleep(Duration::from_millis(100));
+                }
+                continue;
+            }
+        } else if got_data && start_fails > 0 {
+            util::log(&format!("capture {mon}: ffmpeg started again after {start_fails} failed start(s)"));
+            start_fails = 0;
+            fail_state = None;
         }
         let no_frames = !got_data || pipe.ring.lock().unwrap().frames == frames_before;
         // Moved to another game's window (`Pipe::move_to`): start on it at once, nothing failed.
@@ -1372,7 +1460,7 @@ fn supervise(pipe: Arc<Pipe>) {
                 *STEP.lock().unwrap() = Some((wanted.clone(), enc.clone(), sw));
             }
         }
-        let wait_until = Instant::now() + Duration::from_secs(backoff);
+        let wait_until = Instant::now() + Duration::from_secs(if slow > 0 { slow } else { backoff });
         while Instant::now() < wait_until {
             if !pipe.alive() {
                 return;
@@ -1589,6 +1677,7 @@ pub fn self_test(report_path: &str) {
             buffer_ram_secs: 30.0,
             buffer_dir: root.join("rec"),
             window: 0,
+            game: false,
         };
         // The monitor is named to ffmpeg by handle / output, not by Glint's own number (0.1.35).
         {

@@ -266,6 +266,32 @@ function renderEditorPage() {
     ${list.length ? `<div class="grid m pj-grid">${list.map(projCardHtml).join("")}</div>` : empty}`;
 }
 
+/** 0.1.46 (U3): bring the Editor page's cards up to date without redrawing the page. The same projects in the same
+ *  order: each card that differs is patched in place (its percent, stage text, tags; app.js chromeMorph), or, when
+ *  its shape changed (a job started or ended there), only that card is replaced. Another set or order: render(). */
+function projPatchCards() {
+  if (S.page !== "editor" || S.open || S.renaming) return;
+  const list = projList(), cards = $$("#view .pj-card");
+  if (!list.length || cards.length !== list.length || cards.some((el, i) => el.dataset.pj !== list[i].id) || typeof chromeMorph !== "function") return render();
+  list.forEach((p, i) => {
+    const el = cards[i], html = projCardHtml(p);
+    if (el.__pjHtml === html) return;
+    const tpl = document.createElement("template");
+    tpl.innerHTML = html.trim();
+    const n = tpl.content.firstElementChild;
+    el.__pjHtml = html;
+    if (!n) return;
+    if (chromeShape(el, n)) {
+      for (const at of [...el.attributes]) if (!n.hasAttribute(at.name)) el.removeAttribute(at.name);
+      for (const at of n.attributes) if (el.getAttribute(at.name) !== at.value) el.setAttribute(at.name, at.value);
+      chromeMorph(el, n);
+    } else {
+      n.__pjHtml = html;
+      el.replaceWith(n);
+    }
+  });
+}
+
 async function projNew() {
   const name = await askText(t("Name the new project"), t("Project {n}", { n: projList().length + 1 }), t("Create"));
   if (!name) return;
@@ -775,8 +801,10 @@ function projRenderPanel() {
   const sel = $(".pj-game", aside), games = projLibGames(S.clips);
   if (projLib.game !== "all" && !games.includes(projLib.game)) projLib.game = "all";
   const opts = `<option value="all">${esc(t("All games"))}</option>` + games.map((g) => `<option value="${esc(g)}"${g === projLib.game ? " selected" : ""}>${esc(g)}</option>`).join("");
-  if (sel.innerHTML !== opts) sel.innerHTML = opts;
-  sel.value = projLib.game;
+  // 0.1.46: compared with what was set last (its serialization says selected="", so it never matched and the
+  // options were rebuilt on every call, closing an open game filter).
+  if (sel.__pjOpts !== opts) { sel.innerHTML = opts; sel.__pjOpts = opts; }
+  if (sel.value !== projLib.game) sel.value = projLib.game;
   // The project's clips that are gone from the library (0.1.38): their pieces show empty in the editor.
   const lost = projMissing(projById(aside.dataset.pjFor)), miss = $(".pj-missing", aside);
   if (miss) {
@@ -849,8 +877,9 @@ function projRenderBusy() {
   const html = info ? `<div>${esc(info.text)}</div><div class="progress"><i style="width:${info.pct}%"></i></div>` : "";
   for (const el of [$(".pj-busy", aside), $("#modal .pj-empty-busy")]) {
     if (!el) continue;
-    el.hidden = !info;
-    if (el.innerHTML !== html) el.innerHTML = html;
+    if (el.hidden !== !info) el.hidden = !info;
+    if (typeof chromeHtml === "function") chromeHtml(el, html); // 0.1.46: a tick patches the text and the bar in place
+    else if (el.innerHTML !== html) el.innerHTML = html;
   }
 }
 
@@ -1634,7 +1663,9 @@ if (typeof document !== "undefined" && typeof window !== "undefined" && window._
         projRefresh();
       }
       projRenderBusy();
-      if (S.page === "editor" && !S.open && projList().some((p) => p.busy || projJobOf(p.id))) projRefreshUI();
+      // 0.1.46 (U3): a tick patches the busy project's card in place (projPatchCards); was projRefreshUI() → render()
+      // of the whole page on every "jobs-changed", which closed an open menu or dropdown on the Editor page.
+      if (S.page === "editor" && !S.open && (projList().some((p) => p.busy || projJobOf(p.id)) || $("#view .pj-card-busy"))) projPatchCards();
     });
     // The library changed under the open project's list.
     // A deleted clip makes sources of virtual projects missing (0.1.38): the list is read again, which redraws the panel.
