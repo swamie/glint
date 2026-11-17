@@ -32,7 +32,7 @@ Branch `gamedetect-laptop`, from `v0.1.44`. Nothing was pushed to `main`; the ve
 
 - A row passes only where I looked at frames of the recording.
 - "Only the game's sound" is proven only where another program's sound was playing and measured.
-- Build "0.1.44" is the unchanged release. "final" is this branch's head.
+- Build "0.1.44" is the unchanged release, "fix 1" is commit `6be19b0`, other rows name the commit they ran on. "head" is `f01a19c`, this branch's last code commit (later commits only change this report).
 
 | Game | Store | Window mode | Build | Glint chose | Source | Reason (log) | Frames show the game | Only the game's sound |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -41,19 +41,22 @@ Branch `gamedetect-laptop`, from `v0.1.44`. Nothing was pushed to `main`; the ve
 | Terraria (hand-picked) | Steam | windowed 800×600, in front and behind another window | fix 1 | Terraria | Window | your pick | yes, both | — |
 | Terraria (hand-picked) | Steam | minimized | fix 1 | Terraria | Window | minimized, keeps the last picture | yes (the last picture) | — |
 | Terraria (hand-picked) | Steam | exclusive 1280×800, then exclusive 1920×1200 | fix 1 | Terraria | MonitorDda | exclusive fullscreen | yes | Game track silent exactly while Terraria's own volume was 0, sound otherwise |
-| Terraria | Steam | borderless 1280×800 window in the middle of the desktop, another window over part of it | final | Terraria | Window | library:steam | **yes**, only the game, whole | — |
-| Terraria | Steam | exclusive 1280×800, then "Go Windowed" (1280×800 in the middle) | final | Terraria | MonitorDda, then Window | "no longer in exclusive fullscreen: it no longer covers its monitor" | yes, also with another window in front | — |
-| Terraria | Steam | exclusive 1920×1200, then "Go Windowed" with Borderless on (covers the monitor) | final | Terraria | MonitorDda, then Window | "no longer in exclusive fullscreen: it is in front and the shell does not say D3D fullscreen" | yes, also with another window in front | — |
-| Terraria, method set to Desktop Duplication by hand | Steam | 1280×800 window in the middle | final | Terraria | MonitorDda | "window capture is not available on this PC …: the capture method is set to Desktop Duplication, which records whole monitors" | whole monitor, other windows included (the user's choice, now said so) | — |
+| Terraria | Steam | borderless 1280×800 window in the middle of the desktop, another window over part of it | `4886016` | Terraria | Window | library:steam | **yes**, only the game, whole | — |
+| Terraria | Steam | exclusive 1280×800, then "Go Windowed" (1280×800 in the middle) | `4886016` | Terraria | MonitorDda, then Window | "no longer in exclusive fullscreen: it no longer covers its monitor" | yes, also with another window in front | — |
+| Terraria | Steam | exclusive 1920×1200, then "Go Windowed" with Borderless on (covers the monitor) | head | Terraria | MonitorDda, then Window | "no longer in exclusive fullscreen: it is in front and the shell does not say D3D fullscreen" | yes, also with another window in front | — |
+| Terraria, method set to Desktop Duplication by hand | Steam | 1280×800 window in the middle | `4886016` | Terraria | MonitorDda | "window capture is not available on this PC …: the capture method is set to Desktop Duplication, which records whole monitors" | whole monitor, other windows included (the user's choice, now said so) | — |
 | tModLoader (runs as `dotnet.exe`) | Steam | windowed 800×720 | 0.1.44 | tModLoader | Monitor | "window gave no picture" (**wrong**) | **no**: the whole screen (Steam and other windows), the game behind them | — |
-| tModLoader (hand-picked) | Steam | windowed 800×720, minimized, in front and behind | final | tModLoader | Window | your pick | **yes**, only the game, also while another window covered the whole screen | **yes**: a 1 kHz tone from another program at −24 dB in the Desktop reference track, absent from the Game track (−50 dB, the same as without it) |
-| Minecraft Java (Prism Launcher, its own Java runtime) | — | 854×480 window, then grown to fill the screen | final | Minecraft (`javaw.exe`, by its GLFW window and title) | Window | minecraft | yes, only the game, also while another window was in front | — |
-| Wallpaper Engine (negative case) | Steam | wallpaper running, its UI minimized | final | nothing | Wait | waiting for a game (`wallpaperui.exe` is denied; the wallpaper itself is no top-level window) | n/a | n/a |
+| tModLoader (hand-picked) | Steam | windowed 800×720, minimized, in front and behind | `1b4767c` | tModLoader | Window | your pick | **yes**, only the game, also while another window covered the whole screen | **yes**: a 1 kHz tone from another program at −24 dB in the Desktop reference track, absent from the Game track (−50 dB, the same as without it) |
+| tModLoader | Steam | windowed 800×720 from launch (the AMF stall during its loading), then its own Settings → Video → Go Fullscreen (a borderless 1920×1200 window, no D3D flag), then another program in focus | head | tModLoader | Window throughout | library:steam, seen | **yes**, only the game, also while another program had focus; `glint.log` has the AMF step-down line and no "gave no picture" after it | — |
+| Minecraft Java (Prism Launcher, its own Java runtime) | — | 854×480 window, then grown to fill the screen | head | Minecraft (`javaw.exe`, by its GLFW window and title) | Window | minecraft | yes, only the game, while another program had focus | — |
+| Wallpaper Engine (negative case) | Steam | wallpaper running, its UI minimized | `2da396c` (detection as `1b4767c`; it was no longer running for a check at head) | nothing | Wait | waiting for a game (`wallpaperui.exe` is denied; the wallpaper itself is no top-level window) | n/a | n/a |
 
 Also checked:
 
+- **`--live-check` at head**: its window capture, the window that keeps itself out of capture (black, as it should be), the monitor by handle and Desktop Duplication all give the right picture.
+
 - **The real app**, not the tool, with a test data folder. Its log measures windows in physical pixels at 150 % ("1920x1200 on monitor 1 of 1920x1200" for a borderless Terraria, not 1280×800). It reads the method set to Desktop Duplication and gives the new reason.
-- **The UI texts in English, Korean and Greek**, rendered through `ui/` with `tools/serve.js`: the switch's reason, the sub-reason and the status bar.
+- **The UI texts in English, Korean and Greek**: the return values of `capWhyText`, `capWhyDetail` and `capStatusText` in a browser preview of `ui/` (`tools/serve.js`, the mock backend). Access to the real app's window was denied, so the texts were not seen inside the app itself.
 - **The yellow border.** With the border forced on (`display_border=1`), Windows drew it around Terraria's window on the screen. The 224 frames captured from that window have no yellow at any edge. The border is on the screen only and never in the clip.
 
 ## Bugs found and fixed
@@ -77,6 +80,8 @@ Also checked:
    - Cause: `cfgs` left the failed window at once, but `decide` held the old source and reason.
    - Fix: leaving a failed window capture is no longer held. Commit `4886016`.
 5. **GAME mode recorded the whole monitor whenever "auto" picked Desktop Duplication for monitors** (Windows 10, or Windows' Screenshot-borders setting off). The owner's decision: GAME mode now captures the game's window by Graphics Capture whenever ffmpeg has `gfxcapture`. Only Desktop Duplication chosen by hand, or an ffmpeg without `gfxcapture`, leaves GAME mode without window capture, and the reason says so. Commit `f01a19c`.
+   - **The cost:** on Windows 10, and on Windows 11 with the Screenshot-borders setting off, every GAME-mode player now sees Windows' yellow border around the game's window on the screen. It is not in the clip: with the border forced on here, Windows drew it on the screen and none of the 224 captured frames had it. The README's Windows 10 paragraph says the opposite and needs changing (see "For the merge").
+   - **Check before release** (the owner's main PC): turn "Let desktop apps turn off the screenshot border" off, run `glint.exe --detect-watch <folder>` with a game running, and confirm that `looks.jsonl` shows a source `gfxcapture=hwnd=…` with frames, that ffmpeg only warns about the border, and that the clips show the game.
 
 Each fix has checks in `--capmode-test`, built from the recorded window states.
 
@@ -129,6 +134,14 @@ One existing scenario changed its expectation (bug 4): a fullscreen window whose
 - **Terraria mutes itself when it is not in front** (its own setting), so its Game track is silent then. Not a Glint issue.
 - **The GNU build prints `ld.exe: .rsrc merge failure: multiple non-default manifests`.** The built app is still per-monitor DPI aware: see the physical-pixel log line above.
 
+## For the merge
+
+- **README, now stale:** the "Windows 10" paragraph (Auto uses Desktop Duplication there, so no border: GAME mode now uses window capture there) and the Game or Desktop section's fallback sentence (the whole monitor is now recorded only when Desktop Duplication is chosen by hand or ffmpeg lacks `gfxcapture`, or the window gives no picture).
+- **Changelog:** bugs 1 to 5 and the readable reasons.
+- **`ui/capture2.js`:** its "choose Desktop Duplication here" border hint needs a GAME-mode wording.
+- **The ~4 s of desktop** recorded while leaving exclusive fullscreen (see "Other observations"), not changed.
+- **Not committed, on purpose:** frames and clips of this session (they show private windows) stay on the laptop.
+
 ## What I could not test
 
 - **Hybrid graphics:** this laptop has no dedicated GPU.
@@ -137,6 +150,5 @@ One existing scenario changed its expectation (bug 4): a fullscreen window whose
 - **Albion Online** (Xbox app, BattlEye twin `Albion-Online_BE.exe`): installed, but it needs the owner's sign-in and play. Skipped.
 - **Overwatch** (Battle.net): installed, but Battle.net is not. Skipped.
 - **Roblox, a Microsoft Store game:** not installed.
-- **tModLoader in fullscreen on the final build:** my injected Alt+Enter did not switch it.
 - **Bug 5 under its real conditions** (Windows 10, or the Screenshot-borders setting off): this PC is neither, and I did not change a Windows privacy setting. It is covered by a unit test plus the window-capture rows above.
 - **The second-chance rule of bug 3** (a failed window retried after a mode change): covered by a unit test only. With the per-run wait, no window failed again live.
