@@ -29,8 +29,6 @@ function capWhyText(why) {
 function capWhyDetail(detail) {
   switch (detail) {
     case "setting_dda": return t("The capture method is set to Desktop Duplication, which records whole monitors. Choose Auto or Graphics Capture under Capture to record only the game's window.");
-    case "border": return t("Windows does not let Glint hide the yellow capture border (Settings → Privacy & security → Screenshot borders), so capture method Auto uses Desktop Duplication, which records whole monitors.");
-    case "windows10": return t("Windows 10 cannot hide the capture border, so capture method Auto uses Desktop Duplication, which records whole monitors.");
     case "no_gfxcapture": return t("This ffmpeg has no window capture. Update ffmpeg under Settings → Components.");
     case "no_picture": return t("Its window's capture ran 12 seconds without a picture.");
     case "refused": return t("ffmpeg could not capture its window.");

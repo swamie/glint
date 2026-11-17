@@ -221,14 +221,23 @@ pub fn cfg_for(s: &Settings, t: &Target, m: &Monitor, window: bool) -> CaptureCf
         c.width = w;
         c.height = h;
         c.scaled = scaled;
+        // One window is only ever captured by Graphics Capture, whatever "auto" picks for monitors.
+        c.method = "wgc".into();
     }
     c
 }
 
-/// This PC can capture one window: ffmpeg has Graphics Capture and the capture method (the
-/// setting, or what "auto" picks: Desktop Duplication on Windows 10) is Graphics Capture.
+/// This PC can capture one window in GAME mode: ffmpeg has Graphics Capture and the capture method
+/// is not set to Desktop Duplication by hand.
+///
+/// Until the laptop session this also required "auto" to pick Graphics Capture, which it does not on
+/// Windows 10 or when Windows' "Screenshot borders" setting does not let apps hide the yellow border:
+/// GAME mode then recorded the game's whole monitor, the desktop and every window over the game
+/// included, the reported "recording my entire screen". The owner's call: GAME mode records the
+/// game's window there too. Windows may then draw its yellow border around the game's window on the
+/// screen; the recorded picture is the window's own (see GAMEDETECT_REPORT.md).
 pub fn window_capture_ok(s: &Settings) -> bool {
-    util::find_exe(&s.ffmpeg_path, "ffmpeg").is_some_and(|f| crate::recorder::resolve_method(&f, &s.method) == "wgc")
+    s.method != "dda" && util::find_exe(&s.ffmpeg_path, "ffmpeg").is_some_and(|f| crate::recorder::has_wgc(&f))
 }
 
 /// Game mode's capture list: the game, or nothing (the recorder waits).
@@ -324,7 +333,7 @@ pub fn found(core: &Core) -> Option<(String, u32, String)> {
         gamedetect::library_hint(&fg.exe, &lib);
     }
     let method = util::find_exe(&s.ffmpeg_path, "ffmpeg").map(|f| crate::recorder::resolve_method(&f, &s.method));
-    let env = gamedetect::Env { window_capture: method.as_deref() == Some("wgc"), dda: method.as_deref() == Some("dda"), d3d_fullscreen: win::d3d_fullscreen(), now: clock() };
+    let env = gamedetect::Env { window_capture: window_capture_ok(&s), dda: method.as_deref() == Some("dda"), d3d_fullscreen: win::d3d_fullscreen(), now: clock() };
     let mut st = state().lock().unwrap();
     // A window of the game, as the log describes it: no title (titles can be private), its size
     // against its monitor's mode, and whether it covers it.
@@ -865,6 +874,13 @@ fn test_targets(r: &mut Report) {
     let t = Target { hwnd: 0x2a0b4, pid: 7, exe: "x.exe".into(), name: "X".into(), monitor: 1, width: 1919, height: 1079 };
     let c = cfg_for(&s, &t, &mons[1], true);
     r.check("cfg: window capture at even numbers, no desktop sound, the game's monitor", c.window == 0x2a0b4 && (c.width, c.height) == (1918, 1078) && !c.scaled && !c.desktop_audio && c.mic && c.monitor == 1 && c.hz == 60, &format!("{}x{} scaled {} monitor {}", c.width, c.height, c.scaled, c.monitor));
+    // The owner's call (laptop session): the window is captured by Graphics Capture whatever "auto"
+    // picks for monitors (Windows 10, Windows' Screenshot-borders setting); only "dda" set by hand
+    // (or an ffmpeg without gfxcapture) leaves GAME mode without window capture.
+    let auto_s = Settings { method: "auto".into(), ..s.clone() };
+    let dda_s = Settings { method: "dda".into(), ..s.clone() };
+    let have_wgc = util::find_exe(&auto_s.ffmpeg_path, "ffmpeg").is_some_and(|f| crate::recorder::has_wgc(&f));
+    r.check("cfg: GAME mode captures the window by Graphics Capture under \"auto\", whatever auto picks for monitors; \"dda\" by hand means no window capture", cfg_for(&auto_s, &t, &mons[1], true).method == "wgc" && cfg_for(&dda_s, &t, &mons[1], true).method == "wgc" && !window_capture_ok(&dda_s) && window_capture_ok(&auto_s) == have_wgc && cfg_for(&auto_s, &t, &mons[1], false).method == "auto", &format!("gfxcapture here: {have_wgc}"));
     let f = cfg_for(&s, &t, &mons[1], false);
     let desk = core::capture_cfg_for(&s, &mons[1], s.max_clip_secs());
     r.check("cfg: the fallback is the monitor as desktop mode records it, without desktop sound", f.window == 0 && f.width == desk.width && f.height == desk.height && !f.desktop_audio && CaptureCfg { desktop_audio: true, ..f.clone() } == desk, "");
