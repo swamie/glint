@@ -349,4 +349,5 @@ glintAddLanguage("ko", "한국어", {
   "A project could open empty and lose its edit. That is fixed, and an edit that fails to open is never overwritten.": "프로젝트가 빈 채로 열려 편집이 사라질 수 있던 문제를 고쳤어요. 열리지 않은 편집은 절대 덮어쓰지 않아요.",
   "A long song on the timeline can be clicked anywhere, not only at its very end.": "타임라인의 긴 노래를 맨 끝만이 아니라 어디서든 클릭할 수 있어요.",
   "A new choice in Settings, under Capture, lets an NVIDIA graphics card read the video while the editor exports. Exports are not faster, but your processor has less to do.": "설정의 캡처에 새 선택지가 생겼어요. 편집기가 내보내는 동안 NVIDIA 그래픽 카드가 영상을 읽게 할 수 있어요. 내보내기가 빨라지지는 않지만 프로세서가 할 일이 줄어요.",
+  "Polls from the developer now show up within minutes. Some copies of Glint used to wait up to a day before looking for them.": "개발자의 설문이 이제 몇 분 안에 나타나요. 전에는 일부 Glint가 설문을 찾기까지 최대 하루를 기다렸어요.",
 });

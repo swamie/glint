@@ -40,6 +40,12 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.47", date: "2026-11-18",
+    fixed: [
+      t("Polls from the developer now show up within minutes. Some copies of Glint used to wait up to a day before looking for them."),
+    ],
+  },
+  {
     version: "0.1.46", date: "2026-11-17", gold: true,
     new: [
       { title: t("Animated backdrops."), text: t("Five quiet moving backgrounds for Glint's pages: Snowfall, Aurora, Starfield, Fireflies and Drift. Pick one in Settings. They are off until you choose one, and they pause when Glint is not the window in front."), go: "settings:backdrop", label: t("Open the setting") },

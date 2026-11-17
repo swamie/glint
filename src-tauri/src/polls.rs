@@ -30,6 +30,9 @@ pub const ADDRESS_URL: &str = "https://raw.githubusercontent.com/swamie/glint/ma
 const ADDRESS_FOR: u64 = 24 * 3600;
 /// After a failed read of the address, try again after this long.
 const ADDRESS_RETRY: u64 = 3600;
+/// An address file that is empty (no server yet) is read again after this long, so a server
+/// published later is found within minutes and not the next day (0.1.47).
+const ADDRESS_NONE: u64 = 900;
 /// The first look after Glint starts, and the time between looks.
 const FIRST_LOOK: u64 = 30;
 const LOOK_EVERY: u64 = 6 * 3600;
@@ -185,6 +188,26 @@ fn cache_file() -> PathBuf {
     util::data_dir().join("polls-address.json")
 }
 
+/// How long a cached address stays good: a day when there is one, an hour after a failed read, a quarter of an hour when
+/// the file named no server (an address published later is then found soon). 0.1.47: it used to be a day for all of them.
+fn address_keep(c: &AddressCache) -> u64 {
+    if c.failed {
+        ADDRESS_RETRY
+    } else if c.address.is_empty() {
+        ADDRESS_NONE
+    } else {
+        ADDRESS_FOR
+    }
+}
+
+/// Drop the cached address when it says "no server", so the next look reads the file again (the top bar's button does this).
+fn forget_empty_address() {
+    let cache: AddressCache = fs::read_to_string(cache_file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    if cache.address.is_empty() {
+        let _ = fs::remove_file(cache_file());
+    }
+}
+
 fn now() -> u64 {
     util::unix_ms() / 1000
 }
@@ -192,7 +215,7 @@ fn now() -> u64 {
 /// The server's address ("" = none), from the cache when it is fresh, else read again.
 fn address(net: &Net) -> Result<String, String> {
     let cache: AddressCache = fs::read_to_string(cache_file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-    let keep = if cache.failed { ADDRESS_RETRY } else { ADDRESS_FOR };
+    let keep = address_keep(&cache);
     if cache.source == net.address_url && now() < cache.fetched + keep && now() + 60 >= cache.fetched {
         return Ok(cache.address);
     }
@@ -446,6 +469,7 @@ pub fn polls_list(core: St, refresh: Option<bool>) -> Vec<Poll> {
         return Vec::new();
     }
     if refresh == Some(true) && now() >= CACHE.lock().unwrap().0 + MANUAL_EVERY {
+        forget_empty_address(); // "no server" is never held against a look the user asked for
         self::refresh(&core);
     }
     CACHE.lock().unwrap().1.clone()
@@ -681,6 +705,24 @@ pub fn self_test(report_path: &str) {
     *server.address.lock().unwrap() = String::new();
     let before = server.count();
     check("an empty address file: no polls, no error, nothing else asked", list_with(&net, true).is_ok_and(|l| l.is_empty()) && server.count() == before + 1);
+    // 0.1.47: the owner's case. An empty address was read and cached; the address is published afterwards.
+    let unit = |address: &str, failed: bool| address_keep(&AddressCache { source: String::new(), address: address.into(), fetched: 0, failed });
+    check("an empty address is read again after a quarter of an hour, a failed read after an hour, an address after a day", unit("", false) == 900 && unit("", true) == 3600 && unit("https://polls.example.com", false) == 24 * 3600);
+    forget_address();
+    *server.address.lock().unwrap() = String::new();
+    let _ = list_with(&net, true); // caches "no server"
+    *server.address.lock().unwrap() = server.base.clone(); // the owner publishes the address
+    check("a cached empty address still holds for a few minutes (no request storm)", list_with(&net, true).is_ok_and(|l| l.is_empty()));
+    forget_empty_address(); // what the top bar's button does before it asks again
+    check("after the button, the published server is found and its polls shown", list_with(&net, true).is_ok_and(|l| l.len() == 2 && l[0].id == 7));
+    let before = server.count();
+    forget_empty_address(); // there is an address now: it is kept
+    let _ = list_with(&net, true);
+    check("a cached real address is not dropped by the button", server.count() == before + 1 && server.got.lock().unwrap().last().is_some_and(|r| r.1.starts_with("/v1/polls")));
+    // An old cache file (written by 0.1.45 / 0.1.46: empty, "not failed", fetched 20 minutes ago) is read again at once.
+    let old = AddressCache { source: net.address_url.clone(), address: String::new(), fetched: now() - 20 * 60, failed: false };
+    let _ = fs::write(cache_file(), serde_json::to_string(&old).unwrap_or_default());
+    check("a cache file from 0.1.46 that says \"no server\" is not trusted for a day", list_with(&net, true).is_ok_and(|l| l.len() == 2));
     forget_address();
     *server.address.lock().unwrap() = "http://polls.example.com".into();
     let before = server.count();
