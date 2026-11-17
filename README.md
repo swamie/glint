@@ -294,6 +294,12 @@ For builders: the destination is not in the source. `src-tauri/bug-webhook.txt` 
 
 **Apply recommended settings.** The button at the top of Capture works out encoder, capture method, resolution, frame rate, quality and buffer mode from this PC's graphics card, screen, memory and Windows version, lists every change with its reason, and applies them only after you agree. Results can be inconsistent: treat them as a start and tweak to your liking. Every choice that is on Auto shows what it is using, such as "Auto (NVIDIA NVENC)".
 
+## Plugins
+
+Glint can take optional add-ons that are not part of its own build. A plugin is a folder in `%APPDATA%\Glint\plugins\` with a `plugin.json`; with no plugin there, nothing plugin-related runs. A plugin can load a script into Glint's window and talk to Glint from its own program over a local port (127.0.0.1 only, with a random token in `plugins\api.json`). An empty file named `disabled` in a plugin's folder turns it off. How it works: `src-tauri/src/plugins.rs`.
+
+**Claude plugin.** `plugins/claude-mcp` lets Claude edit in the editor over MCP (import, cut, trim, reorder, add audio and text, export) and gives it transcripts, loudness and frame screenshots so it can hear and see the clips. It reads only folders you share with it. Install and use: [plugins/claude-mcp/README.md](plugins/claude-mcp/README.md).
+
 ## Blur
 
 The Blur page starts with a live preview, which can be folded away with its Hide button (it is then not drawn at all): the same moving shapes drawn as the original and as Blur would render them with the current settings, following Blur's own maths (frames blended per output frame, weighting, gamma, interpolation, filters). It updates while a control is dragged, and a line under it says in plain numbers what will happen, including when a combination would do nothing. Quick presets set the common fields; less-used settings are in collapsible groups.
@@ -366,6 +372,7 @@ src-tauri/src/
   rules.rs      render rules: a chain of steps (color, Blur, upscale, compress, GIF, copy) as one job
   editor.rs     per-track audio, waveforms and film strip for the editor; export
   jobs.rs       background render queue
+  plugins.rs    optional add-ons: loads an installed plugin's script, its local API (off with none installed)
   import.rs     import from other clipping software
   lang.rs       the backend's own texts (overlay, tray) in other languages
   update.rs     update check, download and swap from GitHub releases
@@ -373,6 +380,7 @@ src-tauri/src/
   core.rs       shared state, settings application, status
   app.rs        Tauri window, tray, toast, UI commands
   bench.rs      headless benchmark     keys.rs  hotkey self-test
+plugins/        optional add-ons, not part of the build (claude-mcp: Claude in the editor over MCP)
 tools/          i18n-check.js (translation coverage), serve.js (serve ui/ to a browser; mock.js stands in for the backend)
 ui/             index.html, style.css, app.js (library, settings), editor.js/.css (viewer, player, editor),
                 editmodel.js (the edit model), timeline.js/.css, jobs.js/.css (renders button), importer.js/.css,
