@@ -26,6 +26,7 @@ Branch `gamedetect-laptop`, from `v0.1.44`. Nothing was pushed to `main`; the ve
   - `--desktop-audio`: adds a Desktop track as the reference for the Game track.
   - `--every N`, `--settle N`, `--clip-secs N`, `--secs N`.
 - Refuses to run without `GLINT_DATA_DIR`.
+- Outside the files named for this task, only `main.rs` changed: the module line and the six-line `--detect-watch` dispatch, beside the other self-test flags.
 
 ## Matrix
 
