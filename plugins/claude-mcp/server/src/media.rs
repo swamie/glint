@@ -278,6 +278,23 @@ pub fn transcribe(path: &Path, track: u32, from: f64, to: Option<f64>, language:
     Ok(out)
 }
 
+/// The newest whisper.cpp release that has Windows binaries (the very newest sometimes has none).
+fn whisper_zip_url() -> Result<String, String> {
+    let out = Command::new("curl.exe")
+        .args(["-sL", "--fail", "-H", "User-Agent: glint-mcp", "https://api.github.com/repos/ggml-org/whisper.cpp/releases?per_page=30"])
+        .output()
+        .map_err(|e| format!("curl.exe could not start: {e}"))?;
+    let list: Value = serde_json::from_slice(&out.stdout).map_err(|_| "Could not read whisper.cpp's release list from GitHub".to_string())?;
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["draft"] != json!(true))
+        .flat_map(|r| r["assets"].as_array().cloned().unwrap_or_default())
+        .find(|a| a["name"] == "whisper-bin-x64.zip")
+        .and_then(|a| a["browser_download_url"].as_str().map(str::to_string))
+        .ok_or_else(|| "No recent whisper.cpp release has whisper-bin-x64.zip".to_string())
+}
+
 /// Download whisper.cpp and a model into the plugin's folder (Windows: curl.exe and tar.exe come with Windows 10+).
 pub fn setup_whisper(model: &str) -> Result<String, String> {
     let dir = plugin_dir().join("whisper");
@@ -289,8 +306,9 @@ pub fn setup_whisper(model: &str) -> Result<String, String> {
         }
         let zip = dir.join("whisper-bin-x64.zip");
         eprintln!("Downloading whisper.cpp ...");
+        let url = whisper_zip_url()?;
         let mut c = Command::new("curl.exe");
-        c.args(["-L", "--fail", "-o"]).arg(&zip).arg("https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip");
+        c.args(["-L", "--fail", "-o"]).arg(&zip).arg(&url);
         if !c.status().map(|s| s.success()).unwrap_or(false) {
             return Err("Downloading whisper.cpp failed".into());
         }
