@@ -40,6 +40,17 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.48", date: "2026-11-18",
+    improved: [
+      { text: t("When GAME mode records your whole screen instead of only the game, the switch's menu and the status bar now say why and what you can do about it."), go: "capmode", label: t("Show me") },
+    ],
+    fixed: [
+      t("In GAME mode, a game that goes from fullscreen to a window is recorded as a window again. Glint used to keep recording the whole screen around it, and nothing at all while another window was in front."),
+      t("In GAME mode, a game that took a while to start could be recorded as the whole screen, with other windows in front of it, until it closed. This was seen with AMD graphics."),
+      t("On Windows 10, and when Windows does not let apps hide the yellow capture border, GAME mode now records only the game instead of the whole screen. Windows may draw a yellow border around the game on your screen, but it is not in your clips."),
+    ],
+  },
+  {
     version: "0.1.47", date: "2026-11-18",
     fixed: [
       t("Polls from the developer now show up within minutes. Some copies of Glint used to wait up to a day before looking for them."),

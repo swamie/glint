@@ -74,7 +74,7 @@ struct State {
     /// Windows whose capture failed twice in a row: their monitor is recorded instead.
     failed: Vec<u64>,
     /// A window capture that has not delivered its first frame yet: (pipeline id, window, since).
-    silent: Option<(u64, u64, std::time::Instant)>,
+    silent: Option<(u64, u64, u32, std::time::Instant)>,
     /// The last game recorded: a clip of the buffer it left after it exited is filed under it.
     last: Option<String>,
     /// 0.1.41: what `gamedetect::decide` keeps between looks, its last source and reason, and the
@@ -83,6 +83,50 @@ struct State {
     source: Option<Source>,
     why: Why,
     logged: String,
+    /// Every program the last look counted as a game, with its evidence (for `--detect-watch`).
+    cands: Vec<gamedetect::Cand>,
+    /// Why each failed window failed: "no_picture" or "refused" (`Why::detail`).
+    fail_why: Vec<(u64, &'static str)>,
+}
+
+fn set_fail_why(list: &mut Vec<(u64, &'static str)>, h: u64, why: &'static str) {
+    list.retain(|(x, _)| *x != h);
+    list.push((h, why));
+}
+
+/// Why this PC records no window in GAME mode (`Why::detail` of "no_window_capture"), "" when it
+/// can: no ffmpeg, the method set to Desktop Duplication, an ffmpeg without `gfxcapture`, Windows 10,
+/// or Windows' "Screenshot borders" setting (capture method Auto then takes Desktop Duplication;
+/// see `recorder::resolve_method`). Without this the user only saw "not available on this PC".
+pub fn method_detail(s: &Settings) -> &'static str {
+    let Some(f) = util::find_exe(&s.ffmpeg_path, "ffmpeg") else { return "no_ffmpeg" };
+    match s.method.as_str() {
+        "dda" => "setting_dda",
+        "wgc" => "",
+        _ if !crate::recorder::has_wgc(&f) => "no_gfxcapture",
+        _ if { let b = win::windows_build(); b != 0 && b < crate::polish::BORDERLESS_WGC_BUILD } => "windows10",
+        _ if !crate::capture2::border_info().can_remove => "border",
+        _ => "",
+    }
+}
+
+/// What the last look decided, for the test tool `--detect-watch` (detectwatch.rs).
+#[derive(Clone, Debug, Default)]
+pub struct WatchView {
+    pub why: Why,
+    pub source: Option<Source>,
+    pub target: Option<Target>,
+    pub candidates: Vec<gamedetect::Cand>,
+    /// Windows whose capture gave no picture, and windows seen in exclusive fullscreen.
+    pub failed: Vec<u64>,
+    pub exclusive: Vec<u64>,
+}
+
+pub fn watch_view() -> WatchView {
+    let st = state().lock().unwrap();
+    let mut failed = st.mem.failed.clone();
+    failed.extend(st.failed.iter().copied().filter(|h| !st.mem.failed.contains(h)));
+    WatchView { why: st.why.clone(), source: st.source, target: st.target.clone(), candidates: st.cands.clone(), failed, exclusive: st.mem.exclusive.clone() }
 }
 
 /// The least of the asked range a clip taken while waiting (the game exited) must hold, in seconds.
@@ -111,15 +155,26 @@ pub fn last_game() -> Option<String> {
 const FIRST_FRAME_SECS: u64 = 12;
 
 /// Whether the window capture `c` has gone silent from its start for too long (see `FIRST_FRAME_SECS`).
-fn never_delivered(silent: &mut Option<(u64, u64, std::time::Instant)>, c: &CapStats, minimized: bool, now: std::time::Instant) -> bool {
+///
+/// The wait is per ffmpeg run (`RecStatus::pid`), not per capture: the recorder restarts ffmpeg when
+/// the encoder refuses the capture's frames (AMD's AMF on integrated Radeon graphics: two failed runs,
+/// then frames through system memory). Counted across those runs, the wait ran out about a second
+/// after the encoder was fixed, on a window that was fine, and GAME mode recorded the whole monitor
+/// for the rest of the window's life (seen with tModLoader on a Radeon 840M, 0.1.44). Between runs
+/// (no ffmpeg) nothing is counted; a window ffmpeg itself cannot capture is the recorder's
+/// `window_failed`.
+fn never_delivered(silent: &mut Option<(u64, u64, u32, std::time::Instant)>, c: &CapStats, minimized: bool, now: std::time::Instant) -> bool {
     if c.window == 0 || c.frames > 0 || minimized {
         *silent = None;
         return false;
     }
+    if c.status.pid == 0 {
+        return false;
+    }
     match silent {
-        Some((id, w, since)) if *id == c.id && *w == c.window => now.duration_since(*since).as_secs() >= FIRST_FRAME_SECS,
+        Some((id, w, pid, since)) if *id == c.id && *w == c.window && *pid == c.status.pid => now.duration_since(*since).as_secs() >= FIRST_FRAME_SECS,
         _ => {
-            *silent = Some((c.id, c.window, now));
+            *silent = Some((c.id, c.window, c.status.pid, now));
             false
         }
     }
@@ -166,14 +221,23 @@ pub fn cfg_for(s: &Settings, t: &Target, m: &Monitor, window: bool) -> CaptureCf
         c.width = w;
         c.height = h;
         c.scaled = scaled;
+        // One window is only ever captured by Graphics Capture, whatever "auto" picks for monitors.
+        c.method = "wgc".into();
     }
     c
 }
 
-/// This PC can capture one window: ffmpeg has Graphics Capture and the capture method (the
-/// setting, or what "auto" picks: Desktop Duplication on Windows 10) is Graphics Capture.
+/// This PC can capture one window in GAME mode: ffmpeg has Graphics Capture and the capture method
+/// is not set to Desktop Duplication by hand.
+///
+/// Until the laptop session this also required "auto" to pick Graphics Capture, which it does not on
+/// Windows 10 or when Windows' "Screenshot borders" setting does not let apps hide the yellow border:
+/// GAME mode then recorded the game's whole monitor, the desktop and every window over the game
+/// included, the reported "recording my entire screen". The owner's call: GAME mode records the
+/// game's window there too. Windows may then draw its yellow border around the game's window on the
+/// screen; the recorded picture is the window's own (see GAMEDETECT_REPORT.md).
 pub fn window_capture_ok(s: &Settings) -> bool {
-    util::find_exe(&s.ffmpeg_path, "ffmpeg").is_some_and(|f| crate::recorder::resolve_method(&f, &s.method) == "wgc")
+    s.method != "dda" && util::find_exe(&s.ffmpeg_path, "ffmpeg").is_some_and(|f| crate::recorder::has_wgc(&f))
 }
 
 /// Game mode's capture list: the game, or nothing (the recorder waits).
@@ -296,20 +360,33 @@ pub fn found(core: &Core) -> Option<(String, u32, String)> {
         gamedetect::library_hint(&fg.exe, &lib);
     }
     let method = util::find_exe(&s.ffmpeg_path, "ffmpeg").map(|f| crate::recorder::resolve_method(&f, &s.method));
-    let env = gamedetect::Env { window_capture: method.as_deref() == Some("wgc"), dda: method.as_deref() == Some("dda"), d3d_fullscreen: win::d3d_fullscreen(), now: clock() };
+    let env = gamedetect::Env { window_capture: window_capture_ok(&s), dda: method.as_deref() == Some("dda"), d3d_fullscreen: win::d3d_fullscreen(), now: clock() };
     let mut st = state().lock().unwrap();
+    // A window of the game, as the log describes it: no title (titles can be private), its size
+    // against its monitor's mode, and whether it covers it.
+    let facts = |h: u64| -> String {
+        match wins.iter().find(|w| w.hwnd == h) {
+            Some(w) => {
+                let mon = mons.get(w.monitor as usize).map(|m| format!("{}x{}", m.width, m.height)).unwrap_or_else(|| "?".into());
+                format!("window {h:#x} ({}, {}x{} on monitor {} of {mon}{}{}{})", games::exe_key(&w.exe), w.width, w.height, w.monitor + 1, if w.fullscreen { ", covers it" } else { "" }, if w.minimized { ", minimized" } else { "" }, if w.foreground { ", in front" } else { "" })
+            }
+            None => format!("window {h:#x}"),
+        }
+    };
     for c in caps.iter().filter(|c| c.window != 0 && c.status.window_failed) {
         if !st.mem.failed.contains(&c.window) {
-            util::log(&format!("game mode: window {:#x} could not be captured", c.window));
+            util::log(&format!("game mode: {} could not be captured: ffmpeg refused it twice in a row (encoder {}, last error: {})", facts(c.window), c.status.encoder, if c.status.error.is_empty() { "none" } else { &c.status.error }));
             st.mem.failed.push(c.window);
+            set_fail_why(&mut st.fail_why, c.window, "refused");
         }
     }
     if let Some(c) = caps.iter().find(|c| c.game) {
         let minimized = wins.iter().find(|w| w.hwnd == c.window).map_or(true, |w| w.minimized);
         let mut silent = st.silent.take();
         if never_delivered(&mut silent, c, minimized, std::time::Instant::now()) && !st.mem.failed.contains(&c.window) {
-            util::log(&format!("game mode: window {:#x} gave no picture in {FIRST_FRAME_SECS} s", c.window));
+            util::log(&format!("game mode: {} gave no picture in {FIRST_FRAME_SECS} s of one capture run (ffmpeg {}, by {}, encoder {}, last error: {})", facts(c.window), c.status.pid, c.status.method, c.status.encoder, if c.status.error.is_empty() { "none" } else { &c.status.error }));
             st.mem.failed.push(c.window);
+            set_fail_why(&mut st.fail_why, c.window, "no_picture");
             silent = None;
         }
         st.silent = silent;
@@ -317,7 +394,32 @@ pub fn found(core: &Core) -> Option<(String, u32, String)> {
     st.failed.retain(|h| wins.iter().any(|w| w.hwnd == *h));
     let prefs = gamedetect::Prefs { auto: s.game_auto, pick: &s.game_pick, pick_path: &s.game_pick_path, games: &s.game_exes, not_games: &s.not_game_exes, seen: &seen };
     let mut mem = std::mem::take(&mut st.mem);
-    let d = gamedetect::decide(&wins, &lib, &prefs, &env, &mut mem, &win::process_alive);
+    let (failed_before, exclusive_before) = (mem.failed.clone(), mem.exclusive.clone());
+    let mut d = gamedetect::decide(&wins, &lib, &prefs, &env, &mut mem, &win::process_alive);
+    // Every mark set or cleared, once, with the rule that did it (gamedetect.rs keeps the rules).
+    for h in mem.exclusive.iter().filter(|h| !exclusive_before.contains(h)) {
+        let rule = if env.d3d_fullscreen { "in front and covering its monitor while the shell says D3D fullscreen" } else { "covering its monitor while its window capture gave nothing" };
+        util::log(&format!("game mode: {} is in exclusive fullscreen: {rule}", facts(*h)));
+    }
+    for h in exclusive_before.iter().filter(|h| !mem.exclusive.contains(h) && wins.iter().any(|w| w.hwnd == **h)) {
+        let w = wins.iter().find(|w| w.hwnd == *h);
+        let rule = match w {
+            Some(w) if !w.fullscreen && !w.minimized => "it no longer covers its monitor",
+            Some(w) if w.foreground && !env.d3d_fullscreen => "it is in front and the shell does not say D3D fullscreen",
+            _ => "it changed mode",
+        };
+        util::log(&format!("game mode: {} is no longer in exclusive fullscreen: {rule}", facts(*h)));
+    }
+    for h in failed_before.iter().filter(|h| !mem.failed.contains(h) && wins.iter().any(|w| w.hwnd == **h)) {
+        util::log(&format!("game mode: {} changed mode since its capture failed: its window is tried again", facts(*h)));
+    }
+    st.fail_why.retain(|(h, _)| mem.failed.contains(h));
+    if d.why.code == "no_window_capture" {
+        d.why.detail = method_detail(&s).into();
+    } else if d.why.code == "window_failed" {
+        let h = d.window.map(|i| wins[i].hwnd);
+        d.why.detail = st.fail_why.iter().find(|(x, _)| Some(*x) == h).map(|(_, r)| r.to_string()).unwrap_or_default();
+    }
     st.mem = mem;
     let prev = st.target.clone();
     let next = match d.window {
@@ -334,14 +436,23 @@ pub fn found(core: &Core) -> Option<(String, u32, String)> {
     // One log line per change of what is decided (never per look).
     let key = format!("{}|{}|{:?}|{:?}", d.why.code, d.why.game, d.source, next.as_ref().map(|t| t.hwnd));
     if key != st.logged {
+        // Self-contained: a bug report carries only the end of the log, so each change says the
+        // window, its monitor, the shell's state, the capture method and why, and the encoder.
+        let m = method.as_deref().unwrap_or("?");
+        let why_method = match method_detail(&s) {
+            "" => String::new(),
+            code => format!(" ({})", gamedetect::detail_text(code)),
+        };
+        let enc = caps.first().map(|c| format!(", encoder {}", if c.status.encoder.is_empty() { "?" } else { &c.status.encoder })).unwrap_or_default();
         let detail = match &next {
-            Some(t) => format!(" ({}, window {:#x}, {}x{} on monitor {}, by {})", games::exe_key(&t.exe), t.hwnd, t.width, t.height, t.monitor + 1, source_name(d.source, method.as_deref().unwrap_or("?"))),
+            Some(t) => format!(" | {}; recorded by {}; shell D3D fullscreen {}; method {:?} -> {m}{why_method}{enc}", facts(t.hwnd), source_name(d.source, m), if env.d3d_fullscreen { "yes" } else { "no" }, s.method),
             None => String::new(),
         };
         util::log(&format!("game mode: {}{detail}", d.why.line()));
         st.logged = key;
     }
     st.why = d.why;
+    st.cands = d.candidates;
     st.source = Some(d.source);
     if let Some(t) = &next {
         st.last = Some(t.name.clone());
@@ -795,6 +906,13 @@ fn test_targets(r: &mut Report) {
     let t = Target { hwnd: 0x2a0b4, pid: 7, exe: "x.exe".into(), name: "X".into(), monitor: 1, width: 1919, height: 1079 };
     let c = cfg_for(&s, &t, &mons[1], true);
     r.check("cfg: window capture at even numbers, no desktop sound, the game's monitor", c.window == 0x2a0b4 && (c.width, c.height) == (1918, 1078) && !c.scaled && !c.desktop_audio && c.mic && c.monitor == 1 && c.hz == 60, &format!("{}x{} scaled {} monitor {}", c.width, c.height, c.scaled, c.monitor));
+    // The owner's call (laptop session): the window is captured by Graphics Capture whatever "auto"
+    // picks for monitors (Windows 10, Windows' Screenshot-borders setting); only "dda" set by hand
+    // (or an ffmpeg without gfxcapture) leaves GAME mode without window capture.
+    let auto_s = Settings { method: "auto".into(), ..s.clone() };
+    let dda_s = Settings { method: "dda".into(), ..s.clone() };
+    let have_wgc = util::find_exe(&auto_s.ffmpeg_path, "ffmpeg").is_some_and(|f| crate::recorder::has_wgc(&f));
+    r.check("cfg: GAME mode captures the window by Graphics Capture under \"auto\", whatever auto picks for monitors; \"dda\" by hand means no window capture", cfg_for(&auto_s, &t, &mons[1], true).method == "wgc" && cfg_for(&dda_s, &t, &mons[1], true).method == "wgc" && !window_capture_ok(&dda_s) && window_capture_ok(&auto_s) == have_wgc && cfg_for(&auto_s, &t, &mons[1], false).method == "auto", &format!("gfxcapture here: {have_wgc}"));
     let f = cfg_for(&s, &t, &mons[1], false);
     let desk = core::capture_cfg_for(&s, &mons[1], s.max_clip_secs());
     r.check("cfg: the fallback is the monitor as desktop mode records it, without desktop sound", f.window == 0 && f.width == desk.width && f.height == desk.height && !f.desktop_audio && CaptureCfg { desktop_audio: true, ..f.clone() } == desk, "");
@@ -821,7 +939,8 @@ fn test_targets(r: &mut Report) {
     let t0 = std::time::Instant::now();
     let later = |s: u64| t0 + std::time::Duration::from_secs(s);
     let mut silent = None;
-    let w = cap(5);
+    let run = |pid: u32| CapStats { status: crate::recorder::RecStatus { pid, ..Default::default() }, ..cap(5) };
+    let w = run(100);
     let a = never_delivered(&mut silent, &w, false, t0);
     let b = never_delivered(&mut silent, &w, false, later(FIRST_FRAME_SECS - 1));
     let c = never_delivered(&mut silent, &w, false, later(FIRST_FRAME_SECS));
@@ -830,8 +949,23 @@ fn test_targets(r: &mut Report) {
     let _ = never_delivered(&mut silent, &w, false, t0);
     let mini = never_delivered(&mut silent, &w, true, later(60));
     let after = never_delivered(&mut silent, &w, false, later(61));
-    let framed = never_delivered(&mut silent, &CapStats { frames: 3, ..cap(5) }, false, later(200));
+    let framed = never_delivered(&mut silent, &CapStats { frames: 3, ..run(100) }, false, later(200));
     r.check("no first frame: minimized or delivering never counts, and the wait starts again", !mini && !after && !framed, "");
+    // Recorded on a Radeon 840M (tModLoader, 0.1.44): AMF refused the GPU frames twice (ffmpeg
+    // restarted, nothing between runs) and frames came through system memory from the third run,
+    // about 18 s after the start. Counted per capture, the window "gave no picture" at 12 s.
+    let mut silent = None;
+    let r1 = never_delivered(&mut silent, &run(4101), false, t0);
+    let gap = never_delivered(&mut silent, &run(0), false, later(7));
+    let r2 = never_delivered(&mut silent, &run(4102), false, later(8));
+    let r2b = never_delivered(&mut silent, &run(4102), false, later(14));
+    let r3 = never_delivered(&mut silent, &run(4103), false, later(17));
+    let r3b = never_delivered(&mut silent, &run(4103), false, later(18));
+    r.check("no first frame: the wait is per ffmpeg run, so encoder restarts never fail the window", !r1 && !gap && !r2 && !r2b && !r3 && !r3b, &format!("{r1} {gap} {r2} {r2b} {r3} {r3b}"));
+    let mut silent = None;
+    let _ = never_delivered(&mut silent, &run(4200), false, t0);
+    let still = never_delivered(&mut silent, &run(4200), false, later(FIRST_FRAME_SECS));
+    r.check("no first frame: one ffmpeg run that captures nothing for the whole wait still fails the window", still, "");
 }
 
 /// 0.1.41: the rebuilt detection (gamedetect.rs) and what capmode.rs does with its decision.
@@ -882,9 +1016,15 @@ fn test_rebuild(r: &mut Report) {
     state().lock().unwrap().source = Some(Source::Monitor);
     let mo = core::capture_cfgs(&s);
     r.check("cfgs: paused gives nothing (the buffer is kept), exclusive gives Desktop Duplication, a refused window its monitor", parked && ex.first().is_some_and(|c| c.method == "dda" && c.window == 0) && mo.first().is_some_and(|c| c.window == 0 && c.method == s.method), "");
-    state().lock().unwrap().why = Why { code: "exclusive".into(), game: "X".into(), monitor: 1, evidence: vec!["known".into()] };
+    state().lock().unwrap().why = Why { code: "exclusive".into(), game: "X".into(), monitor: 1, evidence: vec!["known".into()], ..Default::default() };
     r.check("status: the reason is given in game mode while clipping, not in desktop mode or paused", why_of(&s, true).code == "exclusive" && why_of(&Settings::default(), true).code.is_empty() && why_of(&s, false).code.is_empty(), "");
     *state().lock().unwrap() = State::default();
+    // The reason says why the monitor is recorded, in the log and to the UI (laptop session).
+    let dda_set = Settings { method: "dda".into(), capture_mode: "game".into(), ..Default::default() };
+    let w = Why { code: "no_window_capture".into(), game: "Terraria".into(), detail: "border".into(), ..Default::default() };
+    let f = Why { code: "window_failed".into(), game: "tModLoader".into(), detail: "no_picture".into(), ..Default::default() };
+    let json = serde_json::to_string(&w).unwrap_or_default();
+    r.check("why: \"window capture is not available\" and \"gave no picture\" say why, in the log line and to the UI", (util::find_exe(&dda_set.ffmpeg_path, "ffmpeg").is_none() || method_detail(&dda_set) == "setting_dda") && w.line().contains("Screenshot borders") && f.line().contains("12 s without one frame") && json.contains("\"detail\":\"border\"") && Why { code: "window".into(), ..Default::default() }.line() == "recording the game's window", &format!("{} | {} | {json}", w.line(), f.line()));
     // Monitors by device name: a position that does not match no longer means the main monitor.
     let mut m2 = mons.to_vec();
     m2[1].x = 2560;

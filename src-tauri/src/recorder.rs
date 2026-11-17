@@ -478,6 +478,9 @@ pub struct RecStatus {
     /// Game mode: the window capture failed twice in a row without a frame (capmode.rs then
     /// records the game's monitor instead).
     pub window_failed: bool,
+    /// The capture filter ffmpeg was last started with ("gfxcapture=hwnd=…", "ddagrab=output_idx=…"),
+    /// as it was given: what is really recorded, for the log and `--detect-watch`.
+    pub source: String,
 }
 
 /// One monitor's buffer, as `stats` reports it.
@@ -791,6 +794,11 @@ pub fn retarget(mut args: Vec<String>, monitor: u32, src: Option<&crate::win::Mo
         }
     }
     args
+}
+
+/// The capture filter of a capture command line (`capture_args`): its first filter, with its options.
+pub fn capture_source(args: &[String]) -> String {
+    args.iter().position(|a| a == "-filter_complex").and_then(|i| args.get(i + 1)).map(|f| f.split(',').next().unwrap_or("").to_string()).unwrap_or_default()
 }
 
 /// Remember how monitor `monitor` was last named to ffmpeg; true when that is new (worth a log line).
@@ -1289,6 +1297,7 @@ fn supervise(pipe: Arc<Pipe>) {
             args
         };
         let frames_before = pipe.ring.lock().unwrap().frames;
+        pipe.status.lock().unwrap().source = capture_source(&args);
         let spawned = util::hidden_cmd_prio(&ffmpeg).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
         let started = Instant::now();
         let mut exit_code: Option<i32> = None;

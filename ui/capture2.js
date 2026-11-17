@@ -83,6 +83,7 @@ function cap2BorderText() {
   const b = a.border || {};
   const where = t("Windows Settings › Privacy & security › Screenshot borders");
   const method = st.recording && st.method ? st.method : s.method === "auto" ? a.method : s.method;
+  if (s.capture_mode === "game") return cap2BorderGameText(s, a, st, b, where);
   if (s.method === "auto" && a.method === "dda" && a.method_why === "border") {
     return t("Auto uses Desktop Duplication because {where} does not let desktop apps turn off the yellow border.", { where: esc(where) });
   }
@@ -94,6 +95,23 @@ function cap2BorderText() {
     return `<span class="cap2-warn">${t("{where} does not let desktop apps turn off the yellow border, so Graphics Capture shows it around your screen. Desktop Duplication has no border.", { where: esc(where) })}</span>`;
   }
   return t("Glint asks Windows for no yellow border. If one shows up in a game anyway, switch “Let desktop apps turn off the screenshot border” off and on again in {where}, or choose Desktop Duplication here.", { where: esc(where) });
+}
+
+/** GAME mode: the game's window is recorded by Graphics Capture whatever "auto" picks for monitors,
+ *  so the yellow border can show around it on the screen. It is never in the clip (GAMEDETECT_REPORT.md, bug 5).
+ *  Desktop Duplication is no remedy here: it records the whole monitor, not only the game. */
+function cap2BorderGameText(s, a, st, b, where) {
+  if (s.method === "dda" || a.method_why === "no_wgc") return ""; // no window capture: capmode.js says why
+  if (st.recording && st.border === "failed") {
+    return `<span class="cap2-warn">${t("Windows did not turn off the yellow border around the game's window this time. It is on your screen only, not in your clips. To try again, switch “Let desktop apps turn off the screenshot border” off and on again in {where}.", { where: esc(where) })}</span>`;
+  }
+  if (a.method_why === "windows10") {
+    return t("Windows 10 draws a yellow border around the game's window while Glint records it. It is on your screen only, not in your clips.");
+  }
+  if (a.method_why === "border" || (b.configurable && !b.can_remove)) {
+    return t("{where} does not let desktop apps turn off the yellow border, so Windows draws it around the game's window while Glint records it. It is on your screen only, not in your clips.", { where: esc(where) });
+  }
+  return t("Glint asks Windows for no yellow border around the game's window. If one shows up anyway, switch “Let desktop apps turn off the screenshot border” off and on again in {where}. It is on your screen only, not in your clips.", { where: esc(where) });
 }
 
 function cap2BorderHint() {
