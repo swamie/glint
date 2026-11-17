@@ -12,6 +12,7 @@ mod compress;
 mod core;
 mod denoise;
 mod deps;
+mod detectwatch;
 mod e2e;
 mod edcache;
 mod editor;
@@ -175,6 +176,11 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--live-check") {
         // Test-only live verification: real monitor pictures, the real window list and libraries, three 3 s captures of its own window.
         livecheck::run(args.get(i + 1).map(String::as_str).unwrap_or("live"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--detect-watch") {
+        // Test-only: GAME mode on this PC's real games through the app's own two-second look; each change is clipped and checked.
+        detectwatch::run(&args[i + 1..]);
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--monprev-test") {
