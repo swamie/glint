@@ -32,6 +32,6 @@
 .mp-chev { flex: none; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; opacity: .7; }
 .mp-pop { position: fixed; z-index: 1000; display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--line-2); border-radius: calc(var(--radius) + 2px);
   background: var(--raised); box-shadow: 0 12px 34px rgba(0, 0, 0, .38); }
-.mp-pop-head { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .02em; }
+.mp-pop-head { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0; }
 .mp-pop .mp-map { max-width: none; }
 @media (prefers-reduced-motion: reduce) { .mp-mon { transition: none; } }

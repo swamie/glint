@@ -1,0 +1,3 @@
+# setup.sh and the program run on Linux: keep Unix line endings whatever git's settings on Windows.
+*.sh text eol=lf
+*.py text eol=lf

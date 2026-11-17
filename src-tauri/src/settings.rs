@@ -157,11 +157,15 @@ pub struct ColorPreset {
     pub gamma: f32,
     /// 0.1.41: 0 = off .. 1 (the export's unsharp, luma amount 1.5 x this).
     pub sharpness: f32,
+    /// 0.1.45: -1 (cool) .. +1 (warm), 0 = off (`editor::Color::temperature`); absent in older settings = 0.
+    pub temperature: f32,
+    /// 0.1.45: 0 = off .. 1 (`editor::Color::glow`); absent in older settings = 0.
+    pub glow: f32,
 }
 
 impl Default for ColorPreset {
     fn default() -> Self {
-        ColorPreset { name: String::new(), brightness: 1.0, contrast: 1.0, saturation: 1.0, gamma: 1.0, sharpness: 0.0 }
+        ColorPreset { name: String::new(), brightness: 1.0, contrast: 1.0, saturation: 1.0, gamma: 1.0, sharpness: 0.0, temperature: 0.0, glow: 0.0 }
     }
 }
 
@@ -215,6 +219,13 @@ pub struct Settings {
     pub bitrate: u32,
     /// "auto" | "nvenc" | "amf" | "qsv" | "x264"
     pub encoder: String,
+    /// 0.1.46: the editor's export decodes its pieces on the graphics card (NVIDIA, when the encoder is NVENC):
+    /// "auto" (used when it works, else the CPU, by itself) | "off" (default: always the CPU; measured, 30 s of
+    /// 1440p60 in 6 ranges: the same wall time, ffmpeg CPU -48 % plain but only -17 % with an overlay and colours).
+    pub hw_decode: String,
+    /// 0.1.46: a cuts-only export of one clip re-encodes only each piece's first frames up to a keyframe and copies
+    /// the rest ("smart rendering", only where that is exact): "auto" | "off".
+    pub smart_cuts: String,
     /// "auto" | "wgc" | "dda"
     pub method: String,
     /// Where the replay buffer lives: "mixed" (the newest `buffer_ram_secs`
@@ -303,6 +314,9 @@ pub struct Settings {
     /// ids and "p:<preset id>". Tiles not listed follow in their usual order (colorpick.js prTileOrder).
     pub theme_order: Vec<String>,
     pub theme_preset: String,
+    /// 0.1.46 backdrop: the animated backdrop behind the window's pages (ui/backdrop.js). "" = none;
+    /// an unknown id is shown as none.
+    pub backdrop: String,
     /// Library folder colors: folder name -> "#rrggbb" (right-click a folder → Color).
     /// Renaming a folder carries its color along, deleting it drops it (`carry_folder_color`).
     pub folder_colors: std::collections::BTreeMap<String, String>,
@@ -316,6 +330,8 @@ pub struct Settings {
     /// Install a waiting update without being asked, while no game is running, Glint's
     /// window is closed and nothing is being rendered, exported or imported.
     pub update_auto: bool,
+    /// polls: ask the developer's server for open polls (polls.rs). Old settings load as true.
+    pub polls: bool,
     /// Interface language: "en", "ko" or "el".
     pub language: String,
     /// How many Blur renders may run at the same time; more wait in a queue.
@@ -377,6 +393,8 @@ impl Default for Settings {
             quality: "high".into(),
             bitrate: 0,
             encoder: "auto".into(),
+            hw_decode: "off".into(),
+            smart_cuts: "off".into(),
             method: "auto".into(),
             buffer: "mixed".into(),
             buffer_ram_secs: 30,
@@ -423,11 +441,13 @@ impl Default for Settings {
             theme_presets: Vec::new(),
             theme_order: Vec::new(),
             theme_preset: String::new(),
+            backdrop: String::new(), // backdrop: none
             folder_colors: Default::default(),
             card_tags: Vec::new(),
             nav_opacity: 60,
             update_check: true,
             update_auto: true,
+            polls: true, // polls
             language: "en".into(),
             blur_parallel: 2,
             ui_zoom: 100,

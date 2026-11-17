@@ -993,7 +993,14 @@ pub fn parse(args: &[String]) -> Opts {
     }
 }
 
+#[link(name = "kernel32")]
+extern "system" {
+    fn SetErrorMode(mode: u32) -> u32;
+}
+
 fn main() {
+    // 0.1.46: no Windows error box from the installer or what it starts (SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX).
+    unsafe { SetErrorMode(0x0001 | 0x0002 | 0x8000) };
     let args: Vec<String> = std::env::args().skip(1).collect();
     log_open();
     log(&format!("Glint setup ({}), {}", env!("CARGO_PKG_VERSION"), args.join(" ")));

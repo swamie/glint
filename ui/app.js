@@ -286,11 +286,54 @@ document.addEventListener("pointerdown", (e) => {
   window.addEventListener("blur", pressEnd);
 }
 
+/* 0.1.46 (U3): renderChrome runs on every status poll (each second) and every render, also while a render's
+   progress ticks: it now changes only what differs, on the nodes already there, so an open menu, dropdown,
+   tooltip or a text box with the focus is never touched by it. */
+/** Text of `el`, by the text node's own data when it has one (no node is replaced). */
+function chromeText(el, text) {
+  if (!el) return;
+  const s = String(text ?? "");
+  const n = el.firstChild;
+  if (n && n.nodeType === 3 && el.childNodes.length === 1) { if (n.data !== s) n.data = s; return; }
+  if (el.textContent !== s) el.textContent = s;
+}
+/** Markup of `el`: nothing when it is what was set last (and nobody changed it since); when only texts and
+ *  attributes differ (the same tags in the same places: "Buffer <b>0:42</b>" → "<b>0:43</b>"), those are
+ *  patched in place; only a different shape replaces the children. */
+function chromeHtml(el, html) {
+  if (!el) return;
+  if (el.__chHtml === html && el.innerHTML === el.__chSer) return;
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html;
+  if (!chromeMorph(el, tpl.content)) el.replaceChildren(...tpl.content.childNodes);
+  el.__chHtml = html;
+  el.__chSer = el.innerHTML;
+}
+function chromeShape(a, b) {
+  if (a.nodeType !== b.nodeType || a.nodeName !== b.nodeName || a.childNodes.length !== b.childNodes.length) return false;
+  for (let i = 0; i < a.childNodes.length; i++) if (!chromeShape(a.childNodes[i], b.childNodes[i])) return false;
+  return true;
+}
+function chromeMorph(el, frag) {
+  if (el.childNodes.length !== frag.childNodes.length) return false;
+  for (let i = 0; i < frag.childNodes.length; i++) if (!chromeShape(el.childNodes[i], frag.childNodes[i])) return false;
+  const patch = (a, b) => {
+    if (a.nodeType === 3 || a.nodeType === 8) { if (a.data !== b.data) a.data = b.data; return; }
+    if (a.nodeType !== 1) return;
+    for (const at of [...a.attributes]) if (!b.hasAttribute(at.name)) a.removeAttribute(at.name);
+    for (const at of b.attributes) if (a.getAttribute(at.name) !== at.value) a.setAttribute(at.name, at.value);
+    for (let i = 0; i < a.childNodes.length; i++) patch(a.childNodes[i], b.childNodes[i]);
+  };
+  for (let i = 0; i < frag.childNodes.length; i++) patch(el.childNodes[i], frag.childNodes[i]);
+  return true;
+}
+const chromeAttr = (el, name, value) => { if (el && el.getAttribute(name) !== value) el.setAttribute(name, value); };
+
 function renderChrome() {
   if (!S.settings) return;
   // Texts that live in index.html: data-i18n holds the English text, data-i18n-ph a placeholder.
-  for (const el of $$("[data-i18n]")) el.textContent = t(el.dataset.i18n);
-  for (const el of $$("[data-i18n-ph]")) el.placeholder = t(el.dataset.i18nPh);
+  for (const el of $$("[data-i18n]")) chromeText(el, t(el.dataset.i18n));
+  for (const el of $$("[data-i18n-ph]")) { const ph = t(el.dataset.i18nPh); if (el.placeholder !== ph) el.placeholder = ph; }
   if (typeof updRender === "function") updRender(); // its tooltip is text too
   if (typeof jobsRender === "function") jobsRender(); // shown or hidden by a setting
   if (typeof capRender === "function") capRender(); // the GAME / DESKTOP switch (capmode.js)
@@ -298,9 +341,9 @@ function renderChrome() {
   // The sidebar can be folded to a strip of icons, so every item carries its name as a tooltip.
   document.documentElement.style.setProperty("--nav-op", String(clamp(+S.settings.nav_opacity || 60, 20, 100) / 100)); // the clip arrows in fullscreen (editor.css)
   $("#app").classList.toggle("side-min", S.sideMin);
-  $("#side-toggle").title = S.sideMin ? t("Show the sidebar") : t("Hide the sidebar");
-  $("#side-toggle").setAttribute("aria-label", $("#side-toggle").title);
-  $("#search").title = t("Search clips and games");
+  chromeAttr($("#side-toggle"), "title", S.sideMin ? t("Show the sidebar") : t("Hide the sidebar"));
+  chromeAttr($("#side-toggle"), "aria-label", $("#side-toggle").title);
+  chromeAttr($("#search"), "title", t("Search clips and games"));
   const navItem = (id, label, icon, count) =>
     `<button class="nav-item${S.page === id ? " active" : ""}" data-page="${id}" data-hover title="${esc(label)}">${ICON[icon]}<span class="label">${label}</span>${count ? `<span class="badge">${count}</span>` : ""}</button>`;
   // Folders: one row that unfolds the list (closed to begin with). In the list: click to open,
@@ -331,22 +374,22 @@ function renderChrome() {
 
   const st = S.status || {};
   const on = !!st.recording;
-  $("#btn-toggle").textContent = on ? t("Pause") : t("Resume");
+  chromeText($("#btn-toggle"), on ? t("Pause") : t("Resume"));
   // The clip button: the keys of the clip keybind it stands for as keycaps, then "Clip 30s".
   // Its tooltip keeps the full sentence: "F8 to clip the last 30s". In narrow windows the keycaps go (style.css).
   const clipKb = quickBind();
-  $("#btn-clip .clip-keys").innerHTML = clipKb ? comboParts(clipKb).map((p) => `<kbd class="kc">${esc(p)}</kbd>`).join("") : "";
-  $("#btn-clip .clip-keys").hidden = !clipKb;
-  $("#btn-clip .clip-label").textContent = t("Clip {length}", { length: fmtLen(quickSecs()) });
-  $("#btn-clip").title = clipKb
+  chromeHtml($("#btn-clip .clip-keys"), clipKb ? comboParts(clipKb).map((p) => `<kbd class="kc">${esc(p)}</kbd>`).join("") : "");
+  if ($("#btn-clip .clip-keys").hidden !== !clipKb) $("#btn-clip .clip-keys").hidden = !clipKb;
+  chromeText($("#btn-clip .clip-label"), t("Clip {length}", { length: fmtLen(quickSecs()) }));
+  chromeAttr($("#btn-clip"), "title", clipKb
     ? t("{keys} to clip the last {length}", { keys: comboText(clipKb), length: fmtLen(quickSecs()) })
-    : t("Clip last {length}", { length: fmtLen(quickSecs()) });
-  $("#btn-clip").disabled = !on;
+    : t("Clip last {length}", { length: fmtLen(quickSecs()) }));
+  if ($("#btn-clip").disabled !== !on) $("#btn-clip").disabled = !on;
 
   // Glint keeps a replay buffer and saves clips from it; it never records to disk on its own, so the word is "Clipping".
   const enc = { nvenc: "NVENC", amf: "AMF", qsv: "Quick Sync", x264: "x264 (CPU)" }[st.encoder] || st.encoder || "";
-  $("#sb-state").innerHTML = !on
-    ? t("Paused")
+  let state = !on
+    ? esc(t("Paused"))
     : st.error
       ? `<b style="color:var(--danger)">${esc(st.error)}</b>${typeof depsErrorExtra === "function" ? depsErrorExtra(st.error) : ""}`
       : (() => {
@@ -355,7 +398,7 @@ function renderChrome() {
       })();
   // Game mode (capmode.js): "Waiting for a game", or the whole screen as a fallback. "" leaves the text above.
   const capText = typeof capStatusText === "function" ? capStatusText(st) : "";
-  if (capText) $("#sb-state").innerHTML = capText;
+  if (capText) state = capText;
   // More than one monitor buffered (clip keybinds that name another monitor): the text above stays
   // the capture monitor's; a short "+1 monitor" lists them all in its tooltip, and turns yellow
   // with a warning mark when one of the others fails while the capture monitor is fine.
@@ -364,15 +407,16 @@ function renderChrome() {
     const n = caps.length - 1;
     const bad = !st.error && caps.some((c) => !c.primary && c.error);
     const tip = [t("Buffered monitors:"), ...caps.map((c) => `${c.name}  ${c.width}×${c.height} · ${Math.round(c.fps_actual || 0)}/${c.fps || 0} fps${c.primary ? "  " + t("(capture monitor)") : ""}${c.error ? "\n    " + t("Capture problem:") + " " + c.error : ""}`)].join("\n");
-    $("#sb-state").insertAdjacentHTML("beforeend", ` · <span class="sb-more${bad ? " bad" : ""}" title="${esc(tip)}">${bad ? ICON.warn : ""}${n === 1 ? t("+1 monitor") : t("+{n} monitors", { n })}</span>`);
+    state += ` · <span class="sb-more${bad ? " bad" : ""}" title="${esc(tip)}">${bad ? ICON.warn : ""}${n === 1 ? t("+1 monitor") : t("+{n} monitors", { n })}</span>`;
   }
+  chromeHtml($("#sb-state"), state);
   const bufVars = { now: fmtDur(st.buffer_secs || 0), max: fmtDur(st.buffer_max || 0), size: fmtSize(st.buffer_bytes || 0), disk: fmtSize(st.buffer_disk_bytes || 0) };
-  $("#sb-buffer").innerHTML = !on ? "" : st.buffer_disk_bytes ? t("Buffer <b>{now}</b> / {max} · {size} RAM + {disk} disk", bufVars) : t("Buffer <b>{now}</b> / {max} · {size}", bufVars);
+  chromeHtml($("#sb-buffer"), !on ? "" : st.buffer_disk_bytes ? t("Buffer <b>{now}</b> / {max} · {size} RAM + {disk} disk", bufVars) : t("Buffer <b>{now}</b> / {max} · {size}", bufVars));
   // Frames arriving now / the frame rate set. RAM is the whole program (replay buffer, ffmpeg,
   // the WebView): ram_total, or the window plus ffmpeg from a backend that does not send it.
-  $("#sb-load").textContent = on
+  chromeText($("#sb-load"), on
     ? t("{now}/{max} FPS · CPU {cpu}% · RAM {ram}", { now: Math.round(st.fps_actual || 0), max: st.fps || 0, cpu: (st.cpu_pct || 0).toFixed(1), ram: fmtSize(st.ram_total > 0 ? st.ram_total : (st.ram_app || 0) + (st.ram_ffmpeg || 0)) })
-    : "";
+    : "");
 }
 
 /* ---------- library ---------- */
@@ -403,10 +447,10 @@ const cardTagLabel = (kind) => ({ import: t("import"), trim: t("trim"), edit: t(
  * again (thumb_retry: in the background, a few times a day at most, never for a file with no picture); when it is
  * there, "clips-changed" redraws the card with it. Once per clip per session from here. */
 const thumbAsked = new Set();
-function thumbAsk(id) {
+function thumbAsk(id, broken = false) {
   if (!id || thumbAsked.has(id) || typeof invoke !== "function") return;
   thumbAsked.add(id);
-  setTimeout(() => invoke("thumb_retry", { id }).catch(() => {}), 0);
+  setTimeout(() => invoke("thumb_retry", { id, broken }).catch(() => {}), 0); // thumbs-refresh: broken = the picture would not load
 }
 function cardHtml(c) {
   const job = S.jobs[c.id];
@@ -421,7 +465,7 @@ function cardHtml(c) {
   // once reset a background-image's size, so cards showed only the frame's top-left corner.
   return `<article class="card${S.sel.has(c.id) ? " sel" : ""}" data-clip="${c.id}" data-hover>
     <div class="thumb" ${bg}>
-      ${c.thumb ? `<img class="thumb-img" src="${esc(fileSrc(c.thumb))}" alt="" draggable="false" decoding="async" onerror="this.remove();thumbAsk(${esc(JSON.stringify(c.id))})" style="${THUMB_IMG_STYLE}">` : `<div class="ph">${esc(c.game.slice(0, 1).toUpperCase())}</div>`}
+      ${c.thumb ? `<img class="thumb-img" src="${esc(fileSrc(c.thumb))}" alt="" draggable="false" decoding="async" onerror="this.remove();thumbAsk(${esc(JSON.stringify(c.id))},true)" style="${THUMB_IMG_STYLE}">` : `<div class="ph">${esc(c.game.slice(0, 1).toUpperCase())}</div>`}
       <span class="check" title="${esc(t("Select"))}">${ICON.check}</span>
       ${tag}
       ${c.favorite ? `<span class="star">${ICON.star}</span>` : ""}
@@ -431,6 +475,26 @@ function cardHtml(c) {
     <h3>${titleHtml(c)}</h3>
     <p><span>${esc(c.game)}</span>${S.folder === null && folderDiffers(c) ? `<span>${esc(c.folder)}</span>` : ""}<span>${timeAgo(c.created)}</span><span>${fmtSize(c.size)}</span></p>
   </article>`;
+}
+
+/** 0.1.46 (U3): bring one card's render bar in line with S.jobs on the card already drawn (no redraw of the grid):
+ *  the bar is added, moved on or taken away; nothing else of the page is touched. */
+function cardJobPaint(id) {
+  const card = $$("#view .card").find((el) => el.dataset.clip === id);
+  const thumb = card?.querySelector(".thumb");
+  if (!thumb) return;
+  const job = S.jobs[id];
+  let bar = thumb.querySelector(":scope > .job");
+  if (!(job && job.state === "running")) { bar?.remove(); return; }
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.className = "job";
+    bar.appendChild(document.createElement("i"));
+    thumb.appendChild(bar);
+  }
+  bar.classList.toggle("wait", jobWaits(job));
+  const w = `${job.pct}%`, i = bar.firstElementChild;
+  if (i && i.style.width !== w) i.style.width = w;
 }
 
 /** A game's icon: its own (taken from the game's exe, or picked by the user), else a colored initial. */
@@ -511,6 +575,7 @@ function renderLibrary() {
       <div class="head-actions">
         <button class="btn" data-act="import">${ICON.plus}${t("Import")}</button>
         <button class="btn" data-act="rescan">${ICON.refresh}${t("Rescan folder")}</button>
+        <button class="btn thr-btn" data-act="thumbs-missing" title="${esc(t("Refresh thumbnails: make the missing ones again (F5). Hold Ctrl while clicking, or press Ctrl+F5, to make all of them again."))}" aria-label="${esc(t("Refresh thumbnails"))}">${ICON.image}</button><!-- thumbs-refresh: one icon button, so the head fits a narrow window -->
         <button class="btn primary" data-act="open-dir">${ICON.folder}${t("Open folder")}</button>
       </div>
     </div>
@@ -539,7 +604,9 @@ function renderSelBar() {
   const on = isLib() && sel.length > 0 && !S.open;
   document.body.classList.toggle("has-sel", on);
   el.hidden = !on;
-  if (!on) return closeMenu();
+  // 0.1.46 (U3): only the bar's own "Move to" goes with the bar. Was closeMenu() on every redraw without a
+  // selection, so a render's progress (which redrew the page) shut a right-click or the game menu on each tick.
+  if (!on) { if (menuSelBar) closeMenu(); return; }
   const allFav = sel.every((c) => c.favorite);
   el.innerHTML = `<b>${t("{n} selected", { n: sel.length })}</b><span class="muted">${fmtSize(sel.reduce((n, c) => n + c.size, 0))}</span>
     <button class="btn sm" data-act="sel-move">${ICON.folder}${t("Move to")}</button>
@@ -633,7 +700,46 @@ let menuIds = [];
 // `sfx`: the item's own sound instead of the click (sfx.js), e.g. "none" where the action plays one.
 const mItem = (m, label, icon = "", arg = "", cls = "", sfx = "") => `<button data-m="${m}" data-arg="${esc(arg)}" class="${cls}"${sfx ? ` data-sfx="${sfx}"` : ""}>${icon || "<svg></svg>"}<span>${esc(label)}</span></button>`;
 const mSub = (label, icon, inner) => `<div class="has-sub"><button tabindex="-1">${icon}<span>${esc(label)}</span><b class="chev">›</b></button><div class="submenu">${inner}</div></div>`;
-function closeMenu() { const m = $("#menu"); m.hidden = true; m.innerHTML = ""; m.className = "menu"; m.style.cssText = ""; }
+let menuSelBar = false; // the open menu is the selection bar's "Move to" (it closes with the selection)
+function closeMenu() { const m = $("#menu"); m.hidden = true; m.innerHTML = ""; m.className = "menu"; m.style.cssText = ""; menuSelBar = false; }
+
+/* 0.1.46 (U2): a button that opened #menu closes it when clicked again, for every opener.
+   Was: the click that should close it was also the opener's own click, so it opened the menu again (app.js's
+   click handler closed it with setTimeout(0) while capmode.js's arrow, waiting for its game_menu answer, drew
+   it again after that). Now the click that opened the menu names its opener (`menuOpener`, noted when #menu
+   goes from hidden to shown); a press and click on that opener while the menu is open close the menu, and
+   that click goes no further (window, capture: before any opener's own listener). Right-click menus have no
+   opener: a right-click opens the menu again where it is. Dropdowns (dropdown.js), the renders list
+   (jobs.js) and the polls list (polls.js) toggle on their own. */
+let menuOpener = null;                 // the element whose click opened the shown #menu
+let menuClicked = { el: null, at: -1e9 }; // the last click's button-like element and when
+let menuPressOff = null;               // the opener pressed while its menu was open: its click closes
+const MENU_OPENER_SEL = "button, a, summary, [role=button], .chip, [data-act]";
+window.addEventListener("pointerdown", (e) => {
+  const m = $("#menu");
+  menuPressOff = e.button === 0 && m && !m.hidden && menuOpener?.isConnected && menuOpener.contains(e.target) ? menuOpener : null;
+}, true);
+window.addEventListener("click", (e) => {
+  const m = $("#menu");
+  const opener = menuPressOff || (m && !m.hidden ? menuOpener : null);
+  menuPressOff = null;
+  if (e.button === 0 && opener?.isConnected && opener.contains(e.target)) {
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    closeMenu();
+    return;
+  }
+  menuClicked = { el: e.target.closest?.(MENU_OPENER_SEL) || null, at: performance.now() };
+}, true);
+window.addEventListener("contextmenu", () => { menuClicked = { el: null, at: -1e9 }; menuPressOff = null; menuOpener = null; }, true);
+new MutationObserver((recs) => {
+  const m = $("#menu");
+  if (m.hidden) { menuOpener = null; return; }
+  // Shown just now (the hidden attribute went away): the click of the last 2 s opened it, if it was a button still on the page.
+  if (!recs.some((r) => r.oldValue !== null)) return;
+  const c = menuClicked;
+  menuOpener = c.el && c.el.isConnected && !m.contains(c.el) && performance.now() - c.at < 2000 ? c.el : null;
+}).observe($("#menu"), { attributes: true, attributeFilter: ["hidden"], attributeOldValue: true });
 /** Folder choices for `ids`: the main folder, every folder, and "New folder…". */
 function folderItems(ids) {
   const clips = S.clips.filter((c) => ids.includes(c.id));
@@ -646,6 +752,7 @@ function openMoveMenu(anchor) {
   menuIds = [...S.sel];
   m.innerHTML = folderItems(menuIds);
   m.hidden = false;
+  menuSelBar = true;
   const r = anchor.getBoundingClientRect();
   m.style.left = `${r.left}px`;
   m.style.bottom = `${window.innerHeight - r.top + 8}px`;
@@ -655,6 +762,7 @@ function placeMenu(x, y) {
   const m = $("#menu");
   m.className = "menu ctx";
   m.hidden = false;
+  menuSelBar = false;
   const r = m.getBoundingClientRect();
   m.style.left = `${clamp(x, 8, window.innerWidth - r.width - 8)}px`;
   m.style.top = `${clamp(y, 8, window.innerHeight - r.height - 8)}px`;
@@ -1360,6 +1468,7 @@ function renderRecording() {
       ${row(t("Bitrate"), s.bitrate ? (plan.disk ? t("Fixed. Moving pictures use all of it; the {length} buffer can reach {size}", { length: fmtLen(maxSecs()), size: fmtSize((s.bitrate * 1e6 * maxSecs()) / 8) }) : t("Fixed. Moving pictures use all of it; the {length} buffer can reach {size} of RAM", { length: fmtLen(maxSecs()), size: fmtSize((s.bitrate * 1e6 * maxSecs()) / 8) })) : t("Auto picks the bitrate from the Quality level below"), select("bitrate", [[0, t("Auto")], ...[...new Set([5, 8, 10, 15, 20, 30, 40, 50, 60, 80, 100, s.bitrate])].filter(Boolean).sort((a, b) => a - b).map((b) => [b, `${b} Mbps`])], true))}
       ${s.bitrate ? "" : row(t("Quality"), st.max_mbps ? t("Current ceiling {mbps} Mbps; quiet scenes use much less", { mbps: st.max_mbps.toFixed(0) }) : t("Quality-targeted bitrate"), select("quality", [["low", t("Low")], ["medium", t("Medium")], ["high", t("High")], ["ultra", t("Ultra")]]))}
       ${row(t("Encoder"), t("Auto picks your GPU's hardware encoder"), select("encoder", [["auto", t("Auto")], ["nvenc", "NVIDIA NVENC"], ["amf", "AMD AMF"], ["qsv", "Intel Quick Sync"], ["x264", t("x264 (CPU, heavy)")]]))}
+      ${row(t("Read video on the graphics card when exporting"), t("Takes work off the processor during an export in the editor; the export is not faster. NVIDIA cards only. If the card cannot do it, Glint reads the video the normal way"), select("hw_decode", [["off", t("Off")], ["auto", t("On")]]))}
       ${row(t("Capture method"), t("Graphics Capture is smoother at high frame rates") + win10CaptureHint() + (typeof cap2BorderHint === "function" ? cap2BorderHint() : ""), select("method", [["auto", t("Auto")], ["wgc", "Windows Graphics Capture"], ["dda", "Desktop Duplication"]]))}
       ${row(t("Show cursor"), "", toggle("cursor"))}
     </div>
@@ -1391,6 +1500,7 @@ function renderSettings() {
     <div class="section" data-cat="look"><h2>${t("Appearance")}</h2>
       ${presetTilesHtml() /* colorpick.js: built-in tiles, the user's presets, "+ New preset" */}
       ${colorRowsHtml() /* colorpick.js: the "Customise colors" box (colors and custom CSS) */}
+      ${typeof bdPickerHtml === "function" ? bdPickerHtml() : "" /* backdrop.js: the animated backdrop picker (0.1.46) */}
       ${row(t("Match the taskbar icon to the theme"), t("Colors Glint's icon in the taskbar and the tray with the theme's accent, including a custom theme's and your own accent color"), (typeof iconReloadButton === "function" ? iconReloadButton() : "") + toggle("icon_theme"))}
       ${row(t("Tags on clips"), t("A small label on a clip's picture that says what made it. Pick the kinds that get one"), `<div class="tag-kinds">${CARD_TAGS.map((k) => `<button type="button" class="chip${(s.card_tags || []).includes(k) ? " active" : ""}" data-act="tag-kind" data-kind="${k}" aria-pressed="${(s.card_tags || []).includes(k)}">${esc(cardTagLabel(k))}</button>`).join("")}</div>`)}
       ${row(t("Renders button"), t("The button in the top bar that lists Blur renders and their progress"), select("renders_button", [["auto", t("While rendering")], ["always", t("Always")], ["never", t("Never")]]))}
@@ -1443,6 +1553,7 @@ function renderSettings() {
       ${row(t("Version"), "", `<span class="path">Glint ${esc(S.version || "")}</span><button class="btn sm" data-act="whats-new" data-sfx="open">${t("What's new")}</button>`)}
       ${row(t("Check for updates daily"), t("Asks GitHub once a day whether a newer Glint has been released. Nothing about you or this PC is sent"), toggle("update_check"))}
       ${row(t("Install updates automatically"), t("Installs a new version by itself and restarts Glint in the tray, with clipping on or off as it was. Only while Glint's window is closed and nothing is being rendered, exported or imported, and never while a game is running. Otherwise the update button in the top bar waits for your click"), toggle("update_auto"))}
+      ${typeof pollsSettingRow === "function" ? pollsSettingRow() : "" /* polls (polls.js) */}
     </div>
     <div class="section" data-cat="program"><h2>${t("Program")}</h2>
       ${row(t("ffmpeg.exe path"), S.ffmpeg ? t("Using {path}", { path: `<span class="path" title="${esc(S.ffmpeg)}">${esc(S.ffmpeg)}</span>` }) : t("Not found"), `<input class="field" type="text" data-set="ffmpeg_path" value="${esc(S.settings.ffmpeg_path)}" placeholder="${esc(S.ffmpeg ? t("Auto ({name})", { name: S.ffmpeg }) : t("Auto"))}" style="width:340px">`)}
@@ -1592,6 +1703,8 @@ document.addEventListener("click", async (e) => {
     switch (d.act) {
       case "open-dir": return await invoke("open_clips_dir");
       case "rescan": await invoke("rescan_library"); await refreshClips(); return flash(t("Library rescanned"));
+      case "thumbs-missing": return thrStart(e.ctrlKey || e.shiftKey ? "all" : "missing"); // thumbs-refresh (thumbsrefresh.js); Ctrl / Shift: all
+      case "thumbs-all": return thrStart("all"); // thumbs-refresh
       case "sel-clear": return clearSel();
       case "sel-del": return await bulkDelete();
       case "sel-move": return openMoveMenu(el);
@@ -1758,7 +1871,9 @@ window.addEventListener("keydown", (e) => {
   // is its own (arrows, Enter, Esc closes it). This listener runs before theirs, so it has to stand aside.
   if (document.querySelector(".tl-menu, .bug-dlg, .wn-dlg")) return;
   const inField = e.target.matches?.("input, select, textarea");
-  if (e.ctrlKey && e.code === "KeyK") { e.preventDefault(); $("#search").classList.add("open"); $("#q").focus(); $("#q").select(); }
+  const thr = typeof thrKeyAction === "function" ? thrKeyAction(e, { library: isLib(), open: !!S.open, inField }) : null; // thumbs-refresh: F5 / Ctrl+F5
+  if (thr) { e.preventDefault(); thrStart(thr); } // thumbs-refresh
+  else if (e.ctrlKey && e.code === "KeyK") { e.preventDefault(); $("#search").classList.add("open"); $("#q").focus(); $("#q").select(); }
   else if (isLib() && !S.open && !inField && e.ctrlKey && e.code === "KeyA") { e.preventDefault(); S.sel = new Set([...S.sel, ...visibleClips().list.map((c) => c.id)]); syncSel(); } // what was picked keeps its order, the rest follow as on screen
   else if (isLib() && !S.open && !inField && e.code === "Delete" && S.sel.size) { e.preventDefault(); bulkDelete(); }
   else if (e.code === "Escape" && !S.open && (S.sel.size || !$("#menu").hidden)) { if (!$("#menu").hidden) closeMenu(); else clearSel(); }
@@ -1864,7 +1979,10 @@ async function pollStatus() {
     if (p.state === "cancelled") delete S.jobs[p.id];
     if (p.state === "error") flash(p.message, true);
     const c = S.clips.find((x) => x.id === p.id);
-    if (S.open === p.id && c) $("#v-blur").innerHTML = blurPanel(c);
-    else if (["library", "favorites", "rendered"].includes(S.page) && !S.open) render();
+    // 0.1.46 (U3): a tick updates only its own bar: the open clip's Blur panel in place, else the card's bar.
+    // Was render() of the whole page on every tick, which rebuilt the library under an open menu or dropdown.
+    // The finished clip comes with "clips-changed", which redraws the list (an open menu stays).
+    if (S.open === p.id && c) chromeHtml($("#v-blur"), blurPanel(c));
+    else if (["library", "favorites", "rendered"].includes(S.page) && !S.open) cardJobPaint(p.id);
   });
 })().catch(fail);

@@ -117,8 +117,10 @@ function depsPaint() {
 
 /** Only the progress bars and error lines (cheap: runs on every progress event). */
 function depsPaintProgress() {
-  for (const el of document.querySelectorAll(".deps-live")) el.innerHTML = depsProgHTML(false) + depsErrorHTML();
-  for (const el of document.querySelectorAll(".deps-sb")) el.innerHTML = (DEPS.busy ? depsProgHTML(true) : `<button class="btn sm primary" data-deps="install" data-id="ffmpeg">${t("Install ffmpeg")}</button>`) + depsErrorHTML();
+  // 0.1.46 (U3): app.js chromeHtml patches the texts and the bar in place on each tick (was innerHTML every tick).
+  const set = (el, html) => (typeof chromeHtml === "function" ? chromeHtml(el, html) : (el.innerHTML = html));
+  for (const el of document.querySelectorAll(".deps-live")) set(el, depsProgHTML(false) + depsErrorHTML());
+  for (const el of document.querySelectorAll(".deps-sb")) set(el, (DEPS.busy ? depsProgHTML(true) : `<button class="btn sm primary" data-deps="install" data-id="ffmpeg">${t("Install ffmpeg")}</button>`) + depsErrorHTML());
 }
 
 async function depsCheck() {

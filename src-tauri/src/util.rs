@@ -53,15 +53,25 @@ pub fn tmp_dir() -> PathBuf {
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const ABOVE_NORMAL_PRIORITY_CLASS: u32 = 0x0000_8000;
 
+/// The program a command gets while Windows is ending the session (0.1.46, `session::ending`): a
+/// path that cannot exist, so `spawn` / `output` / `status` return an error and nothing is started
+/// (a process started then fails with 0xC0000142 and Windows shows an error box for it).
+pub const SESSION_ENDING_PROGRAM: &str = r"\\?\glint-session-ending\nothing-is-started.exe";
+
+/// The one gate of Glint's child processes: the program itself, or `SESSION_ENDING_PROGRAM`.
+fn gated(program: &Path) -> &Path {
+    if crate::session::ending() { Path::new(SESSION_ENDING_PROGRAM) } else { program }
+}
+
 /// A child process that never flashes a console window.
 pub fn hidden_cmd(program: &Path) -> Command {
-    let mut c = Command::new(program);
+    let mut c = Command::new(gated(program));
     c.creation_flags(CREATE_NO_WINDOW);
     c
 }
 
 pub fn hidden_cmd_prio(program: &Path) -> Command {
-    let mut c = Command::new(program);
+    let mut c = Command::new(gated(program));
     c.creation_flags(CREATE_NO_WINDOW | ABOVE_NORMAL_PRIORITY_CLASS);
     c
 }
@@ -141,7 +151,7 @@ pub fn select_arg(path: &Path) -> String {
 /// Open the folder that holds `path` in Explorer, with the file selected. If
 /// the file is gone, open the nearest folder that still exists.
 pub fn reveal(path: &Path) -> Result<(), String> {
-    let mut cmd = Command::new("explorer.exe");
+    let mut cmd = Command::new(gated(Path::new("explorer.exe")));
     if path.exists() {
         cmd.raw_arg(select_arg(path));
     } else {
@@ -206,6 +216,18 @@ pub fn track_child(child: &std::process::Child) {
             log(&format!("child {}: not tied to Glint's life ({e})", child.id()));
         }
     }
+}
+
+/// The CPU seconds (user + kernel) a child process has used, read once it has exited (0.1.46: measuring the
+/// export's decode on the graphics card against the CPU). None when Windows does not say.
+pub fn child_cpu_secs(child: &std::process::Child) -> Option<f64> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::{FILETIME, HANDLE};
+    use windows::Win32::System::Threading::GetProcessTimes;
+    let (mut c, mut e, mut k, mut u) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+    unsafe { GetProcessTimes(HANDLE(child.as_raw_handle()), &mut c, &mut e, &mut k, &mut u) }.ok()?;
+    let secs = |f: FILETIME| ((f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64) as f64 / 1e7;
+    Some(secs(k) + secs(u))
 }
 
 /// Whether `pid` (a child of this process) is in the kill-on-close job (tests).

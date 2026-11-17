@@ -157,6 +157,9 @@ type RowMap = Vec<Vec<(u32, Vec<(f64, f64)>)>>;
 fn map_opts(opts: &ExportOpts, segs: Vec<Range>, map: &Map, rows: &RowMap) -> ExportOpts {
     let mut o = opts.clone();
     o.track_titles = Vec::new();
+    // Rows by role (0.1.44) arrive here already as `rows`: the file is exported with plain stream rows.
+    o.track_map = Vec::new();
+    o.track_over = Vec::new();
     o.start = 0.0;
     o.end = 0.0;
     o.segments = segs
@@ -207,6 +210,45 @@ fn map_opts(opts: &ExportOpts, segs: Vec<Range>, map: &Map, rows: &RowMap) -> Ex
         o.tracks = opts.tracks.iter().filter_map(|t| Some(TrackVolume { index: if t.volume <= 0.0 { t.index } else { track_to_file(t.index)? }, volume: t.volume })).collect();
     }
     o
+}
+
+/// 0.1.44, rows by role (`ExportOpts::track_map`): where each track row is heard in the exported file. `used`
+/// = the sources exported (indices into `map.sources`) with the stretch of the file each covers; `file_track(i,
+/// s)` = the file's audio stream that carries stream `s` of source `i`. A source with no entry, or -1 for a row,
+/// is silent on that row; an override (`track_over`) plays its stream for its stretch and silences the row's own
+/// stream there.
+fn role_rows(opts: &ExportOpts, map: &Map, used: &[(usize, (f64, f64))], file_track: &dyn Fn(usize, u32) -> Option<u32>) -> RowMap {
+    let n_rows = opts.track_map.iter().map(|m| m.streams.len()).max().unwrap_or(0).max(opts.track_titles.len());
+    let stream_of = |i: usize, row: usize| -> Option<u32> {
+        let clip = &map.sources[i].clip;
+        opts.track_map.iter().find(|m| &m.clip == clip)?.streams.get(row).copied().filter(|s| *s >= 0).map(|s| s as u32)
+    };
+    (0..n_rows)
+        .map(|row| {
+            let mut groups: Vec<(u32, Vec<usize>)> = Vec::new();
+            for &(i, _) in used {
+                let Some(jt) = stream_of(i, row).and_then(|s| file_track(i, s)) else { continue };
+                match groups.iter_mut().find(|g| g.0 == jt) {
+                    Some(g) => g.1.push(i),
+                    None => groups.push((jt, vec![i])),
+                }
+            }
+            let mut out: Vec<(u32, Vec<(f64, f64)>)> = groups.into_iter().map(|(jt, is)| (jt, used.iter().filter(|(i, _)| !is.contains(i)).map(|(_, span)| *span).collect())).collect();
+            for v in opts.track_over.iter().filter(|v| v.row as usize == row && v.end > v.start) {
+                for (a, b, p) in map.span(v.start, v.end) {
+                    if let Some(own) = stream_of(p.k, row).and_then(|s| file_track(p.k, s)) {
+                        if let Some(e) = out.iter_mut().find(|e| e.0 == own) {
+                            e.1.push((a, b));
+                        }
+                    }
+                    if let Some(jt) = file_track(p.k, v.stream) {
+                        out.push((jt, vec![(-1.0e6, a), (b, 1.0e6)]));
+                    }
+                }
+            }
+            out
+        })
+        .collect()
 }
 
 /// The track titles of each source (as `join` names them) and the project's titles over all present sources.
@@ -290,7 +332,10 @@ fn export_with(s: &Settings, target: &Target, sources: &[Source], opts: &ExportO
         // A project track is the stream of this clip a draft would have put on it (join's rules: a clip
         // with only a Mix is heard on Desktop too).
         let at = present.iter().position(|x| std::ptr::eq(*x, src)).unwrap_or(0);
-        let rows: RowMap = if opts.track_titles.is_empty() {
+        let rows: RowMap = if !opts.track_map.is_empty() {
+            let map = Map { sources, exported: vec![(k, 0.0)] };
+            role_rows(opts, &map, &[(k, (0.0, f64::INFINITY))], &|_, s| Some(s))
+        } else if opts.track_titles.is_empty() {
             (0..project.titles.len()).map(|t| project.feeds.get(at).and_then(|f| f.get(t)).copied().flatten().map(|x| vec![(x as u32, Vec::new())]).unwrap_or_default()).collect()
         } else {
             // 0.1.38: rows by title; this clip's own shown track with that title, else silent.
@@ -321,7 +366,16 @@ fn export_with(s: &Settings, target: &Target, sources: &[Source], opts: &ExportO
     util::log(&format!("export project {}: {} clips joined in {} ms ({}), starts {:?}", target.id, chosen.len(), started.elapsed().as_millis(), done.mode.name(), done.starts));
     // The joined file has the tracks join gave it, by title.
     let file_titles = done.plan.tracks.titles.clone();
-    let rows: RowMap = if opts.track_titles.is_empty() {
+    let rows: RowMap = if !opts.track_map.is_empty() {
+        let feeds = &done.plan.tracks.feeds;
+        let map = Map { sources, exported: ks.iter().copied().zip(done.starts.iter().copied()).collect() };
+        let used: Vec<(usize, (f64, f64))> = ks.iter().enumerate().map(|(j, &k)| (k, (done.starts[j], done.starts.get(j + 1).copied().unwrap_or(f64::INFINITY)))).collect();
+        let n_file = file_titles.len();
+        role_rows(opts, &map, &used, &|i, s| {
+            let j = ks.iter().position(|&k| k == i)?;
+            (0..n_file).find(|jt| feeds.get(j).and_then(|f| f.get(*jt)).copied().flatten() == Some(s as usize)).map(|jt| jt as u32)
+        })
+    } else if opts.track_titles.is_empty() {
         project.titles.iter().map(|t| file_titles.iter().position(|x| x == t).map(|x| vec![(x as u32, Vec::new())]).unwrap_or_default()).collect()
     } else {
         // 0.1.38: rows by title across the clips. Clip j is heard on row T from its own shown track

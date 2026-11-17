@@ -14,8 +14,9 @@
 .viewer.ws.editing {
   --ws-top: 46px;
   --ws-pool-w: 0px;
-  --ws-insp-w: clamp(250px, var(--ws-insp, 300px), min(560px, 30vw));
-  --ws-tl-h: clamp(140px, var(--ws-tl, clamp(180px, 30vh, 260px)), calc(100vh - var(--ws-top) - 200px));
+  --ws-insp-w: clamp(280px, var(--ws-insp, 320px), max(280px, 40vw)); /* 0.1.46: 280 .. 40 %, 320 at first */
+  /* 148 px: the timeline's toolbar (43), ruler (26), the video row (56), its scrollbar (13) and row grip (10). */
+  --ws-tl-h: clamp(148px, var(--ws-tl, clamp(180px, 30vh, 260px)), calc(100vh - var(--ws-top) - 200px));
   width: 100%; height: 100%; max-height: none; border: 0; border-radius: 0;
   grid-template-columns: var(--ws-pool-w) minmax(0, 1fr) var(--ws-insp-w);
   grid-template-rows: var(--ws-top) minmax(0, 1fr) auto;
@@ -48,9 +49,11 @@
 .viewer.ws.editing > .v-side { grid-area: side; max-height: none; min-height: 0; padding: 12px 14px 0; }
 .viewer.ws.editing.ws-no-insp > .v-side, .viewer.ws.editing.ws-no-insp > .ws-grip-insp { display: none; }
 
-/* The timeline: the height the grip above it sets (--ws-tl), taller only when its own row grip asks for
-   more (--tl-want, timeline.js), and never so tall that the player gets less than 200 px. */
-.viewer.ws.editing .e-tl { --e-tl-min: var(--ws-tl-h); --e-tl-cap: calc(100vh - var(--ws-top) - 200px); }
+/* The timeline: exactly the height the border above it sets (--ws-tl), whatever the number of rows; the rows
+   scroll inside it (the toolbar and the ruler stay). 0.1.46: it was only a MINIMUM, and once the rows were made
+   even a little taller (the row grip, --tl-want = the height of every row) the area grew to show them all and the
+   border could not make it smaller. The row grip now only changes the rows' height. */
+.viewer.ws.editing .e-tl { --e-tl-min: var(--ws-tl-h); --e-tl-cap: calc(100vh - var(--ws-top) - 200px); height: var(--ws-tl-h); min-height: var(--ws-tl-h); max-height: var(--ws-tl-h); }
 
 /* ---------- the borders: drag them ---------- */
 .viewer.ws.editing > .ws-grip { display: block; position: relative; z-index: 6; touch-action: none; }
@@ -83,3 +86,75 @@
 /* An empty project: the hint fills the middle. */
 .viewer.ws.editing.pj-blank > .v-main > .pj-empty { background: var(--bg); }
 .viewer.ws.editing.pj-blank > .ws-grip-tl { display: none; } /* no timeline yet */
+
+/* ---------- 0.1.46: roomier panels, the same controls ----------
+   One spacing scale (4 / 8 / 12 / 16 px), 14 px side padding, click targets at least 28 px, one title style. */
+
+/* The inspector: tabs at the top (workspace.js wsTabsMount), one group of sections at a time, Export as the footer. */
+.viewer.ws.editing > .v-side { padding: 0 14px; container-type: inline-size; }
+.viewer.ws.editing .v-edit > .ws-out { display: none !important; }
+.viewer.ws.editing .ws-tabs { position: sticky; top: 0; z-index: 4; display: flex; gap: 4px; margin: 0 -14px 8px; padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.ws-tab { flex: 1 1 auto; min-width: 0; /* auto, not 0: a long label (Greek "Επικαλύψεις") takes the room the short ones leave */ min-height: 42px; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 4px 2px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); font: 600 11px var(--sans, inherit); cursor: pointer; white-space: nowrap; }
+.ws-tab svg { flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ws-tab span { max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ws-tab:hover { color: var(--text); background: var(--raised); }
+.ws-tab.on { color: var(--text); background: var(--raised); border-color: var(--line-2); }
+.ws-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* A narrow pane (or long words): the tabs show their icons, the name is in the tooltip. */
+@container (max-width: 250px) { .ws-tab span { display: none; } .ws-tab { min-height: 32px; } }
+
+/* Sections: one title style, the same gaps. */
+.viewer.ws.editing .v-edit > .e-sec { gap: 8px; padding: 8px 0 12px; }
+.viewer.ws.editing .v-edit > .e-sec > .e-title:first-child { font-size: 12.5px; letter-spacing: 0; min-height: 28px; }
+
+/* One control row: the name on the left, the value on the right, the slider across the width under them. */
+.viewer.ws.editing .e-sliders { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+.viewer.ws.editing .e-slider { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "lab val" "rng rng" "end end"; align-items: center; gap: 2px 8px; }
+.viewer.ws.editing .e-slider > span:first-child { grid-area: lab; text-align: left; justify-self: start; }
+.viewer.ws.editing .e-slider > input[type="range"] { grid-area: rng; width: 100%; min-height: 20px; margin: 0; }
+.viewer.ws.editing .e-slider > output { grid-area: val; }
+.viewer.ws.editing .e-slider > .e-ends { grid-area: end; grid-column: auto; margin-top: -2px; }
+/* The fades and similar label / number rows: the boxes on one right edge. */
+.viewer.ws.editing .v-edit .ov-row { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+.viewer.ws.editing .v-edit .ov-row > span:first-child { flex: 1 1 auto; min-width: 0; }
+.viewer.ws.editing .e-line { gap: 8px; min-height: 28px; }
+
+/* The looks (0.1.46): one dropdown the width of the section (dropdown.js). Its list lives on <body>: built-in
+   looks, a line, the saved ones with their delete x (editor.js edLookDecorate). */
+.e-look-row { display: flex; min-width: 0; }
+.e-look-row .dd-btn.e-looks { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 30px; }
+.dd-list.e-looks-list .dd-group { height: 0; margin: 4px 4px; padding: 0; border-bottom: 0; border-top: 1px solid var(--line); }
+.dd-list.e-looks-list .dd-opt.in-group { padding-left: 9px; padding-right: 2px; }
+.dd-list.e-looks-list .dd-opt.on::after { order: 1; }
+.dd-list.e-looks-list .e-look-x { order: 2; flex: none; margin-left: auto; width: 24px; height: 24px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 5px; background: none; color: var(--muted); cursor: pointer; }
+.dd-list.e-looks-list .dd-opt.on .e-look-x { margin-left: 6px; }
+.dd-list.e-looks-list .e-look-x:hover { background: var(--raised-2); color: var(--text, inherit); }
+.dd-list.e-looks-list .e-look-x svg { width: 14px; height: 14px; }
+
+/* The footer: the Export section on every tab, pinned to the bottom (summary, progress, the two buttons); its
+   options and its title on the Export tab only. */
+.viewer.ws.editing .v-edit > .e-export { gap: 8px; padding: 10px 14px 12px; border-top: 1px solid var(--line); }
+.viewer.ws.editing .v-edit:not([data-ws-tab="export"]) > .e-export > .e-title,
+.viewer.ws.editing .v-edit:not([data-ws-tab="export"]) > .e-export > .e-exp-opt { display: none; }
+.viewer.ws.editing .v-edit[data-ws-tab="export"] > .e-export { position: static; box-shadow: none; margin-top: 0; }
+.viewer.ws.editing .v-edit > .e-export > .e-exp-rules:empty { display: none; }
+.viewer.ws.editing .v-edit > .e-export .btn.wide { min-height: 34px; }
+
+/* The Library: a compact head (the help one line, put away for good with its x), search and game filter side by
+   side, 72 px thumbnails. "Add to the timeline" stays pinned at the bottom. */
+.viewer.ws.editing > .pj-lib .pj-head { position: relative; padding: 10px 12px 4px; }
+.viewer.ws.editing > .pj-lib .pj-h { font-size: 17px; padding-right: 28px; }
+.viewer.ws.editing > .pj-lib .pj-hint { margin-top: 2px; padding-right: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.viewer.ws.editing.ws-no-hint > .pj-lib .pj-hint, .viewer.ws.editing.ws-no-hint > .pj-lib .ws-hint-x { display: none; }
+.ws-hint-x { position: absolute; right: 8px; top: 8px; width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.ws-hint-x:hover { background: var(--raised); color: var(--text); }
+.ws-hint-x svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.viewer.ws.editing > .pj-lib .pj-tools { flex-direction: row; align-items: center; gap: 6px; padding: 4px 12px 8px; }
+.viewer.ws.editing > .pj-lib .pj-tools .pj-q { flex: 1 1 auto; width: auto; min-height: 30px; }
+.viewer.ws.editing > .pj-lib .pj-tools .dd-btn.pj-game { flex: 0 1 auto; width: auto; max-width: 46%; min-height: 30px; }
+.viewer.ws.editing > .pj-lib .pj-item { gap: 8px; padding: 4px; }
+.viewer.ws.editing > .pj-lib .pj-thumb { width: 72px; }
+.viewer.ws.editing > .pj-lib .pj-foot { padding: 8px 12px 12px; }
+.viewer.ws.editing .v-edit > .e-export > .e-title:first-child { cursor: default; padding-left: 6px; }
+.viewer.ws.editing .v-edit > .e-export > .e-title:first-child::before { display: none; }
+.viewer.ws.editing .v-edit > .e-export > .e-title:first-child:hover { background: none; }

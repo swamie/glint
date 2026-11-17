@@ -28,6 +28,9 @@ use std::time::{Duration, SystemTime};
 // Pictures, GIFs and clips on the picture; round / soft blur boxes (0.1.35).
 #[path = "edmedia.rs"]
 mod edmedia;
+// Smart rendering of cuts-only exports (0.1.46).
+#[path = "smartcut.rs"]
+mod smartcut;
 pub use edmedia::{media_info, MediaInfo, MediaSrc, MEDIA_EXT};
 
 /// One audio track of a clip, extracted to its own file so the editor can play
@@ -52,11 +55,17 @@ pub struct Color {
     pub gamma: f32,
     /// 0.1.41: sharpening, 0 = off .. 1: `unsharp` with a 5x5 luma matrix, amount 1.5 x this (chroma untouched).
     pub sharpness: f32,
+    /// 0.1.45: -1 (cool) .. +1 (warm), 0 = off: R x (1 + 0.20 T), G x (1 + 0.02 T), B x (1 - 0.20 T), after the
+    /// brightness / contrast / saturation / gamma step (the preview uses the same matrix).
+    pub temperature: f32,
+    /// 0.1.45: 0 .. 1, 0 = off: a bloom: the highlights (each channel through max(0, (x - 0.55) / 0.45)), blurred
+    /// (Gaussian, sigma 1.6 % of the picture's height), screened back over the picture at opacity 0.9 x glow.
+    pub glow: f32,
 }
 
 impl Default for Color {
     fn default() -> Self {
-        Color { brightness: 1.0, contrast: 1.0, saturation: 1.0, gamma: 1.0, sharpness: 0.0 }
+        Color { brightness: 1.0, contrast: 1.0, saturation: 1.0, gamma: 1.0, sharpness: 0.0, temperature: 0.0, glow: 0.0 }
     }
 }
 
@@ -196,11 +205,83 @@ pub struct ExportOpts {
     /// one per title across the sources; a track row's `index` is its place in this list. Empty = a clip's own
     /// stream index, as before. `editor::export` itself never reads it.
     pub track_titles: Vec<String>,
+    /// 0.1.44, audio rows by role (CONTRACT_0144R): per source, the audio stream each track row plays
+    /// (`streams[k]` for the row whose `index` is k; -1 = none). Present = it decides, not the titles.
+    pub track_map: Vec<TrackMap>,
+    /// 0.1.44: a piece whose row plays another stream of its source than `track_map` says (the "only the mix
+    /// was audible" case of the conversion): row `row`, from `start` to `end` (source seconds, as `segments`).
+    pub track_over: Vec<TrackOver>,
+}
+
+/// One source's streams per track row (`ExportOpts::track_map`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct TrackMap {
+    pub clip: String,
+    pub streams: Vec<i64>,
+}
+
+/// A stretch of a track row that plays `stream` instead (`ExportOpts::track_over`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct TrackOver {
+    pub row: u32,
+    pub start: f64,
+    pub end: f64,
+    pub stream: u32,
+}
+
+/// Audio rows by role for ONE file (0.1.44): `map` = that file's entry of `track_map` (track row k -> stream,
+/// -1 none) and the overrides, as plain stream rows: each track row then names the stream it plays, a row with
+/// none is dropped, and an override is the row's level on the other stream for that stretch (and silence on its
+/// own stream there). Without a map and overrides the options are returned as they are.
+pub fn rows_by_stream(opts: &ExportOpts, map: Option<&TrackMap>) -> ExportOpts {
+    let mut o = opts.clone();
+    o.track_map = Vec::new();
+    o.track_over = Vec::new();
+    if map.is_none() && opts.track_over.is_empty() {
+        return o;
+    }
+    let stream_of = |k: u32| -> Option<u32> {
+        match map {
+            Some(m) => m.streams.get(k as usize).copied().filter(|s| *s >= 0).map(|s| s as u32),
+            None => Some(k),
+        }
+    };
+    let mut audio = Vec::new();
+    for e in &opts.audio {
+        if e.source != "track" {
+            audio.push(e.clone());
+            continue;
+        }
+        let overs: Vec<&TrackOver> = opts.track_over.iter().filter(|v| v.row == e.index && v.end > v.start).collect();
+        if let Some(s) = stream_of(e.index) {
+            // Silent where an override plays another stream (first listed wins).
+            let mut rs: Vec<GainRegion> = overs.iter().map(|v| GainRegion { start: v.start, end: v.end, gain: 0.0 }).collect();
+            rs.extend(e.regions.iter().cloned());
+            audio.push(AudioEdit { index: s, regions: rs, ..e.clone() });
+        }
+        for v in overs {
+            // The other stream, heard only from start to end, at the row's level.
+            let mut rs = vec![GainRegion { start: -1.0e6, end: v.start, gain: 0.0 }, GainRegion { start: v.end, end: 1.0e6, gain: 0.0 }];
+            rs.extend(e.regions.iter().cloned());
+            audio.push(AudioEdit { index: v.stream, regions: rs, ..e.clone() });
+        }
+    }
+    if audio.is_empty() && !opts.audio.is_empty() {
+        // Every row had nothing to play: nothing heard (not "the clip as recorded").
+        o.tracks = vec![TrackVolume { index: 0, volume: 0.0 }];
+    }
+    o.audio = audio;
+    if map.is_some() {
+        o.tracks = o.tracks.iter().filter_map(|t| Some(TrackVolume { index: if t.volume <= 0.0 { t.index } else { stream_of(t.index)? }, volume: t.volume })).collect();
+    }
+    o
 }
 
 impl Default for ExportOpts {
     fn default() -> Self {
-        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new(), ordered: false, overlays: Vec::new(), blurs: Vec::new(), fade_in: 0.0, fade_out: 0.0, canvas: None, canvas_tracks: Vec::new(), tail: 0.0, track_titles: Vec::new() }
+        ExportOpts { start: 0.0, end: 0.0, speed: 1.0, color: Color::default(), tracks: Vec::new(), segments: Vec::new(), audio: Vec::new(), ordered: false, overlays: Vec::new(), blurs: Vec::new(), fade_in: 0.0, fade_out: 0.0, canvas: None, canvas_tracks: Vec::new(), tail: 0.0, track_titles: Vec::new(), track_map: Vec::new(), track_over: Vec::new() }
     }
 }
 
@@ -417,8 +498,28 @@ fn same(a: f64, b: f64) -> bool {
 }
 
 fn is_neutral(c: &Color) -> bool {
-    [c.brightness, c.contrast, c.saturation, c.gamma].iter().all(|v| !v.is_finite() || same(*v as f64, 1.0)) && sharp_amount(c) == 0.0
+    [c.brightness, c.contrast, c.saturation, c.gamma].iter().all(|v| !v.is_finite() || same(*v as f64, 1.0)) && sharp_amount(c) == 0.0 && temp_amount(c) == 0.0 && glow_amount(c) == 0.0
 }
+
+/// `Color::temperature` kept to -1..1 (0 = off).
+fn temp_amount(c: &Color) -> f64 {
+    if c.temperature.is_finite() && (c.temperature as f64).abs() > 0.001 { (c.temperature as f64).clamp(-1.0, 1.0) } else { 0.0 }
+}
+
+/// `Color::glow` kept to 0..1 (0 = off).
+fn glow_amount(c: &Color) -> f64 {
+    if c.glow.is_finite() && c.glow > 0.001 { (c.glow as f64).min(1.0) } else { 0.0 }
+}
+
+/// The glow's highlight knee, blur (a fraction of the picture's height) and strength (opacity per unit of glow).
+const GLOW_KNEE: f64 = 0.55;
+const GLOW_SIGMA: f64 = 0.016;
+const GLOW_OPACITY: f64 = 0.9;
+/// The highlights are blurred on a copy this many pixels high (sigma scaled with it) and scaled back: the same
+/// light as at full size, a fraction of the work on 1440p.
+const GLOW_WORK_H: u32 = 360;
+/// Labels of the glow's branches: one set per use in a graph.
+static GLOW_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// The `unsharp` luma amount of `c` (0 = none): 1.5 x sharpness, sharpness kept to 0..1.
 fn sharp_amount(c: &Color) -> f64 {
@@ -428,7 +529,7 @@ fn sharp_amount(c: &Color) -> f64 {
 /// True if `a` and `b` give the same picture (a non-finite field counts as 1, as in `is_neutral`).
 fn same_color(a: &Color, b: &Color) -> bool {
     let f = |v: f32| if v.is_finite() { v as f64 } else { 1.0 };
-    [(a.brightness, b.brightness), (a.contrast, b.contrast), (a.saturation, b.saturation), (a.gamma, b.gamma)].iter().all(|&(x, y)| same(f(x), f(y))) && same(sharp_amount(a), sharp_amount(b))
+    [(a.brightness, b.brightness), (a.contrast, b.contrast), (a.saturation, b.saturation), (a.gamma, b.gamma)].iter().all(|&(x, y)| same(f(x), f(y))) && same(sharp_amount(a), sharp_amount(b)) && same(temp_amount(a), temp_amount(b)) && same(glow_amount(a), glow_amount(b))
 }
 
 fn clamped(v: f32, lo: f64, hi: f64) -> f64 {
@@ -585,7 +686,25 @@ fn color_filter(c: &Color, matrix: &str, range: &str) -> Option<String> {
     // Sharpness alone (0.1.41): only the unsharp, no trip through RGB.
     let sharp = sharp_amount(c);
     let unsharp = format!("unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount={sharp:.4}:chroma_msize_x=5:chroma_msize_y=5:chroma_amount=0");
-    if [c.brightness, c.contrast, c.saturation, c.gamma].iter().all(|v| !v.is_finite() || same(*v as f64, 1.0)) {
+    let (temp, glow) = (temp_amount(c), glow_amount(c));
+    if glow > 0.0 {
+        // 0.1.45: the look without its glow, then the glow (order: eq, temperature, sharpness, glow).
+        let before = color_filter(&Color { glow: 0.0, ..c.clone() }, matrix, range);
+        let n = GLOW_N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (a, b, h, s, o) = (format!("gwa{n}"), format!("gwb{n}"), format!("gwh{n}"), format!("gws{n}"), format!("gwo{n}"));
+        let k = 255.0 * GLOW_KNEE;
+        let hi = format!("max(0,(val-{k:.3})/{:.4})", 1.0 - GLOW_KNEE);
+        let sigma = GLOW_SIGMA * GLOW_WORK_H as f64;
+        let glow_part = format!(
+            "scale=in_color_matrix={matrix}:in_range={range}:flags=bicubic+accurate_rnd+full_chroma_int,format=gbrp,split=2[{a}][{b}];[{b}]lutrgb=r='{hi}':g='{hi}':b='{hi}',scale=-2:{GLOW_WORK_H},gblur=sigma={sigma:.3}[{h}];[{h}][{a}]scale2ref=flags=bicubic[{s}][{o}];[{o}][{s}]blend=all_mode=screen:all_opacity={:.4},scale=out_color_matrix={matrix}:out_range={range}:flags=bicubic+accurate_rnd",
+            GLOW_OPACITY * glow
+        );
+        return Some(match before {
+            Some(f) => format!("{f},{glow_part}"),
+            None => glow_part,
+        });
+    }
+    if [c.brightness, c.contrast, c.saturation, c.gamma].iter().all(|v| !v.is_finite() || same(*v as f64, 1.0)) && temp == 0.0 {
         return Some(unsharp);
     }
     let b = clamped(c.brightness, 0.0, BRIGHTNESS_MAX);
@@ -606,8 +725,11 @@ fn color_filter(c: &Color, matrix: &str, range: &str) -> Option<String> {
 
     let mut steps = vec![format!("scale=in_color_matrix={matrix}:in_range={range}:flags=bicubic+accurate_rnd+full_chroma_int"), "format=rgb24".to_string()];
     if same(sat, 1.0) {
-        // No channel mixing: brightness, contrast and gamma fold into one table.
-        steps.push(lut(&if same(g, 1.0) { curve } else { gamma(&curve) }));
+        // No channel mixing: brightness, contrast and gamma fold into one table (none when they change nothing:
+        // a temperature alone, 0.1.45).
+        if curve != "val" || !same(g, 1.0) {
+            steps.push(lut(&if same(g, 1.0) { curve } else { gamma(&curve) }));
+        }
     } else {
         if curve != "val" {
             steps.push(lut(&curve));
@@ -628,6 +750,10 @@ fn color_filter(c: &Color, matrix: &str, range: &str) -> Option<String> {
         if !same(g, 1.0) {
             steps.push(lut(&gamma("val")));
         }
+    }
+    if temp != 0.0 {
+        // 0.1.45: warm / cool, the same matrix as the preview's.
+        steps.push(format!("colorchannelmixer=rr={:.5}:gg={:.5}:bb={:.5}", 1.0 + 0.20 * temp, 1.0 + 0.02 * temp, 1.0 - 0.20 * temp));
     }
     steps.push(format!("scale=out_color_matrix={matrix}:out_range={range}:flags=bicubic+accurate_rnd"));
     if sharp > 0.0 {
@@ -822,6 +948,9 @@ fn run_watched(mut cmd: std::process::Command, expected: f64, progress: &mut dyn
         }
         if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
             stopped = Some(CANCELLED.to_string());
+        } else if last >= 40.0 && HW_RUN.with(|h| h.get()) && HW_TEST.with(|t| t.get()) == 2 {
+            // Test (0.1.46): the graphics card's decoding stops part way.
+            stopped = Some("test: the hardware decoder stopped at 40 %".to_string());
         } else if moved.elapsed() >= stall {
             let pct = if expected > 0.0 { ((out_us.max(0.0) / 1e6 / expected) * 100.0).clamp(0.0, 99.0).floor() } else { 0.0 };
             stopped = Some(format!("The export stopped making progress at {pct:.0} %. ffmpeg made no new frame for {} seconds, so it was ended. The log has its last words.", stall.as_secs().max(1)));
@@ -832,9 +961,10 @@ fn run_watched(mut cmd: std::process::Command, expected: f64, progress: &mut dyn
         }
     }
     let status = child.wait().map_err(|e| format!("ffmpeg failed: {e}"))?;
+    LAST_CPU.with(|l| l.set(util::child_cpu_secs(&child).unwrap_or(f64::NAN)));
     let stderr = err_reader.and_then(|h| h.join().ok()).unwrap_or_default();
     if let Some(why) = stopped {
-        if why != CANCELLED {
+        if why.starts_with("The export stopped") {
             util::log(&format!("export: stalled at {:.1} s of output; ffmpeg said: {}", out_us.max(0.0) / 1e6, util::last_lines(&stderr, 4)));
         }
         return Err(why);
@@ -2003,6 +2133,15 @@ pub fn with_cancel<T>(flag: &std::sync::Arc<std::sync::atomic::AtomicBool>, f: i
     out
 }
 pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dyn FnMut(f32)) -> Result<ClipMeta, String> {
+    // 0.1.44: rows by role on one clip (its own entry of `track_map`, else the first; overrides): plain stream rows.
+    let by_stream;
+    let opts = if opts.track_map.is_empty() && opts.track_over.is_empty() {
+        opts
+    } else {
+        let entry = opts.track_map.iter().find(|m| m.clip == src.id).or(opts.track_map.first());
+        by_stream = rows_by_stream(opts, entry);
+        &by_stream
+    };
     // The overlay PNGs are temp files made for this export: gone when it ends, whatever happens.
     let _pngs = OverlayFiles(opts.overlays.iter().map(|o| PathBuf::from(&o.png)).collect());
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg").ok_or("ffmpeg.exe was not found")?;
@@ -2206,7 +2345,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             let trim = if first.3 { String::new() } else { format!("trim=end={:.6},", first.2 - seek - 0.0005) };
             let x = first.1 - seek;
             let one = if same(first.6, 1.0) { format!("if(eq(N,0),0,max(0,T-{x:.6}))") } else { format!("if(eq(N,0),0,max(0,T-{x:.6}))/{:.6}", first.6) };
-            graph.push(format!("[{g}:v:0]{trim}setpts='({:.6}+{one})/{speed:.6}/TB'{}{look}[{label}]", first.5, if g + 1 == groups.len() && tail == 0.0 && needs_end { END_PAD } else { "" }));
+            graph.push(format!("[{g}:v:0]{HWDL}{trim}setpts='({:.6}+{one})/{speed:.6}/TB'{}{look}[{label}]", first.5, if g + 1 == groups.len() && tail == 0.0 && needs_end { END_PAD } else { "" }));
             continue;
         }
         // Several ranges from one input: range j keeps [its on-screen frame, its end - 0.5 ms).
@@ -2224,7 +2363,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             sel.push(cond("t"));
             pts.push(format!("{}*({:.6}+{})", cond("T"), c.5, rel(c)));
         }
-        graph.push(format!("[{g}:v:0]select='{}',setpts='if(eq(N,0),{:.6},{})/{speed:.6}/TB'{}{look}[{label}]", sel.join("+"), first.5, pts.join("+"), if g + 1 == groups.len() && tail == 0.0 && needs_end { END_PAD } else { "" }));
+        graph.push(format!("[{g}:v:0]{HWDL}select='{}',setpts='if(eq(N,0),{:.6},{})/{speed:.6}/TB'{}{look}[{label}]", sel.join("+"), first.5, pts.join("+"), if g + 1 == groups.len() && tail == 0.0 && needs_end { END_PAD } else { "" }));
     }
     if n_in > 1 {
         let labels: String = (0..n_in).map(|k| format!("[v{k}]")).collect();
@@ -2371,6 +2510,37 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             // that starts at `base`; the mix is then cut like the video.
             let mut labels = String::new();
             let mut thru = String::new();
+            // 0.1.44: many audio clips (a montage's ungrouped pieces each name their source's file) made one input
+            // each, every one with its full path on the command line, which Windows cuts at 32767 characters. Past
+            // SHARE_FILES_FROM of them each FILE is one input, read from its start, and every clip of it takes its
+            // stretch with `atrim` (sample-exact; the decoded sound is small beside the picture's).
+            let n_files = rows.iter().filter(|r| matches!(r.source, Source::File { .. })).count();
+            let share = n_files > SHARE_FILES_FROM;
+            let mut shared: Vec<(String, usize)> = Vec::new();
+            let mut taps: Vec<((usize, u32), usize, usize)> = Vec::new(); // ((input, stream), uses, next)
+            if share {
+                for row in rows.iter() {
+                    if let Source::File { path, stream, .. } = &row.source {
+                        let input = match shared.iter().find(|(p, _)| p == path) {
+                            Some((_, i)) => *i,
+                            None => {
+                                let i = first_file + file_inputs.len();
+                                file_inputs.push((path.clone(), 0.0, -1.0));
+                                shared.push((path.clone(), i));
+                                i
+                            }
+                        };
+                        match taps.iter_mut().find(|t| t.0 == (input, *stream)) {
+                            Some(t) => t.1 += 1,
+                            None => taps.push(((input, *stream), 1, 0)),
+                        }
+                    }
+                }
+                for ((input, stream), uses, _) in &taps {
+                    let outs: String = (0..*uses).map(|u| format!("[fs{input}_{stream}_{u}]")).collect();
+                    graph.push(format!("[{input}:a:{stream}]asplit={uses}{outs}"));
+                }
+            }
             for (j, row) in rows.iter().enumerate() {
                 let to_stereo = |ch: u32| {
                     // A mono source plays on both speakers at full level (as in the
@@ -2381,6 +2551,13 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
                 let gain = gain_filter(row.volume, &row.regions);
                 let chain = match &row.source {
                     Source::Track(i, ch) => format!("[{clip_audio}:a:{i}]{},{gain}[r{j}]", to_stereo(*ch)),
+                    Source::File { path, seek, len, at, channels, stream } if share => {
+                        let input = shared.iter().find(|(p, _)| p == path).map(|x| x.1).unwrap_or(first_file);
+                        let tap = taps.iter_mut().find(|t| t.0 == (input, *stream)).map(|t| { t.2 += 1; t.2 - 1 }).unwrap_or(0);
+                        let samples = (at * MIX_RATE as f64).round() as u64;
+                        let delay = if samples > 0 { format!(",adelay=delays={samples}S:all=1") } else { String::new() };
+                        format!("[fs{input}_{stream}_{tap}]asetpts=PTS-STARTPTS,atrim=start={seek:.6}:end={:.6},asetpts=PTS-STARTPTS,{}{delay},{gain}[r{j}]", seek + len, to_stereo(*channels))
+                    }
                     Source::File { path, seek, len, at, channels, stream } => {
                         let input = first_file + file_inputs.len();
                         file_inputs.push((path.clone(), *seek, *len));
@@ -2410,6 +2587,17 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
                 graph.push(cut_chain_gaps("[mix]", &local, &gaps, &speeds, "m", &pad, "[mc]", (MIX_RATE, "stereo")));
                 graph.push(format!("[mc]{thru}amix=inputs={}:duration=first:normalize=0,{tempo}[a]", n_thru + 1));
             }
+            // 0.1.45: a mix that can pass full scale (a level over 100 % anywhere, or more than one source summed) ends
+            // in a limiter, so 200 % is louder but never clipped (the owner's crackle). Sound under the ceiling passes
+            // as it is; a mix that cannot pass full scale keeps its command exactly.
+            let loud = rows.len() > 1 || rows.iter().any(|r| r.volume > 1.0 + 1e-6 || r.regions.iter().any(|g| r.volume * g.2 > 1.0 + 1e-6));
+            if loud {
+                if let Some(last) = graph.last_mut().filter(|g| g.ends_with("[a]")) {
+                    last.truncate(last.len() - 3);
+                    last.push_str("[al]");
+                    graph.push(format!("[al]{LIMITER}[a]"));
+                }
+            }
             maps.extend(["-map", "[a]"].map(String::from));
             audio_args.extend(["-metadata:s:a:0".to_string(), format!("title={title}"), "-disposition:a:0".into(), "default".into()]);
             aac(&mut audio_args);
@@ -2432,18 +2620,24 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     }
     // Keyframe tracks can make the graph long; Windows cuts a command line at 32767 characters, so a
     // long graph goes to a file (`-/filter_complex`, ffmpeg 7+). Short ones stay on the line as before.
-    let graph_text = graph.join(";");
+    let graph_joined = graph.join(";");
     let mut _graph_file = OverlayFiles(Vec::new());
-    let graph_arg: [String; 2] = if graph_text.len() > 24_000 {
-        let dir = overlay_dir();
-        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let path = dir.join(format!("{}.txt", util::new_id()));
-        fs::write(&path, &graph_text).map_err(|e| e.to_string())?;
-        _graph_file.0.push(path.clone());
-        ["-/filter_complex".into(), path.to_string_lossy().into_owned()]
-    } else {
-        ["-filter_complex".into(), graph_text]
-    };
+    // 0.1.46: the graph twice, for decoding on the CPU (as before) and on the graphics card (each range input's
+    // frames first brought back to memory: `hwdownload`, as NV12, the same pixels as the CPU's yuv420p).
+    let mut graph_args: Vec<[String; 2]> = Vec::new();
+    for dl in ["", "hwdownload,format=nv12,"] {
+        let graph_text = graph_joined.replace(HWDL, dl);
+        graph_args.push(if graph_text.len() > 24_000 {
+            let dir = overlay_dir();
+            fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let path = dir.join(format!("{}.txt", util::new_id()));
+            fs::write(&path, &graph_text).map_err(|e| e.to_string())?;
+            _graph_file.0.push(path.clone());
+            ["-/filter_complex".into(), path.to_string_lossy().into_owned()]
+        } else {
+            ["-filter_complex".into(), graph_text]
+        });
+    }
 
     let title = format!("{} (edit)", src.title);
     // Beside the source; from a draft, into its folder in the clips folder.
@@ -2451,9 +2645,16 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     let out = util::unique_path(&dir, &util::sanitize_filename(&title), "mp4");
     let src_s = src_path.to_string_lossy().into_owned();
 
-    let build = |enc: &str| -> Vec<String> {
+    let build_with = |enc: &str, hw: bool| -> Vec<String> {
         let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error", "-nostdin", "-nostats", "-y"].map(String::from).to_vec();
         for (seek, len) in &video_inputs {
+            if hw {
+                // 0.1.46 (S: CPU -44 to -68 %): the range's decoding on the graphics card.
+                a.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"].map(String::from));
+                if HW_TEST.with(|t| t.get()) == 1 {
+                    a.extend(["-hwaccel_device", "9"].map(String::from)); // test: a card that is not there
+                }
+            }
             if video_inputs.len() > 4 {
                 // Every range has its own decoder, all open at once; fewer
                 // threads each keeps memory in check on a 1440p clip.
@@ -2478,11 +2679,16 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             a.extend(["-i".to_string(), src_s.clone()]);
         }
         for (path, seek, len) in &file_inputs {
+            if *len < 0.0 {
+                // One input for every clip of this file (0.1.44): read from its start, each clip cut in the graph.
+                a.extend(["-i".to_string(), path.clone()]);
+                continue;
+            }
             a.extend(["-ss".to_string(), format!("{seek:.6}"), "-t".into(), format!("{len:.6}"), "-i".into(), path.clone()]);
         }
         // The overlay pictures, media items and masks (edmedia::layer_input_args).
         a.extend(layer_args.iter().cloned());
-        a.extend(graph_arg.iter().cloned());
+        a.extend(graph_args[hw as usize].iter().cloned());
         a.extend(maps.iter().cloned());
         a.extend(video_codec_args(enc));
         if speeds.iter().any(|x| !same(*x, 1.0)) {
@@ -2520,6 +2726,7 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
         a
     };
 
+    let build = |enc: &str| build_with(enc, false);
     let expected = out_total;
     if DRY_RUN.with(|d| d.borrow().is_some()) {
         // `--editor-test`: the command (libx264, paths as placeholders) instead of an encode.
@@ -2535,7 +2742,13 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
     // Windows refuses a command line over 32767 characters (R3-2): say so plainly instead of "os error 206".
     let line_len: usize = build(&enc).iter().map(|a| a.len() + 3).sum::<usize>() + ffmpeg.as_os_str().len() + 3;
     if line_len > 32_000 {
-        util::log(&format!("export: the command would be {line_len} characters ({k_count} pieces): refused"));
+        // 0.1.44: pieces share inputs and so do the clips of one audio file; what is left to grow the line is the
+        // number of DIFFERENT audio files. Say which it is.
+        let files_len: usize = file_inputs.iter().map(|f| f.0.len() + 40).sum();
+        util::log(&format!("export: the command would be {line_len} characters ({k_count} pieces, {} audio file inputs, {files_len} characters of them): refused", file_inputs.len()));
+        if files_len * 2 > line_len {
+            return Err(format!("This edit uses too many different audio files ({}) to export in one go. Export it in two parts, or use fewer separate audio files.", file_inputs.len()));
+        }
         return Err(format!("This edit has too many pieces ({k_count}) to export in one go. Export it in two parts, or join some pieces first."));
     }
     let n_layers = layers.as_ref().map(|l| l.overlays.len() + l.blurs.len()).unwrap_or(0);
@@ -2550,7 +2763,63 @@ pub fn export(s: &Settings, src: &ClipMeta, opts: &ExportOpts, progress: &mut dy
             progress(p);
         }
     };
-    let mut result = run_with_progress(&ffmpeg, &build(&enc), expected, &mut forward);
+    // 0.1.46: the pieces decoded on the graphics card when it can (NVIDIA: the encoder is NVENC; the setting not
+    // "off"; H.264 / HEVC 8-bit 4:2:0; at most HW_MAX_INPUTS decoders), else on the CPU as before. Any failure of
+    // that run (at its start, part way, a card without the decoder) is retried at once on the CPU: one log line.
+    let hw = match hw_decode_plan(&ffmpeg, s, &enc, &src_path, video_inputs.len()) {
+        Ok(()) => true,
+        Err(why) => {
+            if s.hw_decode != "off" && enc == "nvenc" {
+                util::log(&format!("export: decoding on the CPU ({why})"));
+            }
+            false
+        }
+    };
+    // 0.1.46, smart rendering: a cuts-only export of one clip whose packets allow it re-encodes only each range's
+    // head and copies the rest (`smartcut`). Any refusal or failure: the full re-encode below, one log line.
+    let cuts_only = k_count >= 2 && same(speed, 1.0) && speeds.iter().all(|x| same(*x, 1.0)) && plain && opts.tracks.is_empty() && opts.audio.is_empty() && layers.is_none() && opts.canvas.is_none() && tail == 0.0 && gap_total == 0.0;
+    let mut smart_done = false;
+    if cuts_only && (SMART_READY || SMART_TRY.with(|x| x.get())) && s.smart_cuts != "off" && !SMART_OFF.with(|x| x.get()) {
+        match smartcut::eligible(&ffmpeg, &src_path, &enc) {
+            Ok(()) => {
+                let t0 = std::time::Instant::now();
+                match smartcut::export(&ffmpeg, &src_path, &ranges, &titles, &title, &out, &mut forward) {
+                    Ok((heads, copied)) => {
+                        util::log(&format!("export: smart render, {heads} heads encoded, {copied} frames copied, in {:.1} s", t0.elapsed().as_secs_f64()));
+                        smart_done = true;
+                    }
+                    Err(e) if e == CANCELLED => return Err(e),
+                    Err(e) => {
+                        let _ = fs::remove_file(&out);
+                        util::log(&format!("export: smart render failed ({e}), re-encoding all"));
+                    }
+                }
+            }
+            Err(why) => util::log(&format!("export: no smart render ({why})")),
+        }
+    }
+    SMART_USED.with(|x| x.set(smart_done));
+    LAST_HW.with(|l| l.set(false));
+    let mut result = if smart_done {
+        Ok(())
+    } else if hw {
+        HW_RUN.with(|h| h.set(true));
+        let r0 = run_with_progress(&ffmpeg, &build_with(&enc, true), expected, &mut forward);
+        HW_RUN.with(|h| h.set(false));
+        LAST_HW.with(|l| l.set(r0.is_ok()));
+        match r0 {
+            Err(e) if e != CANCELLED => {
+                util::log(&format!("export: decoding on the graphics card failed ({}), decoding on the CPU", e.lines().next().unwrap_or("")));
+                let _ = fs::remove_file(&out);
+                let base_pct = top.get();
+                let mut again = |p: f32| forward(base_pct + (99.0 - base_pct) * p / 100.0);
+                run_with_progress(&ffmpeg, &build(&enc), expected, &mut again)
+            }
+            r => r,
+        }
+    } else {
+        run_with_progress(&ffmpeg, &build(&enc), expected, &mut forward)
+    };
     if let Err(e) = &result {
         if enc != "x264" && e != CANCELLED && !e.starts_with("The export stopped") {
             // A hardware encoder can be busy (the recorder and a game may hold its sessions); the CPU always works.
@@ -2720,6 +2989,28 @@ fn run_self_test(r: &mut Report) {
     s.encoder = "auto".into();
     let encoder = pick_encoder(&ffmpeg, &s.encoder);
     r.line(&format!("INFO encoder={encoder}"));
+    if std::env::var("GLINT_EDITOR_ONLY").is_ok_and(|v| v == "smart") {
+        smart_checks(r, &ffmpeg, &s, &dir);
+        return;
+    }
+    if std::env::var("GLINT_EDITOR_ONLY").is_ok_and(|v| v == "hwbench") {
+        hw_bench(r, &ffmpeg, &s, &dir);
+        return;
+    }
+    if std::env::var("GLINT_EDITOR_ONLY").is_ok_and(|v| v == "hw") {
+        hw_checks(r, &ffmpeg, &s, &dir);
+        return;
+    }
+    if std::env::var("GLINT_EDITOR_ONLY").is_ok_and(|v| v == "looks") {
+        // A quick run of only the limiter and look checks (0.1.45), while working on them.
+        let clip = dir.join("lk.mp4");
+        if flash_clip(&ffmpeg, &clip, 30, 8.0, false, 0.0) {
+            let src = ClipMeta { fps: 30, ..library::register(&ffmpeg, &clip, "Lk", "Test Game", "clip") };
+            limiter_checks(r, &ffmpeg, &s, &src, &dir);
+        }
+        look_tg_checks(r, &ffmpeg, &s, &dir);
+        return;
+    }
     if std::env::var("GLINT_EDITOR_ONLY").is_ok_and(|v| v == "groups") {
         // A quick run of only the shared-input checks (0.1.42), while working on them.
         group_checks(r, &ffmpeg, &s, &dir);
@@ -3675,13 +3966,14 @@ fn song_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, dir:
 /// The commands for options without gaps (hashes of `export_args`). Recorded with 0.1.35; 0.1.41 changed every one on
 /// purpose (`-reinit_filter 0` on the range inputs: the hang) and they were recorded again; 0.1.44 changed every one on
 /// purpose too (frame-exact cuts: the repeat that holds the end of a joined picture, `end_cut` / `END_PAD`, a key
-/// frame on it, 0.2 ms of slack in the speed cap) and they were recorded again: later work must keep them.
+/// frame on it, 0.2 ms of slack in the speed cap) and they were recorded again; 0.1.45 changed the three that mix more
+/// than one source into one track on purpose (the limiter, `LIMITER`, at the end of such a mix): recorded again.
 const COMMANDS_0135: [(&str, &str); 5] = [
     ("two ranges, the clip's tracks", "174f7bbc937ec0e7"),
-    ("moved parts at 2x, a track and a through file", "9b814e463bb955b4"),
-    ("one range, a file cut with the video, fades, tail 1.5 s", "0a5bd6d2fcbe867c"),
+    ("moved parts at 2x, a track and a through file", "0ee1bf3633e53e1e"),
+    ("one range, a file cut with the video, fades, tail 1.5 s", "94b23f2d014d29f2"),
     ("whole clip, an overlay picture, tail 2 s", "44c129f68883afe7"),
-    ("three ranges, a blank one and a colored one, levels", "a8e1873e53c16bea"),
+    ("three ranges, a blank one and a colored one, levels", "14f808d9c7336776"),
 ];
 
 /// The option sets of `COMMANDS_0135`, in that order.
@@ -4364,6 +4656,85 @@ fn group_checks_as_asked(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path
     }
 }
 
+/// Smart rendering (0.1.46, `smartcut`) is unfinished: one frame short against the full encode on the test clips.
+/// Until its checks pass it never runs in the app, whatever the setting says.
+const SMART_READY: bool = false;
+
+/// Where a range input's chain gets `hwdownload` when it is decoded on the graphics card (0.1.46).
+const HWDL: &str = "\u{1}hwdl\u{1}";
+/// The most range inputs decoded on the graphics card at once (each is a decoder session and its frames in video
+/// memory); past it the CPU decodes.
+const HW_MAX_INPUTS: usize = 16;
+
+thread_local! {
+    /// Test hook (0.1.46): 1 = the card's decoding fails at its start, 2 = it stops part way, 3 = no decoder.
+    pub(crate) static HW_TEST: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    /// True while an export runs with the graphics card decoding (for `HW_TEST` 2).
+    static HW_RUN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test hook (0.1.46): true = smart rendering may run although `SMART_READY` is false (its own checks only).
+    pub(crate) static SMART_TRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test hook (0.1.46): true = no smart render (the full re-encode, to compare with).
+    pub(crate) static SMART_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Test hook: whether the last export was smart-rendered.
+    pub(crate) static SMART_USED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Bench (0.1.46): the CPU seconds of the last ffmpeg `run_watched` ran.
+    pub(crate) static LAST_CPU: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+    /// Test hook: whether the last export's pieces were decoded on the graphics card (to the end).
+    pub(crate) static LAST_HW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this export's pieces are decoded on the graphics card, else why not.
+fn hw_decode_plan(ffmpeg: &Path, s: &Settings, enc: &str, file: &Path, inputs: usize) -> Result<(), String> {
+    if s.hw_decode == "off" {
+        return Err("the setting is off".into());
+    }
+    if enc != "nvenc" {
+        return Err(format!("the encoder is {enc}, not NVENC"));
+    }
+    if inputs > HW_MAX_INPUTS {
+        return Err(format!("{inputs} inputs, over {HW_MAX_INPUTS}"));
+    }
+    let probe = library::ffprobe_for(ffmpeg).ok_or("no ffprobe")?;
+    let out = util::hidden_cmd(&probe).args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,pix_fmt", "-of", "csv=p=0"]).arg(file).stdin(Stdio::null()).stderr(Stdio::null()).output().map_err(|e| e.to_string())?;
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let mut it = line.split(',');
+    let (codec, pix) = (it.next().unwrap_or(""), it.next().unwrap_or(""));
+    if !matches!(codec, "h264" | "hevc") || !matches!(pix, "yuv420p" | "yuvj420p") {
+        return Err(format!("the clip is {codec} {pix}"));
+    }
+    if HW_TEST.with(|t| t.get()) == 3 || !hw_decoder_works(ffmpeg) {
+        return Err("this PC's graphics card does not decode it".into());
+    }
+    Ok(())
+}
+
+/// Whether ffmpeg decodes H.264 on the graphics card here (once per run: a 4-frame clip made and decoded).
+fn hw_decoder_works(ffmpeg: &Path) -> bool {
+    static CACHE: Mutex<Option<bool>> = Mutex::new(None);
+    if let Some(v) = CACHE.lock().ok().and_then(|c| *c) {
+        return v;
+    }
+    let p = util::tmp_dir().join(format!("hwcheck-{}.mp4", util::new_id()));
+    let _ = fs::create_dir_all(util::tmp_dir());
+    let made = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=30:d=0.2", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", &p.to_string_lossy()]).is_ok();
+    let ok = made && run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-i", &p.to_string_lossy(), "-vf", "hwdownload,format=nv12", "-f", "null", "-"]).is_ok();
+    let _ = fs::remove_file(&p);
+    if let Ok(mut c) = CACHE.lock() {
+        *c = Some(ok);
+    }
+    ok
+}
+
+/// The limiter at the end of a mix that can pass full scale (0.1.45): ceiling -1 dBFS in the FILE. The AAC encoder
+/// rebuilds a limited tone up to 0.5 dB over the limiter's level (0.891 gave -0.6 dBFS peaks), so the limiter holds
+/// 0.85 (-1.4 dBFS) and the encoded file peaks at -1.1. 5 ms lookahead /
+/// attack, 50 ms release, no make-up gain (`level=disabled`): sound under the ceiling is untouched. `latency=1`
+/// takes the lookahead's 5 ms back out (without it every sound came 5 ms late against the picture).
+const LIMITER: &str = "alimiter=limit=0.85:attack=5:release=50:level=disabled:latency=1";
+
+/// Past this many audio clips from files, each file is one input shared by its clips (0.1.44).
+const SHARE_FILES_FROM: usize = 12;
+
 /// The most range inputs one export opens (0.1.42): past it, neighbouring ranges share inputs.
 const MAX_RANGE_INPUTS: usize = 40;
 /// After the last range's picture (0.1.44): its last frame repeated for a moment, so `end_cut` has a repeat to keep.
@@ -4418,6 +4789,411 @@ fn sharp_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta) {
             let _ = fs::remove_file(&m.path);
         }
         Err(e) => r.check("sharpness: the sharpened range", false, &e),
+    }
+}
+
+/// 0.1.46: the pieces decoded on the graphics card (NVIDIA). The same decoded frames (framemd5) as decoding on the
+/// CPU: three ranges of a frame-counter clip (one with a colour), and a file whose colour tags change half way (the
+/// owner's joined drafts); and every failure ends in a finished, identical export by the CPU with one log line: the
+/// card's decoding failing at its start, stopping part way (40 %), and a PC without the decoder. Skipped (with a
+/// line) on a PC without NVENC or without the card's decoder.
+fn hw_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path) {
+    // The setting on (its default is "off" since the 0.1.46 measurement).
+    let on = Settings { hw_decode: "auto".into(), ..s.clone() };
+    let s = &on;
+    if pick_encoder(ffmpeg, &s.encoder) != "nvenc" || !hw_decoder_works(ffmpeg) {
+        r.line("SKIP hardware decode: this PC has no NVENC or no NVIDIA decoder; the checks need one");
+        return;
+    }
+    let md5s = |p: &Path| -> Vec<String> {
+        let Ok(out) = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-loglevel", "error", "-nostdin", "-i"]).arg(p).args(["-map", "0:v:0", "-f", "framemd5", "-"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).output() else { return Vec::new() };
+        String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.starts_with('#')).map(|l| { let f: Vec<&str> = l.split(',').map(str::trim).collect(); format!("{} {}", f.get(2).unwrap_or(&""), f.last().unwrap_or(&"")) }).collect()
+    };
+    let log_file = util::data_dir().join("glint.log");
+    let log_len = || fs::read_to_string(&log_file).map(|t| t.len()).unwrap_or(0);
+    let log_since = |from: usize| fs::read_to_string(&log_file).map(|t| t.get(from..).unwrap_or("").to_string()).unwrap_or_default();
+    let clip = dir.join("hw counter.mp4");
+    let tagged = dir.join("hw tags.mp4");
+    let made = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=640x360:r=60:d=8,geq=lum='if(lt(X,W/2),mod(N*3,200)+20,100)':cb=128:cr=128", "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", "-g", "120", "-pix_fmt", "yuv420p", &clip.to_string_lossy()]).is_ok();
+    // Colour tags that change half way (two encodes with other tags, joined by a stream copy at a keyframe).
+    let (ta, tb, list) = (dir.join("hw ta.mp4"), dir.join("hw tb.mp4"), dir.join("hw list.txt"));
+    let enc_tags = |p: &Path, tags: [&str; 3]| run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=6", "-c:v", "libx264", "-preset", "ultrafast", "-g", "30", "-pix_fmt", "yuv420p", "-colorspace", tags[0], "-color_primaries", tags[1], "-color_trc", tags[2], &p.to_string_lossy()]).is_ok();
+    let tag_ok = enc_tags(&ta, ["bt709", "bt709", "bt709"]) && enc_tags(&tb, ["bt470bg", "bt709", "iec61966-2-1"])
+        && fs::write(&list, format!("file '{}'\noutpoint 3\nfile '{}'\ninpoint 3\n", ta.to_string_lossy().replace('\\', "/"), tb.to_string_lossy().replace('\\', "/"))).is_ok()
+        && run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", &list.to_string_lossy(), "-c", "copy", &tagged.to_string_lossy()]).is_ok();
+    if !made || !tag_ok {
+        r.check("hardware decode: test clips made", false, &format!("{made} {tag_ok}"));
+        return;
+    }
+    let seg = |a: f64, b: f64, c: Option<Color>| Range { start: a, end: b, color: c, ..Default::default() };
+    let cases: Vec<(&str, PathBuf, ExportOpts)> = vec![
+        ("three ranges, one coloured", clip.clone(), ExportOpts { segments: vec![seg(0.5, 2.0, None), seg(3.0, 4.5, Some(Color { brightness: 1.2, ..Default::default() })), seg(5.0, 7.0, None)], ordered: true, ..Default::default() }),
+        ("colour tags that change half way", tagged.clone(), ExportOpts { segments: vec![seg(1.0, 2.5, None), seg(2.5, 4.5, None), seg(4.5, 5.5, None)], ordered: true, ..Default::default() }),
+    ];
+    let off = Settings { hw_decode: "off".into(), ..s.clone() };
+    for (name, file, opts) in &cases {
+        let src = ClipMeta { fps: 60, ..library::register(ffmpeg, file, "HW", "Test Game", "clip") };
+        let cpu = export(&off, &src, opts, &mut |_| {});
+        let from = log_len();
+        let gpu = export(s, &src, opts, &mut |_| {});
+        let used = LAST_HW.with(|l| l.get());
+        match (cpu, gpu) {
+            (Ok(a), Ok(b)) => {
+                let (ma, mb) = (md5s(Path::new(&a.path)), md5s(Path::new(&b.path)));
+                let differ = ma.iter().zip(&mb).filter(|(x, y)| x != y).count();
+                r.check(&format!("hardware decode, {name}: decoded on the card, the same frames as on the CPU"), used && ma.len() > 60 && ma.len() == mb.len() && differ == 0 && !log_since(from).contains("decoding on the CPU"), &format!("{} vs {} frames, {differ} differ; card used {used}", ma.len(), mb.len()));
+                let _ = fs::remove_file(&a.path);
+                let _ = fs::remove_file(&b.path);
+            }
+            (a, b) => r.check(&format!("hardware decode, {name}"), false, &format!("{:?} / {:?}", a.err(), b.err())),
+        }
+    }
+    // Time on 1440p60 (10 s, three ranges): wall seconds and this process's children's CPU are not separated here,
+    // so the wall time is what is reported.
+    let big = dir.join("hw big.mp4");
+    if run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=2560x1440:r=60:d=10", "-c:v", "h264_nvenc", "-preset", "p4", "-g", "60", "-bf", "0", "-pix_fmt", "yuv420p", &big.to_string_lossy()]).is_ok() {
+        let bsrc = ClipMeta { fps: 60, ..library::register(ffmpeg, &big, "HW big", "Test Game", "clip") };
+        let o = ExportOpts { segments: vec![seg(0.5, 3.5, None), seg(4.0, 7.0, None), seg(7.5, 9.9, None)], ordered: true, ..Default::default() };
+        let time = |st: &Settings| -> Option<f64> { let t0 = std::time::Instant::now(); let m = export(st, &bsrc, &o, &mut |_| {}).ok()?; let x = t0.elapsed().as_secs_f64(); let _ = fs::remove_file(&m.path); Some(x) };
+        let (c1, g1) = (time(&off), time(s));
+        r.line(&format!("INFO hardware decode on 10 s of 1440p60, three ranges: {c1:?} s on the CPU, {g1:?} s on the card"));
+    }
+    // The fallbacks: each ends in a finished export, frame for frame the CPU's, with one log line saying why.
+    let (_, file, opts) = &cases[0];
+    let src = ClipMeta { fps: 60, ..library::register(ffmpeg, file, "HW", "Test Game", "clip") };
+    let reference = export(&off, &src, opts, &mut |_| {}).map(|m| { let v = md5s(Path::new(&m.path)); let _ = fs::remove_file(&m.path); v }).unwrap_or_default();
+    for (code, name) in [(1u8, "the card fails at the start"), (2, "the card stops part way (40 %)"), (3, "a PC without the decoder")] {
+        HW_TEST.with(|t| t.set(code));
+        let from = log_len();
+        let res = export(s, &src, opts, &mut |_| {});
+        HW_TEST.with(|t| t.set(0));
+        let said: Vec<String> = log_since(from).lines().filter(|l| l.contains("decoding on the CPU")).map(|l| l.split("export: ").nth(1).unwrap_or(l).to_string()).collect();
+        match res {
+            Ok(m) => {
+                let got = md5s(Path::new(&m.path));
+                r.check(&format!("hardware decode fallback, {name}: a finished export, the CPU's frames, one log line"), !reference.is_empty() && got == reference && said.len() == 1, &format!("{} frames (CPU {}); log: {said:?}", got.len(), reference.len()));
+                let _ = fs::remove_file(&m.path);
+            }
+            Err(e) => r.check(&format!("hardware decode fallback, {name}"), false, &e),
+        }
+    }
+}
+
+/// 0.1.46, smart rendering (`smartcut`): against the full re-encode of the same cuts, on a clip recorded as Glint's
+/// recorder records with NVENC (p4, hq, no B-frames, a keyframe a second) and on a draft joined from two of them by a
+/// stream copy: the same number of frames, at the same times (0.2 ms), in the same order by the burned-in counter,
+/// a clean decode (`-xerror`), flash and beep together, packets with rising, non-negative times, `+faststart` kept.
+/// A libx264 recording (other SPS) and a source with B-frames are refused and exported in full. Skipped without NVENC.
+fn smart_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path) {
+    if pick_encoder(ffmpeg, &s.encoder) != "nvenc" {
+        r.line("SKIP smart rendering: this PC has no NVENC (the heads must match the clip's encoder)");
+        return;
+    }
+    let s = &Settings { smart_cuts: "auto".into(), ..s.clone() };
+    SMART_TRY.with(|x| x.set(true));
+    // The picture: left half a counter (16 grey levels, one step a frame), right half a white flash at k + 0.5 s.
+    let video = "color=c=gray:s=1280x720:r=60:d=12,geq=lum='if(lt(X,W/2),mod(N,16)*12+40,if(lt(mod(T-0.5+0.004,1),0.014),235,30))':cb=128:cr=128";
+    let beep = "if(lt(mod(t-0.5,1),0.06)*gte(t,0.5),0.8*sin(2*PI*1000*t),0)";
+    let make = |p: &Path, enc: &[&str]| -> bool {
+        let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", video, "-f", "lavfi", "-i"].map(String::from).to_vec();
+        a.push(format!("aevalsrc='{beep}|{beep}':s=48000:d=12"));
+        a.extend(["-f", "lavfi", "-i"].map(String::from));
+        a.push(format!("aevalsrc='{beep}|{beep}':s=48000:d=12"));
+        a.extend(["-map", "0:v", "-map", "1:a", "-map", "2:a"].map(String::from));
+        a.extend(enc.iter().map(|x| x.to_string()));
+        a.extend(["-force_key_frames", "expr:gte(t,n_forced*1)", "-c:a", "aac", "-b:a", "160k", "-metadata:s:a:0", "title=Mix", "-metadata:s:a:1", "title=Desktop"].map(String::from));
+        a.push(p.to_string_lossy().into_owned());
+        let args: Vec<&str> = a.iter().map(String::as_str).collect();
+        run_ffmpeg(ffmpeg, &args).is_ok()
+    };
+    let nv: &[&str] = &["-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq", "-bf", "0", "-rc", "vbr", "-cq", "23", "-b:v", "0", "-maxrate", "20000000", "-bufsize", "40000000", "-forced-idr", "1", "-pix_fmt", "yuv420p"];
+    let rec = dir.join("smart rec.mp4");
+    let x264 = dir.join("smart x264.mp4");
+    let bfr = dir.join("smart bframes.mp4");
+    let ok = make(&rec, nv) && make(&x264, &["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"]) && make(&bfr, &["-c:v", "libx264", "-preset", "veryfast", "-bf", "3", "-pix_fmt", "yuv420p"]);
+    // A draft: two recordings joined by a stream copy (as a project's old working file).
+    let rec2 = dir.join("smart rec2.mp4");
+    let draft = dir.join("smart draft.mp4");
+    let list = dir.join("smart list.txt");
+    let ok = ok && make(&rec2, nv) && fs::write(&list, format!("file '{}'\nfile '{}'\n", rec.to_string_lossy().replace('\\', "/"), rec2.to_string_lossy().replace('\\', "/"))).is_ok() && run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", &list.to_string_lossy(), "-map", "0", "-c", "copy", &draft.to_string_lossy()]).is_ok();
+    if !ok {
+        r.check("smart rendering: test clips made", false, "");
+        return;
+    }
+    let tv = |v: f64| v * 219.0 / 255.0 + 16.0;
+    let frames = |file: &Path| -> Vec<(f64, i64, bool)> {
+        let half = |crop: &str| -> Vec<(f64, f64)> {
+            let Ok(out) = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-nostdin", "-i"]).arg(file).args(["-vf", &format!("{crop},format=gray,showinfo"), "-f", "null", "-"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output() else { return Vec::new() };
+            String::from_utf8_lossy(&out.stderr).lines().filter_map(|l| { let p = l.find("pts_time:")?; let m = l.find("mean:[")?; Some((l[p + 9..].split_whitespace().next()?.parse().ok()?, l[m + 6..].split(|c: char| !c.is_ascii_digit() && c != '.').next()?.parse().ok()?)) }).collect()
+        };
+        let (l, rr) = (half("crop=iw/2:ih:0:0"), half("crop=iw/2:ih:iw/2:0"));
+        l.iter().zip(&rr).map(|(a, b)| (a.0, ((tv(a.1) - 40.0) / 12.0).round() as i64, b.1 > 128.0)).collect()
+    };
+    let clean = |file: &Path| util::hidden_cmd(ffmpeg).args(["-hide_banner", "-loglevel", "error", "-xerror", "-nostdin", "-i"]).arg(file).args(["-f", "null", "-"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().is_ok_and(|o| o.status.success() && o.stderr.is_empty());
+    let packets_sane = |file: &Path| -> bool {
+        let Some(fp) = library::ffprobe_for(ffmpeg) else { return false };
+        let out = util::hidden_cmd(&fp).args(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=dts_time", "-of", "csv=p=0"]).arg(file).stdin(Stdio::null()).stderr(Stdio::null()).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        let d: Vec<f64> = out.lines().filter_map(|l| l.trim().trim_end_matches(',').parse().ok()).collect();
+        !d.is_empty() && d[0] >= -1e-6 && d.windows(2).all(|w| w[1] > w[0])
+    };
+    let faststart = |file: &Path| fs::read(file).ok().and_then(|b| { let f = |tag: &[u8]| b.windows(4).position(|w| w == tag); Some(f(b"moov")? < f(b"mdat")?) }).unwrap_or(false);
+    // Mid-GOP starts, one on a keyframe (3.0), one inside one second (6.2 .. 6.7), mid-frame asks (snapped).
+    let segs = vec![(0.53, 2.41), (3.0, 4.27), (6.2, 6.7), (7.61, 9.99), (10.4, 11.9)];
+    let opts = ExportOpts { segments: segs.iter().map(|&(a, b)| Range { start: a, end: b, ..Default::default() }).collect(), ordered: true, ..Default::default() };
+    for (name, file) in [("a recording (NVENC)", &rec), ("a draft joined from two recordings", &draft)] {
+        let src = ClipMeta { fps: 60, ..library::register(ffmpeg, file, "Smart", "Test Game", "clip") };
+        SMART_OFF.with(|x| x.set(true));
+        let t0 = std::time::Instant::now();
+        let full = export(s, &src, &opts, &mut |_| {});
+        let t_full = t0.elapsed().as_secs_f64();
+        SMART_OFF.with(|x| x.set(false));
+        let t1 = std::time::Instant::now();
+        let smart = export(s, &src, &opts, &mut |_| {});
+        let t_smart = t1.elapsed().as_secs_f64();
+        let used = SMART_USED.with(|x| x.get());
+        match (full, smart) {
+            (Ok(a), Ok(b)) => {
+                let (pa, pb) = (Path::new(&a.path), Path::new(&b.path));
+                let (fa, fb) = (frames(pa), frames(pb));
+                let bad: Vec<String> = fa.iter().zip(&fb).filter(|(x, y)| (x.0 - y.0).abs() > 0.0002 || x.1 != y.1 || x.2 != y.2).take(3).map(|(x, y)| format!("{x:?} vs {y:?}")).collect();
+                r.check(&format!("smart rendering, {name}: smart, the same frames at the same times in the same order as the full encode"), used && fa.len() > 300 && fa.len() == fb.len() && bad.is_empty(), &format!("{} vs {} frames; differences {bad:?}; {t_full:.1} s full, {t_smart:.1} s smart", fa.len(), fb.len()));
+                let (fl, be) = (flash_times(ffmpeg, pb), beep_times(ffmpeg, pb));
+                let offs: Vec<f64> = fl.iter().filter_map(|f| be.iter().map(|x| f - x).min_by(|x, y| x.abs().total_cmp(&y.abs()))).collect();
+                let worst = offs.iter().fold(0.0f64, |w, x| w.max(x.abs()));
+                r.check(&format!("smart rendering, {name}: a clean decode, flash on beep, rising packet times, faststart"), clean(pb) && fl.len() >= 7 && worst < 0.002 && packets_sane(pb) && faststart(pb), &format!("clean {}, {} flashes worst {:.1} ms, packets {}, faststart {}", clean(pb), fl.len(), worst * 1000.0, packets_sane(pb), faststart(pb)));
+                let _ = fs::remove_file(pa);
+                let _ = fs::remove_file(pb);
+            }
+            (a, b) => r.check(&format!("smart rendering, {name}"), false, &format!("{:?} / {:?}", a.err(), b.err())),
+        }
+    }
+    for (name, file) in [("a libx264 recording (another SPS)", &x264), ("a clip with B-frames", &bfr)] {
+        let src = ClipMeta { fps: 60, ..library::register(ffmpeg, file, "Smart", "Test Game", "clip") };
+        let res = export(s, &src, &opts, &mut |_| {});
+        let used = SMART_USED.with(|x| x.get());
+        r.check(&format!("smart rendering refused for {name}: exported in full"), res.is_ok() && !used, &format!("{:?}, smart {used}", res.as_ref().err()));
+        if let Ok(m) = res {
+            let _ = fs::remove_file(&m.path);
+        }
+    }
+}
+
+/// 0.1.46, deciding the default of `hw_decode`: 30 s of 1440p60 in 6 ranges, plain and with a still overlay and a
+/// colour on two ranges, exported 3 times each way, alternating (CPU, card, CPU, ...): wall and ffmpeg CPU seconds,
+/// medians. Only with GLINT_EDITOR_ONLY=hwbench.
+fn hw_bench(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path) {
+    let big = dir.join("bench 1440.mp4");
+    if run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=2560x1440:r=60:d=32", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=32", "-map", "0:v", "-map", "1:a", "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23", "-g", "60", "-bf", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", &big.to_string_lossy()]).is_err() {
+        r.check("bench clip made", false, "");
+        return;
+    }
+    let src = ClipMeta { fps: 60, ..library::register(ffmpeg, &big, "Bench", "Test Game", "clip") };
+    let png = overlay_dir().join("bench-still.png");
+    let _ = fs::create_dir_all(overlay_dir());
+    let seg = |a: f64, c: Option<Color>| Range { start: a, end: a + 5.0, color: c, ..Default::default() };
+    let warm = Some(Color { brightness: 1.05, saturation: 1.2, ..Default::default() });
+    let plain = ExportOpts { segments: (0..6).map(|k| seg(0.5 + 5.2 * k as f64, None)).collect(), ordered: true, ..Default::default() };
+    let rich = |png: String| ExportOpts { segments: (0..6).map(|k| seg(0.5 + 5.2 * k as f64, if k == 1 || k == 4 { warm.clone() } else { None })).collect(), ordered: true, overlays: vec![Overlay { png, from: 2.0, to: 26.0, x: 0.05, y: 0.05, w: 0.3, h: 0.15, track: Vec::new(), media: None }], ..Default::default() };
+    let off = Settings { hw_decode: "off".into(), ..s.clone() };
+    let on = Settings { hw_decode: "auto".into(), ..s.clone() };
+    let median = |mut v: Vec<f64>| { v.sort_by(|a, b| a.total_cmp(b)); v.get(v.len() / 2).copied().unwrap_or(f64::NAN) };
+    for case in ["plain", "a still overlay and a colour on two ranges"] {
+        let (mut cw, mut cc, mut gw, mut gc) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut card_used = true;
+        for run in 0..6 {
+            let card = run % 2 == 1;
+            let o = if case == "plain" { plain.clone() } else {
+                let _ = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=white@0.6:s=768x216,format=rgba", "-frames:v", "1", &png.to_string_lossy()]);
+                rich(png.to_string_lossy().into_owned())
+            };
+            let t0 = std::time::Instant::now();
+            let m = export(if card { &on } else { &off }, &src, &o, &mut |_| {});
+            let wall = t0.elapsed().as_secs_f64();
+            let cpu = LAST_CPU.with(|l| l.get());
+            if card {
+                card_used &= LAST_HW.with(|l| l.get());
+            }
+            r.line(&format!("INFO bench {case}, run {}: {} wall {wall:.2} s, ffmpeg CPU {cpu:.2} s{}", run + 1, if card { "card" } else { "CPU " }, if m.is_err() { " (FAILED)" } else { "" }));
+            if let Ok(m) = m {
+                let _ = fs::remove_file(&m.path);
+            }
+            if card { gw.push(wall); gc.push(cpu) } else { cw.push(wall); cc.push(cpu) }
+        }
+        let (a, b, c2, d) = (median(cw), median(gw), median(cc), median(gc));
+        r.line(&format!("RESULT bench {case}: wall CPU {a:.2} s / card {b:.2} s ({:+.1} %); ffmpeg CPU seconds CPU {c2:.2} / card {d:.2} ({:+.1} %); card used every time: {card_used}", (b / a - 1.0) * 100.0, (d / c2 - 1.0) * 100.0));
+    }
+}
+
+/// (peak dB, RMS dB) of the first audio track of `file` (`volumedetect`).
+fn peak_rms(ffmpeg: &Path, file: &Path) -> Option<(f64, f64)> {
+    let out = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-nostats", "-nostdin", "-i"]).arg(file).args(["-map", "0:a:0", "-af", "volumedetect", "-f", "null", "-"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().ok()?;
+    let t = String::from_utf8_lossy(&out.stderr);
+    let num = |k: &str| t.lines().find_map(|l| l.split(k).nth(1)).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse::<f64>().ok());
+    Some((num("max_volume:")?, num("mean_volume:")?))
+}
+
+/// 0.1.45, "at 200 % it peaks and crackles": a mix that can pass full scale ends in a limiter (ceiling -1 dBFS).
+/// A full-scale tone at 200 %: its peak at most -1 dBFS (+0.1) and still a sine, not a clipped wave (crest factor
+/// about 3 dB, against about 1 dB for the clipped one); a quiet tone at 200 % exactly 6.02 dB over 100 % (the limiter
+/// idle); two full-scale tones summed under the ceiling; a single row at 100 % has no limiter in its command.
+fn limiter_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, dir: &Path) {
+    let tone = |name: &str, expr: &str| -> Option<String> {
+        let p = dir.join(name);
+        run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", &format!("aevalsrc='{expr}':s=48000:d=5"), "-c:a", "pcm_s16le", &p.to_string_lossy()]).ok().map(|_| p.to_string_lossy().into_owned())
+    };
+    let (Some(full), Some(quiet), Some(other)) = (tone("full.wav", "0.999*sin(2*PI*1000*t)"), tone("quiet.wav", "0.1*sin(2*PI*1000*t)"), tone("other.wav", "0.999*sin(2*PI*1700*t)")) else {
+        r.check("limiter: tone files made", false, "");
+        return;
+    };
+    let row = |path: &str, volume: f32| AudioEdit { source: "file".into(), path: path.into(), offset: 0.0, trim_start: 0.0, length: 4.0, volume, ..Default::default() };
+    let opts = |rows: Vec<AudioEdit>| ExportOpts { segments: vec![Range { start: 0.0, end: 4.0, ..Default::default() }], audio: rows, ..Default::default() };
+    let level = |o: &ExportOpts| -> Result<(f64, f64), String> {
+        let m = export(s, src, o, &mut |_| {})?;
+        let v = peak_rms(ffmpeg, Path::new(&m.path)).ok_or("could not measure")?;
+        let _ = fs::remove_file(&m.path);
+        Ok(v)
+    };
+    let cmd = |o: &ExportOpts| export_args(s, src, o).map(|a| a.join(" ")).unwrap_or_default();
+    r.check("limiter: a single row at 100 % has none; 200 % and two rows summed have it", !cmd(&opts(vec![row(&full, 1.0)])).contains("alimiter") && cmd(&opts(vec![row(&full, 2.0)])).contains(LIMITER) && cmd(&opts(vec![row(&full, 1.0), row(&other, 1.0)])).contains(LIMITER), "");
+    match level(&opts(vec![row(&full, 2.0)])) {
+        Ok((peak, rms)) => r.check("limiter: a full-scale tone at 200 %: peak at most -1 dBFS (+0.1), still a sine (crest over 2.5 dB)", peak <= -0.9 && peak - rms > 2.5, &format!("peak {peak:.2} dB, RMS {rms:.2} dB, crest {:.2} dB", peak - rms)),
+        Err(e) => r.check("limiter: a full-scale tone at 200 %", false, &e),
+    }
+    match (level(&opts(vec![row(&quiet, 1.0)])), level(&opts(vec![row(&quiet, 2.0)]))) {
+        (Ok(a), Ok(b)) => r.check("limiter: a quiet tone at 200 % is 6.02 dB over 100 % (untouched)", (b.1 - a.1 - 6.02).abs() <= 0.1, &format!("RMS {:.2} -> {:.2} dB ({:+.2})", a.1, b.1, b.1 - a.1)),
+        (a, b) => r.check("limiter: a quiet tone at 100 % and 200 %", false, &format!("{:?} / {:?}", a.err(), b.err())),
+    }
+    match level(&opts(vec![row(&full, 1.0), row(&other, 1.0)])) {
+        Ok((peak, rms)) => r.check("limiter: two full-scale tones summed stay under the ceiling", peak <= -0.9, &format!("peak {peak:.2} dB, RMS {rms:.2} dB")),
+        Err(e) => r.check("limiter: two full-scale tones summed", false, &e),
+    }
+}
+
+/// One frame of `file` at `t` as RGB, `w` x `h`.
+fn rgb_at(ffmpeg: &Path, file: &Path, t: f64, w: usize, h: usize) -> Option<Vec<u8>> {
+    let out = util::hidden_cmd(ffmpeg).args(["-hide_banner", "-loglevel", "error", "-nostdin", "-ss", &format!("{t:.3}"), "-i"]).arg(file).args(["-frames:v", "1", "-vf", &format!("scale={w}:{h}:flags=neighbor"), "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    (out.stdout.len() == w * h * 3).then_some(out.stdout)
+}
+
+/// 0.1.45: `Color::temperature` and `Color::glow`. Temperature +1 on gray 128: R up 20 %, G up 2 %, B down 20 %
+/// (B's preview: 154 / 131 / 102); 0 for both: the same command as without them; glow on a white square on black (and
+/// a mid-gray block): the square's middle, far black and the gray untouched, light beside the square that falls off
+/// with distance, the next range untouched; the time of a 10 s 1440p export with and without glow; and (when
+/// GLINT_LOOK_PNG_DIR is set) one frame of the test picture with "Dark fantasy" and with glow 0.5 as PNG files.
+fn look_tg_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, dir: &Path) {
+    // Temperature on gray.
+    let gray = dir.join("gray.mp4");
+    if run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=0x808080:s=320x180:r=30:d=3", "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", "-pix_fmt", "yuv444p", "-color_range", "pc", &gray.to_string_lossy()]).is_ok() {
+        let src = ClipMeta { fps: 30, ..library::register(ffmpeg, &gray, "Gray", "Test Game", "clip") };
+        let warm = Color { temperature: 1.0, ..Default::default() };
+        match export(s, &src, &ExportOpts { segments: vec![Range { start: 0.0, end: 2.0, color: Some(warm), ..Default::default() }], ..Default::default() }, &mut |_| {}) {
+            Ok(m) => {
+                let px = rgb_at(ffmpeg, Path::new(&m.path), 1.0, 32, 18).unwrap_or_default();
+                let avg = |c: usize| px.iter().skip(c).step_by(3).map(|v| *v as f64).sum::<f64>() / (px.len() / 3).max(1) as f64;
+                let (rr, gg, bb) = (avg(0), avg(1), avg(2));
+                let base = rgb_at(ffmpeg, &gray, 1.0, 32, 18).unwrap_or_default();
+                let g0 = base.iter().map(|v| *v as f64).sum::<f64>() / base.len().max(1) as f64;
+                r.check("temperature +1 on gray: R up 20 %, G up 2 %, B down 20 % (within 2 %)", (rr / g0 - 1.2).abs() < 0.024 && (gg / g0 - 1.02).abs() < 0.02 && (bb / g0 - 0.8).abs() < 0.016, &format!("gray {g0:.1} -> {rr:.1} / {gg:.1} / {bb:.1} (the preview: 154 / 131 / 102 from 128)"));
+                let _ = fs::remove_file(&m.path);
+            }
+            Err(e) => r.check("temperature +1 on gray", false, &e),
+        }
+        let plain = ExportOpts { segments: vec![Range { start: 0.0, end: 1.0, color: Some(Color { brightness: 1.1, ..Default::default() }), ..Default::default() }, Range { start: 1.5, end: 2.5, ..Default::default() }], ordered: true, ..Default::default() };
+        let zero = ExportOpts { segments: vec![Range { start: 0.0, end: 1.0, color: Some(Color { brightness: 1.1, temperature: 0.0, glow: 0.0, ..Default::default() }), ..Default::default() }, Range { start: 1.5, end: 2.5, color: Some(Color { temperature: 0.0, glow: 0.0, ..Default::default() }), ..Default::default() }], ordered: true, ..Default::default() };
+        let parsed: Result<Color, _> = serde_json::from_str(r#"{"brightness":1,"contrast":1,"saturation":1,"gamma":1,"sharpness":0}"#);
+        r.check("temperature and glow: a colour without them reads as 0; 0 is the same command as without them", parsed.is_ok_and(|c| c.temperature == 0.0 && c.glow == 0.0) && matches!((export_args(s, &src, &plain), export_args(s, &src, &zero)), (Ok(a), Ok(b)) if args_hash(&a) == args_hash(&b)), "");
+    }
+    // Glow: a white square (80 px) in the middle of black, a mid-gray block (100) at the left; range 1 with glow 0.5.
+    let (w, h) = (640usize, 360usize);
+    let sq = dir.join("square.mp4");
+    let pic = "color=c=black:s=640x360:r=30:d=4,drawbox=x=280:y=140:w=80:h=80:c=white:t=fill,drawbox=x=40:y=140:w=80:h=80:c=0x646464:t=fill";
+    if run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", pic, "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0", "-pix_fmt", "yuv444p", &sq.to_string_lossy()]).is_ok() {
+        let src = ClipMeta { fps: 30, ..library::register(ffmpeg, &sq, "Square", "Test Game", "clip") };
+        let glow = Color { glow: 0.5, ..Default::default() };
+        let opts = ExportOpts { segments: vec![Range { start: 0.0, end: 2.0, color: Some(glow.clone()), ..Default::default() }, Range { start: 2.0, end: 4.0, ..Default::default() }], ..Default::default() };
+        match export(s, &src, &opts, &mut |_| {}) {
+            Ok(m) => {
+                let out = Path::new(&m.path);
+                let lum = |px: &[u8], x: usize, y: usize| { let i = (y * w + x) * 3; (px[i] as f64 + px[i + 1] as f64 + px[i + 2] as f64) / 3.0 };
+                let (a, b) = (rgb_at(ffmpeg, out, 1.0, w, h).unwrap_or_default(), rgb_at(ffmpeg, out, 3.0, w, h).unwrap_or_default());
+                let orig = rgb_at(ffmpeg, &sq, 1.0, w, h).unwrap_or_default();
+                if a.len() == w * h * 3 && b.len() == a.len() && orig.len() == a.len() {
+                    // Right of the square (it ends at x = 359), along its middle row.
+                    let beside: Vec<f64> = [1usize, 3, 6, 10, 15, 25, 40].iter().map(|d| lum(&a, 359 + d, 180)).collect();
+                    let falls = beside.windows(2).all(|p| p[1] <= p[0] + 0.5) && beside[0] > 8.0 && beside[6] < 3.0;
+                    let mid = lum(&a, 320, 180);
+                    let far = lum(&a, 600, 30);
+                    let grayv = (lum(&a, 80, 180), lum(&orig, 80, 180));
+                    let next_same = (0..w * h * 3).step_by(97).all(|i| (b[i] as i32 - orig[i] as i32).abs() <= 2);
+                    r.check("glow 0.5 on a white square: its middle and far black untouched, light beside it falling off, the gray untouched", falls && mid >= 253.0 && far <= 2.0 && (grayv.0 - grayv.1).abs() <= 2.0, &format!("beside at 1/3/6/10/15/25/40 px {beside:.0?}; middle {mid:.0}, far {far:.0}, gray {:.0} (was {:.0}) (the preview: 42 at 1 px, 13 at 6 px, 0 by 15 px)", grayv.0, grayv.1));
+                    r.check("glow on range 1 leaves range 2 untouched", next_same, "");
+                } else {
+                    r.check("glow: frames read", false, "");
+                }
+                let _ = fs::remove_file(out);
+            }
+            Err(e) => r.check("glow on a white square", false, &e),
+        }
+        // The two PNG frames for B's preview (the test picture as a still).
+        if let Some(png_dir) = std::env::var_os("GLINT_LOOK_PNG_DIR").map(PathBuf::from) {
+            let _ = fs::create_dir_all(&png_dir);
+            let still = dir.join("look-test.png");
+            let test_pic = "color=c=black:s=640x360:d=1,drawbox=x=280:y=140:w=80:h=80:c=white:t=fill,drawbox=x=40:y=140:w=80:h=80:c=0x646464:t=fill,drawbox=x=440:y=60:w=160:h=60:c=0xd04030:t=fill,drawbox=x=440:y=240:w=160:h=60:c=0x30a0e0:t=fill";
+            let _ = run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", test_pic, "-frames:v", "1", &still.to_string_lossy()]);
+            let mut made = Vec::new();
+            for (name, c) in [("dark-fantasy", crate::rules::look_color(s, "Dark fantasy")), ("glow-0.5", Some(Color { glow: 0.5, ..Default::default() }))] {
+                let (Some(c), true) = (c, still.is_file()) else { continue };
+                let f = look_filter(ffmpeg, &still, &c).unwrap_or_else(|| "null".into());
+                let outp = png_dir.join(format!("{name}.png"));
+                if run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-i", &still.to_string_lossy(), "-vf", &f, "-frames:v", "1", &outp.to_string_lossy()]).is_ok() {
+                    made.push(outp.to_string_lossy().into_owned());
+                }
+            }
+            let _ = fs::copy(&still, png_dir.join("test-picture.png"));
+            r.check("look frames written as PNG for the preview comparison", made.len() == 2, &format!("{} made", made.len()));
+        }
+    }
+    // Time: 10 s of 1440p60 with and without glow.
+    let big = dir.join("big.mp4");
+    if run_ffmpeg(ffmpeg, &["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=2560x1440:r=60:d=10", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", &big.to_string_lossy()]).is_ok() {
+        let src = ClipMeta { fps: 60, ..library::register(ffmpeg, &big, "Big", "Test Game", "clip") };
+        let time = |c: Color| -> Option<f64> {
+            let t0 = std::time::Instant::now();
+            let m = export(s, &src, &ExportOpts { segments: vec![Range { start: 0.0, end: 10.0, color: Some(c), ..Default::default() }], ..Default::default() }, &mut |_| {}).ok()?;
+            let secs = t0.elapsed().as_secs_f64();
+            let _ = fs::remove_file(&m.path);
+            Some(secs)
+        };
+        let (a, b) = (time(Color { brightness: 1.05, ..Default::default() }), time(Color { brightness: 1.05, glow: 0.5, ..Default::default() }));
+        r.line(&format!("INFO glow cost on 10 s of 1440p60: {a:?} s without, {b:?} s with"));
+        r.check("glow: a 10 s 1440p export with glow works", b.is_some(), &format!("{a:?} / {b:?} s"));
+    }
+}
+
+/// 0.1.44: many audio clips of one file (past `SHARE_FILES_FROM`) share one input: the file is on the command line
+/// once, and each clip still plays exactly its own stretch at its own place (a beep a second in the file; clip j
+/// takes the beep at 2.5 s and is placed at 0.6 j s: its beep must start there, to the millisecond).
+fn shared_audio_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, dir: &Path) {
+    let beeps = dir.join("beeps.mp4");
+    if !flash_clip(ffmpeg, &beeps, 30, 6.0, false, 0.0) {
+        r.check("shared audio inputs: beep file made", false, "");
+        return;
+    }
+    let bp = beeps.to_string_lossy().into_owned();
+    let n = SHARE_FILES_FROM + 4;
+    let rows: Vec<AudioEdit> = (0..n).map(|j| AudioEdit { source: "file".into(), path: bp.clone(), offset: 0.5 + 0.4 * j as f64, trim_start: 2.45, length: 0.3, volume: 1.0, ..Default::default() }).collect();
+    let opts = ExportOpts { segments: vec![Range { start: 0.0, end: 8.0, ..Default::default() }], audio: rows, ..Default::default() };
+    let line = export_args(s, src, &opts).map(|a| a.join(" ")).unwrap_or_default();
+    let inputs = line.matches("beeps.mp4").count();
+    match export(s, src, &opts, &mut |_| {}) {
+        Ok(m) => {
+            let got = beep_times(ffmpeg, Path::new(&m.path));
+            let want: Vec<f64> = (0..n).map(|j| 0.5 + 0.4 * j as f64 + 0.05).collect();
+            let worst = want.iter().map(|w| got.iter().map(|g| (g - w).abs()).fold(f64::INFINITY, f64::min)).fold(0.0f64, f64::max);
+            r.check(&format!("{n} audio clips of one file: the file is one input, each clip's beep at its place"), inputs == 1 && got.len() == n && worst < 0.002, &format!("{inputs} inputs; {} beeps, worst {:.1} ms", got.len(), worst * 1000.0));
+            let _ = fs::remove_file(&m.path);
+        }
+        Err(e) => r.check(&format!("{n} audio clips of one file"), false, &e),
     }
 }
 
@@ -4829,6 +5605,11 @@ fn timeline_checks(r: &mut Report, ffmpeg: &Path, s: &Settings, src: &ClipMeta, 
     }
     gap_checks(r, ffmpeg, s, src, (f_desk, f_mic), &tone_s);
     stream_checks(r, ffmpeg, s, src, dir, (300, f_desk, f_mic));
+    shared_audio_checks(r, ffmpeg, s, src, dir);
+    limiter_checks(r, ffmpeg, s, src, dir);
+    look_tg_checks(r, ffmpeg, s, dir);
+    hw_checks(r, ffmpeg, s, dir);
+    // smart_checks: not in the full run while smart rendering is unfinished (GLINT_EDITOR_ONLY=smart runs them).
     watchdog_checks(r, ffmpeg);
     tag_change_checks(r, ffmpeg, s, dir);
     sync_checks(r, ffmpeg, s, dir);

@@ -15,19 +15,31 @@ const ED_SEEK_STEPS = [1, 2, 3, 5, 10, 15, 30];
 const edSeekStep = () => { try { const n = +localStorage.getItem("glint.seekStep"); return ED_SEEK_STEPS.includes(n) ? n : 5; } catch { return 5; } };
 const edSetSeekStep = (n) => { try { localStorage.setItem("glint.seekStep", String(n)); } catch {} };
 // 0.1.41 (P): Sharpness, 0..1 (0 = off). A color or preset without it reads as 0 (edCol).
-const ED_COLOR_KEYS = ["brightness", "contrast", "saturation", "gamma", "sharpness"];
+// 0.1.45: Temperature -1 (cool) .. +1 (warm) and Glow 0..1, the same way (0 = off, absent reads as 0).
+const ED_COLOR_KEYS = ["brightness", "contrast", "saturation", "gamma", "sharpness", "temperature", "glow"];
+/** The color keys whose neutral value is 0 (they may be absent from a color or a preset). */
+const ED_ZERO_KEYS = ["sharpness", "temperature", "glow"];
 const ED_NO_COLOR = { brightness: 1, contrast: 1, saturation: 1, gamma: 1 };
-/** Value `k` of color `c`, its neutral value when it is not there (sharpness 0, the others 1). */
-const edCol = (c, k) => (Number.isFinite(c?.[k]) ? c[k] : k === "sharpness" ? 0 : 1);
+/** Value `k` of color `c`, its neutral value when it is not there (sharpness, temperature, glow 0, the others 1). */
+const edCol = (c, k) => (Number.isFinite(c?.[k]) ? c[k] : ED_ZERO_KEYS.includes(k) ? 0 : 1);
+/** What picking a look sets besides its own numbers: everything it has not, at its neutral value. */
+const ED_LOOK_ZERO = { sharpness: 0, temperature: 0, glow: 0 };
 // Names are English keys, shown through t(). The built-in looks have no sharpening: picking one sets it to 0.
+// The looks after "Black and white" (0.1.45) use temperature and glow; rules.rs BUILTIN_LOOKS has the same table (A).
 const ED_PRESETS = [
-  { name: "None", ...ED_NO_COLOR, sharpness: 0 },
-  { name: "Vivid", brightness: 1, contrast: 1.08, saturation: 1.35, gamma: 1, sharpness: 0 },
-  { name: "Punchy", brightness: 1, contrast: 1.25, saturation: 1.15, gamma: 0.95, sharpness: 0 },
-  { name: "Soft", brightness: 1.02, contrast: 0.88, saturation: 0.9, gamma: 1.08, sharpness: 0 },
-  { name: "Bright", brightness: 1.1, contrast: 1, saturation: 1.05, gamma: 1.15, sharpness: 0 },
-  { name: "Moody", brightness: 0.94, contrast: 1.15, saturation: 0.8, gamma: 0.9, sharpness: 0 },
-  { name: "Black and white", brightness: 1, contrast: 1.12, saturation: 0, gamma: 1, sharpness: 0 },
+  { name: "None", ...ED_NO_COLOR, ...ED_LOOK_ZERO },
+  { name: "Vivid", brightness: 1, contrast: 1.08, saturation: 1.35, gamma: 1, ...ED_LOOK_ZERO },
+  { name: "Punchy", brightness: 1, contrast: 1.25, saturation: 1.15, gamma: 0.95, ...ED_LOOK_ZERO },
+  { name: "Soft", brightness: 1.02, contrast: 0.88, saturation: 0.9, gamma: 1.08, ...ED_LOOK_ZERO },
+  { name: "Bright", brightness: 1.1, contrast: 1, saturation: 1.05, gamma: 1.15, ...ED_LOOK_ZERO },
+  { name: "Moody", brightness: 0.94, contrast: 1.15, saturation: 0.8, gamma: 0.9, ...ED_LOOK_ZERO },
+  { name: "Black and white", brightness: 1, contrast: 1.12, saturation: 0, gamma: 1, ...ED_LOOK_ZERO },
+  { name: "Dark fantasy", brightness: 0.92, contrast: 1.2, saturation: 0.85, gamma: 0.88, sharpness: 0, temperature: -0.35, glow: 0.45 },
+  { name: "Dreamy", brightness: 1.03, contrast: 0.94, saturation: 1.05, gamma: 1.06, sharpness: 0, temperature: 0.1, glow: 0.6 },
+  { name: "Neon night", brightness: 0.97, contrast: 1.2, saturation: 1.4, gamma: 0.92, sharpness: 0, temperature: -0.15, glow: 0.35 },
+  { name: "Cold", brightness: 1, contrast: 1.1, saturation: 0.9, gamma: 1, sharpness: 0, temperature: -0.4, glow: 0 },
+  { name: "Golden hour", brightness: 1.03, contrast: 1.05, saturation: 1.12, gamma: 1.03, sharpness: 0, temperature: 0.4, glow: 0.15 },
+  { name: "Faded film", brightness: 1.02, contrast: 0.86, saturation: 0.8, gamma: 1.1, sharpness: 0, temperature: 0.15, glow: 0 },
 ];
 // key, label, min, max, how the value is shown
 const ED_SLIDERS = [
@@ -36,6 +48,8 @@ const ED_SLIDERS = [
   ["saturation", "Saturation", 0, 2, "pct"],
   ["gamma", "Gamma", 0.5, 2, "num"],
   ["sharpness", "Sharpness", 0, 1, "pct"],
+  ["temperature", "Temperature", -1, 1, "temp"], // shown -100 .. +100, "Cool" and "Warm" at its ends (0.1.45)
+  ["glow", "Glow", 0, 1, "pct"],
 ];
 const ED_DRIFT = 0.08;          // seconds a preview audio element may drift from the video before it is re-seeked
 const ED_GAIN_STEP = 0.1;       // Up / Down change a segment's level by this much
@@ -80,7 +94,12 @@ function edMarksSave(id, list) {
   } catch (e) { console.warn("Glint: could not save the bookmarks", e); }
 }
 
-const edFmtVal = (key, x) => (ED_SLIDERS.find((s) => s[0] === key)[4] === "pct" ? `${Math.round(x * 100)}%` : x.toFixed(2));
+const edFmtVal = (key, x) => {
+  const how = ED_SLIDERS.find((s) => s[0] === key)[4];
+  if (how === "pct") return `${Math.round(x * 100)}%`;
+  if (how === "temp") { const n = Math.round(x * 100); return n > 0 ? `+${n}` : String(n); } // -100 .. +100 (0.1.45)
+  return x.toFixed(2);
+};
 const edSameColor = (a, b) => ED_COLOR_KEYS.every((k) => Math.abs(edCol(a, k) - edCol(b, k)) < 0.005);
 const edBaseName = (path) => String(path).split(/[\\/]/).pop() || String(path);
 /** Used to tell whether an edit changed the model (so a no-op leaves no undo step). */
@@ -105,15 +124,60 @@ const edTextTarget = (node) => !!node?.matches?.('textarea, select, [contentedit
 
 /** CSS filter for the live color preview, applied in the same order the export uses:
  *  brightness, contrast, saturation, then gamma (an SVG filter, CSS has none). */
-function edFilterCss(col) {
+function edFilterCss(col, picH) {
   const f = [];
   if (col.brightness !== 1) f.push(`brightness(${col.brightness})`);
   if (col.contrast !== 1) f.push(`contrast(${col.contrast})`);
   if (col.saturation !== 1) f.push(`saturate(${col.saturation})`);
   if (col.gamma !== 1) f.push("url(#e-gamma)");
+  // The export's order (0.1.45): eq, temperature, sharpness, glow.
+  const temp = edCol(col, "temperature");
+  if (Math.abs(temp) > 0.004) f.push(`url(#${edTempFilter(temp)})`);
   const sharp = edCol(col, "sharpness");
-  if (sharp > 0.004) f.push(`url(#${edSharpFilter(sharp)})`); // 0.1.41: last, as the export's unsharp
+  if (sharp > 0.004) f.push(`url(#${edSharpFilter(sharp)})`); // 0.1.41: as the export's unsharp
+  const glow = edCol(col, "glow");
+  if (glow > 0.004) f.push(`url(#${edGlowFilter(glow, picH)})`);
   return f.join(" ") || "none";
+}
+
+/* Temperature and glow in the preview (0.1.45): SVG filters made once each in the page's hidden <svg>, by the binding
+ * formulas of CONTRACT_0145 (the export, A, uses the same numbers):
+ *   temperature T (-1..1), on RGB after eq:  R' = R(1 + 0.20T), G' = G(1 + 0.02T), B' = B(1 - 0.20T);
+ *   glow g (0..1): the highlights max(0, (x - ED_GLOW_KNEE) / (1 - ED_GLOW_KNEE)) per channel, blurred with a Gaussian
+ *     of sigma = ED_GLOW_SIGMA x the picture's height, screened over the picture at opacity ED_GLOW_OPACITY x g
+ *     (screen with opacity o = screen with the blurred layer multiplied by o, which is how the filter does it). */
+const ED_TEMP = { r: 0.2, g: 0.02, b: -0.2 };
+const ED_GLOW_KNEE = 0.55, ED_GLOW_SIGMA = 0.016, ED_GLOW_OPACITY = 0.9;
+function edDefs() {
+  let defs = document.getElementById("e-sharp-defs");
+  if (!defs) {
+    defs = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    defs.id = "e-sharp-defs";
+    defs.setAttribute("aria-hidden", "true");
+    defs.setAttribute("style", "position:absolute;width:0;height:0;overflow:hidden");
+    document.body.appendChild(defs);
+  }
+  return defs;
+}
+/** The id of the page's temperature filter for `T` (in steps of 0.01), made on first use. */
+function edTempFilter(T) {
+  const q = Math.round(Math.min(1, Math.max(-1, +T || 0)) * 100), id = `e-temp-${q < 0 ? "m" + -q : q}`;
+  if (typeof document === "undefined" || document.getElementById(id)) return id;
+  const x = q / 100, r = (1 + ED_TEMP.r * x).toFixed(4), g = (1 + ED_TEMP.g * x).toFixed(4), b = (1 + ED_TEMP.b * x).toFixed(4);
+  edDefs().insertAdjacentHTML("beforeend", `<filter id="${id}" color-interpolation-filters="sRGB" x="0" y="0" width="100%" height="100%"><feColorMatrix type="matrix" values="${r} 0 0 0 0  0 ${g} 0 0 0  0 0 ${b} 0 0  0 0 0 1 0"/></filter>`);
+  return id;
+}
+/** The id of the page's glow filter for glow `g` (steps of 0.05) on a picture shown `picH` CSS px high (the blur's
+ *  deviation in those pixels, steps of half a pixel), made on first use. */
+function edGlowFilter(g, picH) {
+  const q = Math.round(Math.min(1, Math.max(0, +g || 0)) * 20), sd = Math.max(0.5, Math.round(ED_GLOW_SIGMA * (+picH > 0 ? +picH : 720) * 2) / 2);
+  const id = `e-glow-${q}-${String(sd).replace(".", "_")}`;
+  if (typeof document === "undefined" || document.getElementById(id)) return id;
+  const slope = (1 / (1 - ED_GLOW_KNEE)).toFixed(5), icpt = (-ED_GLOW_KNEE / (1 - ED_GLOW_KNEE)).toFixed(5), op = (ED_GLOW_OPACITY * q / 20).toFixed(4);
+  const hi = ["R", "G", "B"].map((c) => `<feFunc${c} type="linear" slope="${slope}" intercept="${icpt}"/>`).join("");
+  const lay = ["R", "G", "B"].map((c) => `<feFunc${c} type="linear" slope="${op}"/>`).join("");
+  edDefs().insertAdjacentHTML("beforeend", `<filter id="${id}" color-interpolation-filters="sRGB" x="0" y="0" width="100%" height="100%"><feComponentTransfer in="SourceGraphic" result="hi">${hi}</feComponentTransfer><feGaussianBlur in="hi" stdDeviation="${sd}" edgeMode="duplicate" result="bl"/><feComponentTransfer in="bl" result="lay">${lay}</feComponentTransfer><feBlend in="SourceGraphic" in2="lay" mode="screen"/></filter>`);
+  return id;
 }
 
 /* Sharpness in the preview (0.1.41). CSS cannot sharpen: an SVG unsharp mask does it, the picture plus `a` times
@@ -130,23 +194,55 @@ function edSharpParams(s) {
 function edSharpFilter(s) {
   const { q, std, k2, k3 } = edSharpParams(s), id = `e-sharp-${Math.round(q * ED_SHARP_STEPS)}`;
   if (typeof document === "undefined" || document.getElementById(id)) return id;
-  let defs = document.getElementById("e-sharp-defs");
-  if (!defs) {
-    defs = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    defs.id = "e-sharp-defs";
-    defs.setAttribute("aria-hidden", "true");
-    defs.setAttribute("style", "position:absolute;width:0;height:0;overflow:hidden");
-    document.body.appendChild(defs);
-  }
-  defs.insertAdjacentHTML("beforeend", `<filter id="${id}" color-interpolation-filters="sRGB" x="0" y="0" width="100%" height="100%"><feGaussianBlur in="SourceGraphic" stdDeviation="${std}" edgeMode="duplicate" result="b"/><feComposite in="SourceGraphic" in2="b" operator="arithmetic" k1="0" k2="${k2}" k3="${k3}" k4="0"/></filter>`);
+  edDefs().insertAdjacentHTML("beforeend", `<filter id="${id}" color-interpolation-filters="sRGB" x="0" y="0" width="100%" height="100%"><feGaussianBlur in="SourceGraphic" stdDeviation="${std}" edgeMode="duplicate" result="b"/><feComposite in="SourceGraphic" in2="b" operator="arithmetic" k1="0" k2="${k2}" k3="${k3}" k4="0"/></filter>`);
   return id;
+}
+
+/* The preview's limiter (0.1.45): one DynamicsCompressorNode before the destination, always in the chain. Sound under
+ * the ceiling passes untouched; sound that would pass it (a level over 100 %, rows summed) is held under it instead of
+ * being cut flat. The export's ffmpeg alimiter (A) has the same ceiling, -1 dBFS. */
+// Measured (OfflineAudioContext, 440 Hz sine, Chromium): the compressor adds its own make-up gain (x1.178 at these
+// settings), undone by a gain after it, so quiet sound is exactly as loud as without it (200 % of 0.1 -> 0.2000).
+// A full-scale sine comes out at 0.778 at 100 %, 0.831 at 200 %, 0.877 at 400 %: always under -1 dBFS (0.891).
+// -2.5 dB rather than -1.5: at -1.5 the attack lets 200 % through at 0.923.
+const ED_LIMITER = { threshold: -2.5, knee: 0, ratio: 20, attack: 0.003, release: 0.05 };
+const ED_LIMITER_MAKEUP = 1.178;
+const ED_CEIL_KNEE = 0.8, ED_CEIL_ROOM = 0.091; // the soft ceiling: identity to 0.8, then at most 0.8 + 0.091 = 0.891
+let edCeil = null;
+/** The soft ceiling's curve (input -1..1): x up to the knee, then knee + room x tanh((|x| - knee) / room). */
+function edCeilingCurve() {
+  if (edCeil) return edCeil;
+  const n = 8193, out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1, a = Math.abs(x);
+    out[i] = a <= ED_CEIL_KNEE ? x : Math.sign(x) * (ED_CEIL_KNEE + ED_CEIL_ROOM * Math.tanh((a - ED_CEIL_KNEE) / ED_CEIL_ROOM));
+  }
+  edCeil = out;
+  return out;
+}
+/** The limiter of AudioContext `ctx` (made once per context, connected to its destination): what rows connect to. */
+function edLimiter(ctx) {
+  if (ctx.__glintLimiter) return ctx.__glintLimiter;
+  const c = ctx.createDynamicsCompressor();
+  for (const [k, x] of Object.entries(ED_LIMITER)) c[k].value = x;
+  const back = ctx.createGain();
+  back.gain.value = 1 / ED_LIMITER_MAKEUP;
+  // The compressor follows the level, not every peak (two full-scale rows at 200 % still reach 0.926): a soft ceiling
+  // after it catches what is left. It is the identity up to 0.8 (everything quieter passes untouched) and bends
+  // smoothly towards 0.889 above that, never past it.
+  const ceil = ctx.createWaveShaper();
+  ceil.curve = edCeilingCurve();
+  ceil.oversample = "4x";
+  c.connect(back).connect(ceil).connect(ctx.destination);
+  ctx.__glintLimiter = c;
+  return c;
 }
 
 /** The user's saved color presets, skipping malformed entries. */
 function edUserPresets() {
   const list = S.settings?.color_presets;
   // A preset saved before Sharpness (0.1.41) has none: it reads as 0.
-  return Array.isArray(list) ? list.filter((p) => p && typeof p.name === "string" && ED_COLOR_KEYS.every((k) => Number.isFinite(p[k]) || (k === "sharpness" && p[k] == null))) : [];
+  return Array.isArray(list) ? list.filter((p) => p && typeof p.name === "string" && ED_COLOR_KEYS.every((k) => Number.isFinite(p[k]) || (ED_ZERO_KEYS.includes(k) && p[k] == null))) : []; // temperature, glow (0.1.45) too
 }
 
 /** The tracks to edit when editor_audio_tracks fails: same rows, no files (the preview then uses the clip's own audio). */
@@ -331,6 +427,65 @@ document.addEventListener("fullscreenchange", () => {
   // Watching a clip fullscreen: #modal is the fullscreen element (see P.fullscreen); editor.css styles it by this class.
   document.getElementById("modal")?.classList.toggle("fs", document.fullscreenElement?.id === "modal");
 });
+/* 0.1.46: the Color section's looks dropdown (a <select> that dropdown.js draws). The open editor sets `edLookHook`
+   ({ sel(), key(e), act(k), closed(), del(name) }). These listeners are registered at load, before dropdown.js and
+   app.js add theirs, so Up / Down on the closed dropdown change the look here instead of opening the list. */
+let edLookHook = null;
+let edLookKeyAt = -1e9; // the last key press: a row made active just after it was reached with the keyboard
+const edLookOpen = () => typeof DD !== "undefined" && DD.list && edLookHook && DD.sel === edLookHook.sel();
+window.addEventListener("keydown", (e) => {
+  edLookKeyAt = performance.now();
+  const s = edLookHook?.sel();
+  if (!s || e.target !== s || s.disabled || (typeof DD !== "undefined" && DD.list)) return;
+  if ((e.code !== "ArrowDown" && e.code !== "ArrowUp") || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  try { edLookHook.key(e); } catch (err) { console.error("Glint: look step failed", err); }
+}, true);
+// The delete x in a saved look's row: deletes it, never picks it (before dropdown.js's click, which picks the row).
+window.addEventListener("click", (e) => {
+  const x = e.target.closest?.(".e-look-x");
+  if (!x || !edLookOpen() || !DD.list.contains(x)) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  const name = x.dataset.name;
+  ddClose(true);
+  edLookHook.del(name);
+}, true);
+/** Draws the looks list's extras: no "Custom" row, the divider, a delete x on each saved look. */
+function edLookDecorate(list) {
+  for (const r of DD.rows) {
+    const o = r.__ddOpt;
+    if (!o.value) { r.style.display = "none"; continue; }
+    if (o.dataset.name && !r.querySelector(".e-look-x")) {
+      const name = o.dataset.name;
+      r.insertAdjacentHTML("beforeend", `<button type="button" tabindex="-1" class="e-x e-look-x" data-name="${esc(name)}" aria-label="${esc(t("Delete preset {name}", { name }))}" title="${esc(t("Delete preset"))}">${ICON.x}</button>`);
+    }
+  }
+  // (Only when missing: classList.add rewrites the attribute, which would wake the observer below again, for ever.)
+  if (!list.classList.contains("e-looks-list")) list.classList.add("e-looks-list");
+}
+let edLookWatch = null;
+if (typeof MutationObserver !== "undefined" && typeof document !== "undefined" && document.body) {
+  new MutationObserver(() => {
+    const list = edLookOpen() ? DD.list : null;
+    if (list === edLookWatch?.list) return;
+    if (edLookWatch) { edLookWatch.mo.disconnect(); edLookWatch = null; try { edLookHook?.closed(); } catch (err) { console.error(err); } }
+    if (!list) return;
+    edLookDecorate(list);
+    let act = DD.rows[DD.act] || null;
+    const mo = new MutationObserver(() => {
+      if (DD.list !== list) return;
+      edLookDecorate(list);
+      const now = DD.rows[DD.act] || null;
+      if (now === act) return;
+      act = now;
+      if (now && performance.now() - edLookKeyAt < 150) { try { edLookHook?.act(now.__ddOpt.value); } catch (err) { console.error("Glint: look preview failed", err); } }
+    });
+    mo.observe(list, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    edLookWatch = { list, mo };
+  }).observe(document.body, { childList: true });
+}
 /** Set while the viewer goes to the previous or next clip in fullscreen: the player being replaced must not leave fullscreen. */
 let edKeepFull = false;
 
@@ -1273,7 +1428,7 @@ function mountPlayer(root, c) {
     const gain = ctx.createGain();
     gain.gain.value = 0;
     node.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(edLimiter(ctx)); // 0.1.45: every row through the one limiter: 200 % is louder, never clipped
     s.node = node;
     s.gain = gain;
   }
@@ -1326,17 +1481,30 @@ function mountPlayer(root, c) {
   const srcEls = (k) => [...P.src.values()].filter((e) => e.kind === "track" && e.srcK === k);
   const srcSoundOn = (k) => { const L = srcEls(k); return L.length > 0 && L.every((e) => e.state === "on"); };
   P.srcSoundOn = srcSoundOn;
+  /** The track of source `s` that row `r` plays (0.1.44): by role (its stream), or by title; `stream` overrides. */
+  function srcTrackOf(s, r, stream) {
+    const all = s.tracksAll || s.tracks || [];
+    if (Number.isInteger(stream)) return all.find((x) => +x.index === stream) || null;
+    if (r.role) { const st = emRowStream(s, r); return st >= 0 ? all.find((x) => +x.index === st) || null : null; }
+    return (s.tracks || []).find((x) => (x.title || `Track ${x.index + 1}`) === r.title) || null;
+  }
+  /** The streams pieces of source `k` play instead on row `r` (part.over, "only the mix was heard there"). */
+  function overStreams(m, k, r) {
+    const out = new Set();
+    for (const p of emParts(m)) { const o = m.parts[p.i]?.over; if (!p.gap && o && Number.isInteger(o[r.title]) && emSourceAt(VS, p.src + 1e-6) === k) out.add(o[r.title]); }
+    return [...out];
+  }
   function syncTrackEls() {
     if (!VS || !P.model || dead) return;
     const rows = P.model.audio.filter((r) => r.kind === "track");
     for (const s of byNearness(VS)) {
       if (s.missing || s.trackFail || !Array.isArray(s.tracks)) continue;
-      for (const r of rows) {
-        const tr = s.tracks.find((x) => (x.title || `Track ${x.index + 1}`) === r.title), id = `${r.id}@${s.k}`;
+      for (const r of rows) for (const ov of [null, ...overStreams(P.model, s.k, r)]) {
+        const tr = srcTrackOf(s, r, ov), id = ov === null ? `${r.id}@${s.k}` : `${r.id}@${s.k}#${ov}`;
         if (!tr || P.src.has(id)) continue;
         if (!tr.path) { failSource(s, new Error(`the audio tracks of ${s.title} were not extracted`)); break; }
         const e = newSrc(id, "track", tr.path, r.title);
-        Object.assign(e, { rowId: r.id, srcK: s.k });
+        Object.assign(e, { rowId: r.id, srcK: s.k, over: ov }); // over: the stream of a piece's own choice (0.1.44)
         if (P.trackState === "idle" || P.trackState === "none") P.trackState = "loading";
         e.ready.then(() => {
           if (dead || P.src.get(id) !== e) return;
@@ -1390,6 +1558,19 @@ function mountPlayer(root, c) {
       } else {
         if (rows.some((r) => !r.path)) throw new Error("the clip's audio tracks were not extracted");
         list = rows.map((r) => newSrc(r.id, "track", r.path, r.title));
+        // A piece that plays another stream on a row (part.over, 0.1.44): an element of that stream too; syncAudio lets
+        // each be heard only in its own pieces.
+        const all = P.model.tracksAll || [];
+        for (const r of rows) {
+          const st = new Set((P.model.parts || []).map((p) => p?.over?.[r.title]).filter(Number.isInteger));
+          for (const x of st) {
+            const tr = all.find((y) => +y.index === x);
+            if (!tr || !tr.path) continue;
+            const e = newSrc(`${r.id}#${x}`, "track", tr.path, r.title);
+            Object.assign(e, { rowId: r.id, over: x });
+            list.push(e);
+          }
+        }
       }
       await Promise.all(list.map((s) => s.ready));
       if (stale()) return;
@@ -1481,7 +1662,7 @@ function mountPlayer(root, c) {
       let want = null;
       // A row cut with the video is silent in a gap (0.1.36), as the clip's own tracks are.
       // A project's clip track (0.1.38) plays only while its own clip is the one in the video, at that file's time.
-      if (row) want = s.kind === "file" ? (emRowCovers(row, now, m) ? emRowFileAt(m, row, now) : null) /* an added file is heard wherever its block lies (0.1.38) */ : aft ? null : s.srcK !== undefined ? (s.srcK === vk && !vpend ? v.currentTime : null) : src; // a file that plays through cuts keeps its place in the file across a jump
+      if (row) want = s.kind === "file" ? (emRowCovers(row, now, m) ? emRowFileAt(m, row, now) : null) /* an added file is heard wherever its block lies (0.1.38) */ : aft ? null : s.srcK !== undefined ? (s.srcK === vk && !vpend && pieceStreamIs(m, row, s.over) ? v.currentTime : null) : pieceStreamIs(m, row, s.over) ? src : null; // a file that plays through cuts keeps its place in the file across a jump
       const end = Number.isFinite(a.duration) ? a.duration : Infinity;
       if (want === null || want >= end - 0.01) { if (!a.paused) a.pause(); continue; }
       const rate = rateOf(s); // 0.1.41: a track at the piece's speed, an added file at the timeline's
@@ -1491,6 +1672,12 @@ function mountPlayer(root, c) {
       else if (!run && !a.paused) a.pause();
     }
     levels(now);
+  }
+  /** True if the piece being played plays stream choice `over` on `row` (null: the row's own stream, 0.1.44). */
+  function pieceStreamIs(m, row, over) {
+    const o = m && m.parts && playSrc !== null ? m.parts[playSrc]?.over : null;
+    const want = o && Number.isInteger(o[row.title]) ? o[row.title] : null;
+    return (over ?? null) === want;
   }
   function drift() {
     const want = P.editing && P.src.size > 0 && playing() && !dead;
@@ -1530,7 +1717,9 @@ function mountPlayer(root, c) {
   function applyColor() {
     const m = ed(), now = lookNow(); // the frame on screen while playing (0.1.41), else the clock
     const col = m ? emColorAt(m, now) : ED_NO_COLOR;
-    const css = edFilterCss(col), exp = String(Math.round((1 / (col.gamma || 1)) * 10000) / 10000);
+    // Glow (0.1.45): its blur is measured in the shown picture's pixels (sigma = 1.6 % of its height).
+    const picH = edCol(col, "glow") > 0.004 ? shownPicH() : 0;
+    const css = edFilterCss(col, picH), exp = String(Math.round((1 / (col.gamma || 1)) * 10000) / 10000);
     if (css !== shownCss) { shownCss = css; v.style.filter = css; }
     if (exp !== shownExp) {
       shownExp = exp;
@@ -1552,6 +1741,13 @@ function mountPlayer(root, c) {
   P.applyColor = applyColor;
 
   /* ----- the seek bar: the source clip, or the finished clip while editing ----- */
+  /** The height in CSS px of the picture as shown (the video fitted in its box; the canvas preview's when it is on). */
+  function shownPicH() {
+    const view = box.querySelector(".cv-view");
+    if (view && !view.hidden && view.clientHeight) return view.clientHeight;
+    const w = v.clientWidth, h = v.clientHeight, vw = v.videoWidth, vh = v.videoHeight;
+    return vw > 0 && vh > 0 && w > 0 ? Math.min(h, (w * vh) / vw) : h || 720;
+  }
   // The finished clip runs on after the video up to emEnd (0.1.35); without anything after the video that is emKeptDuration.
   const barLen = () => { const m = ed(); return m ? emSrcToOut(m, emEnd(m)) || 1 : dur(); };
   const toBar = (sec) => { const m = ed(); return m ? emSrcToOut(m, sec) : sec; };
@@ -1706,6 +1902,29 @@ function mountPlayer(root, c) {
     paint();
     wake();
   };
+  /** 0.1.46: show timeline second `sec` while a trim handle is dragged: the playhead goes there and the video stands.
+   *  At most one seek is in flight; a newer position waits for it to land, and the last one always wins. */
+  let peekWant = null, peekBusy = false;
+  P.peek = (sec) => {
+    if (!Number.isFinite(sec)) return;
+    peekWant = sec;
+    if (!peekBusy) peekRun();
+  };
+  function peekRun() {
+    const m = ed();
+    if (dead || peekWant === null || !m) { peekBusy = false; peekWant = null; return; }
+    const at = clamp(peekWant, 0, m.duration);
+    peekWant = null;
+    peekBusy = true;
+    go(at, false);
+    paint();
+    const el = v, done = () => { peekBusy = false; if (peekWant !== null) peekRun(); };
+    if (aft || vpend || !el.seeking) { setTimeout(done, 16); return; } // (not requestAnimationFrame: it waits while the window is hidden)
+    let to = 0;
+    const landed = () => { clearTimeout(to); el.removeEventListener("seeked", landed); done(); };
+    el.addEventListener("seeked", landed);
+    to = setTimeout(landed, 400); // a seek that never reports back does not hold the next one forever
+  }
   /** The playhead: timeline time while editing (see tlNow). */
   P.time = () => tlNow();
   const leaveFull = () => (document.fullscreenElement ? document.exitFullscreen().catch((e) => console.warn("Glint: exitFullscreen failed", e)) : Promise.resolve());
@@ -1768,6 +1987,9 @@ function mountPlayer(root, c) {
       }
       if (dead) return null;
       const m = emNew(dur(), tracks);
+      m.tracksAll = tracks.map((x) => ({ index: x.index, title: x.title, path: x.path || "" })); // "Simplify the audio rows" (0.1.44)
+      m.clipId = c.id;
+      m.clipGame = c.game || "";
       m.clipTitle = c.title || ""; // a piece of a single clip is named after it (0.1.37)
       m.clipPath = c.path || "";   // the file an ungrouped piece's sound comes from (0.1.39; a draft: its file)
       // A project's draft: its saved edit comes back (projects.js); false = nothing usable saved.
@@ -1801,6 +2023,8 @@ function mountPlayer(root, c) {
     const m = emNew(dur(), []);
     m.clipTitle = c.title || "";
     m.clipPath = c.path || "";
+    m.clipId = c.id;
+    m.rowsMode = "roles"; // a clip opened for the first time: rows by role (0.1.44)
     emSetMarks(m, edMarksLoad(c.id));
     if (c.kind === "joined" && Array.isArray(c.joins) && c.joins.length) {
       const starts = [0, ...c.joins], names = Array.isArray(c.join_names) ? c.join_names : [];
@@ -1817,7 +2041,10 @@ function mountPlayer(root, c) {
       return edFallbackTracks(c);
     }).then((tracks) => {
       if (stale()) return;
-      const shape = emNew(dur(), tracks), n = m.removed.length;
+      if (typeof emSetKnownGames === "function") emSetKnownGames([...new Set((S.clips || []).map((x) => x.game).filter(Boolean))]);
+      const shape = emNewRoles(dur(), tracks, c.game || ""), n = m.removed.length; // rows by role (0.1.44); a Glint clip: emNew's rows
+      m.tracksAll = shape.tracksAll;
+      m.clipGame = shape.clipGame;
       const ids = new Set(m.audio.map((r) => r.id));
       const rows = shape.audio.filter((r) => !ids.has(r.id)).map((r) => ({ ...r, gains: Array(n).fill(1) }));
       m.audio = [...m.audio.filter((r) => r.kind === "track"), ...rows, ...m.audio.filter((r) => r.kind !== "track")];
@@ -1843,10 +2070,12 @@ function mountPlayer(root, c) {
       try {
         const tr = await invoke("editor_audio_tracks", { id: s.clip });
         if (!Array.isArray(tr)) throw new Error("editor_audio_tracks did not return a list");
+        s.tracksAll = tr; // every track, the mix included: rows by role (0.1.44) choose from these
         s.tracks = emShownTracks(tr);
       } catch (e) {
         console.warn("Glint: editor_audio_tracks failed for a project's clip; its rows play the video's own sound.", s.title, e);
-        s.tracks = emShownTracks(edFallbackTracks(s));
+        s.tracksAll = edFallbackTracks(s);
+        s.tracks = emShownTracks(s.tracksAll);
       }
     }));
   }
@@ -1867,6 +2096,8 @@ function mountPlayer(root, c) {
       ...m.audio.filter((r) => r.kind !== "track"),
     ];
     for (const r of m.audio) if (r.kind === "track") r.index = titles.indexOf(r.title);
+    // Rows by role (0.1.44): each row knows its role by its name ("Desktop", "Mic", "Game", "Clip audio").
+    if (emRowsMode(m) === "roles") for (const r of m.audio) if (r.kind === "track") r.role = emRoleOfName(r.title) || "other"; // a named track's own row
     m.tracks0 = titles.map((title, k) => ({ index: k, title }));
     m.trackTitles = titles.slice();
   }
@@ -1880,21 +2111,38 @@ function mountPlayer(root, c) {
   let loadGen = 0;
   P.tracksPending = () => !!VS && VS.some((s) => !s.missing && !Array.isArray(s.tracks));
   /** The saved edit's track titles, by their index (to have the rows its levels belong to before the tracks come). */
-  async function savedTitles() {
-    if (!P.draft) return [];
+  /** ...and its rows' mode (0.1.44): { titles, mode: "roles" | "titles" | null (nothing saved: a new project) }. */
+  async function savedRows() {
+    if (!P.draft) return { titles: [], mode: null };
     let text = null;
     try {
       if (typeof projCarry !== "undefined" && projCarry && projCarry.id === c.id) text = projCarry.state;
       else if (typeof projCache !== "undefined" && projCache.has(c.id)) text = projCache.get(c.id);
       else text = await invoke("project_state", { id: c.id });
+      if (text == null || text === "") return { titles: [], mode: null };
       const s = typeof text === "string" ? JSON.parse(text) : text;
       const rows = (Array.isArray(s?.audio) ? s.audio : []).filter((r) => r && r.kind === "track" && typeof r.title === "string");
-      return [...new Set(rows.slice().sort((a, b) => (+a.index || 0) - (+b.index || 0)).map((r) => r.title))];
-    } catch { return []; }
+      return { titles: [...new Set(rows.slice().sort((a, b) => (+a.index || 0) - (+b.index || 0)).map((r) => r.title))], mode: s?.rows_mode === "roles" ? "roles" : "titles" };
+    } catch { return { titles: [], mode: null }; }
+  }
+  /** Rows by role (0.1.44): the role rows of `known` sources and the titles `have`, Desktop / Mic / Game / Clip audio in
+   *  that order, then the named tracks that keep a row of their own (in the order they come). */
+  function roleTitles(known, have) {
+    const rows = emRoleRows(known).rows.map((x) => x.title);
+    const all = [...new Set([...(have || []), ...rows])];
+    const roles = EM_ROLES.map((r) => r[1]);
+    return [...roles.filter((x) => all.includes(x)), ...all.filter((x) => !roles.includes(x))];
+  }
+  /** Each source's game (a track named after it is its Game track), and the games Glint knows (0.1.44). */
+  function sourceGames() {
+    const lib = typeof S !== "undefined" && Array.isArray(S.clips) ? S.clips : [];
+    if (typeof emSetKnownGames === "function") emSetKnownGames([...new Set(lib.map((x) => x.game).filter(Boolean))]);
+    for (const s of VS || []) if (!s.game) s.game = lib.find((x) => x.id === s.clip)?.game || "";
   }
   /** Titles from every source whose tracks are known, after the ones the model has (append-only). */
   function grownTitles(m) {
     const have = Array.isArray(m.trackTitles) ? m.trackTitles.slice() : [];
+    if (emRowsMode(m) === "roles") return roleTitles(VS.filter((s) => Array.isArray(s.tracksAll)), have);
     for (const x of emTrackTitles(VS.map((s) => s.tracks || []))) if (!have.includes(x)) have.push(x);
     return have;
   }
@@ -1905,6 +2153,8 @@ function mountPlayer(root, c) {
       try {
         const o = JSON.parse(json);
         if (!Array.isArray(o.audio) || !Array.isArray(o.removed)) return json;
+        if ((o.rm || "titles") !== emRowsMode(m)) return json; // a step from the other mode keeps its own rows (0.1.44)
+        if (Array.isArray(o.tt)) o.tt = m.trackTitles.slice();
         const known = new Set(o.audio.filter((r) => r.kind === "track").map((r) => r.title));
         const add = tracks.filter((r) => !known.has(r.title)).map((r) => ({ ...r, volume: 1, muted: false, gains: Array(o.removed.length).fill(1) }));
         const tr = [...o.audio.filter((r) => r.kind === "track"), ...add];
@@ -1976,9 +2226,16 @@ function mountPlayer(root, c) {
    */
   async function virtualModel() {
     const known = VS.every((s) => s.missing || Array.isArray(s.tracks));
-    const titles = known ? emTrackTitles(VS.map((s) => s.tracks || [])) : await savedTitles();
+    // Rows by role (0.1.44) for a new project; an edit saved before keeps its rows by title, exactly as it was.
+    const saved = await savedRows();
     if (dead) return null;
+    const mode = saved.mode || "roles";
+    sourceGames();
+    const titles = mode === "roles"
+      ? roleTitles(known ? VS.filter((s) => !s.missing) : [], saved.titles)
+      : known ? emTrackTitles(VS.map((s) => s.tracks || [])) : saved.titles;
     const m = emNew(dur(), []);
+    m.rowsMode = mode;
     // A project of one clip: its piece is named after that clip, not after the project (0.1.40).
     m.clipTitle = (VS.length === 1 && !VS[0]?.inner?.length && VS[0]?.title) || c.title || "";
     m.virtual = true; // its ranges never run across two clips' files (emSrcSpans)
@@ -2009,6 +2266,7 @@ function mountPlayer(root, c) {
     // 0.1.41 (F2): on the timeline at once; their tracks, waveforms and frames come after (loadSourceTracks).
     if (dead || P.model !== m) return false;
     VS.push(...fresh);
+    sourceGames(); // their games (a track named after it is their Game track, 0.1.44)
     c.sources = next.sources;
     c.duration = +next.duration || VS.reduce((n, s) => n + s.duration, 0);
     c.joins = next.joins;
@@ -2026,6 +2284,77 @@ function mountPlayer(root, c) {
     P.edSync("add");
     return true;
   };
+  /* ----- rows by role or by title (0.1.44) ----- */
+  /** Resolves true once every clip's tracks are known (the export's track_map needs them), false after `ms`. */
+  P.whenTracks = async (ms) => {
+    const t0 = performance.now();
+    while (!dead && (singlePending || (VS && P.tracksPending()))) { if (performance.now() - t0 > ms) return false; await new Promise((r) => setTimeout(r, 100)); }
+    return !dead;
+  };
+  P.whenTracks.ready = () => !singlePending && !(VS && P.tracksPending());
+  /** True when the rows can be switched: every clip's tracks are known. */
+  const rowsReady =() => !!P.model && !singlePending && !(VS && P.tracksPending()) && (!!VS || Array.isArray(P.model.tracksAll));
+  /** What "Simplify the audio rows" would do now, without doing it: { before, after, mixesDropped } or null. */
+  let rowsMemo = { key: "", res: null };
+  function rowsPreview() {
+    const m = P.model;
+    if (!rowsReady() || emRowsMode(m) === "roles") return null;
+    const key = emState(m);
+    if (rowsMemo.key === key) return rowsMemo.res;
+    rowsMemo = { key, res: rowsPreview0(m) };
+    return rowsMemo.res;
+  }
+  function rowsPreview0(m) {
+    const copy = { ...JSON.parse(JSON.stringify({ ...m, sources: null, undo: [], redo: [] })), sources: m.sources, undo: [], redo: [] };
+    const res = emSimplifyRows(copy);
+    if (!res) return null;
+    const same = res.after === res.before && JSON.stringify(copy.audio.filter((r) => r.kind === "track").map((r) => [r.index, r.gains])) === JSON.stringify(m.audio.filter((r) => r.kind === "track").map((r) => [r.index, r.gains]));
+    return same ? null : res;
+  }
+  /** The preview sound and the waveforms of the rows again, after the rows changed. */
+  function rowsChanged() {
+    for (const [id, s] of [...P.src]) if (s.kind === "track") { dropSrc(s); P.src.delete(id); }
+    P.trackState = "idle";
+    if (VS) { for (const s of VS) delete s.trackFail; syncTrackEls(); joinWaves(P.model); }
+    else { loadTracks(); for (const [id, wave] of P.waves) if (P.model.audio.some((r) => r.id === id)) tl((h) => h.setWaveform(id, wave)); }
+    tl((h) => h.refresh());
+    P.edSync("rows");
+    output(true);
+  }
+  /** "Simplify the audio rows": rows by role, one undo step; a flash says what changed. */
+  P.simplifyRows = () => {
+    const m = P.model;
+    if (!rowsReady() || emRowsMode(m) === "roles") return false;
+    emSnapshot(m);
+    const res = emSimplifyRows(m);
+    if (!res) { m.undo.pop(); return false; }
+    rowsChanged();
+    rowsOfferDone();
+    flash(t("{before} audio rows are now {after}.", { before: res.before, after: res.after }) + (res.mixesDropped ? " " + t("Mixes that doubled the sound are left out.") : ""));
+    return true;
+  };
+  /** "Show every track" on (rows by title) or off (rows by role), one undo step, levels kept either way. */
+  P.everyTrack = (on) => {
+    const m = P.model;
+    if (!rowsReady() || (emRowsMode(m) === "titles") === !!on) return false;
+    if (!on) return P.simplifyRows();
+    emSnapshot(m);
+    const res = emEveryTrack(m);
+    if (!res) { m.undo.pop(); return false; }
+    rowsChanged();
+    return true;
+  };
+  const rowsOfferKey = () => `glint.rowsOffer.${c.id}`;
+  function rowsOfferDone() { try { localStorage.setItem(rowsOfferKey(), "1"); } catch { /* the line just comes back next time */ } }
+  /** What the timeline shows about the rows: { mode, ready, offer: null | { before, after, mixes } }. */
+  P.rowsInfo = () => {
+    if (!P.model) return { mode: "titles", ready: false, offer: null };
+    let dismissed = false;
+    try { dismissed = localStorage.getItem(rowsOfferKey()) === "1"; } catch { dismissed = false; }
+    const pv = !dismissed ? rowsPreview() : null;
+    return { mode: emRowsMode(P.model), ready: rowsReady(), offer: pv ? { before: pv.before, after: pv.after, mixes: pv.mixesDropped } : null };
+  };
+  P.rowsOfferDismiss = () => { rowsOfferDone(); tl((h) => h.refresh()); };
   /** Saves the bookmarks in source seconds, so they find their picture again whatever the part order. */
   const saveMarks = () => {
     const m = P.model;
@@ -2050,6 +2379,8 @@ function mountPlayer(root, c) {
         game: c.game, // names the Game row ("Overwatch audio")
         getTime: () => tlNow(),
         onSeek: (sec, exact) => P.seek(sec, false, !!exact), // exact: onto a bookmark, even inside a cut-out part
+        // 0.1.46: a piece's end being dragged: the preview shows the frame under it (P.peek, throttled).
+        onTrimPeek: (r, side, speed) => P.peek(emTrimPeek(r, side, speed, frame).at),
         onChange: (what) => P.edSync(what),
         onMarks: () => saveMarks(),
         // sel: the primary piece { row, seg } or null; sels: every selected piece (older timelines pass only sel).
@@ -2080,6 +2411,9 @@ function mountPlayer(root, c) {
         // 0.1.41 (F2): a track row whose sound is still on its way says so, quietly.
         soundLoading: () => !!VS && (P.tracksPending() || bgQ.some((x) => x.kind !== "thumbs") || bgBusy > 0),
         cvApi: () => P.cv || null,
+        // 0.1.44: rows by role or by title: what to show, and the actions.
+        rowsInfo: () => P.rowsInfo(),
+        rowsApi: { simplify: () => P.simplifyRows(), everyTrack: (on) => P.everyTrack(on), dismiss: () => P.rowsOfferDismiss() },
       });
     } catch (e) {
       console.error("Glint: mountTimeline failed", e);
@@ -2150,7 +2484,7 @@ function mountPlayer(root, c) {
     const rates = lists.map((w) => +w?.per_second || 0).filter((x) => x > 0), ps = rates.length ? Math.max(...rates) : 50;
     for (const row of m.audio.filter((r) => r.kind === "track")) {
       const parts = VS.map((s) => {
-        const tr = (s.tracks || []).find((x) => (x.title || `Track ${x.index + 1}`) === row.title);
+        const tr = srcTrackOf(s, row, null); // by role or by title (0.1.44)
         const w = tr && (srcWaves.get(s.k) || []).find((x) => x.index === tr.index);
         return { start: s.start, duration: s.duration, peaks: w && Array.isArray(w.peaks) ? w.peaks : null, ps: +w?.per_second || 0 };
       });
@@ -2295,6 +2629,13 @@ function mountPlayer(root, c) {
   P.openKeys = () => edOpenKeys(root);
 
   /** Runs one editor shortcut (an ED_KEYS cmd). */
+  /** 0.1.46: after O, the playhead stood on the first frame cut away (the new end): it goes back one frame, onto the
+   *  piece's new last frame (I needs nothing: the playhead is on the new first frame already). */
+  function trimEndPeek(at) {
+    const m = P.model;
+    const p = m && emPieceList(m).find((q) => !q.gap && Math.abs(q.at + q.len - at) < 0.02);
+    if (p) P.peek(emTrimPeek(p, "end", p.speed, frame).at);
+  }
   P.command = (cmd) => {
     const now = tlNow();
     // Delete and Esc first go to the overlays (a selected text or shape, a drawing tool, a text being typed).
@@ -2335,6 +2676,7 @@ function mountPlayer(root, c) {
       try { ok = !!P.tl.run(cmd); } catch (e) { threw = true; console.error(`Glint: timeline run(${cmd}) failed, using the editor's own code`, e); }
       if (!threw) {
         if (ok) {
+          if (cmd === "trimEnd") trimEndPeek(now);
           if (cmd === "mark") flash((m.marks || []).length > marksBefore ? t("Bookmark added") : t("Bookmark removed"));
           if (cmd === "louder" || cmd === "quieter") {
             const sel = P.selection().sel || before, row = sel && sel.row !== "video" ? emRow(P.model, sel.row) : null;
@@ -2379,7 +2721,9 @@ function mountPlayer(root, c) {
       // Without the timeline's run(): the same model functions as its trim brackets.
       case "trimStart": case "trimEnd":
         if (edTrimRefused(m, cmd, now)) return flash(t("Nothing would be left to keep"));
-        return P.edit("trim", (mm) => (cmd === "trimStart" ? emSetTrimStart(mm, now, true) : emSetTrimEnd(mm, now, true)));
+        if (!P.edit("trim", (mm) => (cmd === "trimStart" ? emSetTrimStart(mm, now, true) : emSetTrimEnd(mm, now, true)))) return false;
+        if (cmd === "trimEnd") trimEndPeek(now);
+        return true;
       case "undo": if (emUndo(m)) { tl((h) => h.refresh()); P.edSync("undo"); } else flash(t("Nothing to undo")); return;
       case "redo": if (emRedo(m)) { tl((h) => h.refresh()); P.edSync("redo"); } else flash(t("Nothing to redo")); return;
     }
@@ -2626,14 +2970,16 @@ function mountEditor(root, c, P) {
   function renderColor() {
     const user = edUserPresets(), col = color(), off = model() ? "" : "disabled";
     $(".e-color", pane).innerHTML = `
-      <div class="e-title">${esc(t("Color"))} <span class="e-tag" hidden>${esc(t("Custom"))}</span></div>
+      <div class="e-title">${esc(t("Color"))}</div>
       <div class="e-target"></div>
-      <div class="e-chips">
-        ${ED_PRESETS.map((p, i) => `<button type="button" class="e-chip" data-e-chip="b${i}" data-e-preset="b${i}" ${off}>${esc(t(p.name))}</button>`).join("")}
-        ${user.map((p, i) => `<span class="e-chip e-user" data-e-chip="u${i}"><button type="button" data-e-preset="u${i}" ${off}>${esc(p.name)}</button><button type="button" class="e-x" data-e-delpreset="${esc(p.name)}" aria-label="${esc(t("Delete preset {name}", { name: p.name }))}" title="${esc(t("Delete preset"))}">${ICON.x}</button></span>`).join("")}
-      </div>
+      ${/* 0.1.46: the looks are one dropdown (dropdown.js draws it; edLookList adds the divider and the delete x). */ ""}
+      <div class="e-look-row"><select class="field e-looks" id="e-looks" aria-label="${esc(t("Look"))}" ${off}>
+        <option value="" disabled>${esc(t("Custom"))}</option>
+        ${ED_PRESETS.map((p, i) => `<option value="b${i}">${esc(t(p.name))}</option>`).join("")}
+        ${user.length ? `<optgroup label="">${user.map((p, i) => `<option value="u${i}" data-name="${esc(p.name)}">${esc(p.name)}</option>`).join("")}</optgroup>` : ""}
+      </select></div>
       <div class="e-sliders">
-        ${ED_SLIDERS.map(([k, label, min, max]) => `<label class="e-slider"><span>${esc(t(label))}</span><input type="range" min="${min}" max="${max}" step="0.01" value="${edCol(col, k)}" data-e-color="${k}" ${off}><output data-e-val="${k}">${edFmtVal(k, edCol(col, k))}</output></label>`).join("")}
+        ${ED_SLIDERS.map(([k, label, min, max]) => `<label class="e-slider"><span>${esc(t(label))}</span><input type="range" min="${min}" max="${max}" step="0.01" value="${edCol(col, k)}" data-e-color="${k}" ${off}><output data-e-val="${k}">${edFmtVal(k, edCol(col, k))}</output>${k === "temperature" ? `<span class="e-ends" aria-hidden="true"><span>${esc(t("Cool"))}</span><span>${esc(t("Warm"))}</span></span>` : ""}</label>`).join("")}
       </div>
       <button type="button" class="btn sm e-save" data-e-act="preset-save" ${off}>${esc(t("Save as preset"))}</button>`;
     lastTarget = "";
@@ -2653,10 +2999,65 @@ function mountEditor(root, c, P) {
   function markPreset() {
     const col = color();
     const hit = presetList().find(([, p]) => edSameColor(p, col))?.[0];
-    for (const x of $$("[data-e-chip]", pane)) x.classList.toggle("on", x.dataset.eChip === hit);
-    const tag = $(".e-tag", pane);
-    if (tag) tag.hidden = !!hit;
+    const sel = $("#e-looks", pane);
+    // Not while the open list previews a look: the select keeps the look it had, so Enter on another one is a change.
+    if (sel && !lookPv && sel.value !== (hit || "")) sel.value = hit || "";
+    if (sel) sel.disabled = !model();
   }
+
+  /* 0.1.46: the looks dropdown. While its list is open, a row reached with the keyboard is shown on the preview
+     (the model's colors are put back when the list closes without a pick); a pick is one edit, one undo step.
+     With the list closed and the dropdown focused, Up / Down pick the previous / next look; a run of them is one
+     undo step. */
+  let lookPv = null;      // { orig: the colors before the preview, segs }
+  let lookRun = { at: -1e9, len: -1 }; // the last Up / Down pick: when, and the undo length it left
+  const lookSel = () => $("#e-looks", pane);
+  const lookOf = (k) => presetList().find(([key]) => key === k)?.[1];
+  const putColors = (m, list) => m.colors.forEach((col, i) => { for (const k of Object.keys(col)) delete col[k]; Object.assign(col, list[i]); });
+  function lookPreview(k) {
+    const m = model(), p = lookOf(k);
+    if (!m || !p) return;
+    if (!lookPv) lookPv = { orig: structuredClone(m.colors), segs: target().segs };
+    putColors(m, structuredClone(lookPv.orig));
+    emSetColor(m, lookPv.segs, { ...ED_LOOK_ZERO, ...p });
+    P.applyColor();
+    syncSliders();
+  }
+  function lookUnpreview(apply) {
+    if (!lookPv) return;
+    const m = model(), pv = lookPv;
+    lookPv = null;
+    if (!m) return;
+    putColors(m, pv.orig);
+    if (apply) { P.applyColor(); syncSliders(); markPreset(); }
+  }
+  function lookPick(k, run) {
+    const p = lookOf(k), m = model(), segs = target().segs;
+    if (!p || !m) return;
+    const n0 = m.undo.length, now = performance.now();
+    const merge = run && now - lookRun.at < 1500 && n0 === lookRun.len;
+    if (!P.edit("color", (mm) => emSetColor(mm, segs, { ...ED_LOOK_ZERO, ...p }))) return; // a preset without Sharpness, Temperature or Glow (older, or a look) sets them to 0
+    if (merge && m.undo.length > n0) m.undo.splice(n0, 1);
+    lookRun = run ? { at: now, len: m.undo.length } : { at: -1e9, len: -1 };
+  }
+  pane.addEventListener("change", (e) => {
+    if (e.target !== lookSel()) return;
+    const k = e.target.value;
+    lookUnpreview(false);
+    lookPick(k, false);
+    markPreset();
+  });
+  edLookHook = {
+    sel: lookSel,
+    key(e) { // a key on the closed, focused dropdown
+      const keys = presetList().map(([k]) => k), cur = keys.indexOf(lookSel().value);
+      const next = e.code === "ArrowDown" ? (cur < 0 ? 0 : Math.min(keys.length - 1, cur + 1)) : (cur < 0 ? keys.length - 1 : Math.max(0, cur - 1));
+      if (next !== cur) { lookPick(keys[next], true); markPreset(); }
+    },
+    act(k) { if (k) lookPreview(k); },
+    closed() { lookUnpreview(true); },
+    del(name) { deletePreset(name).catch(fail); },
+  };
   async function savePreset() {
     const m = model();
     if (!m) return;
@@ -2714,18 +3115,20 @@ function mountEditor(root, c, P) {
     // Replace instead of saving beside the original. A project asks which of its clips go when it is exported.
     const rep = edReplaceOn();
     const repNote = !rep ? "" : c.draft ? t("You choose which clips go to the Recycle Bin when you export.") : t("The original goes to the Recycle Bin. The export takes its name and its place.");
+    // 0.1.46 (workspace.js): the summary, the progress and the two buttons are the pane's footer on every tab;
+    // what has `e-exp-opt` shows on the Export tab only.
     const html = `<div class="e-title">${esc(t("Export"))}</div>
-      <div class="small">${lines.map(esc).join(" ")}</div>
-      ${audioNotes().map((n) => `<div class="small e-note">${esc(n)}</div>`).join("")}
-      <label class="check e-replace"><input type="checkbox" data-e-replace ${rep ? "checked" : ""} ${job ? "disabled" : ""}><span>${esc(c.draft ? t("Replace clips of the project") : t("Replace the original clip"))}</span></label>
-      ${repNote ? `<div class="small e-replace-note">${esc(repNote)}</div>` : ""}
+      <div class="small e-exp-sum">${lines.map(esc).join(" ")}</div>
+      ${audioNotes().map((n) => `<div class="small e-note e-exp-opt">${esc(n)}</div>`).join("")}
+      <label class="check e-replace e-exp-opt"><input type="checkbox" data-e-replace ${rep ? "checked" : ""} ${job ? "disabled" : ""}><span>${esc(c.draft ? t("Replace clips of the project") : t("Replace the original clip"))}</span></label>
+      ${repNote ? `<div class="small e-replace-note e-exp-opt">${esc(repNote)}</div>` : ""}
       ${/* P 0.1.41 (projects.js): the bar with what it does and Cancel; after a failed or stalled export its message and "Show the log". */
         job ? (typeof projExpProgHtml === "function" ? projExpProgHtml(job, c.id) : `<div class="e-prog"><div class="small e-prog-txt">${esc(t("Exporting… {pct}%", { pct: job.pct.toFixed(0) }))}</div><div class="progress"><i style="width:${job.pct}%"></i></div></div>`)
           : typeof projExpFailHtml === "function" ? projExpFailHtml(c.id) : ""}
       <button class="btn primary wide" data-v="export" ${job || !changed ? "disabled" : ""}><span>${esc(rep && !c.draft ? t("Export and replace") : t("Export"))}</span></button>
       <button class="btn wide" data-v="export-blur" ${job || !S.blur || !m ? "disabled" : ""}>${ICON.blur}<span>${esc(changed ? t("Export and render with Blur") : t("Render with Blur"))}</span></button>
-      ${typeof rulesExportHtml === "function" ? rulesExportHtml(c, !!job) : "" /* rules.js: "then run a render rule" */}
-      ${S.blur ? "" : `<div class="small">${esc(t("blur-cli.exe not found. Set its path under Blur."))}</div>`}`;
+      <div class="e-exp-opt e-exp-rules">${typeof rulesExportHtml === "function" ? rulesExportHtml(c, !!job) : "" /* rules.js: "then run a render rule" */}</div>
+      ${S.blur ? "" : `<div class="small e-exp-opt">${esc(t("blur-cli.exe not found. Set its path under Blur."))}</div>`}`;
     if (html === lastExport) return;
     lastExport = html;
     $(".e-export", pane).innerHTML = html;
@@ -2735,7 +3138,8 @@ function mountEditor(root, c, P) {
     const bar = $(".e-prog i", pane), txt = $(".e-prog-txt", pane);
     if (!job || !bar || !txt) return renderExport();
     bar.style.width = `${job.pct}%`;
-    txt.textContent = typeof projExpText === "function" ? projExpText(job) : t("Exporting… {pct}%", { pct: job.pct.toFixed(0) }); // P 0.1.41
+    const line = typeof projExpText === "function" ? projExpText(job) : t("Exporting… {pct}%", { pct: job.pct.toFixed(0) }); // P 0.1.41
+    if (typeof chromeText === "function") chromeText(txt, line); else txt.textContent = line; // 0.1.46: the text node's data, no node replaced
   }
 
   pane.addEventListener("change", (e) => {
@@ -2767,15 +3171,12 @@ function mountEditor(root, c, P) {
     P.edSync("color");
   });
   pane.addEventListener("click", async (e) => {
-    const btn = e.target.closest("[data-e-preset],[data-e-delpreset],[data-e-act],.e-speed");
+    const btn = e.target.closest("[data-e-delpreset],[data-e-act],.e-speed");
     if (!btn) return;
     const d = btn.dataset;
     try {
-      if ("ePreset" in d) {
-        const p = presetList().find(([k]) => k === d.ePreset)?.[1], segs = target().segs;
-        if (p) P.edit("color", (m) => emSetColor(m, segs, { sharpness: 0, ...p })); // a preset without Sharpness (older, or a look) sets it to 0
-      } else if (d.eAct === "color-all") {
-        const shown = { sharpness: 0, ...color() }; // its Sharpness too, also when it is off (0.1.41)
+      if (d.eAct === "color-all") {
+        const shown = { ...ED_LOOK_ZERO, ...color() }; // its Sharpness, Temperature, Glow too, also when off (0.1.41, 0.1.45)
         P.edit("color", (m) => emSetColor(m, null, shown));
       } else if ("eDelpreset" in d) await deletePreset(d.eDelpreset);
       else if (d.eAct === "preset-save") await savePreset();
@@ -3017,6 +3418,13 @@ async function edExport(withBlur) {
       if (go === "back" && gaps.first) { P.seek(gaps.first.at, false, true); P.tl?.select?.({ row: "video", seg: gaps.first.seg }); }
       return;
     }
+  }
+  // Rows by role (0.1.44): the export needs every clip's tracks (track_map). Wait for the ones still loading.
+  if (emRowsMode(m) === "roles" && typeof P.whenTracks === "function" && !P.whenTracks.ready()) {
+    flash(t("Waiting for the clips' audio tracks…"));
+    const ok = await P.whenTracks(20000);
+    if (S.open !== id || S.player !== P) return;
+    if (!ok) return flash(t("The audio tracks of a clip could not be read, so the export cannot place its sound. Try again in a moment."), true);
   }
   const opts = emToOpts(m);
   // "Replace the original": one clip replaces itself; a project asks which of its clips go (projects.js).

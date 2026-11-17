@@ -84,6 +84,7 @@ fn cfg(ffmpeg: &Path, monitor: u32, w: u32, h: u32, hz: u32, method: &str, windo
         buffer_ram_secs: 10.0,
         buffer_dir: util::tmp_dir(),
         window,
+        game: false,
     }
 }
 

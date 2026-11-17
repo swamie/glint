@@ -212,6 +212,7 @@ pub fn capture_cfg_for(s: &Settings, m: &win::Monitor, clip_secs: u32) -> Captur
         buffer_ram_secs: s.buffer_ram_secs.clamp(5, 600) as f64,
         buffer_dir: crate::spill::dir(&s.buffer_dir),
         window: 0,
+        game: false,
     }
 }
 
@@ -362,6 +363,12 @@ impl Core {
     /// Background upkeep, every two seconds: game detection, display-mode
     /// changes (a game switching resolution). (Discord Rich Presence lived here until 0.1.24; the owner had it removed.)
     pub fn watch(self: &Arc<Self>) {
+        // 0.1.46: the end of the Windows session stops the captures quietly and starts nothing (session.rs).
+        let ending = self.clone();
+        crate::session::watch(Box::new(move || {
+            crate::util::log("session: ending; the captures are stopped");
+            ending.rec.stop();
+        }));
         let core = self.clone();
         thread::spawn(move || {
             let modes = || win::monitors().iter().map(|m| (m.width, m.height, m.hz)).collect::<Vec<_>>();
@@ -570,8 +577,8 @@ impl Core {
     pub fn clip_blocking(&self, seconds: u32, monitor: i32) -> Result<ClipMeta, String> {
         let s = self.settings();
         let game_mode = crate::capmode::game_mode(&s);
-        // Game mode records one thing, the game: a keybind's own monitor does not apply.
-        let monitor = if game_mode { -1 } else { monitor };
+        // Game mode: a key of the capture monitor clips the game; a key naming another monitor clips
+        // that monitor's own buffer, which GAME mode keeps as desktop mode does (0.1.46).
         let count = win::monitors().len();
         let mon = resolve_monitor(&s, monitor, count);
         let primary = mon == capture_monitor(&s, count);
@@ -582,8 +589,9 @@ impl Core {
         }
         // Game mode with no game running: the buffer of the game that exited is kept, so whatever
         // of the asked range it still holds (at least a second) is saved; with nothing, a toast.
-        let waiting = game_mode && self.rec.current_cfgs().is_empty();
-        let snapped = self.rec.snapshot(seconds as f64, if primary { None } else { Some(mon) });
+        let game_clip = game_mode && primary;
+        let waiting = game_clip && !self.rec.game_capturing();
+        let snapped = if game_clip { self.rec.snapshot_game(seconds as f64) } else { self.rec.snapshot(seconds as f64, if primary { None } else { Some(mon) }) };
         if waiting && !snapped.as_ref().is_ok_and(|v| crate::capmode::enough_to_clip(&v.0.segments, seconds as f64)) {
             util::log(&format!("clip {seconds}s: no game is running (game mode) and nothing in the buffer for that time"));
             self.toast_on("No game is running", "Glint records the game as soon as one starts", mon);
@@ -603,12 +611,14 @@ impl Core {
         // The overlay goes where the picture came from.
         let mon = cfg.monitor;
         // The game's own sound for the same time, when it was captured for any of it.
-        let game_pcm = if s.game_audio || game_mode { crate::procaudio::global().plan(&snap.segments).map(crate::audio::Plan::read) } else { None };
+        // A monitor's clip in GAME mode (0.1.46) is taken like a desktop clip, with the sound GAME mode
+        // records: the microphone, the desktop's sound when asked for there, the game's track when on.
+        let game_pcm = if s.game_audio || game_clip { crate::procaudio::global().plan(&snap.segments).map(crate::audio::Plan::read) } else { None };
         // Game mode: nothing of the desktop's sound, only the game's and the microphone, unless the
         // user asked for the desktop's sound there too. Then the clip has the usual tracks
         // (Mix, Desktop, Microphone, Game) around the game's picture; track 1 holds the game too
         // when the desktop's sound lacks it (clip::game_missing_from_desktop, 0.1.35).
-        let game_only = crate::capmode::game_only(&s);
+        let game_only = crate::capmode::game_only(&s) && game_clip;
         let desk = if game_only { None } else { desk };
         let cap = clip::Capture { snap, desk, mic, game: game_pcm, width: cfg.width, height: cfg.height, fps: cfg.fps };
         let started = std::time::Instant::now();
@@ -731,17 +741,21 @@ impl Core {
         }
         // The GAME / DESKTOP switch or a game mark changed: look for the game again now (capmode.rs).
         if crate::capmode::marks_changed(&old, &new) {
-            // Switched by hand: what the other mode buffered is dropped (clipping stays on).
+            // Switched by hand: the game's capture and its buffer go; a monitor capture that stays the
+            // same in the other mode (a monitor a clip keybind names) keeps running with its buffer (0.1.46).
             if old.capture_mode != new.capture_mode && self.rec.is_running() {
-                self.rec.stop();
-                self.rec.wait();
+                self.rec.drop_game();
             }
             self.track_game();
         }
         if self.rec.is_running() {
             // Only the monitors whose capture changed are restarted (see `Recorder::start`).
             let cfgs = capture_cfgs(&new);
-            if self.rec.current_cfgs() != cfgs {
+            if cfgs.is_empty() && old.capture_mode != new.capture_mode {
+                // Switched to GAME with no game and no other monitor to buffer: nothing is kept.
+                self.rec.stop();
+                self.rec.wait();
+            } else if self.rec.current_cfgs() != cfgs {
                 self.rec.start(cfgs);
             }
         }

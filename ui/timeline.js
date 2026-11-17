@@ -395,6 +395,11 @@ function tlRowKParse(s) {
  *  "Overwatch audio", "Desktop audio"); an added file keeps its name. `game` is the clip's game ("" or "Desktop" = none). */
 function tlRowName(r, game) {
   if (!r || r.kind !== "track") return r ? t(r.title) : "";
+  // Rows by role (0.1.44): named by what they are, whatever the recorder called the track.
+  if (r.role === "desktop") return t("Desktop audio");
+  if (r.role === "mic") return t("Mic audio");
+  if (r.role === "game") return game && game !== "Desktop" ? t("{game} audio", { game }) : t("Game audio");
+  if (r.role === "clip") return t("Clip audio");
   if (r.title === "Microphone") return t("Mic audio");
   if (r.title === "Desktop") return t("Desktop audio");
   if (r.title === "Game") return game && game !== "Desktop" ? t("{game} audio", { game }) : t("Game audio");
@@ -469,6 +474,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
       <span class="tl-sep"></span>
       <button type="button" class="btn sm tl-add" data-tl-act="add" title="${esc(t("Add an audio file as a new track"))}">${ICON.plus}<span>${esc(t("Add audio"))}</span></button>
     </div>
+    <div class="tl-rowsbar" hidden></div>
     <div class="tl-body">
       <div class="tl-heads"><div class="tl-corner"></div><div class="tl-hrows"></div></div>
       <div class="tl-lanes">
@@ -483,7 +489,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     <div class="tl-grip" role="separator" aria-orientation="horizontal" aria-label="${esc(t("Track height"))}" title="${esc(t("Drag to make the tracks taller or shorter. Double-click to reset."))}"><span></span></div>`;
   const q = (sel) => host.querySelector(sel);
   const el = {
-    bar: q(".tl-bar"), body: q(".tl-body"), sbar: q(".tl-sbar"), grip: q(".tl-grip"), hrows: q(".tl-hrows"), lanes: q(".tl-lanes"), rows: q(".tl-rows"),
+    bar: q(".tl-bar"), rowsbar: q(".tl-rowsbar"), body: q(".tl-body"), sbar: q(".tl-sbar"), grip: q(".tl-grip"), hrows: q(".tl-hrows"), lanes: q(".tl-lanes"), rows: q(".tl-rows"),
     ruler: q(".tl-ruler canvas"), phK: q(".tl-ph-k"), ph: q(".tl-ph"), cuts: q(".tl-cuts"), joints: q(".tl-joints"), tip: q(".tl-tip"), band: q(".tl-band"),
     bHide: q('[data-tl-act="hide-cuts"]'), bNames: q('[data-tl-act="names"]'), bFit: q('[data-tl-act="fit"]'),
     bmFlags: q(".tl-bmks"), bmLines: q(".tl-bmls"), tc: q(".tl-tc"), bSelect: q('[data-tl-act="tool-select"]'), bBlade: q('[data-tl-act="tool-blade"]'),
@@ -655,7 +661,9 @@ function mountTimeline(host, opts) {  const m = opts.model;
     el.hrows.innerHTML = ovRows.map((k) => `<div class="tl-head tl-head-ov" style="height:${tlOvH}px" title="${ovTip}"><span class="tl-htag">V${k + 2}</span><span class="tl-hname">${esc(t("Overlays"))}</span></div>`).join("") +
       (showStrip() ? `<div class="tl-head tl-head-parts" style="height:${tlPartsH}px" title="${partsTip}">${esc(t("Clips"))}</div>` : "") +
       `<div class="tl-head tl-head-video" style="height:${vidH()}px" title="${esc(opts.title || t("Video"))}" aria-label="${esc(t("Video"))}"><span class="tl-htag">V1</span>${tlSvg(tlPaths.film)}<span class="tl-hname">${esc(t("Video"))}</span></div>` + emLanes(m).map(headHtml).join("") +
-      `<div class="tl-head tl-head-add"><button type="button" class="tl-btn tl-hadd" data-tl-act="add" title="${esc(t("Add an audio file as a new track"))}" aria-label="${esc(t("Add an audio file as a new track"))}">${ICON.plus}</button><span class="tl-hname">${esc(t("Add audio"))}</span></div>`;
+      `<div class="tl-head tl-head-add"><button type="button" class="tl-btn tl-hadd" data-tl-act="add" title="${esc(t("Add an audio file as a new track"))}" aria-label="${esc(t("Add an audio file as a new track"))}">${ICON.plus}</button><span class="tl-hname">${esc(t("Add audio"))}</span>` +
+      // 0.1.44: rows by role, or one per track title ("Show every track"); shown once the tracks are known.
+      `<button type="button" class="tl-rmode" data-tl-act="rows-mode" role="switch" aria-checked="false" hidden title="${esc(t("Show every track of the clips as its own row, as the recorders named them"))}">${esc(t("Every track"))}</button></div>`;
     const list = [...ovRows.map((k) => ({ id: `ov${k}`, kind: "ov", k, h: tlOvH })), ...(showStrip() ? [{ id: "parts", kind: "parts", h: tlPartsH }] : []), { id: "video", kind: "video", h: vidH() }, ...emLanes(m).map((r) => ({ id: r.id, kind: r.kind, h: audH() }))];
     el.rows.innerHTML = list.map((L) => `<div class="tl-lane" data-tl-lane="${esc(L.id)}" data-tl-kind="${L.kind}" style="height:${L.h}px"${L.kind === "parts" ? ` title="${partsTip}"` : ""}><canvas></canvas></div>`).join("");
     el.trimS.style.top = el.trimE.style.top = `${rowsTop()}px`;
@@ -884,7 +892,25 @@ function mountTimeline(host, opts) {  const m = opts.model;
     st.bar[key] = { sig, html };
   }
   /** Everything that depends on the model or the selection. */
+  /** Rows by role (0.1.44): what the editor says about them ({ mode, ready, offer }), or null without that API. */
+  const rowsInfo = () => { try { return opts.rowsInfo?.() || null; } catch (e) { console.error("Glint timeline: rowsInfo failed", e); return null; } };
+  /** The quiet line above the rows ("Simplify the audio rows"), and the "Every track" switch. Only touched when it changes. */
+  function updateRowsBar() {
+    const info = rowsInfo(), sw = el.hrows.querySelector(".tl-rmode");
+    if (sw) {
+      const show = !!info && info.ready;
+      if (sw.hidden === show) sw.hidden = !show;
+      const on = String(!!info && info.mode === "titles");
+      if (sw.getAttribute("aria-checked") !== on) { sw.setAttribute("aria-checked", on); sw.classList.toggle("on", on === "true"); }
+    }
+    const o = info?.offer;
+    const html = o ? `<span class="tl-rows-msg">${esc(t("{n} audio rows. By role it would be {k}.", { n: o.before, k: o.after }))}${o.mixes ? " " + esc(t("Mixes that doubled the sound are left out.")) : ""}</span>` +
+      `<button type="button" class="btn sm" data-tl-act="rows-simplify">${esc(t("Simplify the audio rows"))}</button>` +
+      `<button type="button" class="tl-btn tl-rows-x" data-tl-act="rows-dismiss" title="${esc(t("Not now"))}" aria-label="${esc(t("Not now"))}">${tlSvg("M6 6l12 12M18 6 6 18")}</button>` : "";
+    if (html !== st.rowsBarHtml) { st.rowsBarHtml = html; el.rowsbar.innerHTML = html; el.rowsbar.hidden = !html; }
+  }
   function updateBar() {
+    updateRowsBar();
     const plan = removePlan(), removed = plan.restore;
     setBtn(el.bRemove, "remove", !plan.ok, tlSvg(removed ? tlPaths.restore : tlPaths.trash),
       removed ? keyTip(t("Restore segment"), "remove", t("Restore segment (Del)")) : keyTip(t("Delete segment"), "remove", t("Delete segment (Del)")));
@@ -2793,6 +2819,9 @@ function mountTimeline(host, opts) {  const m = opts.model;
       const edgeT = d.side === "end" ? r.at + r.len : r.at;
       showTip(edgeT, limit ? t("No more footage") : `${tlFmtPrecise(toV(edgeT))} · ${tlFmtLen(r.len)} s`);
       changed("trim");
+      // 0.1.46: the preview shows the frame under the handle, live (the new first frame, or the new last one).
+      // Was: nothing seeked during the drag, so the picture kept the frame the playhead stood on before it.
+      opts.onTrimPeek?.({ at: r.at, src: r.src, len: r.len }, d.side, sp);
       return;
     }
     if (d.type === "gap-edge") {
@@ -3266,6 +3295,12 @@ function mountTimeline(host, opts) {  const m = opts.model;
     out.push(...top);
     if (top.length) out.push("<hr>");
     out.push(item("names", tlPaths.names, t("Names on the audio"), { on: st.names }));
+    // Rows by role (0.1.44): the switch, and the offer while the rows are by title.
+    const ri = rowsInfo();
+    if (ri?.ready) {
+      if (ri.mode === "titles" && ri.offer) out.push(item("rows-simplify", tlPaths.level, t("Simplify the audio rows")));
+      out.push(item("rows-mode", tlPaths.level, t("Show every track"), { on: ri.mode === "titles" }));
+    }
     out.push(item("select-all", tlPaths.selAll, t("Select all pieces")), item("fit", tlPaths.fit, t("Fit the whole clip")));
     if (typeof opts.onCommand === "function") out.push("<hr>", item("shortcuts", tlPaths.keys, t("Shortcuts…")), item("fullscreen", tlPaths.full, t("Fullscreen")));
     return out.join("");
@@ -3347,6 +3382,8 @@ function mountTimeline(host, opts) {  const m = opts.model;
       case "cv-crop": try { cvApi()?.crop?.(); } catch (e) { console.error("Glint timeline: cv.crop failed", e); } return true;
       case "hide-cuts": return setHideCuts(!st.hideCuts);
       case "names": return setNames(!st.names);
+      case "rows-simplify": try { opts.rowsApi?.simplify?.(); } catch (e) { console.error("Glint timeline: simplify failed", e); } updateBar(); return true;
+      case "rows-mode": { const i = rowsInfo(); if (i?.ready) { try { opts.rowsApi?.everyTrack?.(i.mode !== "titles"); } catch (e) { console.error("Glint timeline: rows mode failed", e); } } updateBar(); return true; }
       case "select-all": return selectAll();
       case "fit": fit(); return true;
       case "shortcuts": case "fullscreen": opts.onCommand?.(act); return true;
@@ -3418,6 +3455,10 @@ function mountTimeline(host, opts) {  const m = opts.model;
     const id = b.dataset.tlRow;
     switch (b.dataset.tlAct) {
       case "split": doSplit(); break;
+      // Rows by role (0.1.44): the editor does them (it knows the clips' tracks) and reports back through onChange.
+      case "rows-simplify": try { opts.rowsApi?.simplify?.(); } catch (e) { console.error("Glint timeline: simplify failed", e); } updateBar(); break;
+      case "rows-dismiss": try { opts.rowsApi?.dismiss?.(); } catch (e) { console.error(e); } updateBar(); break;
+      case "rows-mode": { const i = rowsInfo(); if (i?.ready) { try { opts.rowsApi?.everyTrack?.(i.mode !== "titles"); } catch (e) { console.error("Glint timeline: rows mode failed", e); } } updateBar(); break; }
       case "remove": doRemoveOrClose(); break;
       case "tool-select": setTool("select"); break;
       case "tool-blade": setTool("blade"); break;
