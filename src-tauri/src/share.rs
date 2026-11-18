@@ -506,6 +506,18 @@ pub fn share_copy(text: String) -> bool {
     copy_text(&text)
 }
 
+/// Open clip `id`'s share page in the default browser.
+#[tauri::command(async)]
+pub fn share_open(core: St, id: String) -> Result<(), String> {
+    let base = core.settings().share.base()?;
+    let link = link_of(&id, &base).ok_or("That clip has no share link")?;
+    // Only a link of the configured server, made of plain URL characters, is handed to the shell.
+    if !link.url.starts_with(&base) || !link.url.chars().all(|c| c.is_ascii_alphanumeric() || "/:.-_".contains(c)) {
+        return Err("That share link looks wrong".into());
+    }
+    util::hidden_cmd(Path::new("explorer.exe")).arg(&link.url).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// Delete clip `id`'s upload from the Worker and forget its link.
 #[tauri::command(async)]
 pub fn share_delete(core: St, id: String) -> Result<(), String> {

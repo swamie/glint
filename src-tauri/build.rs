@@ -24,5 +24,9 @@ fn main() {
     let ids: Vec<&str> = lines.next().unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())).collect();
     println!("cargo:rustc-env=GLINT_BUG_HOOK={}", hide(&url));
     println!("cargo:rustc-env=GLINT_BUG_PINGS={}", hide(&ids.join(",")));
+    // A private build's tag, e.g. GLINT_BUILD_TAG=-dev.share: shown after the version, and such a
+    // build never offers or installs updates (update.rs). Public releases leave it unset.
+    println!("cargo:rerun-if-env-changed=GLINT_BUILD_TAG");
+    println!("cargo:rustc-env=GLINT_BUILD_TAG={}", std::env::var("GLINT_BUILD_TAG").unwrap_or_default());
     tauri_build::build()
 }

@@ -16,26 +16,61 @@ let shareLinks = {}; // clip id -> link, for the current Worker
 const shareMine = new Set(); // ids of the share jobs this window queued: a failure among them is flashed
 
 const shareEsc = (s) => (typeof esc === "function" ? esc(s) : String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]));
-// On once both the address and the upload key are filled in (the address has a default; the key never does).
-const shareOn = () => !!(typeof S !== "undefined" && S.settings && S.settings.share && String(S.settings.share.url || "").trim() && String(S.settings.share.token || "").trim());
+// The entries show while an address is set (it has a default). The upload key is asked for on first use.
+const shareOn = () => !!(typeof S !== "undefined" && S.settings && S.settings.share && String(S.settings.share.url || "").trim());
+const shareHasKey = () => shareOn() && !!String(S.settings.share.token || "").trim();
+const SHARE_OPEN_ICON = '<svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg>';
+const SHARE_UP_ICON = '<svg viewBox="0 0 24 24"><path d="M7 18a4.500 4.500 0 0 1-.500-8.970A6 6 0 0 1 18 10.500 3.800 3.800 0 0 1 17.500 18"/><path d="M12 20v-8M9 14.500l3-3 3 3"/></svg>';
 
 function shareRefresh() {
-  if (!shareOn()) { shareLinks = {}; return Promise.resolve(); }
+  if (!shareHasKey()) { shareLinks = {}; return Promise.resolve(); }
   return invoke("share_links").then((m) => { shareLinks = m || {}; }).catch(() => {});
 }
 
-/** Right-click menu entries for one clip (nothing for several, or while share links are not set up). */
+/** Right-click menu entries. One clip: Share link (or Copy share link / Open share page / Delete from
+ *  cloud once it is uploaded). Several: one entry that uploads those not yet shared. */
 function shareMenuItem(clips) {
   const list = (clips || []).filter((c) => c && !c.draft);
-  if (!shareOn() || list.length !== 1) return "";
+  if (!shareOn() || !list.length) return "";
+  const btn = (what, arg, icon, label) => `<button data-shm="${what}" data-arg="${shareEsc(arg)}">${icon}<span>${shareEsc(label)}</span></button>`;
+  if (list.length > 1) {
+    const todo = list.filter((c) => !shareLinks[c.id]);
+    return todo.length ? btn("share-many", todo.map((c) => c.id).join(","), SHARE_UP_ICON, t("Upload {n} to cloud", { n: todo.length })) : "";
+  }
   const id = list[0].id;
-  const has = !!shareLinks[id];
-  return `<button data-shm="share" data-arg="${shareEsc(id)}">${SHARE_ICON}<span>${shareEsc(has ? t("Copy share link") : t("Share link"))}</span></button>`
-    + (has ? `<button data-shm="delete" data-arg="${shareEsc(id)}">${SHARE_DEL_ICON}<span>${shareEsc(t("Delete share link"))}</span></button>` : "");
+  if (!shareLinks[id]) return btn("share", id, SHARE_ICON, t("Share link"));
+  return btn("share", id, SHARE_ICON, t("Copy share link")) + btn("open", id, SHARE_OPEN_ICON, t("Open share page")) + btn("delete", id, SHARE_DEL_ICON, t("Delete from cloud"));
+}
+
+/** Ask for the upload key once, when it is missing. True when there is one afterwards. */
+async function shareNeedKey() {
+  if (shareHasKey()) return true;
+  const asked = askText(t("Paste your upload key to turn on share links. It stays on this PC."), "", t("Save key"));
+  document.querySelector("#confirm .ask-input")?.setAttribute("maxlength", "200"); // keys are longer than a name
+  const key = await asked;
+  if (!key || !key.trim()) return false;
+  S.settings.share.token = key.trim();
+  try { S.status = await invoke("save_settings", { settings: S.settings }); } catch (e) { flash(t(String(e?.message ?? e)), true); return false; }
+  return true;
+}
+
+async function shareMany(ids) {
+  if (!(await shareNeedKey())) return;
+  let n = 0, err = "";
+  for (const id of ids) {
+    try {
+      const r = await invoke("share_clip", { id });
+      if (r && r.url) shareLinks[id] = r.url;
+      if (r && r.job) { shareMine.add(r.job.id); n++; }
+    } catch (e) { err = t(String(e?.message ?? e)); }
+  }
+  if (err && !n) return flash(err, true);
+  flash(t("Uploading {n} clips. Each link is ready when its upload ends: right-click the clip to copy it.", { n }));
 }
 
 async function shareClip(id) {
   const c = (S.clips || []).find((k) => k.id === id);
+  if (!(await shareNeedKey())) return;
   try {
     const r = await invoke("share_clip", { id });
     if (r && r.url) {
@@ -53,11 +88,11 @@ async function shareClip(id) {
 }
 
 async function shareDelete(id) {
-  if (!(await ask(t("Delete this clip's share link? Anyone with the link can no longer watch it. Messages that already show it in Discord may keep the picture for a while."), t("Delete link")))) return;
+  if (!(await ask(t("Delete this clip from the cloud? Anyone with the link can no longer watch it. Messages that already show it in Discord may keep the picture for a while. The clip on this PC stays."), t("Delete from cloud")))) return;
   try {
     await invoke("share_delete", { id });
     delete shareLinks[id];
-    flash(t("Share link deleted"));
+    flash(t("Deleted from the cloud"));
   } catch (e) { flash(t(String(e?.message ?? e)), true); }
 }
 
@@ -67,7 +102,7 @@ function shareSettingsSection() {
   const s = (S.settings && S.settings.share) || {};
   const field = (path, value, ph, type = "text") => `<input class="field" type="${type}" data-set="share.${path}" value="${shareEsc(value || "")}" placeholder="${shareEsc(ph)}" spellcheck="false" autocomplete="off" style="width:340px">`;
   return `<div class="section" data-cat="program"><h2>${t("Share links")}</h2>
-    ${row(t("Share links"), t("Optional. Upload a clip to your own Cloudflare account and copy a link that plays inside Discord. Set up the Worker in server/share of Glint's code first. Until an address is set, Glint never uploads anything"), "")}
+    ${row(t("Share links"), t("Optional. Upload a clip to your own Cloudflare account and copy a link that plays inside Discord. Set up the Worker in server/share of Glint's code first. Without an upload key, Glint never uploads anything"), "")}
     ${row(t("Worker address"), t("Where your share Worker runs, such as https://glint-share.yourname.workers.dev"), field("url", s.url, "https://…workers.dev"))}
     ${row(t("Upload key"), t("The UPLOAD_TOKEN you gave the Worker. It stays on this PC"), field("token", s.token, "", "password"))}
     ${row(t("Your name"), t("Shown on the embed before the game, as in “Rubust · Minecraft”. Empty shows the game alone"), field("name", s.name, t("Name")))}
@@ -120,6 +155,8 @@ if (typeof document !== "undefined" && typeof window !== "undefined" && window._
     if (what === "test") return void shareTest();
     closeMenu();
     if (what === "share") shareClip(id);
+    else if (what === "share-many") shareMany(id.split(",").filter(Boolean));
+    else if (what === "open") invoke("share_open", { id }).catch((e2) => flash(t(String(e2?.message ?? e2)), true));
     else if (what === "delete") shareDelete(id);
   });
   // The link list follows the address: read it at start and whenever the settings are saved.

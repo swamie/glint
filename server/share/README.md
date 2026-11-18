@@ -66,7 +66,7 @@ link in a browser.
 
 - Discord may not play very large videos inline. Glint warns above 100 MB;
   trim or compress such clips first.
-- Deleting a link (right-click → Delete share link) removes the video, but
+- Deleting a link (right-click → Delete from cloud) removes the video, but
   Discord may keep showing the picture in old messages for a while.
 - An upload that Glint abandons (closed mid-upload) leaves parts that R2
   removes on its own after about a week.

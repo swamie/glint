@@ -172,7 +172,7 @@ fn get_state(core: St) -> AppState {
         ffmpeg: util::find_exe(&s.ffmpeg_path, "ffmpeg").map(|p| p.to_string_lossy().into_owned()),
         blur: blur::find(&s).map(|p| p.to_string_lossy().into_owned()),
         hardware: win::hardware(),
-        version: env!("CARGO_PKG_VERSION"),
+        version: concat!(env!("CARGO_PKG_VERSION"), env!("GLINT_BUILD_TAG")),
         settings: s,
     }
 }
@@ -1055,6 +1055,7 @@ pub fn run(minimized: bool) {
             crate::share::share_clip,
             crate::share::share_links,
             crate::share::share_copy,
+            crate::share::share_open,
             crate::share::share_delete,
             crate::share::share_test,
             crate::upscale::upscale_clips,
