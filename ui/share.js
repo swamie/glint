@@ -16,9 +16,13 @@ let shareLinks = {}; // clip id -> link, for the current Worker
 const shareMine = new Set(); // ids of the share jobs this window queued: a failure among them is flashed
 
 const shareEsc = (s) => (typeof esc === "function" ? esc(s) : String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]));
-// The entries show while an address is set (it has a default). The upload key is asked for on first use.
-const shareOn = () => !!(typeof S !== "undefined" && S.settings && S.settings.share && String(S.settings.share.url || "").trim());
-const shareHasKey = () => shareOn() && !!String(S.settings.share.token || "").trim();
+// The menu entries show once an upload key is set (Settings → Share links), or always in a private
+// build (version tagged by GLINT_BUILD_TAG, e.g. "0.1.48-dev.share"), which asks for the key on first use.
+// A public release shows nothing in the menu to people who have not set up a server.
+const shareHasAddr = () => !!(typeof S !== "undefined" && S.settings && S.settings.share && String(S.settings.share.url || "").trim());
+const shareHasKey = () => shareHasAddr() && !!String(S.settings.share.token || "").trim();
+const sharePrivateBuild = () => typeof S !== "undefined" && !/^\d+\.\d+\.\d+$/.test(String(S.version || "0.0.0"));
+const shareOn = () => shareHasKey() || (shareHasAddr() && sharePrivateBuild());
 const SHARE_OPEN_ICON = '<svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg>';
 const SHARE_UP_ICON = '<svg viewBox="0 0 24 24"><path d="M7 18a4.500 4.500 0 0 1-.500-8.970A6 6 0 0 1 18 10.500 3.800 3.800 0 0 1 17.500 18"/><path d="M12 20v-8M9 14.500l3-3 3 3"/></svg>';
 
