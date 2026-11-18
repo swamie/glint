@@ -16,7 +16,8 @@ let shareLinks = {}; // clip id -> link, for the current Worker
 const shareMine = new Set(); // ids of the share jobs this window queued: a failure among them is flashed
 
 const shareEsc = (s) => (typeof esc === "function" ? esc(s) : String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]));
-const shareOn = () => !!(typeof S !== "undefined" && S.settings && S.settings.share && String(S.settings.share.url || "").trim());
+// On once both the address and the upload key are filled in (the address has a default; the key never does).
+const shareOn = () => !!(typeof S !== "undefined" && S.settings && S.settings.share && String(S.settings.share.url || "").trim() && String(S.settings.share.token || "").trim());
 
 function shareRefresh() {
   if (!shareOn()) { shareLinks = {}; return Promise.resolve(); }

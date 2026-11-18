@@ -459,7 +459,7 @@ impl Default for Settings {
             editor_keys: Default::default(),
             compress_mb: 10,
             compress: Default::default(),
-            share: crate::share::ShareSettings { copy: true, ..Default::default() },
+            share: crate::share::ShareSettings { url: crate::share::DEFAULT_URL.into(), copy: true, ..Default::default() },
             gif: Default::default(),
             upscale: Default::default(),
             rules: Vec::new(),

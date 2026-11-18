@@ -45,6 +45,9 @@ const PART_TIMEOUT: Duration = Duration::from_secs(600);
 /// Longest a small API call may take.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The owner's share server. Uploads still need its upload key, which only the owner has.
+pub const DEFAULT_URL: &str = "https://clips.glintclip.com";
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct ShareSettings {
