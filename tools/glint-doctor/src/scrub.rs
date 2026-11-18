@@ -9,14 +9,20 @@
 //!     the folders they are in and the file type stay;
 //!   - web addresses keep only a known host (GitHub, Discord, ...), never the
 //!     query; any other host is hidden;
-//!   - e-mail addresses, IP addresses, the PC's name, network share hosts;
-//!   - the Windows user name as a word of its own becomes `~`;
+//!   - e-mail addresses, IP addresses, the PC's name, network share hosts,
+//!     Windows account ids (SIDs), the organization in a "OneDrive - <org>"
+//!     folder;
+//!   - the Windows user name, and the name of the profile folder when it is
+//!     another, as a word of its own become `~`; the Windows domain becomes
+//!     `<pc>`;
 //!   - anything that looks like a key or token.
 //!
 //! Settings get one more pass (`Scrubber::settings`): values are dropped by
-//! the NAME of the setting (tokens, keys, webhooks, share-link fields) and the
-//! large or personal ones (custom CSS, presets, folder colors) are reduced to
-//! a count.
+//! the NAME of the setting (tokens, keys, webhooks, and the whole `share`
+//! object of share links: its `url`, `token` and `name`) and the large or
+//! personal ones (custom CSS, presets, folder colors) are reduced to a count.
+//! A dropped value says whether it was set, so a fault that depends on it can
+//! still be seen.
 //!
 //! This is best effort on free text. The server runs a second pass
 //! (server/doctor/src/scrub.js) before anything is stored or sent on.
@@ -41,9 +47,12 @@ const SECRET_WORDS: [&str; 17] = ["token", "secret", "password", "passwd", "pass
 
 pub struct Scrubber {
     profile: String,
-    user: Option<Regex>,
-    host: Option<Regex>,
+    /// Words replaced where they stand alone: the user name and profile folder name (`~`), the PC and domain (`<pc>`).
+    words: Vec<(Regex, &'static str)>,
     webhook: Regex,
+    onedrive: Regex,
+    sid: Regex,
+    dotted_token: Regex,
     other_profile: Regex,
     media: Regex,
     url: Regex,
@@ -87,36 +96,65 @@ fn replace_word(text: &str, re: &Regex, with: &str) -> String {
 }
 
 impl Scrubber {
-    /// From this PC: `USERPROFILE`, `USERNAME`, `COMPUTERNAME`.
+    /// From this PC: `USERPROFILE`, `USERNAME`, `COMPUTERNAME`, and `USERDOMAIN`
+    /// (the work domain, or the PC's name again on a home PC).
     pub fn from_env() -> Self {
         let var = |n: &str| std::env::var(n).unwrap_or_default();
-        Self::new(&var("USERPROFILE"), &var("USERNAME"), &var("COMPUTERNAME"))
+        let mut s = Self::new(&var("USERPROFILE"), &var("USERNAME"), &var("COMPUTERNAME"));
+        s.add_word(&var("USERDOMAIN"), "<pc>");
+        s
+    }
+
+    /// Also replace `word` where it stands alone (not when it is too short or too ordinary).
+    pub fn add_word(&mut self, word: &str, with: &'static str) {
+        let Some(r) = word_regex(&word.trim().to_lowercase()) else { return };
+        if !self.words.iter().any(|(x, _)| x.as_str() == r.as_str()) {
+            self.words.push((r, with));
+        }
     }
 
     pub fn new(profile: &str, user: &str, host: &str) -> Self {
         let re = |p: &str| Regex::new(p).expect("a fixed pattern");
-        Scrubber {
+        let mut s = Scrubber {
             profile: profile.to_string(),
-            user: word_regex(user),
-            host: word_regex(host),
-            webhook: re(r#"(?i)https?://[a-z0-9.-]*discord(?:app)?\.com/api/webhooks/[^\s"'<>]*"#),
+            words: Vec::new(),
+            // Discord's API takes a version in the path (/api/v10/webhooks/...): that form must go too,
+            // since discord.com is a host whose paths are otherwise kept.
+            webhook: re(r#"(?i)https?://[a-z0-9.-]*discord(?:app)?\.com/api/(?:v\d+/)?webhooks/[^\s"'<>]*"#),
+            onedrive: re(r#"(?i)\b(OneDrive)( - )([^\\/:*?"<>|\r\n]+)"#),
+            sid: re(r"\bS-1-5-21(?:-\d+){2,5}\b"),
+            // JSON web tokens and Discord bot tokens: three long parts with dots between.
+            dotted_token: re(r"\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{16,}\b"),
             other_profile: re(r#"(?i)\b([a-z]:[\\/]+(?:Users|Documents and Settings)[\\/]+)([^\\/:*?"<>|\r\n]+)"#),
-            media: re(r"(?i)\.(mp4|mkv|mov|webm|avi|m4v|gif|png|jpe?g|webp|bmp|wav|mp3|m4a|aac|flac|ogg|opus)\b"),
+            media: re(r"(?i)\.(mp4|mkv|mov|webm|avi|m4v|wmv|flv|mpe?g|ts|mts|m2ts|3gp|gif|png|jpe?g|webp|bmp|tiff?|avif|heic|wav|mp3|m4a|aac|flac|ogg|opus|wma|aiff?)\b"),
             url: re(r#"(?i)\b(https?|wss?|ftp)://([^\s"'<>/?#]+)([^\s"'<>]*)"#),
-            email: re(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}"),
+            // Also the URL-encoded form (name%40example.com).
+            email: re(r"[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}"),
             ipv4: re(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b"),
             ipv6: re(r"(?i)\b(?:[0-9a-f]{1,4}:){4,7}[0-9a-f]{1,4}\b|\b(?:[0-9a-f]{1,4}:){1,6}:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*\b"),
             unc: re(r#"(^|[\s"'=(,\[])(\\{2,4})([A-Za-z0-9._$-]{2,})(\\)"#),
-            labelled: re(r#"(?i)\b(bearer|token|secret|password|passwd|api[_-]?key|upload[_-]?key|authorization)\b(["']?\s*[:=]\s*["']?|\s+)([A-Za-z0-9._~+/=-]{8,})"#),
+            // "access_token=", "client_secret:", "x-api-key: " and the like, not only the bare word.
+            labelled: re(r#"(?i)\b([a-z0-9_-]*(?:bearer|token|secret|password|passwd|pwd|api[_-]?key|access[_-]?key|upload[_-]?key|authorization|cookie))\b(["']?\s*[:=]\s*["']?|\s+)([A-Za-z0-9._~+/=%-]{8,})"#),
             long_hex: re(r"\b[0-9a-fA-F]{32,}\b"),
             long_token: re(r"\b[A-Za-z0-9_-]{40,}\b"),
+        };
+        s.add_word(host, "<pc>");
+        s.add_word(user, "~");
+        // The profile folder is often not the user name (a Microsoft account gets the first
+        // letters of the e-mail address, a renamed account keeps its old folder).
+        let leaf = profile.trim_end_matches(['\\', '/']).rsplit(['\\', '/']).next().unwrap_or("");
+        if !leaf.eq_ignore_ascii_case(user.trim()) {
+            s.add_word(leaf, "~");
         }
+        s
     }
 
     /// Free text: a log, an error message, a path.
     pub fn text(&self, text: &str) -> String {
         let t = self.webhook.replace_all(text, "<webhook removed>").into_owned();
         let t = sanitize_with(&t, &self.profile);
+        let t = self.onedrive.replace_all(&t, "$1$2<org>");
+        let t = self.sid.replace_all(&t, "<sid>");
         let t = self.other_profile.replace_all(&t, |c: &Captures| {
             let name = c[2].trim();
             if ["public", "default", "all users", "default user"].contains(&name.to_lowercase().as_str()) || name == "<user>" {
@@ -153,13 +191,11 @@ impl Scrubber {
         let t = self.ipv6.replace_all(&t, "<ip>");
         let t = self.unc.replace_all(&t, |c: &Captures| format!("{}{}<host>{}", &c[1], &c[2], &c[4]));
         let mut t = t.into_owned();
-        if let Some(host) = &self.host {
-            t = replace_word(&t, host, "<pc>");
-        }
-        if let Some(user) = &self.user {
-            t = replace_word(&t, user, "~");
+        for (word, with) in &self.words {
+            t = replace_word(&t, word, with);
         }
         let t = self.labelled.replace_all(&t, |c: &Captures| format!("{}{}<removed>", &c[1], &c[2]));
+        let t = self.dotted_token.replace_all(&t, "<token>");
         let t = self.long_hex.replace_all(&t, "<hex>");
         self.long_token.replace_all(&t, "<token>").into_owned()
     }
@@ -237,14 +273,7 @@ impl Scrubber {
         let words: Vec<&str> = k.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
         let secret = words.iter().any(|w| SECRET_WORDS.contains(w)) || k.ends_with("_key") || k.starts_with("key_") || k.starts_with("share");
         if secret {
-            let empty = match v {
-                Value::Null => true,
-                Value::String(s) => s.trim().is_empty(),
-                Value::Array(a) => a.is_empty(),
-                Value::Object(o) => o.is_empty(),
-                Value::Bool(_) | Value::Number(_) => return v.clone(),
-            };
-            return Value::String(if empty { String::new() } else { "<set; removed>".into() });
+            return redact(v);
         }
         if COUNT_ONLY.contains(&k.as_str()) {
             return Value::String(match v {
@@ -255,6 +284,20 @@ impl Scrubber {
             });
         }
         self.settings(v)
+    }
+}
+
+/// A setting whose name marks it as secret: every text in it is dropped, saying only
+/// whether it was set. Switches and numbers stay, and so does the shape of an object,
+/// so `"share": { "url": "<set; removed>", "token": "<set; removed>", "name": "", "copy": true }`
+/// still shows that share links are set up.
+fn redact(v: &Value) -> Value {
+    match v {
+        Value::Bool(_) | Value::Number(_) => v.clone(),
+        Value::Null => Value::String(String::new()),
+        Value::String(s) => Value::String(if s.trim().is_empty() { String::new() } else { "<set; removed>".into() }),
+        Value::Array(a) => Value::String(if a.is_empty() { String::new() } else { format!("<{} items; removed>", a.len()) }),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), redact(x))).collect()),
     }
 }
 
@@ -382,5 +425,89 @@ mod tests {
         assert_eq!(v["keybinds"][0]["key"], "F9");
         assert_eq!(v["encoder"], "auto");
         assert_eq!(v["polls_address"], "<an address is set; removed>");
+    }
+
+    #[test]
+    fn versioned_webhooks_on_a_kept_host() {
+        // discord.com keeps its path, so the webhook rule has to know the /api/v10/ form.
+        let t = s().text("posting to https://discord.com/api/v10/webhooks/1234567890/AbCdEfGh_ijkl-MNOP?wait=true and https://ptb.discordapp.com/api/webhooks/1/x");
+        assert!(!t.contains("1234567890") && !t.contains("AbCdEfGh") && !t.contains("/api/webhooks/1/x"), "{t}");
+        assert_eq!(t.matches("<webhook removed>").count(), 2, "{t}");
+    }
+
+    #[test]
+    fn a_profile_folder_that_is_not_the_user_name() {
+        // A Microsoft account: the folder is the start of the e-mail address, the user name another word.
+        let sc = Scrubber::new(r"C:\Users\veraj", "Vera", "DESKTOP-7Q2K9");
+        let t = sc.text(r"signed in as veraj on DESKTOP-7Q2K9; mic: Vera's AirPods; folder C:\Users\veraj\Videos");
+        assert_eq!(t, r"signed in as ~ on <pc>; mic: ~'s AirPods; folder ~\Videos");
+    }
+
+    #[test]
+    fn the_windows_domain() {
+        let mut sc = s();
+        sc.add_word("CONTOSO-CORP", "<pc>");
+        sc.add_word("", "<pc>");
+        assert_eq!(sc.text(r"logon CONTOSO-CORP\vera"), r"logon <pc>\vera");
+    }
+
+    #[test]
+    fn onedrive_organization_and_account_ids() {
+        let t = s().text(r"clips_dir D:\OneDrive - Contoso Holdings Ltd\Videos\Glint, user S-1-5-21-3623811015-3361044348-30300820-1013");
+        assert_eq!(t, r"clips_dir D:\OneDrive - <org>\Videos\Glint, user <sid>");
+        assert_eq!(s().text(r"C:\Users\Vera Example\OneDrive\Videos"), r"~\OneDrive\Videos");
+    }
+
+    #[test]
+    fn more_kinds_of_token() {
+        let t = s().text(concat!(
+            "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk ",
+            // Split so secret scanners do not flag these made-up tokens.
+            "bot MTA5ODc2NTQzMjEwOTg3NjU0", ".GhIjKl", ".aBcDeFgHiJkLmNoPqRsTuVwXyZ012345 ",
+            "access_token=ya29.a0AfH6SMBxyz client_secret: \"s3cr3t-value-99\" x-api-key: sk-ant-", "api03-abcdefgh ",
+            "gh ghp_", "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789",
+        ));
+        for leak in ["eyJhbGci", "MTA5ODc2", "ya29", "s3cr3t", "sk-ant", "ghp_"] {
+            assert!(!t.contains(leak), "{leak} in {t}");
+        }
+        // Ordinary text with dots is not a token.
+        let line = "capture: gfxcapture.monitor_index.hdr_mode off; build 10.0.26100.2314";
+        assert_eq!(s().text(line), line);
+    }
+
+    #[test]
+    fn encoded_addresses_and_other_media() {
+        let t = s().text(r"login vera.example%40outlook.com; saved D:\Rec\holiday in Rome.wmv and D:\Rec\stream 2.ts; capture: -f mpegts pipe");
+        assert!(!t.contains("outlook") && !t.contains("Rome") && !t.contains("stream 2"), "{t}");
+        assert!(t.contains(r"D:\Rec\<name>.wmv") && t.contains(r"D:\Rec\<name>.ts") && t.contains("-f mpegts pipe"), "{t}");
+    }
+
+    #[test]
+    fn share_link_settings_as_glint_stores_them() {
+        // ShareSettings in share.rs (branch claude/project-thread-7xmpzx): settings.json has
+        // "share": { "url", "token", "name", "copy" }.
+        let sc = s();
+        let set = sc.settings(&json!({ "share": { "url": "https://glint-share.vera.workers.dev", "token": "0f3c9a7e1b", "name": "Vera", "copy": true } }));
+        assert_eq!(set["share"], json!({ "url": "<set; removed>", "token": "<set; removed>", "name": "<set; removed>", "copy": true }));
+        let off = sc.settings(&json!({ "share": { "url": "", "token": "", "name": "", "copy": false } }));
+        assert_eq!(off["share"], json!({ "url": "", "token": "", "name": "", "copy": false }));
+        let text = serde_json::to_string(&set).unwrap();
+        assert!(!text.contains("vera") && !text.contains("0f3c9a7e1b") && !text.contains("Vera"), "{text}");
+    }
+
+    #[test]
+    fn other_personal_settings() {
+        let v = s().settings(&json!({
+            "sound_file": r"C:\Users\Vera Example\Music\my song.mp3",
+            "game_pick_path": r"D:\Games\Valorant\VALORANT.exe",
+            "compress": { "dest": r"C:\Users\Vera Example\Desktop" },
+            "folder_colors": { "Vera stuff": "#f00" },
+            "card_tags": ["private"],
+        }));
+        assert_eq!(v["sound_file"], r"~\Music\<name>.mp3");
+        assert_eq!(v["game_pick_path"], r"D:\Games\Valorant\VALORANT.exe");
+        assert_eq!(v["compress"]["dest"], r"~\Desktop");
+        assert_eq!(v["folder_colors"], "<1 items>");
+        assert_eq!(v["card_tags"], "<1 items>");
     }
 }
