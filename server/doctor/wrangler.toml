@@ -1,0 +1,44 @@
+# Glint Doctor: a Cloudflare Worker with one Durable Object. See README.md.
+# Its own Worker: it shares nothing with server/share or server/polls.
+name = "glint-doctor"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# All state (support codes, reports) lives in one SQLite-backed Durable Object.
+# It is what makes "a code works once" true: see src/store.js.
+[[durable_objects.bindings]]
+name = "STORE"
+class_name = "DoctorStore"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DoctorStore"]
+
+[vars]
+# The Claude model that reads the diagnostics, and how hard it thinks (low, medium, high, xhigh, max).
+MODEL = "claude-opus-5-5"
+EFFORT = "high"
+# "on": if a safety classifier declines the request, Anthropic re-runs it on a fallback model
+# in the same call. "off" leaves the parameter and its beta header out.
+FALLBACKS = "on"
+# Where Glint's source is read from, at the tag of the reported version (v0.1.48), else main.
+REPO = "swamie/glint"
+# Largest upload accepted, in KB. The tool sends at most 360.
+MAX_UPLOAD_KB = "400"
+# How long a new support code is good for, in hours, when mint does not say.
+CODE_HOURS = "72"
+# Most reports accepted in any 24 hours, whatever codes exist: a ceiling on what a day can cost.
+MAX_RUNS_PER_DAY = "20"
+# Reports and their diagnostics are deleted after this many days.
+RETAIN_DAYS = "30"
+# "on": the tool may show the user Claude's short plain-language summary. "off": only "sent, thanks".
+USER_SUMMARY = "on"
+# Discord user ids to ping when a report arrives, separated by commas ("" = nobody).
+DISCORD_PINGS = ""
+
+# Secrets, never vars (`npx wrangler secret put <NAME>`):
+#   ANTHROPIC_API_KEY   the real API key; it exists only here
+#   ADMIN_TOKEN         the developer's key for /admin/*
+#   DISCORD_WEBHOOK     optional: where finished reports are posted
+#   GITHUB_TOKEN        optional: only if the repository is private or GitHub rate-limits the Worker
