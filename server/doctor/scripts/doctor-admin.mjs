@@ -53,7 +53,7 @@ const when = (ms) => (ms ? new Date(ms).toISOString().replace("T", " ").slice(0,
 switch (cmd) {
   case "mint": {
     const label = words.join(" ").trim();
-    if (!label) die('Say who the code is for: mint "void\'s friend with the black screen"');
+    if (!label) die('Say who the code is for: mint "a Discord user, black clips on AMD"');
     const { codes } = await api("POST", "/admin/codes", { label, hours: Number(flag("hours")) || undefined, count: Number(flag("count")) || undefined });
     for (const c of codes) {
       console.log(`${c.code}   good until ${c.expires.replace("T", " ").slice(0, 16)} UTC   for: ${c.label}`);

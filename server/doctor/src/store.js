@@ -52,6 +52,7 @@ export class DoctorStore extends DurableObject {
         created INTEGER NOT NULL,
         status TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
+        next_try INTEGER NOT NULL DEFAULT 0,
         finished INTEGER,
         glint_version TEXT NOT NULL DEFAULT '',
         bundle TEXT NOT NULL,
@@ -130,7 +131,14 @@ export class DoctorStore extends DurableObject {
       // Plain text only: no address may reach the user through the model, whatever a log line said.
       let summary = "";
       try { summary = String(JSON.parse(row.report).user_summary || ""); } catch {}
-      out.user_summary = summary.replace(/\b(?:https?:\/\/|www\.)\S+/gi, "").replace(/[\u0000-\u0008\u000b-\u001f]/g, " ").slice(0, 900);
+      out.user_summary = summary
+        .replace(/\b(?:https?|ftp|file):\/\/\S+|\bwww\.\S+/gi, "")
+        .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g, "")
+        .replace(/[`*_#<>\[\]]/g, "")
+        .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, " ")
+        .replace(/[ \t]{2,}/g, " ")
+        .trim()
+        .slice(0, 900);
     }
     return out;
   }
@@ -153,7 +161,7 @@ export class DoctorStore extends DurableObject {
 
   /** Run the analysis of a stored upload again (after a failure, or after changing the prompt). */
   retry(ticket) {
-    const ok = this.sql.exec("UPDATE reports SET status = 'queued', attempts = 0, error = NULL WHERE ticket = ? RETURNING ticket", ticket).toArray().length > 0;
+    const ok = this.sql.exec("UPDATE reports SET status = 'queued', attempts = 0, next_try = 0, error = NULL WHERE ticket = ? RETURNING ticket", ticket).toArray().length > 0;
     if (ok) this.ctx.storage.setAlarm(Date.now());
     return ok;
   }
@@ -161,20 +169,21 @@ export class DoctorStore extends DurableObject {
   /* ---------- the work, after the user has been answered ---------- */
 
   /**
-   * Runs when `redeem` or `retry` asked for it, and once a day to clear old reports. One upload
-   * per run. Alarms of one object never overlap, so a row still marked 'analyzing' here was
-   * left by a run that was cut short, and is simply taken again.
+   * Runs when `redeem` or `retry` asked for it, when a failed attempt is due again, and once a
+   * day to clear old reports. One upload per run. Alarms of one object never overlap, so a row
+   * still marked 'analyzing' here was left by a run that was cut short, and is simply taken again.
+   * A report waiting to be tried again (`next_try`) does not hold up a newer one.
    */
   async alarm() {
     const now = Date.now();
     this.sql.exec("DELETE FROM reports WHERE created < ?", now - num(this.env.RETAIN_DAYS, 30) * 24 * HOUR);
     this.sql.exec("DELETE FROM codes WHERE expires < ? AND created < ?", now - 30 * 24 * HOUR, now - num(this.env.RETAIN_DAYS, 30) * 24 * HOUR);
 
-    const job = this.one("SELECT ticket, bundle, attempts FROM reports WHERE status IN ('queued', 'analyzing') ORDER BY created LIMIT 1");
+    const job = this.one("SELECT ticket, bundle, attempts FROM reports WHERE status IN ('queued', 'analyzing') AND next_try <= ? ORDER BY created LIMIT 1", now);
     if (job) {
       const attempts = job.attempts + 1;
       this.sql.exec("UPDATE reports SET status = 'analyzing', attempts = ? WHERE ticket = ?", attempts, job.ticket);
-      let again = 0;
+      let finished = true;
       try {
         const { report, meta } = await analyze(this.env, JSON.parse(job.bundle));
         this.sql.exec("UPDATE reports SET status = 'done', finished = ?, report = ?, meta = ?, error = NULL, model = ?, input_tokens = ?, output_tokens = ? WHERE ticket = ?", Date.now(), JSON.stringify(report), JSON.stringify(meta), meta.model, meta.input_tokens, meta.output_tokens, job.ticket);
@@ -183,18 +192,20 @@ export class DoctorStore extends DurableObject {
         if (e instanceof Permanent || attempts >= MAX_ATTEMPTS) {
           this.sql.exec("UPDATE reports SET status = 'failed', finished = ?, error = ? WHERE ticket = ?", Date.now(), error, job.ticket);
         } else {
-          this.sql.exec("UPDATE reports SET status = 'queued', error = ? WHERE ticket = ?", error, job.ticket);
-          again = 60 * 1000 * attempts;
+          finished = false;
+          this.sql.exec("UPDATE reports SET status = 'queued', next_try = ?, error = ? WHERE ticket = ?", Date.now() + 60 * 1000 * attempts, error, job.ticket);
         }
       }
-      if (!again) {
-        const delivered = await postToDiscord(this.env, this.getReport(job.ticket, false));
+      if (finished) {
+        let delivered = false;
+        try { delivered = await postToDiscord(this.env, this.getReport(job.ticket, false)); } catch (e) { console.error(e); }
         this.sql.exec("UPDATE reports SET delivered = ? WHERE ticket = ?", delivered ? 1 : 0, job.ticket);
       }
-      const more = this.one("SELECT COUNT(*) AS n FROM reports WHERE status IN ('queued', 'analyzing')").n > 0;
-      if (more) return void (await this.ctx.storage.setAlarm(Date.now() + (again || 1000)));
     }
-    // Nothing waiting: come back tomorrow to delete what has grown old, as long as anything is stored.
-    if (this.one("SELECT (SELECT COUNT(*) FROM reports) + (SELECT COUNT(*) FROM codes) AS n").n > 0) await this.ctx.storage.setAlarm(Date.now() + 24 * HOUR);
+    // The next run: soon for a report that is due, at its time for one that waits, else tomorrow
+    // to delete what has grown old, as long as anything is stored.
+    const next = this.one("SELECT MIN(next_try) AS at FROM reports WHERE status IN ('queued', 'analyzing')").at;
+    if (next !== null && next !== undefined) await this.ctx.storage.setAlarm(Math.max(next, Date.now() + 1000));
+    else if (this.one("SELECT (SELECT COUNT(*) FROM reports) + (SELECT COUNT(*) FROM codes) AS n").n > 0) await this.ctx.storage.setAlarm(Date.now() + 24 * HOUR);
   }
 }

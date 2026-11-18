@@ -52,9 +52,12 @@ function newCode() {
 }
 const pretty = (code) => code.match(/.{4}/g).join("-");
 
+/** Shorter admin keys are refused outright: the key guards every report. */
+const MIN_ADMIN_TOKEN = 24;
+
 async function isAdmin(request, env) {
   const want = env.ADMIN_TOKEN || "";
-  if (!want) return false;
+  if (want.length < MIN_ADMIN_TOKEN) return false;
   const enc = new TextEncoder();
   const [a, b] = await Promise.all([crypto.subtle.digest("SHA-256", enc.encode(bearer(request))), crypto.subtle.digest("SHA-256", enc.encode(want))]);
   return crypto.subtle.timingSafeEqual(a, b);
