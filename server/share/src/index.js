@@ -302,6 +302,9 @@ ${lineTag}
 
 export default {
   async fetch(request, env) {
+    // The bucket's binding may be named BUCKET (wrangler.toml) or CLIPS (set up in the dashboard).
+    if (!env.BUCKET && env.CLIPS) env = { ...env, BUCKET: env.CLIPS };
+    if (!env.BUCKET) return fail("The Worker has no R2 bucket bound. Bind one named BUCKET or CLIPS.", 500);
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);
     try {
@@ -332,4 +335,3 @@ export default {
   },
 };
 
-export { newId, sharePage };
