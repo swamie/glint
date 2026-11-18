@@ -66,20 +66,53 @@ fn cli(cmd: &str, args: &[String]) -> i32 {
     }
 }
 
+/// Every Claude Desktop config this PC may use: the classic installer's (%APPDATA%\Claude), and the Store app's,
+/// which reads %LOCALAPPDATA%\Claude-Data\claude_<id>\ (or its package's LocalCache) instead.
+fn claude_configs() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let name = "claude_desktop_config.json";
+    let roaming = PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default());
+    let local = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default());
+    let mut out = Vec::new();
+    let subdirs = |dir: PathBuf, prefix: &str| -> Vec<PathBuf> {
+        std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir() && p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(prefix))).collect()
+    };
+    for d in subdirs(local.join("Claude-Data"), "claude_") {
+        out.push(d.join(name));
+    }
+    for d in subdirs(local.join("Packages"), "Claude_") {
+        let c = d.join("LocalCache").join("Roaming").join("Claude");
+        if c.is_dir() {
+            out.push(c.join(name));
+        }
+    }
+    let classic = roaming.join("Claude");
+    if out.is_empty() || classic.join(name).is_file() {
+        out.push(classic.join(name));
+    }
+    out
+}
+
 fn install_claude() -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe = folders::display(&exe);
-    let path = std::path::PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()).join("Claude").join("claude_desktop_config.json");
-    let mut cfg: Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).filter(Value::is_object).unwrap_or_else(|| json!({}));
-    if !cfg["mcpServers"].is_object() {
-        cfg["mcpServers"] = json!({});
+    let mut done = Vec::new();
+    for path in claude_configs() {
+        let mut cfg: Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).filter(Value::is_object).unwrap_or_else(|| json!({}));
+        if path.is_file() {
+            let _ = std::fs::copy(&path, path.with_extension("json.bak"));
+        }
+        if !cfg["mcpServers"].is_object() {
+            cfg["mcpServers"] = json!({});
+        }
+        cfg["mcpServers"]["glint"] = json!({ "command": exe, "args": [] });
+        if let Some(d) = path.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).map_err(|e| format!("{}: {e}", path.display()))?;
+        done.push(path.display().to_string());
     }
-    cfg["mcpServers"]["glint"] = json!({ "command": exe, "args": [] });
-    if let Some(d) = path.parent() {
-        let _ = std::fs::create_dir_all(d);
-    }
-    std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap()).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(format!("Added \"glint\" to {}. Restart Claude Desktop.\nFor Claude Code instead: claude mcp add glint -- \"{exe}\"", path.display()))
+    Ok(format!("Added \"glint\" to {}. Quit Claude Desktop fully (tray > Quit) and open it again.\nFor Claude Code instead: claude mcp add glint -- \"{exe}\"", done.join(" and ")))
 }
 
 /* ---------- MCP over stdio: one JSON-RPC message per line ---------- */

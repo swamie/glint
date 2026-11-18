@@ -22,13 +22,18 @@ $dest = Join-Path $dataDir "plugins\claude-mcp"
 
 if ($Uninstall) {
     Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
-    $cfg = Join-Path $env:APPDATA "Claude\claude_desktop_config.json"
+    # Claude Desktop's config: the classic app's, and the Store app's (Claude-Data or its package's LocalCache).
+    $cfgs = @(Join-Path $env:APPDATA "Claude\claude_desktop_config.json")
+    $cfgs += Get-ChildItem (Join-Path $env:LOCALAPPDATA "Claude-Data\claude_*\claude_desktop_config.json") -ErrorAction SilentlyContinue | ForEach-Object FullName
+    $cfgs += Get-ChildItem (Join-Path $env:LOCALAPPDATA "Packages\Claude_*\LocalCache\Roaming\Claude\claude_desktop_config.json") -ErrorAction SilentlyContinue | ForEach-Object FullName
+    foreach ($cfg in $cfgs) {
     if (Test-Path $cfg) {
         $j = Get-Content $cfg -Raw | ConvertFrom-Json
         if ($j.mcpServers -and $j.mcpServers.PSObject.Properties["glint"]) {
             $j.mcpServers.PSObject.Properties.Remove("glint")
             $j | ConvertTo-Json -Depth 20 | Set-Content $cfg -Encoding UTF8
         }
+    }
     }
     Write-Host "Removed. Restart Glint and Claude Desktop."
     return
