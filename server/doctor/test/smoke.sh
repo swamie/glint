@@ -1,20 +1,17 @@
 #!/usr/bin/env bash
 # End-to-end check of the Doctor Worker, run against `npx wrangler dev` (local storage) and
 # test/mock.mjs (stand-ins for Claude, GitHub and Discord). Nothing real is called or billed.
+# test/run.sh starts both and runs this; by hand:
 #
-#   cat > .dev.vars <<'X'
-#   ANTHROPIC_API_KEY=test-anthropic-key
-#   ADMIN_TOKEN=test-admin
-#   DISCORD_WEBHOOK=http://127.0.0.1:8798/discord
-#   ANTHROPIC_BASE_URL=http://127.0.0.1:8798
-#   SOURCE_BASE_URL=http://127.0.0.1:8798/raw
-#   X
 #   node test/mock.mjs 8798 &
-#   npx wrangler dev --port 8797 &
-#   bash test/smoke.sh http://127.0.0.1:8797 test-admin http://127.0.0.1:8798
+#   npx wrangler dev --port 8797 --var ANTHROPIC_API_KEY:test-anthropic-key \
+#     --var ADMIN_TOKEN:test-admin-0123456789abcdef --var DISCORD_WEBHOOK:http://127.0.0.1:8798/discord \
+#     --var ANTHROPIC_BASE_URL:http://127.0.0.1:8798 --var SOURCE_BASE_URL:http://127.0.0.1:8798/raw &
+#   bash test/smoke.sh http://127.0.0.1:8797 test-admin-0123456789abcdef http://127.0.0.1:8798
 set -euo pipefail
 BASE=$1; ADMIN=$2; MOCK=$3
-ok() { echo "ok   $1"; }
+PASSED=0
+ok() { echo "ok   $1"; PASSED=$((PASSED + 1)); }
 bad() { echo "FAIL $1"; exit 1; }
 field() { python3 -c "import json,sys;d=json.load(sys.stdin);print(eval(sys.argv[1]))" "$1"; }
 code_of() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
@@ -27,6 +24,7 @@ printf '%s' "$BUNDLE" > "$T/bundle.json"
 submit() { curl -sS -o "$T/out" -w '%{http_code}' -H "Authorization: Bearer $1" -H 'Content-Type: application/json' -H 'Expect:' --data-binary "@${2:-$T/bundle.json}" "$BASE/v1/submit"; }
 
 [ "$(code_of -H 'Authorization: Bearer nope' "$BASE/admin/codes")" = 401 ] && ok "wrong admin key refused" || bad "admin key"
+[ "$(code_of "$BASE/v1/submit")" = 405 ] && ok "submit takes POST only" || bad "GET submit"
 [ "$(submit "not-a-code")" = 401 ] && ok "no code, no upload" || bad "missing code"
 [ "$(submit "2222-2222-2222")" = 401 ] && ok "unknown code refused" || bad "unknown code"
 [ "$(curl -s "$MOCK/seen" | field 'len(d["claude"])')" = 0 ] && ok "nothing reached Claude without a code" || bad "Claude was called"
@@ -65,17 +63,24 @@ curl -sS "$MOCK/seen" > "$T/seen.json"
 c() { field "$1" < "$T/seen.json"; }
 [ "$(c 'len(d["claude"])')" = 1 ] && ok "Claude called once" || bad "Claude calls: $(c 'len(d["claude"])')"
 [ "$(c 'd["claude"][0]["key"]')" = test-anthropic-key ] && [ "$(c 'd["claude"][0]["version"]')" = 2026-10-21 ] && ok "x-api-key and anthropic-version sent" || bad "headers"
-[ "$(c 'd["claude"][0]["model"]')" = claude-opus-5-5 ] && [ "$(c 'd["claude"][0]["format"]')" = json_schema ] && [ "$(c 'd["claude"][0]["effort"]')" = high ] && ok "model, effort, structured output" || bad "request body"
+[ "$(c 'd["claude"][0]["model"]')" = claude-opus-5-5 ] && [ "$(c 'd["claude"][0]["format"]')" = json_schema ] && [ "$(c 'd["claude"][0]["schema"]')" = True ] && [ "$(c 'd["claude"][0]["effort"]')" = high ] && ok "model, effort, structured output" || bad "request body"
+[ "$(c 'd["claude"][0]["thinking"]')" = adaptive ] && [ "$(c 'd["claude"][0]["stream"]')" = True ] && [ "$(c 'd["claude"][0]["max_tokens"]')" = 64000 ] && [ "$(c 'd["claude"][0]["sampling"]')" = False ] && ok "adaptive thinking, streamed, 64000 tokens, no sampling settings" || bad "thinking or stream"
+[ "$(c 'd["claude"][0]["fallbacks"]')" = default ] && [ "$(c 'd["claude"][0]["beta"]')" = server-side-fallback-2026-07-01 ] && ok "fallbacks with their beta header" || bad "fallbacks"
 [ "$(c '"ref=\"v9.9.9\"" in d["claude"][0]["prompt"] and "recorder.rs" in d["claude"][0]["prompt"]')" = True ] && ok "source of the reported version attached" || bad "source"
 [ "$(c '"someone@example.com" in d["claude"][0]["prompt"]')" = False ] && ok "no e-mail address in the prompt" || bad "prompt leaks"
 [ "$(c 'len(d["discord"])')" = 1 ] && [ "$(c '"smoke test" in d["discord"][0] and "glint-doctor-" in d["discord"][0]')" = True ] && ok "posted to Discord with the report attached" || bad "discord"
 
-adm -X POST "$BASE/admin/reports/$TICKET/retry" >/dev/null; sleep 4
-[ "$(curl -sS "$MOCK/seen" | field 'len(d["claude"])')" = 2 ] && ok "retry analyses the stored diagnostics again" || bad "retry"
+adm -X POST "$BASE/admin/reports/$TICKET/retry" >/dev/null
+for i in $(seq 1 30); do
+  st=$(adm "$BASE/admin/reports/$TICKET" | field 'd["status"]'); [ "$st" = done ] && break; sleep 1
+done
+[ "$(curl -sS "$MOCK/seen" | field 'len(d["claude"])')" = 2 ] && [ "$st" = done ] && ok "retry analyses the stored diagnostics again" || bad "retry: $st"
+adm "$BASE/admin/reports/$TICKET" > "$T/again.json"
+[ "$(field 'd["model"]' < "$T/again.json")" = claude-opus-4-8 ] && [ "$(field 'd["meta"]["fallback"]["to"]' < "$T/again.json")" = claude-opus-4-8 ] && [ "$(field 'd["report"]["severity"]' < "$T/again.json")" = broken_feature ] && ok "a mid-answer fallback: the fallback model's answer is the report" || bad "fallback: $(cat "$T/again.json" | head -c 400)"
 
 C2=$(adm -H 'Content-Type: application/json' --data-binary '{"label":"to revoke","hours":1}' "$BASE/admin/codes" | field 'd["codes"][0]["code"]')
 adm -X DELETE "$BASE/admin/codes/${C2: -4}" >/dev/null
 [ "$(submit "$C2")" = 403 ] && ok "a withdrawn code is refused" || bad "revoke"
 adm -X DELETE "$BASE/admin/reports/$TICKET" >/dev/null
 [ "$(code_of -H "Authorization: Bearer $ADMIN" "$BASE/admin/reports/$TICKET")" = 404 ] && ok "deleted" || bad "delete"
-echo "all passed"
+echo "all $PASSED checks passed"

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Stand-ins for the three services the Worker talks to, for test/smoke.sh:
-//   POST /v1/messages                 the Claude Messages API (streams one fixed report)
+//   POST /v1/messages                 the Claude Messages API (streams one fixed report; from the second
+//                                     call on, after a mid-answer `fallback` block, as a declined request
+//                                     that the fallback model finished)
 //   GET  /raw/<ref>/src-tauri/src/*   raw.githubusercontent.com (tag v9.9.9 exists; any other tag does not)
 //   POST /discord                     a Discord webhook
 //   GET  /seen                        what arrived, for the test to check
@@ -28,16 +30,26 @@ createServer((req, res) => {
     const url = new URL(req.url, "http://x");
     if (req.method === "POST" && url.pathname === "/v1/messages") {
       const sent = JSON.parse(body);
-      seen.claude.push({ key: req.headers["x-api-key"], version: req.headers["anthropic-version"], beta: req.headers["anthropic-beta"], model: sent.model, effort: sent.output_config?.effort, format: sent.output_config?.format?.type, fallbacks: sent.fallbacks, stream: sent.stream, system_chars: sent.system.length, prompt: sent.messages[0].content });
+      seen.claude.push({ key: req.headers["x-api-key"], version: req.headers["anthropic-version"], beta: req.headers["anthropic-beta"], model: sent.model, max_tokens: sent.max_tokens, thinking: sent.thinking?.type, effort: sent.output_config?.effort, format: sent.output_config?.format?.type, schema: !!sent.output_config?.format?.schema, fallbacks: sent.fallbacks, stream: sent.stream, sampling: ["temperature", "top_p", "top_k"].some((k) => k in sent), system_chars: sent.system.length, prompt: sent.messages[0].content });
+      const fallback = seen.claude.length > 1;
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       const send = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
-      send("message_start", { message: { id: "msg_test", model: sent.model, usage: { input_tokens: 1234 } } });
+      send("message_start", { message: { id: "msg_test", model: fallback ? "claude-opus-4-8" : sent.model, usage: { input_tokens: 1234 } } });
       send("content_block_start", { index: 0, content_block: { type: "thinking", thinking: "" } });
       send("content_block_stop", { index: 0 });
-      send("content_block_start", { index: 1, content_block: { type: "text", text: "" } });
+      let at = 1;
+      if (fallback) {
+        // Part of an answer, then the switch to the fallback model, which answers in full.
+        send("content_block_start", { index: at, content_block: { type: "text", text: "" } });
+        send("content_block_delta", { index: at, delta: { type: "text_delta", text: '{"user_summary":"half an ans' } });
+        send("content_block_stop", { index: at++ });
+        send("content_block_start", { index: at, content_block: { type: "fallback", from: { model: sent.model }, to: { model: "claude-opus-4-8" } } });
+        send("content_block_stop", { index: at++ });
+      }
+      send("content_block_start", { index: at, content_block: { type: "text", text: "" } });
       const text = JSON.stringify(report);
-      for (let i = 0; i < text.length; i += 37) send("content_block_delta", { index: 1, delta: { type: "text_delta", text: text.slice(i, i + 37) } });
-      send("content_block_stop", { index: 1 });
+      for (let i = 0; i < text.length; i += 37) send("content_block_delta", { index: at, delta: { type: "text_delta", text: text.slice(i, i + 37) } });
+      send("content_block_stop", { index: at });
       send("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 567 } });
       send("message_stop", {});
       return res.end();
