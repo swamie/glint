@@ -1,0 +1,8 @@
+{
+  "id": "claude-mcp",
+  "name": "Claude (MCP)",
+  "version": "0.1.0",
+  "description": "Lets Claude edit in Glint's editor: import, cut, trim, reorder, add audio and text, export; transcripts, loudness and frames so it can hear and see the clips.",
+  "ui": "bridge.js",
+  "api": true
+}

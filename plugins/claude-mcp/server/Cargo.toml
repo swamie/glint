@@ -1,0 +1,23 @@
+[package]
+name = "glint-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "Glint plugin: lets Claude edit in Glint's editor over MCP. Not part of Glint's own build."
+publish = false
+
+# Its own crate on purpose: Glint's build (src-tauri) never compiles or ships this.
+[workspace]
+
+[[bin]]
+name = "glint-mcp"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+# Text out of a script given as a PDF or a Word file (read_document).
+pdf-extract = "0.7"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[profile.release]
+strip = true
+opt-level = "s"

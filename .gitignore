@@ -14,3 +14,6 @@
 
 # The bug-report webhook (a credential): read at build time, never committed
 /src-tauri/bug-webhook.txt
+
+# The Claude plugin's own build (plugins/claude-mcp)
+/plugins/*/server/target/

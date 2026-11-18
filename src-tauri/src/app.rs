@@ -1083,8 +1083,12 @@ pub fn run(minimized: bool) {
             crate::monprev::monitor_preview,
             crate::capmode::game_mark,
             crate::polls::polls_list, // polls
-            crate::polls::polls_vote  // polls
+            crate::polls::polls_vote, // polls
+            crate::plugins::plugin_ready, // plugins (only used when one is installed)
+            crate::plugins::plugin_reply
         ])
+        // Plugins: load an installed plugin's script into the main window (nothing when none is installed).
+        .on_page_load(|webview, payload| crate::plugins::on_page_load(webview, payload.event() == tauri::webview::PageLoadEvent::Finished))
         .setup(move |app| {
             let handle = app.handle().clone();
             let core = setup_core;
@@ -1134,6 +1138,7 @@ pub fn run(minimized: bool) {
             });
 
             crate::polls::spawn(core.clone()); // polls: 30 s after start, then every 6 hours, only with the setting on
+            crate::plugins::start(handle.clone(), show_main); // plugins: the local API, only if an installed plugin asks for it
 
             let (tx, rx) = std::sync::mpsc::channel::<String>();
             hotkeys::start(tx);
