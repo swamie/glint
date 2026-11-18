@@ -66,6 +66,12 @@ fn code_in_name(stem: &str) -> Option<String> {
     parts.windows(3).find(|w| w.iter().all(|p| fits(p))).map(|w| w.join("-"))
 }
 
+/// Text from the server, made safe to print: no control characters (a terminal escape
+/// sequence could otherwise rewrite what the window shows), at most 900 characters.
+fn printable(text: &str) -> String {
+    text.chars().filter(|c| *c == '\n' || !c.is_control()).take(900).collect::<String>().trim().to_string()
+}
+
 fn marker() -> PathBuf {
     collect::data_dir().join("doctor-used.json")
 }
@@ -228,10 +234,10 @@ fn run(a: &Args) -> Result<bool, String> {
     }
     say("");
     match summary.as_deref() {
-        Some(text) if !text.trim().is_empty() => {
+        Some(text) if !printable(text).is_empty() => {
             say("");
             say("What was found:");
-            say(text.trim());
+            say(&printable(text));
         }
         _ => say("The developer will take it from here and get back to you."),
     }
@@ -270,5 +276,13 @@ mod tests {
         assert_eq!(code_in_name("glint-doctor-abcd-efgh-jkmn (1)").as_deref(), Some("ABCD-EFGH-JKMN"));
         assert_eq!(code_in_name("glint-doctor"), None);
         assert_eq!(code_in_name("glint-doctor-2345-6789"), None);
+    }
+
+    #[test]
+    fn server_text_is_printed_plainly() {
+        assert_eq!(printable("Update the driver.\x1b[2J\x1b]0;owned\x07 Then restart.\r\n"), "Update the driver.[2J]0;owned Then restart.");
+        assert_eq!(printable(&"a".repeat(2000)).len(), 900);
+        assert!(send::is_ticket("0123456789abcdefghijklmn"));
+        assert!(!send::is_ticket("../admin/reports/abcdefgh"));
     }
 }

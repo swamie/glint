@@ -45,8 +45,16 @@ pub struct Answer {
     pub json: Value,
 }
 
+/// curl.exe on Windows; plain curl elsewhere, so the tool can be tried against `wrangler dev` on any PC.
+const CURL: &str = if cfg!(windows) { "curl.exe" } else { "curl" };
+
+/// A ticket the server gave: 24 lowercase letters and digits. Anything else is not put in a URL.
+pub fn is_ticket(t: &str) -> bool {
+    t.len() == 24 && t.bytes().all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
+}
+
 fn curl(dir: &Path, args: &[&str], max_time: &str) -> Result<Answer, String> {
-    let out = Command::new("curl.exe")
+    let out = Command::new(CURL)
         .current_dir(dir)
         .args(["-sS", "--max-time", max_time, "-A", concat!("glint-doctor/", env!("CARGO_PKG_VERSION")), "-H", "Expect:", "-o", "-", "-w", "\n%{http_code}"])
         .args(args)
@@ -77,16 +85,19 @@ pub fn submit(work: &Work, code: &str, bundle: &Value) -> Result<String, String>
     let answer = result?;
     let said = answer.json["error"].as_str().unwrap_or("").to_string();
     match answer.status {
-        200..=299 => answer.json["ticket"].as_str().map(str::to_string).ok_or_else(|| "The server answered, but not in the way this tool expects. Nothing was used up; tell the developer.".to_string()),
+        200..=299 => answer.json["ticket"].as_str().filter(|t| is_ticket(t)).map(str::to_string).ok_or_else(|| "The server took the report but answered in a way this tool does not expect. Tell the developer; the report may well have arrived.".to_string()),
         401 | 403 | 410 => Err(if said.is_empty() { "The support code was not accepted.".into() } else { said }),
         413 => Err("The report was too large for the server. Tell the developer.".into()),
         429 => Err(if said.is_empty() { "Too many tries. Wait a while and try again.".into() } else { said }),
-        s => Err(format!("The server could not take the report (HTTP {s}{}). Your code has not been used up; try again later.", if said.is_empty() { String::new() } else { format!(": {said}") })),
+        s => Err(format!("The server could not take the report (HTTP {s}{}). Try again later; if it then says the code was used, the report did arrive.", if said.is_empty() { String::new() } else { format!(": {said}") })),
     }
 }
 
 /// Ask how far the report is. None when the server could not be asked.
 pub fn status(work: &Work, ticket: &str) -> Option<Value> {
+    if !is_ticket(ticket) {
+        return None;
+    }
     let url = format!("{}/v1/status/{ticket}", endpoint());
     let answer = curl(&work.0, &[&url], "15").ok()?;
     (answer.status == 200).then_some(answer.json)
