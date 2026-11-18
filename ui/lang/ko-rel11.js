@@ -354,4 +354,7 @@ glintAddLanguage("ko", "한국어", {
   "In GAME mode, a game that goes from fullscreen to a window is recorded as a window again. Glint used to keep recording the whole screen around it, and nothing at all while another window was in front.": "GAME 모드에서 전체 화면에서 창 모드로 바꾼 게임을 다시 창으로 녹화해요. 전에는 게임 주변의 화면 전체를 계속 녹화했고, 다른 창이 앞에 있으면 아무것도 녹화하지 않았어요.",
   "In GAME mode, a game that took a while to start could be recorded as the whole screen, with other windows in front of it, until it closed. This was seen with AMD graphics.": "GAME 모드에서 시작하는 데 시간이 걸린 게임이 꺼질 때까지 다른 창이 앞에 보이는 화면 전체로 녹화될 수 있었어요. AMD 그래픽에서 확인된 문제예요.",
   "On Windows 10, and when Windows does not let apps hide the yellow capture border, GAME mode now records only the game instead of the whole screen. Windows may draw a yellow border around the game on your screen, but it is not in your clips.": "Windows 10에서, 그리고 Windows가 앱이 노란 캡처 테두리를 숨기지 못하게 할 때도 이제 GAME 모드는 화면 전체가 아니라 게임만 녹화해요. 화면에서는 게임 둘레에 노란 테두리가 보일 수 있지만 클립에는 들어가지 않아요.",
+  // 0.1.49
+  "Share links.": "공유 링크.",
+  "Upload a clip to your own Cloudflare storage and get a link that plays right inside Discord. It is optional and stays off until you set up your own server and enter its upload key in Settings. After that, right-click a clip and pick Share link.": "클립을 내 Cloudflare 저장소에 올리고 Discord 안에서 바로 재생되는 링크를 받습니다. 선택 사항이며, 내 서버를 설정하고 설정에 업로드 키를 넣기 전에는 꺼져 있습니다. 그다음 클립을 오른쪽 클릭하고 공유 링크 만들기를 고르세요.",
 });
