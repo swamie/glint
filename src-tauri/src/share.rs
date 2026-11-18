@@ -48,17 +48,28 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// The owner's share server. Uploads still need its upload key, which only the owner has.
 pub const DEFAULT_URL: &str = "https://clips.glintclip.com";
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct ShareSettings {
     /// The Worker's address, e.g. `https://glint-share.name.workers.dev`. Empty = feature off.
     pub url: String,
     /// The Worker's `UPLOAD_TOKEN` secret.
     pub token: String,
-    /// Shown on the embed as "<name> · <game>". Empty = the game alone.
+    /// The publisher name, shown on the embed as "<name> · <game>". Claimed on the server
+    /// (`share_claim_name`): 2 to 16 characters, one holder each.
     pub name: String,
+    /// The secret this install made when it claimed `name`; proves the name is ours on later uploads.
+    pub name_secret: String,
     /// Copy the link when a share finishes.
     pub copy: bool,
+    /// After an upload, ask whether to delete the clip from this PC (it can be downloaded again).
+    pub ask_offload: bool,
+}
+
+impl Default for ShareSettings {
+    fn default() -> Self {
+        ShareSettings { url: DEFAULT_URL.into(), token: String::new(), name: String::new(), name_secret: String::new(), copy: true, ask_offload: true }
+    }
 }
 
 impl ShareSettings {
@@ -391,7 +402,7 @@ fn upload(ffmpeg: &Path, meta: &ClipMeta, cfg: &ShareSettings, base: &str, cance
 
         // 1. Start: the Worker checks the space left and gives the upload its id.
         let info = json!({
-            "title": meta.title, "uploader": cfg.name.trim(), "game": meta.game,
+            "title": meta.title, "uploader": cfg.name.trim(), "nameSecret": cfg.name_secret, "game": meta.game,
             "width": if probe.width > 0 { probe.width } else { meta.width },
             "height": if probe.height > 0 { probe.height } else { meta.height },
             "duration": (duration * 100.0).round() / 100.0, "size": size,
@@ -532,7 +543,206 @@ pub fn share_delete(core: St, id: String) -> Result<(), String> {
         m.remove(&id);
         save_links(m);
     });
+    // A cloud-only clip has no file left: without its cloud copy it leaves the library as well.
+    let gone = {
+        let mut lib = core.lib.lock().unwrap();
+        if lib.get(&id).is_some_and(|c| c.cloud_only) { let m = lib.remove(&id); lib.save(); m } else { None }
+    };
+    if let Some(m) = gone {
+        if !m.thumb.is_empty() {
+            let _ = fs::remove_file(&m.thumb);
+        }
+        core.emit("clips-changed", id);
+    }
     Ok(())
+}
+
+/* ---------- publisher name ---------- */
+
+/// What a publisher name may be: 2 to 16 characters; letters, numbers, spaces, dots, dashes, underscores.
+pub fn name_ok(name: &str) -> bool {
+    let n = name.trim().chars().count();
+    (2..=16).contains(&n) && name.trim().chars().all(|c| c.is_alphanumeric() || " _.-".contains(c))
+}
+
+/// 256 random bits as hex, without a random-number crate: each `RandomState` is seeded by the system.
+fn new_secret() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    (0..4)
+        .map(|i| {
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u64(util::unix_ms() ^ i);
+            format!("{:016x}", h.finish())
+        })
+        .collect()
+}
+
+/// Claim `name` as this install's publisher name on the server. Returns { name, secret } for the
+/// UI to save in the settings. A name someone else holds is refused with the server's message.
+#[tauri::command(async)]
+pub fn share_claim_name(core: St, name: String) -> Result<Value, String> {
+    let s = core.settings().share;
+    let base = s.base()?;
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !name_ok(&name) {
+        return Err("A publisher name is 2 to 16 characters: letters, numbers, spaces, dots, dashes or underscores.".into());
+    }
+    let secret = if s.name_secret.len() >= 32 { s.name_secret.clone() } else { new_secret() };
+    let body = json!({ "name": name, "secret": secret, "release": s.name });
+    let ans = call("POST", &format!("{base}/api/names"), &s.token, Body::Json(&body), CALL_TIMEOUT, None)?;
+    if ans.code == 404 {
+        return Err("Your share server is older than this Glint and cannot hold publisher names yet. Update the Worker (server/share), then try again.".into());
+    }
+    if ans.code != 200 {
+        return Err(ans.why());
+    }
+    let name = ans.json().get("name").and_then(Value::as_str).unwrap_or(&name).to_string();
+    Ok(json!({ "name": name, "secret": secret }))
+}
+
+/* ---------- cloud only: delete from this PC, download again ---------- */
+
+/// Status and Content-Length of `url` (a HEAD request; no key is sent: the video route is public by link).
+fn head_len(url: &str) -> Result<(u16, u64), String> {
+    let out = util::hidden_cmd(Path::new("curl.exe"))
+        .args(["-sS", "-I", "--max-time", "30", "-A", "Glint"])
+        .arg(url)
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("Could not run curl.exe: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let code = text.lines().next().and_then(|l| l.split_whitespace().nth(1)).and_then(|c| c.parse().ok()).unwrap_or(0);
+    if code == 0 {
+        return Err(format!("Could not reach the share server. ({})", util::last_lines(&out.stderr, 1)));
+    }
+    let len = text.lines().filter_map(|l| l.split_once(':')).find(|(k, _)| k.trim().eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.trim().parse().ok()).unwrap_or(0);
+    Ok((code, len))
+}
+
+fn video_url(base: &str, link: &Shared) -> String {
+    format!("{base}/v/{}.mp4", link.id)
+}
+
+/// Delete clip `id`'s file from this PC (to the Recycle Bin) and keep the clip in the library as
+/// "cloud only". Refused unless the cloud copy is there right now and is exactly as large as what
+/// was uploaded. The UI asks the user first; nothing else calls this.
+#[tauri::command(async)]
+pub fn share_offload(core: St, id: String) -> Result<ClipMeta, String> {
+    let base = core.settings().share.base()?;
+    let meta = core.lib.lock().unwrap().get_saved(&id)?;
+    let link = link_of(&id, &base).ok_or("Upload the clip first: it has no share link")?;
+    if meta.cloud_only {
+        return Ok(meta);
+    }
+    if core.jobs.busy(&id) {
+        return Err("That clip is being worked on. Try again when it is done.".into());
+    }
+    let (code, len) = head_len(&video_url(&base, &link))?;
+    if code != 200 || len == 0 || len != link.size {
+        return Err("The cloud copy could not be confirmed, so the clip stays on this PC.".into());
+    }
+    if Path::new(&meta.path).exists() {
+        trash::delete(&meta.path).map_err(|e| format!("Could not move the clip to the Recycle Bin: {e}"))?;
+    }
+    let out = core.lib.lock().unwrap().update(&id, |c| c.cloud_only = true).ok_or("Clip not found")?;
+    util::log(&format!("share: clip {id} deleted from this PC (cloud copy {len} bytes confirmed)"));
+    core.emit("clips-changed", id);
+    Ok(out)
+}
+
+/// Download a cloud-only clip back to where it was. A background job (kind "share").
+#[tauri::command(async)]
+pub fn share_redownload(core: St, id: String) -> Result<Job, String> {
+    let core = core.inner();
+    let s = core.settings();
+    let base = s.share.base()?;
+    let meta = core.lib.lock().unwrap().get_saved(&id)?;
+    let link = link_of(&id, &base).ok_or("That clip has no share link")?;
+    if !meta.cloud_only {
+        return Err("That clip is already on this PC".into());
+    }
+    let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg");
+    let clips_dir = PathBuf::from(&s.clips_dir);
+    core.jobs.connect(core);
+    let weak = Arc::downgrade(core);
+    let title = meta.title.clone();
+    let run: Runner = Box::new(move |cancel, progress| {
+        let core = weak.upgrade().ok_or("Glint is closing")?;
+        let tmp = util::tmp_dir().join(format!("share-dl-{}.mp4", util::new_id()));
+        let res = (|| {
+            let mut child = util::hidden_cmd(Path::new("curl.exe"))
+                .current_dir(util::tmp_dir())
+                .args(["-sS", "-f", "--max-time", "3600", "-A", "Glint", "-o"])
+                .arg(library::file_name(&tmp))
+                .arg(video_url(&base, &link))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("Could not run curl.exe: {e}"))?;
+            let status = loop {
+                match child.try_wait() {
+                    Ok(Some(st)) => break st,
+                    Ok(None) if cancel.load(Ordering::SeqCst) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("Cancelled".to_string());
+                    }
+                    Ok(None) => {
+                        let got = fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+                        progress((got as f32 / link.size.max(1) as f32 * 100.0).min(99.0));
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                    Err(e) => return Err(e.to_string()),
+                }
+            };
+            if !status.success() {
+                let mut err = Vec::new();
+                if let Some(mut s) = child.stderr.take() {
+                    let _ = s.read_to_end(&mut err);
+                }
+                return Err(format!("The download failed. Was the clip deleted from the cloud? ({})", util::last_lines(&err, 1)));
+            }
+            let got = fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+            if got == 0 || got != link.size {
+                return Err("The download came back incomplete. Try again.".into());
+            }
+            // Back where it was; if something else has that name now, beside it under a free name.
+            let old = PathBuf::from(&meta.path);
+            let dir = old.parent().map(Path::to_path_buf).filter(|d| fs::create_dir_all(d).is_ok()).unwrap_or_else(|| clips_dir.clone());
+            let _ = fs::create_dir_all(&dir);
+            let stem = old.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| util::sanitize_filename(&meta.title));
+            let dest = util::unique_path(&dir, &stem, "mp4");
+            if fs::rename(&tmp, &dest).is_err() {
+                fs::copy(&tmp, &dest).map_err(|e| format!("Could not save the clip: {e}"))?;
+            }
+            let probe = ffmpeg.as_ref().and_then(|f| library::probe(f, &dest, false));
+            core.lib.lock().unwrap().update(&meta.id, |c| {
+                c.cloud_only = false;
+                c.path = dest.to_string_lossy().into_owned();
+                c.size = got;
+                if let Some(p) = &probe {
+                    if p.width > 0 {
+                        c.width = p.width;
+                        c.height = p.height;
+                    }
+                    if p.fps > 0 {
+                        c.fps = p.fps;
+                    }
+                    c.audio_tracks = p.audio_streams;
+                }
+            });
+            Ok(())
+        })();
+        let _ = fs::remove_file(&tmp);
+        res?;
+        progress(100.0);
+        core.emit("clips-changed", meta.id.clone());
+        core.emit("clip-redownloaded", json!({ "clip": meta.id }));
+        Ok(meta.id.clone())
+    });
+    core.jobs.enqueue(&id, &title, "share", run)
 }
 
 /// Check the address and key: { used, limit, clips } bytes from the Worker.

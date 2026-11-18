@@ -40,6 +40,13 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.50", date: "2026-11-18",
+    new: [
+      { title: t("Cloud tag and cloud-only clips."), text: t("A shared clip now shows a cloud tag on its card: click it to copy the link. After an upload Glint can delete the clip from this PC (it asks first, and the file goes to the Recycle Bin) and keep it in your library, where one click downloads it again."), go: "settings:program", label: t("Open the setting") },
+      { title: t("Publisher names."), text: t("Before your first share you pick a publisher name of 2 to 16 characters. It shows on your shared clips and nobody else on your server can use it. If you run your own share server, update its Worker first.") },
+    ],
+  },
+  {
     version: "0.1.49", date: "2026-11-18",
     new: [
       { title: t("Share links."), text: t("Upload a clip to your own Cloudflare storage and get a link that plays right inside Discord. It is optional and stays off until you set up your own server and enter its upload key in Settings. After that, right-click a clip and pick Share link."), go: "settings:program", label: t("Open the setting") },

@@ -85,3 +85,21 @@ Cloudflare account needed):
     echo 'UPLOAD_TOKEN=test-key' > .dev.vars
     npx wrangler dev --port 8799 &
     bash test/smoke.sh http://127.0.0.1:8799 test-key some-video.mp4
+
+## Publisher names
+
+Before the first share, Glint asks for a publisher name (2 to 16 characters) and
+claims it here with `POST /api/names`. A name has one holder per Worker: whoever
+claimed it first, in any letter case. Glint keeps a random secret in its settings
+as the proof, and an upload under a name is refused unless that secret matches.
+Changing the name in Glint frees the old one. Names are stored in the bucket as
+`n/<name>.json` (the name and a SHA-256 of the secret); delete that object to free
+a name by hand.
+
+## Cloud-only clips
+
+After an upload Glint can delete the clip from the PC and keep it in the library
+with a cloud tag. It checks first that the cloud copy is there and complete, and
+the local file goes to the Recycle Bin. "Redownload" fetches `/v/<id>.mp4` back.
+The cloud copy is the file that was shared (first audio track, at most 1080p 60
+when it had to be converted), not always the original recording.

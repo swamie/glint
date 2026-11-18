@@ -468,6 +468,7 @@ function cardHtml(c) {
       ${c.thumb ? `<img class="thumb-img" src="${esc(fileSrc(c.thumb))}" alt="" draggable="false" decoding="async" onerror="this.remove();thumbAsk(${esc(JSON.stringify(c.id))},true)" style="${THUMB_IMG_STYLE}">` : `<div class="ph">${esc(c.game.slice(0, 1).toUpperCase())}</div>`}
       <span class="check" title="${esc(t("Select"))}">${ICON.check}</span>
       ${tag}
+      ${typeof shareCardBadge === "function" ? shareCardBadge(c) : "" /* share.js: the cloud tag of an uploaded clip */}
       ${c.favorite ? `<span class="star">${ICON.star}</span>` : ""}
       <span class="dur">${fmtDur(c.duration)}</span>
       ${job && job.state === "running" ? `<div class="job${jobWaits(job) ? " wait" : ""}"><i style="width:${job.pct}%"></i></div>` : ""}
@@ -775,6 +776,8 @@ function openClipMenu(id, x, y) {
   if (!c) return closeMenu();
   const many = S.sel.has(id) && S.sel.size > 1;
   menuIds = many ? [...S.sel] : [id];
+  // share.js: a cloud-only clip has no file on this PC, so its menu is the few things that still work.
+  if (!many && c.cloud_only && typeof shareCloudMenu === "function") { $("#menu").innerHTML = shareCloudMenu(c); return placeMenu(x, y); }
   const clips = S.clips.filter((k) => menuIds.includes(k.id));
   const allFav = clips.every((k) => k.favorite);
   const counts = S.clips.reduce((map, k) => ((map[k.game] = (map[k.game] || 0) + 1), map), {});

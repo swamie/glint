@@ -7,6 +7,8 @@
 //   GET  /t/<id>.jpg    the poster picture
 // Upload API (Authorization: Bearer <UPLOAD_TOKEN>)
 //   GET    /api/usage                              { used, limit, clips }
+//   POST   /api/names                              { name, secret, release? } -> { name }: claim a publisher name
+//                                                  (2 to 16 characters, one holder each, compared without case)
 //   POST   /api/uploads                            { title, uploader, game, width, height, duration, size } -> { id, uploadId }
 //   PUT    /api/uploads/<id>/parts/<n>?uploadId=   one piece (all but the last the same size, >= 5 MiB) -> { etag }
 //   PUT    /api/uploads/<id>/poster?uploadId=      the JPEG poster
@@ -14,6 +16,8 @@
 //   DELETE /api/uploads/<id>?uploadId=             abandon an upload
 //   DELETE /api/clips/<id>                         delete a shared clip
 //
+// Publisher names: n/<name, lower case>.json = { name, hash } where hash is the SHA-256 of the
+// secret the claiming install made. An upload that carries a name must carry that secret.
 // Storage: c/<id>/video.mp4, c/<id>/thumb.jpg, c/<id>/meta.json. A clip whose meta.json
 // still says pending (an upload in progress) is not shown.
 
@@ -82,6 +86,55 @@ async function removeClip(env, id) {
   await env.BUCKET.delete([key(id, "video.mp4"), key(id, "thumb.jpg"), key(id, "meta.json")]);
 }
 
+/* ---------- publisher names ---------- */
+
+const NAME_RE = /^[\p{L}\p{N} _.\-]{2,16}$/u;
+const NAME_RULE = "A publisher name is 2 to 16 characters: letters, numbers, spaces, dots, dashes or underscores.";
+/** The name as shown (trimmed, single spaces), or "" when it breaks the rule. */
+function cleanName(v) {
+  const name = String(v ?? "").normalize("NFKC").replace(/\s+/g, " ").trim();
+  return [...name].length >= 2 && [...name].length <= 16 && NAME_RE.test(name) ? name : "";
+}
+const nameKey = (name) => `n/${encodeURIComponent(name.toLowerCase())}.json`;
+async function sha256Hex(text) {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+/** True when `name` is claimed and `secret` is its holder's. */
+async function holdsName(env, name, secret) {
+  if (!name || !secret) return false;
+  const o = await env.BUCKET.get(nameKey(name));
+  if (!o) return false;
+  let rec;
+  try { rec = await o.json(); } catch { return false; }
+  return rec.hash === (await sha256Hex(secret));
+}
+
+async function claimName(request, env) {
+  let body;
+  try { body = await request.json(); } catch { return fail("The request was not JSON", 400); }
+  const name = cleanName(body.name);
+  const secret = String(body.secret || "");
+  if (!name) return fail(NAME_RULE, 400);
+  if (secret.length < 32 || secret.length > 128) return fail("The name's secret is missing. Update Glint.", 400);
+  const hash = await sha256Hex(secret);
+  const k = nameKey(name);
+  const cur = await env.BUCKET.get(k);
+  if (cur) {
+    let rec = {};
+    try { rec = await cur.json(); } catch { /* unreadable: treated as taken */ }
+    if (rec.hash !== hash) return fail(`The name ${name} is taken. Pick another one.`, 409);
+  } else {
+    // onlyIf etagDoesNotMatch "*": written only if nobody claimed it in between.
+    const put = await env.BUCKET.put(k, JSON.stringify({ name, hash, created: Date.now() }), { httpMetadata: { contentType: "application/json" }, onlyIf: { etagDoesNotMatch: "*" } });
+    if (!put) return fail(`The name ${name} is taken. Pick another one.`, 409);
+  }
+  // Give back the name this install held before, so someone else can take it.
+  const old = cleanName(body.release);
+  if (old && old.toLowerCase() !== name.toLowerCase() && (await holdsName(env, old, secret))) await env.BUCKET.delete(nameKey(old));
+  return json({ name });
+}
+
 /* ---------- upload API ---------- */
 
 async function api(request, env, url, parts) {
@@ -102,6 +155,8 @@ async function api(request, env, url, parts) {
     return meta ? json({ ok: true }) : fail("No such clip", 404);
   }
 
+  if (parts[1] === "names" && parts.length === 2 && m === "POST") return claimName(request, env);
+
   if (parts[1] !== "uploads") return fail("Not found", 404);
 
   // POST /api/uploads: start one.
@@ -116,10 +171,15 @@ async function api(request, env, url, parts) {
       const mb = (n) => Math.round(n / 1e6);
       return fail(`Not enough room on the share server: ${mb(used)} of ${mb(limit)} MB used, this clip needs ${mb(size)} MB. Delete old share links or raise MAX_MB.`, 413);
     }
+    // A name on the embed must be the one this install claimed (POST /api/names).
+    const uploader = str(body.uploader, 64);
+    if (uploader && !(await holdsName(env, cleanName(uploader), String(body.nameSecret || "")))) {
+      return fail("Choose a publisher name first: this one is not yours on this server. In Glint, Settings → Share links → Publisher name.", 403);
+    }
     const id = newId();
     const meta = {
       title: str(body.title, 200) || "Clip",
-      uploader: str(body.uploader, 64),
+      uploader: cleanName(uploader),
       game: str(body.game, 80),
       width: int(body.width, 16, 8192, 1920),
       height: int(body.height, 16, 8192, 1080),

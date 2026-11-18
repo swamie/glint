@@ -17,8 +17,19 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer nope" "$
 
 clips() { api "$BASE/api/usage" | python3 -c 'import json,sys;print(json.load(sys.stdin)["clips"])'; }
 BEFORE=$(clips)
+
+# Publisher names: one holder each (the secret is the proof), 2 to 16 characters.
+NS=smoke-secret-0123456789abcdef0123456789abcdef
+name() { api -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' --data-binary "$1" "$BASE/api/names"; }
+[ "$(name "{\"name\":\"Rubust\",\"secret\":\"$NS\"}")" = 200 ] && ok "name claimed" || bad "name not claimed"
+[ "$(name "{\"name\":\"Rubust\",\"secret\":\"$NS\"}")" = 200 ] && ok "same holder claims again" || bad "holder refused"
+[ "$(name '{"name":"rubust","secret":"someone-else-0123456789abcdef0123456789abcdef"}')" = 409 ] && ok "taken name refused (any letter case)" || bad "taken name given away"
+[ "$(name '{"name":"x","secret":"0123456789abcdef0123456789abcdef"}')" = 400 ] && ok "1 character refused" || bad "short name accepted"
+[ "$(name '{"name":"abcdefghijklmnopq","secret":"0123456789abcdef0123456789abcdef"}')" = 400 ] && ok "17 characters refused" || bad "long name accepted"
+code=$(api -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' --data-binary '{"title":"x","uploader":"Rubust","nameSecret":"wrong","size":10}' "$BASE/api/uploads")
+[ "$code" = 403 ] && ok "upload under a name it does not hold refused" || bad "upload under a foreign name gave $code"
 SIZE=$(stat -c %s "$VIDEO")
-start=$(api -H 'Content-Type: application/json' --data-binary "{\"title\":\"Clutch <1v3> & \\\"ace\\\" 🎯\",\"uploader\":\"Rubust\",\"game\":\"Minecraft\",\"width\":1280,\"height\":720,\"duration\":20,\"size\":$SIZE}" "$BASE/api/uploads")
+start=$(api -H 'Content-Type: application/json' --data-binary "{\"title\":\"Clutch <1v3> & \\\"ace\\\" 🎯\",\"uploader\":\"Rubust\",\"nameSecret\":\"$NS\",\"game\":\"Minecraft\",\"width\":1280,\"height\":720,\"duration\":20,\"size\":$SIZE}" "$BASE/api/uploads")
 ID=$(echo "$start" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
 UP=$(echo "$start" | python3 -c 'import json,sys,urllib.parse;print(urllib.parse.quote(json.load(sys.stdin)["uploadId"],safe=""))')
 ok "started $ID"

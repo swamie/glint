@@ -357,4 +357,9 @@ glintAddLanguage("el", "Ελληνικά", {
   // 0.1.49
   "Share links.": "Σύνδεσμοι κοινοποίησης.",
   "Upload a clip to your own Cloudflare storage and get a link that plays right inside Discord. It is optional and stays off until you set up your own server and enter its upload key in Settings. After that, right-click a clip and pick Share link.": "Ανεβάστε ένα κλιπ στον δικό σας χώρο στο Cloudflare και πάρτε έναν σύνδεσμο που παίζει μέσα στο Discord. Είναι προαιρετικό και μένει κλειστό μέχρι να στήσετε τον δικό σας διακομιστή και να βάλετε το κλειδί ανεβάσματος στις Ρυθμίσεις. Μετά κάντε δεξί κλικ σε ένα κλιπ και διαλέξτε Σύνδεσμος κοινοποίησης.",
+  // 0.1.50
+  "Cloud tag and cloud-only clips.": "Ετικέτα cloud και κλιπ μόνο στο cloud.",
+  "A shared clip now shows a cloud tag on its card: click it to copy the link. After an upload Glint can delete the clip from this PC (it asks first, and the file goes to the Recycle Bin) and keep it in your library, where one click downloads it again.": "Ένα κλιπ που μοιραστήκατε δείχνει πλέον ετικέτα cloud στην κάρτα του: κάντε κλικ για αντιγραφή του συνδέσμου. Μετά τη μεταφόρτωση το Glint μπορεί να διαγράψει το κλιπ από αυτόν τον υπολογιστή (ρωτά πρώτα και το αρχείο πηγαίνει στον Κάδο Ανακύκλωσης) και να το κρατήσει στη βιβλιοθήκη σας, όπου το κατεβάζετε ξανά με ένα κλικ.",
+  "Publisher names.": "Ονόματα εκδότη.",
+  "Before your first share you pick a publisher name of 2 to 16 characters. It shows on your shared clips and nobody else on your server can use it. If you run your own share server, update its Worker first.": "Πριν από την πρώτη κοινοποίηση επιλέγετε όνομα εκδότη 2 έως 16 χαρακτήρων. Εμφανίζεται στα κλιπ που μοιράζεστε και κανείς άλλος στον διακομιστή σας δεν μπορεί να το χρησιμοποιήσει. Αν έχετε δικό σας διακομιστή κοινοποίησης, ενημερώστε πρώτα το Worker του.",
 });
