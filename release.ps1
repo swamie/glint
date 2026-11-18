@@ -2,7 +2,7 @@
 #
 #   .\release.ps1                 build, package into dist\release, and publish v<version>
 #   .\release.ps1 -NoPublish      build and package only
-#   .\release.ps1 -Tag "-dev.share"   a private build: tagged version, no self-update, never published
+#   .\release.ps1 -DevTag "-dev.share"   a private build: tagged version, no self-update, never published
 #   .\release.ps1 -Notes "text"   release notes shown on GitHub and in Glint's update prompt
 #
 # The version comes from src-tauri\Cargo.toml. To ship an update: raise `version`
@@ -14,7 +14,7 @@
 param(
     [switch]$NoPublish,
     # A private build: shown after the version (e.g. "-dev.share"), never updates itself, never published.
-    [string]$Tag = "",
+    [string]$DevTag = "",
     [string]$Notes = "",
     [string]$Repo = "swamie/glint"
 )
@@ -24,7 +24,7 @@ $version = (Select-String -Path "$root\src-tauri\Cargo.toml" -Pattern '^version\
 $tag = "v$version"
 Write-Host "Glint $version"
 
-if ($Tag) { $env:GLINT_BUILD_TAG = $Tag; $NoPublish = $true; Write-Host "Private build $version$Tag (not published)" }
+if ($DevTag) { $env:GLINT_BUILD_TAG = $DevTag; $NoPublish = $true; Write-Host "Private build $version$DevTag (not published)" } else { $env:GLINT_BUILD_TAG = "" }
 Push-Location "$root\src-tauri"
 try { cargo build --release; if ($LASTEXITCODE -ne 0) { throw "The build failed." } } finally { Pop-Location }
 
