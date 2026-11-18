@@ -801,7 +801,7 @@ impl Core {
         let names = self.folders();
         let mut lib = self.lib.lock().unwrap();
         let before = lib.clips.len();
-        lib.clips.retain(|c| std::path::Path::new(&c.path).is_file());
+        lib.clips.retain(|c| c.cloud_only || std::path::Path::new(&c.path).is_file());
         let mut changed = lib.clips.len() != before;
         // A draft keeps the folder of its first clip (its export goes there); its file is in `.drafts`.
         // A clip imported in place (its file outside the clips folder) keeps the folder it was

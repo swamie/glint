@@ -162,6 +162,7 @@ fn write_as(s: &Settings, mut cap: Capture, game: &str, game_mode: bool) -> Resu
         joins: Vec::new(),
         join_names: Vec::new(),
         draft: false,
+        cloud_only: false,
     })
 }
 

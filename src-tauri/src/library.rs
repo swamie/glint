@@ -40,6 +40,10 @@ pub struct ClipMeta {
     /// belongs to none). What the editor exports from it is a normal clip.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub draft: bool,
+    /// Share links (share.rs): the file was deleted from this PC after its upload was checked; the
+    /// clip stays in the library and can be downloaded again. Such a clip has no file at `path`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cloud_only: bool,
 }
 
 pub struct Library {
@@ -53,7 +57,7 @@ impl Library {
 
     pub fn load() -> Self {
         let mut clips: Vec<ClipMeta> = fs::read_to_string(Self::file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-        clips.retain(|c| Path::new(&c.path).is_file());
+        clips.retain(|c| c.cloud_only || Path::new(&c.path).is_file());
         Library { clips }
     }
 
@@ -413,6 +417,7 @@ pub fn register_id(ffmpeg: &Path, file: &Path, id: String, title: &str, game: &s
         joins: Vec::new(),
         join_names: Vec::new(),
         draft: false,
+        cloud_only: false,
     }
 }
 

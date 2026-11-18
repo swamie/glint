@@ -878,6 +878,8 @@ function openClip(id) {
   // clipById (join.js) also finds an "Edit together" draft, which is never in S.clips.
   const c = given || (typeof clipById === "function" ? clipById(id) : S.clips.find((x) => x.id === id));
   if (!c) return;
+  // A clip whose file was deleted from this PC after an upload (share.js): offer the download instead.
+  if (!given && typeof shareCloudOnlyOpen === "function" && shareCloudOnlyOpen(id)) return;
   const draft = !!c.draft; // a project's draft (projects.js): edit mode only, nothing to keep, copy, rename or delete
   // An open project saves its edit before it goes (projects.js); it never asks and is never deleted.
   if (S.player && typeof projFlush === "function") projFlush(S.player);
