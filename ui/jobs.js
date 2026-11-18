@@ -95,7 +95,7 @@ function jobsClipTitle(clipId, fallback) {
 /** Every row, newest first: { key, kind, title, state, pct, message, job }. */
 function jobsRows() {
   // thumbs-refresh: kind "thumbs" (its title is one of two English names, translated here).
-  const rows = jobsList.map((j) => ({ key: j.id, kind: ["compress", "join", "gif", "upscale", "rule", "thumbs"].includes(j.kind) ? j.kind : "blur", title: j.kind === "thumbs" ? t(j.title) : jobsClipTitle(j.clip_id, j.title), state: j.state, pct: +j.pct || 0, message: j.message || "", start: +j.queued || 0, job: j }));
+  const rows = jobsList.map((j) => ({ key: j.id, kind: ["compress", "join", "gif", "upscale", "rule", "thumbs", "share"].includes(j.kind) ? j.kind : "blur", title: j.kind === "thumbs" ? t(j.title) : jobsClipTitle(j.clip_id, j.title), state: j.state, pct: +j.pct || 0, message: j.message || "", start: +j.queued || 0, job: j }));
   for (const [id, x] of jobsExports) rows.push({ key: "export:" + id, kind: "export", title: jobsClipTitle(id, ""), state: x.pct >= 100 ? "exported" : "exporting", pct: x.pct, message: "", start: x.start, job: null });
   return rows.sort((a, b) => b.start - a.start);
 }
@@ -190,7 +190,7 @@ function jobsStateLine(r) {
   }
   // GIF exports, upscales and render rules word their own lines: gifJobLine / upscaleJobLine /
   // rulesJobLine(row) in gif.js, upscale.js and rules.js return the text, or "" to leave it to the lines below.
-  const own = { gif: "gifJobLine", upscale: "upscaleJobLine", rule: "rulesJobLine" }[r.kind];
+  const own = { gif: "gifJobLine", upscale: "upscaleJobLine", rule: "rulesJobLine", share: "shareJobLine" }[r.kind];
   if (own && typeof window[own] === "function") { const line = window[own](r); if (line) return line; }
   switch (r.state) {
     case "queued": return squeeze ? t("Waiting to compress for Discord") : t("Waiting");
@@ -219,7 +219,7 @@ function jobsRowEl(r) {
   // Backend jobs (Blur and compress) can be cancelled and their result opened; export rows only follow along.
   if (r.job && (r.state === "queued" || r.state === "running")) act = `<button type="button" class="btn sm jobs-act" data-j-cancel="${esc(r.job.id)}">${esc(t("Cancel"))}</button>`;
   // "Edit together" makes no library clip: its draft opens in the editor by itself (join.js), so no Open.
-  else if (r.job && r.state === "done" && r.job.result_id && r.kind !== "join" && r.kind !== "gif") act = `<button type="button" class="btn sm jobs-act" data-j-open="${esc(r.job.result_id)}">${esc(t("Open"))}</button>`;
+  else if (r.job && r.state === "done" && r.job.result_id && r.kind !== "join" && r.kind !== "gif" && r.kind !== "share") act = `<button type="button" class="btn sm jobs-act" data-j-open="${esc(r.job.result_id)}">${esc(t("Open"))}</button>`;
   const el = document.createElement("div");
   el.className = `jobs-row jobs-st-${r.state}`;
   el.innerHTML = `<div class="jobs-main">

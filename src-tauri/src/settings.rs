@@ -355,6 +355,8 @@ pub struct Settings {
     pub compress_mb: u32,
     /// The Compress page's settings (sizes in the menu, preset, audio, caps, where the result goes).
     pub compress: crate::compress::CompressSettings,
+    /// Share links (share.rs): the user's own Cloudflare Worker. Empty address = off.
+    pub share: crate::share::ShareSettings,
     /// The last choices of the "Export as GIF" dialog (gif.rs).
     pub gif: crate::gif::GifOpts,
     /// The last choices of the "Upscale" dialog (upscale.rs).
@@ -457,6 +459,7 @@ impl Default for Settings {
             editor_keys: Default::default(),
             compress_mb: 10,
             compress: Default::default(),
+            share: crate::share::ShareSettings { copy: true, ..Default::default() },
             gif: Default::default(),
             upscale: Default::default(),
             rules: Vec::new(),

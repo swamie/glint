@@ -1,0 +1,19 @@
+# Glint share links: a Cloudflare Worker with one R2 bucket. See README.md.
+name = "glint-share"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "glint-clips"
+
+[vars]
+# The embed's side bar color.
+EMBED_COLOR = "#3B82F6"
+# Most the bucket may hold, in MB. R2's free tier is 10 GB; uploads past this are refused.
+MAX_MB = "9000"
+# Where the "uploader · game" line goes: "description" (under the title, like Medal)
+# or "site_name" (small grey line above the title). See README.md, "Testing the embed".
+EMBED_LINE = "description"
+# The upload key is a secret, not a var: `npx wrangler secret put UPLOAD_TOKEN`.

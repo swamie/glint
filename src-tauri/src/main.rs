@@ -39,6 +39,7 @@ mod recorder;
 mod rules;
 mod session;
 mod settings;
+mod share; // share links (optional, server/share)
 mod sound;
 mod speedtest;
 mod spill;
