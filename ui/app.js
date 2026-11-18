@@ -799,9 +799,9 @@ function openClipMenu(id, x, y) {
   placeMenu(x, y);
 }
 /** Menu entries other files add to a clip's right-click menu (0.1.24): "Export as GIF…" (gif.js),
- *  "Upscale…" (upscale.js) and "Render rule" (rules.js). Each is a function `xMenuItem(clips)` that
+ *  "Upscale…" (upscale.js), "Render rule" (rules.js) and the share link entries (share.js). Each is a function `xMenuItem(clips)` that
  *  returns menu HTML ("" for none) and handles its own clicks, as joinMenuItem does. */
-const clipMenuExtras = (clips) => ["gifMenuItem", "upscaleMenuItem", "rulesMenuItem"].map((fn) => (typeof window[fn] === "function" ? window[fn](clips) || "" : "")).join("");
+const clipMenuExtras = (clips) => ["gifMenuItem", "upscaleMenuItem", "rulesMenuItem", "shareMenuItem"].map((fn) => (typeof window[fn] === "function" ? window[fn](clips) || "" : "")).join("");
 /** Right-click on a game chip. */
 function openGameMenu(name, x, y) {
   menuIds = [];
@@ -1558,6 +1558,7 @@ function renderSettings() {
     <div class="section" data-cat="program"><h2>${t("Program")}</h2>
       ${row(t("ffmpeg.exe path"), S.ffmpeg ? t("Using {path}", { path: `<span class="path" title="${esc(S.ffmpeg)}">${esc(S.ffmpeg)}</span>` }) : t("Not found"), `<input class="field" type="text" data-set="ffmpeg_path" value="${esc(S.settings.ffmpeg_path)}" placeholder="${esc(S.ffmpeg ? t("Auto ({name})", { name: S.ffmpeg }) : t("Auto"))}" style="width:340px">`)}
     </div>
+    ${typeof shareSettingsSection === "function" ? shareSettingsSection() : "" /* share.js: share links (optional) */}
     ${typeof depsSection === "function" ? inCat("program", depsSection()) : ""}
     <p class="credits-text">${t("Eternal thanks to my friends {a} and {b}, who helped build this project alongside me. I really appreciate you both.", { a: "heaven", b: "rubust" })}
       ${t("And thank you to everyone who chooses Glint over the major clipping services. It keeps me motivated to keep working on it.")}</p>`;

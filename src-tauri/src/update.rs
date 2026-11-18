@@ -54,8 +54,13 @@ fn file() -> PathBuf {
 pub fn load() -> UpdateInfo {
     let mut info: UpdateInfo = fs::read_to_string(file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
     info.current = env!("CARGO_PKG_VERSION").to_string();
-    info.available = newer(&info.latest, &info.current);
+    info.available = newer(&info.latest, &info.current) && !private_build();
     info
+}
+
+/// A private build (build.rs, GLINT_BUILD_TAG) is never replaced by a public release.
+fn private_build() -> bool {
+    !env!("GLINT_BUILD_TAG").is_empty()
 }
 
 fn save(info: &UpdateInfo) {
@@ -144,7 +149,7 @@ pub fn check() -> UpdateInfo {
     info.url = asset_url(ASSET);
     info.sha_url = asset_url(&format!("{ASSET}.sha256"));
     // A release without the zip (still uploading, or a source-only tag) cannot be installed.
-    info.available = newer(&info.latest, &info.current) && !info.url.is_empty();
+    info.available = newer(&info.latest, &info.current) && !info.url.is_empty() && !private_build();
     info.checked = util::unix_ms() / 1000;
     info.error.clear();
     save(&info);

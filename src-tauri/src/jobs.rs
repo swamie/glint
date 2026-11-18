@@ -93,7 +93,10 @@ const COMPRESS_PARALLEL: usize = 1;
 /// "Edit together" jobs running at once (join.rs; their own lane too).
 const JOIN_PARALLEL: usize = 1;
 
-/// The lane of a job kind: 0 Blur, 1 compress, 2 join ("Edit together").
+/// Share uploads running at once (share.rs; their own lane).
+const SHARE_PARALLEL: usize = 1;
+
+/// The lane of a job kind: 0 Blur, 1 compress, 2 join ("Edit together"), 3 share.
 /// Since 0.1.24 the compress lane also takes "gif" (gif.rs), "upscale"
 /// (upscale.rs) and "rule" (a render rule, rules.rs): one of them at a time,
 /// beside the Blur renders. Only kind "blur" sends "blur-progress".
@@ -102,6 +105,7 @@ fn lane_of(kind: &str) -> usize {
         "compress" | "gif" | "upscale" | "rule" => 1,
         "join" => 2,
         "thumbs" => 2, // thumbs-refresh (0.1.46): never waits behind a Blur render or a compress
+        "share" => 3, // share links (share.rs): an upload mostly waits on the network
         _ => 0,
     }
 }
@@ -202,7 +206,7 @@ impl Jobs {
                 return Err("Glint is closing".into());
             }
             if st.list.iter().any(|j| j.clip_id == clip_id && j.kind == kind && !j.ended()) {
-                return Err(match kind { "compress" => "That clip is already being compressed", "gif" => "A GIF of that clip is already being made", "upscale" => "That clip is already being upscaled", "rule" => "That clip is already going through a render rule", "thumbs" => "Thumbnails are already being made", _ => "That clip is already rendering" }.into());
+                return Err(match kind { "compress" => "That clip is already being compressed", "gif" => "A GIF of that clip is already being made", "upscale" => "That clip is already being upscaled", "rule" => "That clip is already going through a render rule", "thumbs" => "Thumbnails are already being made", "share" => "That clip is already being uploaded", _ => "That clip is already rendering" }.into());
             }
             let job = Job { id: util::new_id(), clip_id: clip_id.into(), title: title.into(), kind: kind.into(), state: "queued".into(), queued: util::unix_ms(), ..Default::default() };
             st.tasks.insert(job.id.clone(), Task { cancel: Arc::new(AtomicBool::new(false)), run: Some(run), last_emit: None });
@@ -362,11 +366,11 @@ impl Inner {
             }
             let limit = self.limit();
             // Running jobs per lane: [blur, compress].
-            let mut running = [0usize; 3];
+            let mut running = [0usize; 4];
             for j in st.list.iter().filter(|j| j.state == "running") {
                 running[lane_of(&j.kind)] += 1;
             }
-            let caps = [limit, COMPRESS_PARALLEL, JOIN_PARALLEL];
+            let caps = [limit, COMPRESS_PARALLEL, JOIN_PARALLEL, SHARE_PARALLEL];
             for i in 0..st.list.len() {
                 if st.list[i].state != "queued" {
                     continue;
