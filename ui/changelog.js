@@ -40,6 +40,12 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.49", date: "2026-11-18",
+    new: [
+      { title: t("Share links."), text: t("Upload a clip to your own Cloudflare storage and get a link that plays right inside Discord. It is optional and stays off until you set up your own server and enter its upload key in Settings. After that, right-click a clip and pick Share link."), go: "settings:program", label: t("Open the setting") },
+    ],
+  },
+  {
     version: "0.1.48", date: "2026-11-18",
     improved: [
       { text: t("When GAME mode records your whole screen instead of only the game, the switch's menu and the status bar now say why and what you can do about it."), go: "capmode", label: t("Show me") },
