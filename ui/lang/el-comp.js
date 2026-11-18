@@ -20,7 +20,7 @@ glintAddLanguage("el", "Ελληνικά", {
   "Default size": "Προεπιλεγμένο μέγεθος",
   "Picked first on this page and ticked in the clip menu": "Επιλέγεται πρώτο σε αυτή τη σελίδα και είναι σημειωμένο στο μενού του κλιπ",
   "Sizes in the clip menu": "Μεγέθη στο μενού του κλιπ",
-  "Right-click a clip → Compress for Discord lists these. Up to 8, from 5 to 1000 MB": "Δεξί κλικ σε κλιπ → Συμπίεση για Discord τα εμφανίζει. Έως 8, από 5 έως 1000 MB",
+  "Right-click a clip → Compress for Discord lists these, in this order. Drag to reorder. Up to 8, from 5 to 1000 MB": "Δεξί κλικ σε κλιπ → Συμπίεση για Discord τα εμφανίζει με αυτή τη σειρά. Σύρετε για αλλαγή σειράς. Έως 8, από 5 έως 1000 MB",
   "Speed": "Ταχύτητα",
   "Slower presets give a slightly better picture at the same size, and take longer": "Οι πιο αργές προρρυθμίσεις δίνουν λίγο καλύτερη εικόνα στο ίδιο μέγεθος και διαρκούν περισσότερο",
   "{name} (default)": "{name} (προεπιλογή)",
@@ -58,7 +58,6 @@ glintAddLanguage("el", "Ελληνικά", {
   "Compressing {clips}…": "Συμπίεση {clips}…",
   "Compressed to {size}.": "Συμπιέστηκε στα {size}.",
   "Pick a size from {min} to {max} MB": "Επιλέξτε μέγεθος από {min} έως {max} MB",
-  "Type one or more sizes from {min} to {max} MB, such as 10, 50, 500": "Πληκτρολογήστε ένα ή περισσότερα μεγέθη από {min} έως {max} MB, π.χ. 10, 50, 500",
   "Add clips": "Προσθήκη κλιπ",
   "Select all shown": "Επιλογή όλων όσων φαίνονται",
   "Add": "Προσθήκη",
@@ -69,4 +68,7 @@ glintAddLanguage("el", "Ελληνικά", {
   // compress.rs messages shown as they come
   "That file was not found": "Το αρχείο δεν βρέθηκε",
   "The file no longer exists": "Το αρχείο δεν υπάρχει πια",
+  "Remove": "Αφαίρεση",
+  "+ MB": "+ MB",
+  "Add a size in MB": "Προσθήκη μεγέθους σε MB",
 });

@@ -2,8 +2,8 @@
 //!
 //! `monitor_preview { index, width }` copies that monitor's current picture from the screen with
 //! plain GDI (StretchBlt from the desktop's DC into a small DIB, about 320 px wide, halftone
-//! scaling) and returns it as a PNG data URL. The UI asks for it about once a second while a
-//! picker is on screen, and never otherwise. The monitor is found by its handle, as the capture
+//! scaling) and returns it as a PNG data URL. The UI asks for it every few seconds while a
+//! picker is on screen and Glint is in front, and never otherwise. The monitor is found by its handle, as the capture
 //! names it (`win::monitor_source`, 0.1.35), so the picture is the monitor of that number.
 //! Exclusive-fullscreen games can come out black: GDI sees what the desktop composes.
 //!
@@ -14,7 +14,7 @@ use std::ffi::c_void;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GdiFlush, GetDC, ReleaseDC, SelectObject, SetBrushOrgEx, SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER,
-    DIB_RGB_COLORS, HALFTONE, HDC, SRCCOPY,
+    COLORONCOLOR, DIB_RGB_COLORS, HALFTONE, HDC, SRCCOPY,
 };
 
 /// The preview's size for a monitor of `w` x `h` at `width` pixels wide (64..=640), keeping its shape.
@@ -129,8 +129,24 @@ pub fn grab_raw(index: u32, width: u32) -> Result<(Vec<u8>, i32, i32, (i32, i32,
         if screen.is_invalid() {
             return Err("The screen could not be read".into());
         }
-        let px = stretch_from(screen, rect, dw, dh);
-        ReleaseDC(HWND::default(), screen);
+        // Cheap first: a plain sampled copy at twice the size (the screen is read once, no filtering
+        // over millions of pixels), then halftone from that small bitmap in memory for a clean picture.
+        let (mw, mh) = (dw * 2, dh * 2);
+        let px = match dib(mw, mh) {
+            Some((mid, bmp, _, old)) => {
+                SetStretchBltMode(mid, COLORONCOLOR);
+                let ok = StretchBlt(mid, 0, 0, mw, mh, screen, rect.0, rect.1, rect.2, rect.3, SRCCOPY).as_bool();
+                ReleaseDC(HWND::default(), screen);
+                let out = if ok { stretch_from(mid, (0, 0, mw, mh), dw, dh) } else { None };
+                free(mid, bmp, old);
+                out
+            }
+            None => {
+                let out = stretch_from(screen, rect, dw, dh);
+                ReleaseDC(HWND::default(), screen);
+                out
+            }
+        };
         px
     };
     let px = px.ok_or("The monitor's picture could not be copied")?;

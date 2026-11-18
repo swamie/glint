@@ -20,7 +20,7 @@ glintAddLanguage("ko", "한국어", {
   "Default size": "기본 크기",
   "Picked first on this page and ticked in the clip menu": "이 페이지에서 처음에 선택되고, 클립 메뉴에서 체크 표시돼요",
   "Sizes in the clip menu": "클립 메뉴의 크기",
-  "Right-click a clip → Compress for Discord lists these. Up to 8, from 5 to 1000 MB": "클립 오른쪽 클릭 → Discord용으로 압축에 나오는 크기예요. 5~1000 MB, 최대 8개",
+  "Right-click a clip → Compress for Discord lists these, in this order. Drag to reorder. Up to 8, from 5 to 1000 MB": "클립 오른쪽 클릭 → Discord용으로 압축에 이 순서대로 나와요. 끌어서 순서를 바꿔요. 5~1000 MB, 최대 8개",
   "Speed": "속도",
   "Slower presets give a slightly better picture at the same size, and take longer": "느린 프리셋일수록 같은 크기에서 화질이 조금 더 좋지만 시간이 더 걸려요",
   "{name} (default)": "{name} (기본값)",
@@ -58,7 +58,6 @@ glintAddLanguage("ko", "한국어", {
   "Compressing {clips}…": "{clips}를 압축하고 있어요…",
   "Compressed to {size}.": "{size}(으)로 압축했어요.",
   "Pick a size from {min} to {max} MB": "{min}~{max} MB 사이로 고르세요",
-  "Type one or more sizes from {min} to {max} MB, such as 10, 50, 500": "{min}~{max} MB 사이의 크기를 하나 이상 입력하세요. 예: 10, 50, 500",
   "Add clips": "클립 추가",
   "Select all shown": "보이는 것 모두 선택",
   "Add": "추가",
@@ -69,4 +68,7 @@ glintAddLanguage("ko", "한국어", {
   // compress.rs messages shown as they come
   "That file was not found": "그 파일을 찾을 수 없어요",
   "The file no longer exists": "파일이 더 이상 없어요",
+  "Remove": "삭제",
+  "+ MB": "+ MB",
+  "Add a size in MB": "크기 추가 (MB)",
 });

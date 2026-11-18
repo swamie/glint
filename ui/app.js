@@ -1368,7 +1368,7 @@ const select = (path, opts, num = false) => {
   return `<select class="field" data-set="${path}" ${num ? "data-num" : ""}>${opts.map(([v, l]) => `<option value="${esc(v)}"${String(cur) === String(v) ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
 };
 const number = (path, min, max, step = 1) => `<input class="field" type="number" data-set="${path}" data-num min="${min}" max="${max}" step="${step}" value="${getPath(S.settings, path)}">`;
-const pageHead = (title, sub) => `<div class="page-head"><div><h1>${title}</h1><div class="sub">${sub}</div></div></div>`;
+const pageHead = (title, sub) => `<div class="page-head"><div><h1>${title}</h1>${sub ? `<div class="sub">${sub}</div>` : ""}</div></div>`;
 
 const DURATIONS = [15, 30, 60, 120, 180, 300, 600, 900, 1800];
 function renderKeybinds() {
@@ -1460,7 +1460,7 @@ function renderRecording() {
     : t("The newest {secs} stay in RAM and the rest is kept in files. Up to {ram} of RAM and {disk} on disk", sizes);
   const bufferDir = s.buffer_dir || "%LOCALAPPDATA%\\Glint\\buffer";
   const extra = kbExtraMons(); // these keep their own capture whatever the Monitor dropdown says
-  $("#view").innerHTML = pageHead(t("Capture"), t("What the replay buffer captures")) + `
+  $("#view").innerHTML = pageHead(t("Capture")) + `
     ${typeof cap2TopHtml === "function" ? cap2TopHtml() : ""}
     ${st.error && st.recording ? `<div class="note bad"><b>${t("Capture problem:")}</b> ${esc(st.error)}${typeof depsErrorExtra === "function" ? depsErrorExtra(st.error) : ""}</div>` : ""}
     <div class="section"><h2>${t("Video")}</h2>

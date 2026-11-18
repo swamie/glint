@@ -132,7 +132,7 @@ function renderCompressPage() {
     ${results ? `<div class="section"><h2>${t("Results")}</h2>${results}</div>` : ""}
     <div class="section"><h2>${t("Compression settings")}</h2>
       ${row(t("Default size"), t("Picked first on this page and ticked in the clip menu"), `<input class="field" type="number" data-cpg-default min="5" max="1000" step="1" value="${+s.compress_mb || 10}"><span class="cpg-unit">MB</span>`)}
-      ${row(t("Sizes in the clip menu"), t("Right-click a clip → Compress for Discord lists these. Up to 8, from 5 to 1000 MB"), `<input class="field" type="text" data-cpg-sizes value="${esc(sizes.join(", "))}" spellcheck="false" style="width:190px">`)}
+      ${row(t("Sizes in the clip menu"), t("Right-click a clip → Compress for Discord lists these, in this order. Drag to reorder. Up to 8, from 5 to 1000 MB"), cpgSizeListHtml(sizes))}
       ${row(t("Speed"), t("Slower presets give a slightly better picture at the same size, and take longer"), select("compress.preset", presets))}
       ${row(t("Audio bitrate"), t("Taken from the size before the picture gets the rest"), select("compress.audio_kbps", [[0, audioAuto], [64, "64 kb/s"], [96, "96 kb/s"], [128, "128 kb/s"], [160, "160 kb/s"], [192, "192 kb/s"]], true))}
       ${row(t("Highest resolution"), t("Glint picks the size the bitrate can carry, never more than this"), select("compress.max_height", [[0, heightAuto], [1080, "1080p"], [720, "720p"], [480, "480p"], [360, "360p"]], true))}
@@ -303,10 +303,15 @@ function cpgBind() {
 
 async function cpgClick(e) {
   if (S.page !== "compress") return;
-  const el = e.target.closest("[data-cpg-pick],[data-cpg-file],[data-cpg-clear],[data-cpg-mb],[data-cpg-start],[data-cpg-remove],[data-cpg-cancel],[data-cpg-copy],[data-cpg-reveal],[data-cpg-open],[data-cpg-dir]");
+  const el = e.target.closest("[data-cpg-pick],[data-cpg-file],[data-cpg-clear],[data-cpg-mb],[data-cpg-start],[data-cpg-remove],[data-cpg-cancel],[data-cpg-copy],[data-cpg-reveal],[data-cpg-open],[data-cpg-dir],[data-cpg-szdel]");
   if (!el || el.disabled) return;
   const d = el.dataset;
   try {
+    if (d.cpgSzdel) {
+      const list = cpgMenuSizes(S.settings).filter((x) => x !== +d.cpgSzdel);
+      if (list.length) cpgSizesSave(list);
+      return;
+    }
     if ("cpgPick" in d) return cpgPickOpen();
     if ("cpgFile" in d) {
       const files = (await invoke("pick_compress_files")) || [];
@@ -365,14 +370,65 @@ function cpgChange(e) {
     el.blur();
     return saveSettings(true);
   }
-  if ("cpgSizes" in el.dataset) {
-    const list = cpgParseSizes(el.value, lo, hi);
-    if (!list.length) { flash(t("Type one or more sizes from {min} to {max} MB, such as 10, 50, 500", { min: lo, max: hi }), true); return render(); }
-    S.settings.compress.sizes = list;
+  if ("cpgSzadd" in el.dataset) {
+    if (el.value === "") return;
+    const n = Math.round(+el.value);
+    if (!Number.isFinite(n) || n < lo || n > hi) { flash(t("Pick a size from {min} to {max} MB", { min: lo, max: hi }), true); return render(); }
+    const list = cpgMenuSizes(S.settings);
+    if (list.includes(n) || list.length >= 8) return render();
     el.blur();
-    return saveSettings(true);
+    return cpgSizesSave(list.concat(n));
   }
 }
+
+/* ---------- the clip menu's sizes: blocks to drag, remove and add ---------- */
+
+function cpgSizeListHtml(sizes) {
+  const lo = CPG.info?.min_mb || 5, hi = CPG.info?.max_mb || 1000;
+  const blocks = sizes.map((x) => `<span class="cpg-sz" data-cpg-sz="${x}" title="${esc(t("Drag to reorder"))}"><i class="cpg-grip" aria-hidden="true"></i>${t("{n} MB", { n: x })}${sizes.length > 1 ? `<button type="button" class="cpg-sz-x" data-cpg-szdel="${x}" aria-label="${esc(t("Remove"))}">×</button>` : ""}</span>`).join("");
+  const add = sizes.length < 8 ? `<input class="field cpg-sz-add" type="number" data-cpg-szadd min="${lo}" max="${hi}" step="1" placeholder="${esc(t("+ MB"))}" aria-label="${esc(t("Add a size in MB"))}">` : "";
+  return `<div class="cpg-szl" data-cpg-szl>${blocks}${add}</div>`;
+}
+
+function cpgSizesSave(list) {
+  S.settings.compress.sizes = list;
+  saveSettings(true);
+}
+
+/** Drag a size block along the row: the blocks move live, the order is saved on release. */
+function cpgSizeDrag(e) {
+  if (S.page !== "compress" || e.button !== 0) return;
+  const blk = e.target.closest?.(".cpg-sz");
+  if (!blk || e.target.closest(".cpg-sz-x")) return;
+  const box = blk.parentElement;
+  const before = [...box.querySelectorAll(".cpg-sz")].map((b) => +b.dataset.cpgSz);
+  if (before.length < 2) return;
+  e.preventDefault();
+  // Listened on the document, not with pointer capture: moving the block in the DOM would drop the capture.
+  blk.classList.add("drag");
+  const move = (ev) => {
+    for (const other of box.querySelectorAll(".cpg-sz")) {
+      if (other === blk) continue;
+      const r = other.getBoundingClientRect();
+      if (ev.clientY < r.top || ev.clientY > r.bottom || ev.clientX < r.left || ev.clientX > r.right) continue;
+      if (ev.clientX > r.left + r.width / 2) { if (other.nextElementSibling !== blk) other.after(blk); }
+      else if (other.previousElementSibling !== blk) other.before(blk);
+      break;
+    }
+  };
+  const up = () => {
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", up);
+    document.removeEventListener("pointercancel", up);
+    blk.classList.remove("drag");
+    const order = [...box.querySelectorAll(".cpg-sz")].map((b) => +b.dataset.cpgSz);
+    if (order.join() !== before.join()) cpgSizesSave(order);
+  };
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", up);
+  document.addEventListener("pointercancel", up);
+}
+if (typeof document !== "undefined") document.addEventListener("pointerdown", cpgSizeDrag);
 
 /* ---------- the clip picker ---------- */
 
