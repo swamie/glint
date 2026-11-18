@@ -357,4 +357,9 @@ glintAddLanguage("ko", "한국어", {
   // 0.1.49
   "Share links.": "공유 링크.",
   "Upload a clip to your own Cloudflare storage and get a link that plays right inside Discord. It is optional and stays off until you set up your own server and enter its upload key in Settings. After that, right-click a clip and pick Share link.": "클립을 내 Cloudflare 저장소에 올리고 Discord 안에서 바로 재생되는 링크를 받습니다. 선택 사항이며, 내 서버를 설정하고 설정에 업로드 키를 넣기 전에는 꺼져 있습니다. 그다음 클립을 오른쪽 클릭하고 공유 링크 만들기를 고르세요.",
+  // 0.1.50
+  "Cloud tag and cloud-only clips.": "클라우드 태그와 클라우드 전용 클립.",
+  "A shared clip now shows a cloud tag on its card: click it to copy the link. After an upload Glint can delete the clip from this PC (it asks first, and the file goes to the Recycle Bin) and keep it in your library, where one click downloads it again.": "공유한 클립의 카드에 클라우드 태그가 표시됩니다. 클릭하면 링크가 복사됩니다. 업로드 후 Glint가 이 PC에서 클립을 삭제할 수 있으며(먼저 묻고, 파일은 휴지통으로 갑니다) 라이브러리에는 그대로 남아 클릭 한 번으로 다시 내려받을 수 있습니다.",
+  "Publisher names.": "게시자 이름.",
+  "Before your first share you pick a publisher name of 2 to 16 characters. It shows on your shared clips and nobody else on your server can use it. If you run your own share server, update its Worker first.": "처음 공유하기 전에 2~16자의 게시자 이름을 정합니다. 공유한 클립에 표시되며 서버에서 다른 사람은 같은 이름을 쓸 수 없습니다. 직접 공유 서버를 운영한다면 먼저 Worker를 업데이트하세요.",
 });
