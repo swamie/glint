@@ -372,4 +372,6 @@ glintAddLanguage("el", "Ελληνικά", {
   "In the editor, a clip you only trimmed can be exported. Before, Glint said there was nothing to export.": "Στον επεξεργαστή, ένα κλιπ που μόνο περικόψατε μπορεί να εξαχθεί. Πριν, το Glint έλεγε ότι δεν υπάρχει τίποτα για εξαγωγή.",
   "In the editor, Desktop sound set to 0% stays silent in the export.": "Στον επεξεργαστή, ο ήχος Desktop στο 0% μένει σιωπηλός στην εξαγωγή.",
   "In the editor, after you cut out the part under the playhead, Play continues from where the playhead is instead of showing the removed part.": "Στον επεξεργαστή, αφού κόψετε το κομμάτι κάτω από την κεφαλή αναπαραγωγής, η Αναπαραγωγή συνεχίζει από εκεί που βρίσκεται η κεφαλή αντί να δείχνει το κομμάτι που αφαιρέθηκε.",
+  // 0.1.53
+  "Text you type in the bug report and feedback boxes is easy to read again. Before, it was dark on a dark background.": "Το κείμενο που γράφετε στα πλαίσια αναφοράς σφάλματος και σχολίων διαβάζεται ξανά εύκολα. Πριν, ήταν σκούρο πάνω σε σκούρο φόντο.",
 });

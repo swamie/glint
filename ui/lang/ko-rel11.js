@@ -372,4 +372,6 @@ glintAddLanguage("ko", "한국어", {
   "In the editor, a clip you only trimmed can be exported. Before, Glint said there was nothing to export.": "편집기에서 길이만 자른 클립도 내보낼 수 있습니다. 이전에는 Glint가 내보낼 것이 없다고 했습니다.",
   "In the editor, Desktop sound set to 0% stays silent in the export.": "편집기에서 데스크톱 소리를 0%로 두면 내보낸 영상에서도 소리가 나지 않습니다.",
   "In the editor, after you cut out the part under the playhead, Play continues from where the playhead is instead of showing the removed part.": "편집기에서 재생 헤드 아래 부분을 잘라낸 뒤 재생하면, 지운 부분을 보여 주지 않고 재생 헤드가 있는 곳부터 이어집니다.",
+  // 0.1.53
+  "Text you type in the bug report and feedback boxes is easy to read again. Before, it was dark on a dark background.": "버그 신고와 의견 상자에 입력한 글자가 다시 잘 보입니다. 이전에는 어두운 배경에 어두운 글자로 표시되었습니다.",
 });
