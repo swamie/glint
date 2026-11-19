@@ -47,3 +47,14 @@
 .cpg-pick-txt { display: flex; flex-direction: column; min-width: 0; }
 .cpg-pick-foot { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-top: 1px solid var(--line); }
 .cpg-pick-n { margin-right: auto; color: var(--muted); font-size: 12.5px; }
+
+/* Sizes in the clip menu: blocks, dragged to reorder (cpgSizeDrag). */
+.cpg-szl { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; max-width: 420px; }
+.cpg-sz { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 4px 0 6px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--raised);
+  font-size: 12.5px; font-weight: 600; cursor: grab; user-select: none; touch-action: none; font-variant-numeric: tabular-nums; }
+.cpg-sz:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line-2)); }
+.cpg-sz.drag { cursor: grabbing; border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--raised)); box-shadow: 0 4px 12px rgba(0, 0, 0, .35); }
+.cpg-grip { width: 6px; height: 12px; opacity: .45; background: radial-gradient(circle, currentColor 1px, transparent 1.3px) 0 0 / 3px 4px; }
+.cpg-sz-x { padding: 0; border: 0; background: none; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%; color: var(--dim); font-size: 14px; line-height: 1; cursor: pointer; }
+.cpg-sz-x:hover { background: var(--raised-2); color: var(--text); }
+.cpg-sz-add.field { width: 74px; height: 28px; }

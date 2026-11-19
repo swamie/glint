@@ -148,8 +148,11 @@ function bdMakeAurora({ w, h, pal }) {
     const { r, g, b } = glintHexToRgb(c);
     // Local coordinates: a unit circle, stretched by the transform into a wide band.
     const grad = bdScratch().createRadialGradient(0, 0, 0, 0, 0, 1);
+    // A brighter core and a quicker falloff than a plain fade, so the bands read as shapes, not haze.
     grad.addColorStop(0, `rgba(${r},${g},${b},1)`);
-    grad.addColorStop(0.45, `rgba(${r},${g},${b},0.5)`);
+    grad.addColorStop(0.25, `rgba(${r},${g},${b},0.85)`);
+    grad.addColorStop(0.55, `rgba(${r},${g},${b},0.32)`);
+    grad.addColorStop(0.8, `rgba(${r},${g},${b},0.08)`);
     grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
     return grad;
   };
@@ -327,7 +330,7 @@ function bdMakeDrift({ w, h, pal }) {
 
 window.GLINT_BACKDROPS = [
   { id: "snowfall", get name() { return t("Snowfall"); }, tier: "builtin", fps: 30, scale: 1, make: bdMakeSnow },
-  { id: "aurora", get name() { return t("Aurora"); }, tier: "builtin", fps: 15, scale: 0.125, make: bdMakeAurora },
+  { id: "aurora", get name() { return t("Aurora"); }, tier: "builtin", fps: 12, scale: 0.33, make: bdMakeAurora },
   { id: "stars", get name() { return t("Starfield"); }, tier: "builtin", fps: 12, scale: 1, make: bdMakeStars },
   { id: "fireflies", get name() { return t("Fireflies"); }, tier: "builtin", fps: 30, scale: 1, make: bdMakeFireflies },
   { id: "drift", get name() { return t("Drift"); }, tier: "builtin", fps: 12, scale: 0.125, make: bdMakeDrift },

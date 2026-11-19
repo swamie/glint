@@ -2,7 +2,7 @@
 // The monitor picker (0.1.41): wherever Glint asks for a monitor (Settings → Capture, a clip keybind's monitor,
 // the keybind that switches the capture monitor), the monitors are drawn to scale in their real arrangement,
 // each with its number, resolution and refresh rate, the main one marked, the chosen one highlighted, and
-// inside each a small live picture of what is on it (monprev.rs `monitor_preview`, about once a second while
+// inside each a small live picture of what is on it (monprev.rs `monitor_preview`, every few seconds while
 // a picker is on screen and the window is visible; never otherwise). Click or arrow keys + Enter pick.
 //
 // monPick(opts) returns the markup. It carries a hidden native <select data-native> with the same data
@@ -14,8 +14,10 @@
 // Pure helpers (node-testable): mpLayout, mpLabel. Names here start with `mp` / `MP`; markup uses `mp-` classes.
 
 const MP = { pics: {}, fails: {}, timer: 0, busy: false, ticks: 0, pop: null, popFor: null };
-const MP_REFRESH_MS = 1000;
-const MP_PIC_WIDTH = 320;
+// Light by design: a new picture every few seconds, only while Glint is the window in front, at about
+// the size it is shown. Out of focus the picker keeps its last pictures and takes none.
+const MP_REFRESH_MS = 3000;
+const MP_PIC_WIDTH = 240;
 
 const mpEsc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const mpMons = () => (typeof S !== "undefined" && Array.isArray(S.monitors) ? S.monitors : []);
@@ -170,7 +172,7 @@ async function mpTick() {
   MP.timer = 0;
   const maps = mpVisibleMaps();
   if (!maps.length || typeof invoke !== "function") return; // nothing on screen: no picture is taken, the loop stops
-  if (!MP.busy) {
+  if (!MP.busy && (MP.ticks === 0 || document.hasFocus())) {
     MP.busy = true;
     MP.ticks++;
     const wanted = [...new Set(maps.flatMap((m) => [...m.querySelectorAll(".mp-pic")].map((i) => +i.dataset.mon)))];
@@ -195,6 +197,7 @@ async function mpTick() {
 }
 
 /* ---------- wiring ---------- */
+if (typeof window !== "undefined") window.addEventListener("focus", () => { if (MP.timer) { clearTimeout(MP.timer); MP.timer = 0; } mpWake(); });
 if (typeof document !== "undefined") {
   document.addEventListener("click", (e) => {
     const open = e.target.closest?.("[data-mp-open]");
