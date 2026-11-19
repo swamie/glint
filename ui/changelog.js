@@ -40,6 +40,12 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.51", date: "2026-11-19",
+    improved: [
+      { text: t("The editor's Overlays tab now shows the text and drawing tools with their names (Text, Rectangle, Arrow, Pen, Blur box, pictures and more). Before, they were only in the small bar over the picture, which was easy to miss.") },
+    ],
+  },
+  {
     version: "0.1.50", date: "2026-11-18",
     new: [
       { title: t("Cloud tag and cloud-only clips."), text: t("A shared clip now shows a cloud tag on its card: click it to copy the link. After an upload Glint can delete the clip from this PC (it asks first, and the file goes to the Recycle Bin) and keep it in your library, where one click downloads it again."), go: "settings:program", label: t("Open the setting") },

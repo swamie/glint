@@ -59,3 +59,11 @@
 .e-ov .ov-rnow::after { content: ""; position: absolute; top: 0; bottom: 0; left: -5px; right: -5px; }
 .kf-bar { cursor: ew-resize; }
 .kf-dia { cursor: grab; }
+/* 0.1.51: the tools in the Overlays panel, with their names. */
+.ov-ptools { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 2px 0 10px; }
+.ov-ptool { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 8px; background: transparent; color: inherit; font: 600 12.5px var(--sans); cursor: pointer; text-align: left; min-width: 0; }
+.ov-ptool[data-ov-add] { grid-column: 1 / -1; }
+.ov-ptool span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-ptool svg { flex: none; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ov-ptool:hover { background: rgba(255, 255, 255, .07); }
+.ov-ptool.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink, #fff); }
