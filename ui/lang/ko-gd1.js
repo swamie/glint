@@ -40,6 +40,6 @@ glintAddLanguage("ko", "한국어", {
   "Monitor {n}": "모니터 {n}",
   "main": "주 모니터",
   "Main monitor": "주 모니터",
-  "A live picture of each monitor. A game in exclusive fullscreen can look black here.": "각 모니터의 실시간 화면이에요. 전용 전체 화면 게임은 여기서 검게 보일 수 있어요.",
+  "A picture of each monitor, taken when this opened. A game in exclusive fullscreen can look black here.": "이 화면을 열 때 찍은 각 모니터의 모습이에요. 전용 전체 화면 게임은 여기서 검게 보일 수 있어요.",
   "Choose a monitor": "모니터 선택",
 });

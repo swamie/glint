@@ -1,9 +1,9 @@
-//! A small live picture of one monitor for the monitor picker (0.1.41, ui/monpick.js).
+//! A small picture of one monitor for the monitor picker (0.1.41, ui/monpick.js).
 //!
 //! `monitor_preview { index, width }` copies that monitor's current picture from the screen with
 //! plain GDI (StretchBlt from the desktop's DC into a small DIB, about 320 px wide, halftone
-//! scaling) and returns it as a PNG data URL. The UI asks for it about once a second while a
-//! picker is on screen, and never otherwise. The monitor is found by its handle, as the capture
+//! scaling) and returns it as a PNG data URL. The UI asks for it once per monitor when a picker
+//! comes on screen (a snapshot, reused for 30 s), never on a timer. The monitor is found by its handle, as the capture
 //! names it (`win::monitor_source`, 0.1.35), so the picture is the monitor of that number.
 //! Exclusive-fullscreen games can come out black: GDI sees what the desktop composes.
 //!
@@ -137,7 +137,7 @@ pub fn grab_raw(index: u32, width: u32) -> Result<(Vec<u8>, i32, i32, (i32, i32,
     Ok((px, dw, dh, rect))
 }
 
-/// The monitor picker's live picture (ui/monpick.js). Fails soft: the picker then shows the
+/// The monitor picker's snapshot picture (ui/monpick.js). Fails soft: the picker then shows the
 /// monitor's number and size only.
 #[tauri::command(async)]
 pub fn monitor_preview(index: u32, width: Option<u32>) -> Result<String, String> {

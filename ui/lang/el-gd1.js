@@ -40,6 +40,6 @@ glintAddLanguage("el", "Ελληνικά", {
   "Monitor {n}": "Οθόνη {n}",
   "main": "κύρια",
   "Main monitor": "Κύρια οθόνη",
-  "A live picture of each monitor. A game in exclusive fullscreen can look black here.": "Ζωντανή εικόνα κάθε οθόνης. Ένα παιχνίδι σε αποκλειστική πλήρη οθόνη μπορεί να φαίνεται μαύρο εδώ.",
+  "A picture of each monitor, taken when this opened. A game in exclusive fullscreen can look black here.": "Εικόνα κάθε οθόνης, τραβηγμένη όταν άνοιξε αυτό. Ένα παιχνίδι σε αποκλειστική πλήρη οθόνη μπορεί να φαίνεται μαύρο εδώ.",
   "Choose a monitor": "Επιλογή οθόνης",
 });

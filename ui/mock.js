@@ -921,7 +921,7 @@ if (!window.__TAURI__) {
           case "get_state": mockDeps.sync(); state.monitors = mockMons(); syncCaptures(); try { state.version = localStorage.getItem("mock.version") || state.version; } catch {} return state; // newtag: localStorage["mock.version"] plays an update
           // newtag: one id per run (app.rs launch_id). localStorage["mock.launch"] = "2" and a reload plays a restart of Glint; a plain reload is a window reopened from the tray.
           case "launch_id": try { return "mock-run-" + (localStorage.getItem("mock.launch") || "1"); } catch { return "mock-run-1"; }
-          // The monitor picker's live picture (monprev.rs): a colored test picture per monitor.
+          // The monitor picker's snapshot picture (monprev.rs): a colored test picture per monitor.
           case "monitor_preview": return mockPreview(args.index, args.width);
           case "auto_info": return state.auto;
           case "recommended_settings": return {
