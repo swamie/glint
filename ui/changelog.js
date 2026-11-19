@@ -40,6 +40,12 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.53", date: "2026-11-20",
+    fixed: [
+      t("Text you type in the bug report and feedback boxes is easy to read again. Before, it was dark on a dark background."),
+    ],
+  },
+  {
     version: "0.1.52", date: "2026-11-20",
     improved: [
       t("Bug reports and feedback now reach the developer from every copy of Glint. Before, some copies could only point you to GitHub."),
