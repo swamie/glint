@@ -364,4 +364,12 @@ glintAddLanguage("ko", "한국어", {
   "Before your first share you pick a publisher name of 2 to 16 characters. It shows on your shared clips and nobody else on your server can use it. If you run your own share server, update its Worker first.": "처음 공유하기 전에 2~16자의 게시자 이름을 정합니다. 공유한 클립에 표시되며 서버에서 다른 사람은 같은 이름을 쓸 수 없습니다. 직접 공유 서버를 운영한다면 먼저 Worker를 업데이트하세요.",
   // 0.1.51
   "The editor's Overlays tab now shows the text and drawing tools with their names (Text, Rectangle, Arrow, Pen, Blur box, pictures and more). Before, they were only in the small bar over the picture, which was easy to miss.": "편집기의 오버레이 탭에 텍스트와 그리기 도구가 이름과 함께 표시됩니다(텍스트, 사각형, 화살표, 펜, 블러 상자, 사진 등). 이전에는 화면 위의 작은 막대에만 있어 놓치기 쉬웠습니다.",
+  // 0.1.52
+  "Bug reports and feedback now reach the developer from every copy of Glint. Before, some copies could only point you to GitHub.": "버그 신고와 의견이 이제 모든 Glint에서 개발자에게 전달됩니다. 이전에는 일부 버전이 GitHub로만 안내했습니다.",
+  "The monitor pictures in Settings are taken once when they come on screen instead of every second, so Glint uses less of your processor while Settings is open.": "설정의 모니터 그림을 매초가 아니라 화면에 나타날 때 한 번만 찍습니다. 설정을 열어 둔 동안 Glint가 프로세서를 덜 씁니다.",
+  "Glint keeps recording the monitor you picked after a monitor is plugged in, turned off or made the main one. Before, your choice could jump to another screen.": "모니터를 연결하거나, 끄거나, 주 모니터로 바꿔도 Glint가 선택한 모니터를 계속 녹화합니다. 이전에는 선택이 다른 화면으로 바뀔 수 있었습니다.",
+  "A monitor connected to a second graphics card is recorded correctly. Before, Glint recorded a different monitor.": "두 번째 그래픽 카드에 연결된 모니터가 올바르게 녹화됩니다. 이전에는 Glint가 다른 모니터를 녹화했습니다.",
+  "In the editor, a clip you only trimmed can be exported. Before, Glint said there was nothing to export.": "편집기에서 길이만 자른 클립도 내보낼 수 있습니다. 이전에는 Glint가 내보낼 것이 없다고 했습니다.",
+  "In the editor, Desktop sound set to 0% stays silent in the export.": "편집기에서 데스크톱 소리를 0%로 두면 내보낸 영상에서도 소리가 나지 않습니다.",
+  "In the editor, after you cut out the part under the playhead, Play continues from where the playhead is instead of showing the removed part.": "편집기에서 재생 헤드 아래 부분을 잘라낸 뒤 재생하면, 지운 부분을 보여 주지 않고 재생 헤드가 있는 곳부터 이어집니다.",
 });

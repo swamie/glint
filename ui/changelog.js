@@ -40,6 +40,20 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.52", date: "2026-11-20",
+    improved: [
+      t("Bug reports and feedback now reach the developer from every copy of Glint. Before, some copies could only point you to GitHub."),
+      t("The monitor pictures in Settings are taken once when they come on screen instead of every second, so Glint uses less of your processor while Settings is open."),
+    ],
+    fixed: [
+      t("Glint keeps recording the monitor you picked after a monitor is plugged in, turned off or made the main one. Before, your choice could jump to another screen."),
+      t("A monitor connected to a second graphics card is recorded correctly. Before, Glint recorded a different monitor."),
+      t("In the editor, a clip you only trimmed can be exported. Before, Glint said there was nothing to export."),
+      t("In the editor, Desktop sound set to 0% stays silent in the export."),
+      t("In the editor, after you cut out the part under the playhead, Play continues from where the playhead is instead of showing the removed part."),
+    ],
+  },
+  {
     version: "0.1.51", date: "2026-11-19",
     improved: [
       { text: t("The editor's Overlays tab now shows the text and drawing tools with their names (Text, Rectangle, Arrow, Pen, Blur box, pictures and more). Before, they were only in the small bar over the picture, which was easy to miss.") },
