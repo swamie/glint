@@ -2546,6 +2546,10 @@ function mountPlayer(root, c) {
       const now = tlNow();
       if (!aft && noVid(em0, now)) setAft(now, playing());
       else if (aft && now < em0.duration - EM_EPS && !noVid(em0, now)) go(now, playing());
+      // The footage under the playhead left the row (its piece was cut out or trimmed away, an undo): the video still
+      // stood in it, so Play showed and sounded what is no longer on the timeline while the playhead waited at the
+      // start of the next piece (0.1.52). It goes to what the playhead shows now.
+      else if (!aft && !vpend && em0.parts && !noVid(em0, now) && Math.abs(emToSrc(em0, now) - vNow()) > 0.05) go(edLand(em0, now, false, frame), playing());
     }
     syncRows();
     applyRate();
