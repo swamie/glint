@@ -1504,7 +1504,7 @@ function emSetThrough(m, id, on) {
  * (everything the PC played). Played or mixed together, the game would be
  * twice as loud. So the result is built from Desktop + Microphone as before,
  * and Game is used INSTEAD of Desktop: it is heard only in the segments where
- * Desktop is silent (muted, level 0, or another row soloed). Mute Desktop and
+ * Desktop is muted (the row, a piece of it, or another row soloed). Mute Desktop and
  * keep Game to keep the game and drop voice chat and music. */
 
 /** The clip's own track row with this title ("Desktop", "Game"), or null. */
@@ -1516,8 +1516,10 @@ function emGameHidden(m, row, i) {
   // `gameApart` (set by editor.js from the waveforms): this clip's desktop sound is silent, so the game
   // played on another output device and is only on the Game row. It is then heard beside Desktop.
   if (m.gameApart) return false;
+  // Game stands in where Desktop is MUTED (the row's mute, or a muted piece). A Desktop row turned down to 0% is just
+  // silent (0.1.52: Game came in at full level there, so the desktop sound seemed to jump back to 100%).
   const d = emTrackRow(m, "Desktop");
-  return !!d && !d.muted && d.volume > 0.005 && (d.gains[i] ?? 1) > 0.005;
+  return !!d && !d.muted && (d.gains[i] ?? 1) > 0.005;
 }
 
 /** What the timeline says about a row, in English (translate with t()): "" for most rows. */
@@ -1920,7 +1922,15 @@ const emAudioUntouched = (m) => !emTracksGone(m).length && !(m.parts || []).some
 /** True if the edit is nothing but one kept range (one in the source too): the export can cut it without re-encoding. */
 const emIsPlainCut = (m) => !emHasLayers(m) && !m.canvas && emKept(m).length === 1 &&(!m.parts || emSrcSpans(m, emKept(m)[0].start, emKept(m)[0].end).length === 1) && Math.abs(m.speed - 1) < 0.005 && emPieces(m).every((p) => !p.blank && emSameColor(p.color)) && emAudioUntouched(m);
 /** True if the result would differ from the source at all. */
-const emChanged = (m) => !(emIsPlainCut(m) && m.removed.every((r) => !r));
+function emChanged(m) {
+  if (!emIsPlainCut(m) || m.removed.some((r) => r)) return true;
+  // A trim (I / O, a dragged edge) leaves one piece with nothing cut out of it, but it shows only part of the source:
+  // that is a change too (0.1.52: the export said "Nothing to export yet" for a clip that was only trimmed).
+  if (!m.parts) return false;
+  const k = emKept(m)[0], x = k ? emSrcSpans(m, k.start, k.end)[0] : null;
+  if (!x || !Number.isFinite(m.source)) return true;
+  return x.src > 0.0005 || x.src + x.len * (x.speed || 1) < m.source - 0.0005;
+}
 
 const emRound = (x) => Math.round(x * 1000) / 1000;
 
