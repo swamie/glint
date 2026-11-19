@@ -598,6 +598,7 @@ function ovMount(root, c, P) {
     for (const b of bar.querySelectorAll("[data-ov-tool]")) { const on = b.dataset.ovTool === k; b.classList.toggle("on", on); b.setAttribute("aria-pressed", String(on)); }
     layer.classList.toggle("drawing", k !== "select");
     box.classList.toggle("ov-drawing", k !== "select");
+    for (const b of panel?.querySelectorAll?.("[data-ov-tool]") || []) { const on = b.dataset.ovTool === k; b.classList.toggle("on", on); b.setAttribute("aria-pressed", String(on)); }
     renderPanel();
   }
   function select(id) {
@@ -985,7 +986,9 @@ function ovMount(root, c, P) {
     let html = `<div class="e-title">${esc(t("Text and drawing"))}</div>`;
     if (!mm) html += `<div class="small">${esc(t("Loading…"))}</div>`;
     else {
-      if (!kind) html += `<div class="small">${esc(t("Pick a tool above the picture, then click or drag on the picture. Pick Select to move or change what you drew."))}</div>`;
+      // 0.1.51: the tools are here too, with their names (the bar over the picture is easy to miss).
+      html += `<div class="ov-ptools" role="toolbar" aria-label="${esc(t("Text and drawing"))}">${OV_TOOLS.map(([k, , d]) => `<button type="button" class="ov-ptool${st.tool === k ? " on" : ""}" data-ov-tool="${k}" aria-pressed="${st.tool === k}">${svg(d)}<span>${esc(ovName(k))}</span></button>`).join("")}<button type="button" class="ov-ptool" data-ov-add>${svg(OV_ADD_PATH)}<span>${esc(t("Picture, GIF or clip"))}</span></button></div>`;
+      if (!kind) html += `<div class="small">${esc(t("Pick a tool, then click or drag on the picture. Pick Select to move or change what you drew."))}</div>`;
       else if (OV_MEDIA_PATHS[kind] && o) {
         // A picture, GIF or clip (media.js): see-through, looping, crop.
         const op = Math.round(ovClamp(ovNum(o.opacity, 1), 0, 1) * 100);
@@ -1135,6 +1138,8 @@ function ovMount(root, c, P) {
 
   panel.addEventListener("mousedown", (e) => { if (e.target.closest("button")) e.preventDefault(); });
   panel.addEventListener("click", (e) => {
+    const tb = e.target.closest("[data-ov-tool], [data-ov-add]");
+    if (tb) { if (tb.dataset.ovTool) setTool(tb.dataset.ovTool); else medPick(); return; }
     const kb = e.target.closest("button[data-kf]");
     if (kb) { keyAction(kb.dataset.kf); return; }
     const b = e.target.closest("[data-ov-color], [data-ov-act], [data-ov-pick]");
