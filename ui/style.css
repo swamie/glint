@@ -30,7 +30,7 @@ body {
   user-select: none;
   -webkit-font-smoothing: antialiased;
 }
-button, input, select { font: inherit; color: inherit; }
+button, input, select, textarea { font: inherit; color: inherit; }
 svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 /* Selected text takes the theme's accent instead of the system blue. A third of it over the dark
    page keeps the text readable whether the accent is a color or white (the Mono theme). */
