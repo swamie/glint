@@ -36,6 +36,41 @@ You need a free Cloudflare account and Node.js.
    set your name, press **Check**.
 4. Right-click a clip → **Share link**. The link is copied when the upload is done.
 
+## Bug reports and feedback
+
+The same Worker takes the bug reports and the feedback that Glint's bug and
+heart buttons send (`POST /report`) and passes them on to a Discord channel.
+The Discord webhook is a secret of the Worker, so it is not in the app.
+
+1. In Discord: the channel's settings → Integrations → Webhooks → New Webhook
+   → Copy Webhook URL.
+2. In this folder:
+
+       npx wrangler secret put BUG_WEBHOOK_URL
+       npx wrangler deploy
+
+   and paste the webhook URL when asked. In the dashboard instead: the Worker →
+   Settings → Variables and Secrets → Add → type Secret, name
+   `BUG_WEBHOOK_URL`.
+
+Optional, set the same way:
+
+- `BUG_PING_IDS`: Discord user ids to mention on each bug report, separated
+  by commas. Feedback never mentions anyone.
+- `FEEDBACK_WEBHOOK_URL`: a second webhook if feedback should go to another
+  channel. Without it feedback goes to `BUG_WEBHOOK_URL`.
+- `REPORT_GAP_S` (30), `REPORT_PER_IP_DAY` (10), `REPORT_PER_DAY` (300): the
+  limits. One connection may send one report per 30 seconds and 10 a day, and
+  the Worker passes on at most 300 a day in all.
+
+Until `BUG_WEBHOOK_URL` is set, Glint shows "Bug reports are not set up on the
+server yet." when someone presses Send. The Worker rebuilds every message
+before it reaches Discord: one embed of plain text, no links or pictures, no
+mentions other than `BUG_PING_IDS`, a log of at most 256 KB.
+
+`node test/report.test.mjs` checks the route with a fake bucket and a fake
+Discord.
+
 ## Settings (`wrangler.toml`, `[vars]`)
 
 - `EMBED_COLOR`: the embed's side bar, `#3B82F6` (blue).

@@ -5,6 +5,9 @@
 //   GET  /c/<id>        the share page (embed tags for Discord, a player for people)
 //   GET  /v/<id>.mp4    the video (Range requests, for Discord's player and browsers)
 //   GET  /t/<id>.jpg    the poster picture
+// Bug reports and feedback from the app (no key; see "Bug reports" below)
+//   POST /report?kind=bug|feedback   multipart: payload_json (Discord-style), files[0] (bug: glint-log.txt)
+//                                    -> 204, or { error } with 400 / 413 / 429 / 502 / 503
 // Upload API (Authorization: Bearer <UPLOAD_TOKEN>)
 //   GET    /api/usage                              { used, limit, clips }
 //   POST   /api/names                              { name, secret, release? } -> { name }: claim a publisher name
@@ -360,6 +363,115 @@ ${lineTag}
 </body></html>`;
 }
 
+// ---- Bug reports and feedback.
+// Glint posts here and the Worker passes the report on to a Discord webhook. The webhook lives only
+// in the Worker's secrets (BUG_WEBHOOK_URL, optional FEEDBACK_WEBHOOK_URL), so it is not in the app
+// and cannot be pulled out of it. BUG_PING_IDS (optional, comma-separated Discord user ids) are
+// mentioned on bug reports. The Worker rebuilds the Discord message from the parts it allows, so a
+// caller cannot ping anyone, add links or images, or post anything but one plain embed.
+// Limits: per IP one report a REPORT_GAP_S (30 s) and REPORT_PER_IP_DAY (10) a day; REPORT_PER_DAY (300)
+// a day in all. Counts are kept in R2 under r/<day>/, a few bytes each.
+
+const REPORT_MAX_BODY = 300 * 1024;
+const REPORT_MAX_LOG = 256 * 1024;
+const WEBHOOK_RE = /^https:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+$/;
+
+const rstr = (v, max) => {
+  const s = typeof v === "string" ? v : "";
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+};
+
+/** One clean Discord payload from what the app sent. Only text, a color and plain fields survive. */
+function cleanPayload(raw, kind, pings) {
+  const e = (raw && Array.isArray(raw.embeds) && raw.embeds[0]) || {};
+  const embed = {};
+  const title = rstr(e.title, 256).trim();
+  if (title) embed.title = title;
+  const desc = rstr(e.description, 4096).trim();
+  if (desc) embed.description = desc;
+  if (Number.isInteger(e.color) && e.color >= 0 && e.color <= 0xffffff) embed.color = e.color;
+  const fields = (Array.isArray(e.fields) ? e.fields : []).slice(0, 6)
+    .map((f) => ({ name: rstr(f && f.name, 256).trim(), value: rstr(f && f.value, 1024).trim(), inline: !!(f && f.inline) }))
+    .filter((f) => f.name && f.value);
+  if (fields.length) embed.fields = fields;
+  if (!embed.description && !fields.length) return null;
+  // The first line ("Bug report · Glint 0.1.52"), without anything that could look like a mention.
+  const head = rstr(raw && raw.content, 200).split("\n").pop().replace(/[@<>]/g, "").trim() || (kind === "bug" ? "Bug report" : "Feedback");
+  const content = kind === "bug" && pings.length ? `${pings.map((id) => `<@${id}>`).join(" ")}\n${head}` : head;
+  return { content, embeds: [embed], allowed_mentions: kind === "bug" ? { parse: [], users: pings } : { parse: [] } };
+}
+
+async function sha(text) {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(d)].slice(0, 12).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function readCount(env, k) {
+  const o = await env.BUCKET.get(k);
+  if (!o) return { n: 0, last: 0 };
+  try { return await o.json(); } catch { return { n: 0, last: 0 }; }
+}
+
+/** null when the report may go, else the refusal. Not exact under bursts (R2 has no atomic add); close enough. */
+async function reportLimit(env, ip) {
+  const now = Date.now();
+  const day = new Date(now).toISOString().slice(0, 10);
+  const num = (v, d) => (v === undefined || v === "" || !Number.isFinite(Number(v)) ? d : Number(v));
+  const gap = num(env.REPORT_GAP_S, 30) * 1000;
+  const perIp = num(env.REPORT_PER_IP_DAY, 10);
+  const perDay = num(env.REPORT_PER_DAY, 300);
+  const ipKey = `r/${day}/${await sha(`${ip}|${day}`)}.json`, allKey = `r/${day}/_all.json`;
+  const [mine, all] = await Promise.all([readCount(env, ipKey), readCount(env, allKey)]);
+  if (now - mine.last < gap) return fail("Wait a moment before sending another report.", 429);
+  if (mine.n >= perIp) return fail("That is a lot of reports from this connection today. Try again tomorrow.", 429);
+  if (all.n >= perDay) return fail("Too many reports today. Try again tomorrow.", 429);
+  const put = (k, v) => env.BUCKET.put(k, JSON.stringify(v), { httpMetadata: { contentType: "application/json" } });
+  await Promise.all([put(ipKey, { n: mine.n + 1, last: now }), put(allKey, { n: all.n + 1, last: now })]);
+  return null;
+}
+
+async function report(request, env, url) {
+  if (request.method !== "POST") return fail("Use POST.", 405);
+  const kind = url.searchParams.get("kind") === "feedback" ? "feedback" : "bug";
+  const hook = String((kind === "feedback" && env.FEEDBACK_WEBHOOK_URL) || env.BUG_WEBHOOK_URL || "").trim();
+  if (!WEBHOOK_RE.test(hook)) return fail("Bug reports are not set up on the server yet.", 503);
+  const length = Number(request.headers.get("Content-Length") || 0);
+  if (length > REPORT_MAX_BODY) return fail("The report is too big.", 413);
+  if (!(request.headers.get("Content-Type") || "").toLowerCase().startsWith("multipart/form-data")) return fail("Send the report as multipart/form-data.", 400);
+  const body = await request.arrayBuffer();
+  if (body.byteLength > REPORT_MAX_BODY) return fail("The report is too big.", 413);
+  let form;
+  try { form = await new Response(body, { headers: { "Content-Type": request.headers.get("Content-Type") } }).formData(); } catch { return fail("The report could not be read.", 400); }
+  let raw;
+  try { raw = JSON.parse(await (async (p) => (typeof p === "string" ? p : p ? await p.text() : ""))(form.get("payload_json"))); } catch { return fail("The report could not be read.", 400); }
+  const pings = String(env.BUG_PING_IDS || "").split(",").map((s) => s.trim()).filter((s) => /^\d{5,25}$/.test(s));
+  const payload = cleanPayload(raw, kind, pings);
+  if (!payload) return fail("The report is empty.", 400);
+  let log = null;
+  const f = kind === "bug" ? form.get("files[0]") : null;
+  if (f) {
+    const text = typeof f === "string" ? f : await f.text();
+    if (text.length > REPORT_MAX_LOG) return fail("The log is too big.", 413);
+    log = text;
+  }
+
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  const refused = await reportLimit(env, ip);
+  if (refused) return refused;
+
+  const out = new FormData();
+  out.append("payload_json", JSON.stringify(payload));
+  if (log !== null) out.append("files[0]", new Blob([log], { type: "text/plain" }), "glint-log.txt");
+  let res;
+  try { res = await fetch(hook, { method: "POST", body: out }); } catch { return fail("Could not reach Discord. Try again in a minute.", 502); }
+  if (res.ok) return new Response(null, { status: 204, headers: NOINDEX });
+  if (res.status === 429) return fail("Discord is busy right now. Try again in a minute.", 429);
+  // Discord's own reason is passed on (it never holds the webhook address).
+  let why = "";
+  try { why = rstr((await res.json()).message, 120); } catch {}
+  return fail(`Discord did not accept the ${kind === "bug" ? "report" : "feedback"} (HTTP ${res.status}${why ? `: ${why}` : ""}).`, 502);
+}
+
 export default {
   async fetch(request, env) {
     // The bucket's binding may be named BUCKET (wrangler.toml) or CLIPS (set up in the dashboard).
@@ -369,6 +481,7 @@ export default {
     const parts = url.pathname.split("/").filter(Boolean);
     try {
       if (parts[0] === "api") return await api(request, env, url, parts);
+      if (parts.length === 1 && parts[0] === "report") return await report(request, env, url);
       if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method not allowed", { status: 405, headers: NOINDEX });
 
       if (parts.length === 2 && (parts[0] === "v" || parts[0] === "t")) {

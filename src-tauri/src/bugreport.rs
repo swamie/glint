@@ -1,8 +1,9 @@
 //! "Report a bug": a message from the user, posted to the developer's Discord.
 //!
-//! The report goes to a Discord webhook built into the program (see build.rs:
-//! it comes from the git-ignored `bug-webhook.txt` and is stored lightly
-//! obfuscated) and pings the developers named there.
+//! The report goes to the Glint server (the share Worker's `/report` route,
+//! server/share), which passes it on to the developers' Discord. The Discord
+//! webhook and the ids to ping are secrets of that Worker; nothing about them
+//! is in the program, so every build can send reports.
 //!
 //! What is sent, and only when the user presses Send: their text, the contact
 //! they typed (if any), the `system` lines they were shown (Glint and Windows
@@ -10,9 +11,9 @@
 //! the last lines of `glint.log`. Every occurrence of the user's profile folder
 //! is replaced by `~` first, so the Windows user name does not leave the PC.
 //!
-//! Network use: one HTTPS POST to discord.com per report, with curl.exe (it
-//! ships with Windows 10 and 11). `GLINT_BUG_HOOK_URL` replaces the address at
-//! run time; the self-test points it at a listener on 127.0.0.1.
+//! Network use: one HTTPS POST to clips.glintclip.com per report, with curl.exe
+//! (it ships with Windows 10 and 11). `GLINT_REPORT_URL` replaces the address
+//! at run time; the self-test points it at a listener on 127.0.0.1.
 use crate::core::Core;
 use crate::{util, win};
 use serde::Serialize;
@@ -23,11 +24,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// Must match `KEY` in build.rs.
-const KEY: &[u8] = b"glint:bug-report:v1/k9#Qz";
-/// The obfuscated webhook URL and ping ids ("" when the build had no bug-webhook.txt).
-const HOOK: &str = env!("GLINT_BUG_HOOK");
-const PINGS: &str = env!("GLINT_BUG_PINGS");
+/// Where reports and feedback are posted (`?kind=bug` or `?kind=feedback` is added).
+const REPORT_URL: &str = "https://clips.glintclip.com/report";
 
 /// Lines of glint.log a report carries.
 const LOG_LINES: usize = 150;
@@ -52,29 +50,12 @@ pub struct BugInfo {
     pub log: String,
 }
 
-/// Undo build.rs's `hide`.
-fn reveal(hex: &str) -> String {
-    let bytes: Vec<u8> = (0..hex.len() / 2)
-        .filter_map(|i| u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok())
-        .enumerate()
-        .map(|(i, b)| b ^ KEY[i % KEY.len()] ^ (i as u8).wrapping_mul(31))
-        .collect();
-    String::from_utf8(bytes).unwrap_or_default()
-}
-
-/// Where reports go and whom they ping.
-struct Hook {
-    url: String,
-    ids: Vec<String>,
-}
-
-fn hook() -> Hook {
-    let url = match std::env::var("GLINT_BUG_HOOK_URL") {
+/// The report address: `GLINT_REPORT_URL` when set, else the Glint server.
+fn endpoint() -> String {
+    match std::env::var("GLINT_REPORT_URL") {
         Ok(u) if !u.trim().is_empty() => u.trim().to_string(),
-        _ => reveal(HOOK),
-    };
-    let ids = reveal(PINGS).split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect();
-    Hook { url, ids }
+        _ => REPORT_URL.to_string(),
+    }
 }
 
 /// Replace every occurrence of the user's profile folder with `~`. Letter case
@@ -183,7 +164,7 @@ fn log_text() -> String {
 
 /// What the dialog shows: whether reports can be sent, and exactly what goes with one.
 pub fn info(core: &Core) -> BugInfo {
-    BugInfo { configured: !hook().url.is_empty(), version: env!("CARGO_PKG_VERSION").to_string(), system: system_text(core), log: log_text() }
+    BugInfo { configured: !endpoint().is_empty(), version: env!("CARGO_PKG_VERSION").to_string(), system: system_text(core), log: log_text() }
 }
 
 /// At most `max` characters, with "…" at the end when something was cut.
@@ -194,11 +175,9 @@ fn cut(text: &str, max: usize) -> String {
     text.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
 }
 
-/// The `payload_json` part of the post.
-fn payload(ids: &[String], text: &str, contact: &str, system: &str) -> serde_json::Value {
-    let pings: Vec<String> = ids.iter().map(|id| format!("<@{id}>")).collect();
-    let title = format!("Bug report · Glint {}", env!("CARGO_PKG_VERSION"));
-    let content = if pings.is_empty() { title } else { format!("{}\n{title}", pings.join(" ")) };
+/// The `payload_json` part of the post. The server adds the pings.
+fn payload(text: &str, contact: &str, system: &str) -> serde_json::Value {
+    let content = format!("Bug report · Glint {}", env!("CARGO_PKG_VERSION"));
     let mut fields = Vec::new();
     if !contact.is_empty() {
         fields.push(serde_json::json!({ "name": "Contact", "value": cut(contact, 1024), "inline": false }));
@@ -208,12 +187,12 @@ fn payload(ids: &[String], text: &str, contact: &str, system: &str) -> serde_jso
     fields.push(serde_json::json!({ "name": "System", "value": format!("```\n{}\n```", cut(&system, 1024 - 8)), "inline": false }));
     serde_json::json!({
         "content": cut(&content, 2000),
-        "allowed_mentions": { "parse": [], "users": ids },
+        "allowed_mentions": { "parse": [] },
         "embeds": [{ "description": cut(text, 4096), "color": 0xf5b83d, "fields": fields }],
     })
 }
 
-/// A short reason, made safe to show: never the webhook address, never the profile folder.
+/// A short reason, made safe to show: never the report address, never the profile folder.
 fn scrub(msg: &str, url: &str) -> String {
     let mut m = msg.to_string();
     if !url.is_empty() {
@@ -240,17 +219,14 @@ pub fn send(core: &Core, text: &str, contact: &str, include_log: bool) -> Result
     if LAST_SENT.lock().unwrap().is_some_and(|t| t.elapsed() < PAUSE) {
         return Err("Wait a moment before sending another report.".into());
     }
-    let hook = hook();
-    if hook.url.is_empty() {
-        return Err("Bug reports are not set up in this copy of Glint.".into());
-    }
+    let url = endpoint();
     let system = system_text(core);
-    let body = serde_json::to_string(&payload(&hook.ids, text, &contact, &system)).map_err(|e| format!("Could not prepare the report: {e}"))?;
+    let body = serde_json::to_string(&payload(text, &contact, &system)).map_err(|e| format!("Could not prepare the report: {e}"))?;
     let log = include_log.then(|| {
         let log = log_text();
         if log.is_empty() { "(the log is empty)".to_string() } else { log }
     });
-    let result = post(&hook.url, "bug", &body, log.as_deref(), "report");
+    let result = post(&url, "bug", &body, log.as_deref(), "report");
     match &result {
         Ok(()) => {
             *LAST_SENT.lock().unwrap() = Some(Instant::now());
@@ -267,7 +243,7 @@ pub fn send(core: &Core, text: &str, contact: &str, include_log: bool) -> Result
 static TEST_ONLY: AtomicBool = AtomicBool::new(false);
 
 /// POST `body` as `payload_json` (and `log` as glint-log.txt when given) to
-/// `url` with curl.exe. `prefix` names the temporary files, `what` the thing in
+/// `url?kind=<prefix>` with curl.exe (`prefix` is "bug" or "fb"). `prefix` names the temporary files, `what` the thing in
 /// error messages ("report", "feedback").
 fn post(url: &str, prefix: &str, body: &str, log: Option<&str>, what: &str) -> Result<(), String> {
     if TEST_ONLY.load(Ordering::SeqCst) && !url.starts_with("http://127.0.0.1:") {
@@ -290,7 +266,8 @@ fn post(url: &str, prefix: &str, body: &str, log: Option<&str>, what: &str) -> R
             fs::write(dir.join(&log_name), log).map_err(|e| format!("Could not attach the log: {e}"))?;
             cmd.arg("-F").arg(format!("files[0]=@{log_name};filename=glint-log.txt;type=text/plain"));
         }
-        let out = cmd.arg(url).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).output().map_err(|e| format!("Could not run curl.exe: {e}"))?;
+        let kind = if prefix == "fb" { "feedback" } else { "bug" };
+        let out = cmd.arg(format!("{url}?kind={kind}")).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).output().map_err(|e| format!("Could not run curl.exe: {e}"))?;
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
         let (answer, code) = stdout.rsplit_once('\n').unwrap_or(("", stdout.as_str()));
         let code: u16 = code.trim().parse().unwrap_or(0);
@@ -299,9 +276,16 @@ fn post(url: &str, prefix: &str, body: &str, log: Option<&str>, what: &str) -> R
             return Err(scrub(&format!("Could not reach Discord. Check the internet connection and try again. ({})", if why.is_empty() { "no answer" } else { &why }), url));
         }
         if !(200..=299).contains(&code) {
-            let detail = serde_json::from_str::<serde_json::Value>(answer.trim()).ok().and_then(|v| v["message"].as_str().map(|m| cut(m, 120))).unwrap_or_default();
+            // The server answers { "error": "..." } in plain words; Discord itself (a test listener) { "message": "..." }.
+            let v = serde_json::from_str::<serde_json::Value>(answer.trim()).ok();
+            let said = v.as_ref().and_then(|v| v["error"].as_str().map(|m| cut(m, 200)));
+            let detail = v.as_ref().and_then(|v| v["message"].as_str().map(|m| cut(m, 120))).unwrap_or_default();
             let detail = if detail.is_empty() { String::new() } else { format!(": {detail}") };
-            let msg = if code == 429 { format!("Discord is busy right now (HTTP 429{detail}). Try again in a minute.") } else { format!("Discord did not accept the {what} (HTTP {code}{detail}).") };
+            let msg = match said {
+                Some(m) if !m.is_empty() => m,
+                _ if code == 429 => format!("Discord is busy right now (HTTP 429{detail}). Try again in a minute."),
+                _ => format!("Discord did not accept the {what} (HTTP {code}{detail})."),
+            };
             return Err(scrub(&msg, url));
         }
         Ok(())
@@ -311,7 +295,7 @@ fn post(url: &str, prefix: &str, body: &str, log: Option<&str>, what: &str) -> R
     result
 }
 
-// ---- Feedback (the heart button): stars and a few words, to the same webhook.
+// ---- Feedback (the heart button): stars and a few words, to the same server.
 
 const MAX_STARS: u8 = 5;
 static LAST_FEEDBACK: Mutex<Option<Instant>> = Mutex::new(None);
@@ -328,7 +312,7 @@ pub struct FeedbackInfo {
 }
 
 pub fn feedback_info(core: &Core) -> FeedbackInfo {
-    FeedbackInfo { configured: !hook().url.is_empty(), version: env!("CARGO_PKG_VERSION").to_string(), language: core.settings().language.clone() }
+    FeedbackInfo { configured: !endpoint().is_empty(), version: env!("CARGO_PKG_VERSION").to_string(), language: core.settings().language.clone() }
 }
 
 /// "★★★★☆ 4 / 5", or "No stars given" for 0.
@@ -379,13 +363,10 @@ pub fn send_feedback(core: &Core, stars: u8, text: &str, contact: &str) -> Resul
     if LAST_FEEDBACK.lock().unwrap().is_some_and(|t| t.elapsed() < PAUSE) {
         return Err("Wait a moment before sending more feedback.".into());
     }
-    let hook = hook();
-    if hook.url.is_empty() {
-        return Err("Feedback is not set up in this copy of Glint.".into());
-    }
+    let url = endpoint();
     let language = core.settings().language.clone();
     let body = serde_json::to_string(&feedback_payload(stars, text, &contact, &language)).map_err(|e| format!("Could not prepare the feedback: {e}"))?;
-    let result = post(&hook.url, "fb", &body, None, "feedback");
+    let result = post(&url, "fb", &body, None, "feedback");
     match &result {
         Ok(()) => {
             *LAST_FEEDBACK.lock().unwrap() = Some(Instant::now());
@@ -400,6 +381,8 @@ pub fn send_feedback(core: &Core, stars: u8, text: &str, contact: &str) -> Resul
 #[derive(Clone, Default)]
 struct Received {
     method: String,
+    /// The request target, e.g. "/report?kind=bug".
+    path: String,
     body: String,
 }
 
@@ -413,7 +396,7 @@ struct Listener {
 fn listen() -> std::io::Result<Listener> {
     use std::io::{Read, Write};
     let server = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let url = format!("http://127.0.0.1:{}/api/webhooks/test/token", server.local_addr()?.port());
+    let url = format!("http://127.0.0.1:{}/report", server.local_addr()?.port());
     let got = std::sync::Arc::new(Mutex::new(Vec::new()));
     let status = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(204));
     let (g, s) = (got.clone(), status.clone());
@@ -450,12 +433,19 @@ fn listen() -> std::io::Result<Listener> {
                 }
             }
             let h = head_end.unwrap_or(buf.len());
-            let method = String::from_utf8_lossy(&buf[..h]).split_whitespace().next().unwrap_or("").to_string();
-            g.lock().unwrap().push(Received { method, body: String::from_utf8_lossy(&buf[h..]).into_owned() });
+            let head = String::from_utf8_lossy(&buf[..h]).to_string();
+            let mut words = head.split_whitespace();
+            let method = words.next().unwrap_or("").to_string();
+            let path = words.next().unwrap_or("").to_string();
+            g.lock().unwrap().push(Received { method, path, body: String::from_utf8_lossy(&buf[h..]).into_owned() });
             let answer = match s.load(Ordering::Relaxed) {
                 400 => {
                     let body = r#"{"message": "Invalid Form Body", "code": 50035}"#;
                     format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                }
+                429 => {
+                    let body = r#"{"error": "Wait a moment before sending another report."}"#;
+                    format!("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
                 }
                 _ => "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".to_string(),
             };
@@ -475,7 +465,7 @@ fn part<'a>(body: &'a str, name: &str) -> Option<&'a str> {
 }
 
 /// `glint.exe --bug-test <report.txt>`: headless checks against a listener on
-/// 127.0.0.1. Never sends anything to the real webhook.
+/// 127.0.0.1. Never sends anything to the real server.
 pub fn self_test(report_path: &str) {
     // First of all: no post of this process may leave 127.0.0.1 (see `post`).
     TEST_ONLY.store(true, Ordering::SeqCst);
@@ -491,14 +481,12 @@ pub fn self_test(report_path: &str) {
             return;
         }
     };
-    std::env::set_var("GLINT_BUG_HOOK_URL", &server.url);
+    std::env::set_var("GLINT_REPORT_URL", &server.url);
     // Never go on unless every report of this test lands on the listener.
-    if !hook().url.starts_with("http://127.0.0.1:") {
+    if !endpoint().starts_with("http://127.0.0.1:") {
         let _ = fs::write(report_path, "FAIL the report address does not point at the test listener\n");
         return;
     }
-    let built_in = reveal(HOOK);
-    let ids: Vec<String> = hook().ids;
     let profile = std::env::var("USERPROFILE").unwrap_or_default();
     let has_profile = |t: &str| {
         let t = t.to_lowercase().replace('/', "\\").replace("\\\\", "\\");
@@ -540,14 +528,11 @@ pub fn self_test(report_path: &str) {
     check(&format!("report is sent: {r:?}"), r.is_ok() && count() == 1);
     let req = last();
     let json = part(&req.body, "payload_json").and_then(|p| p.split_once("\r\n\r\n")).and_then(|(_, j)| serde_json::from_str::<serde_json::Value>(j).ok()).unwrap_or_default();
-    check("it is a POST", req.method == "POST");
+    check("it is a POST to /report?kind=bug", req.method == "POST" && req.path == "/report?kind=bug");
     check("payload_json is JSON", json.is_object());
-    note(format!("INFO ping ids built in: {}", ids.len()));
     let content = json["content"].as_str().unwrap_or("");
-    check("content pings every id", !ids.is_empty() && ids.iter().all(|id| content.contains(&format!("<@{id}>"))));
-    check("content names the version", content.contains(&format!("Glint {}", env!("CARGO_PKG_VERSION"))));
-    let users: Vec<String> = json["allowed_mentions"]["users"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
-    check("allowed_mentions: no parse, exactly the ids", json["allowed_mentions"]["parse"].as_array().is_some_and(|a| a.is_empty()) && users == ids);
+    check("content names the version and pings no one (the server adds the pings)", content == format!("Bug report · Glint {}", env!("CARGO_PKG_VERSION")));
+    check("allowed_mentions: none", json["allowed_mentions"] == serde_json::json!({ "parse": [] }));
     check("embed carries the text", json["embeds"][0]["description"].as_str() == Some(text));
     let fields = json["embeds"][0]["fields"].as_array().cloned().unwrap_or_default();
     check("no Contact field when none was given", !fields.iter().any(|f| f["name"] == "Contact"));
@@ -578,26 +563,31 @@ pub fn self_test(report_path: &str) {
     let r = send(&core, text, "", false);
     note(format!("INFO HTTP 400 gives: {r:?}"));
     check("HTTP 400 is an error with its code", r.as_ref().is_err_and(|e| e.contains("400")) && count() == 3);
-    check("the error does not show the address", r.as_ref().is_err_and(|e| !e.contains(&server.url) && !e.contains("127.0.0.1") && !e.contains("webhooks")));
+    check("the error does not show the address", r.as_ref().is_err_and(|e| !e.contains(&server.url) && !e.contains("127.0.0.1") && !e.contains("/report")));
     check("a failed report does not start the pause", send(&core, text, "", false).is_err_and(|e| e.contains("400")) && count() == 4);
+    // The server's own refusal (rate limit, not set up) is shown in its words.
+    server.status.store(429, Ordering::Relaxed);
+    let r = send(&core, text, "", false);
+    note(format!("INFO server 429 gives: {r:?}"));
+    check("the server's error text is shown as it is", r.as_ref().is_err_and(|e| e == "Wait a moment before sending another report."));
     server.status.store(204, Ordering::Relaxed);
 
     // Nothing listening: a readable error, still without the address.
     *LAST_SENT.lock().unwrap() = None;
-    let dead = std::net::TcpListener::bind("127.0.0.1:0").ok().and_then(|l| l.local_addr().ok()).map(|a| format!("http://127.0.0.1:{}/api/webhooks/x/y", a.port())).unwrap_or_default();
-    std::env::set_var("GLINT_BUG_HOOK_URL", &dead);
+    let dead = std::net::TcpListener::bind("127.0.0.1:0").ok().and_then(|l| l.local_addr().ok()).map(|a| format!("http://127.0.0.1:{}/report", a.port())).unwrap_or_default();
+    std::env::set_var("GLINT_REPORT_URL", &dead);
     let r = send(&core, text, "", false);
     note(format!("INFO no listener gives: {r:?}"));
     check("no answer is an error without the address", r.as_ref().is_err_and(|e| e.contains("Could not reach Discord") && !e.contains(&dead)));
-    std::env::set_var("GLINT_BUG_HOOK_URL", &server.url);
+    std::env::set_var("GLINT_REPORT_URL", &server.url);
 
     // The test guard: an address that is not the listener is refused before curl runs.
     *LAST_SENT.lock().unwrap() = None;
     let before = count();
-    std::env::set_var("GLINT_BUG_HOOK_URL", "https://example.invalid/api/webhooks/guard/x");
+    std::env::set_var("GLINT_REPORT_URL", "https://example.invalid/report");
     let r = send(&core, text, "", false);
     let rf = send_feedback(&core, 4, "guard", "");
-    std::env::set_var("GLINT_BUG_HOOK_URL", &server.url);
+    std::env::set_var("GLINT_REPORT_URL", &server.url);
     check("test guard: a post to any other address is refused", r.is_err_and(|e| e.starts_with("Test run")) && rf.is_err_and(|e| e.starts_with("Test run")) && count() == before);
     *LAST_SENT.lock().unwrap() = None;
     *LAST_FEEDBACK.lock().unwrap() = None;
@@ -619,7 +609,7 @@ pub fn self_test(report_path: &str) {
     let req = last();
     let json = json_of(&req);
     note(format!("INFO feedback payload: {json}"));
-    check("feedback: a POST with payload_json", req.method == "POST" && json.is_object());
+    check("feedback: a POST to /report?kind=feedback with payload_json", req.method == "POST" && req.path == "/report?kind=feedback" && json.is_object());
     check("feedback: content says Feedback and the version, not Bug report", json["content"] == format!("Feedback · Glint {version}"));
     check("feedback: embed title is Feedback", json["embeds"][0]["title"] == "Feedback");
     check("feedback: pings no one (allowed_mentions parse [], no mention)", no_ping(&json, &req.body));
@@ -653,7 +643,7 @@ pub fn self_test(report_path: &str) {
     server.status.store(400, Ordering::Relaxed);
     let r = send_feedback(&core, 2, "", "");
     note(format!("INFO feedback HTTP 400 gives: {r:?}"));
-    check("feedback: HTTP 400 is an error naming the feedback, without the address", r.as_ref().is_err_and(|e| e.contains("400") && e.contains("feedback") && !e.contains("127.0.0.1") && !e.contains("webhooks")) && count() == before + 5);
+    check("feedback: HTTP 400 is an error naming the feedback, without the address", r.as_ref().is_err_and(|e| e.contains("400") && e.contains("feedback") && !e.contains("127.0.0.1") && !e.contains("/report")) && count() == before + 5);
     check("feedback: a failed one does not start the pause", send_feedback(&core, 2, "", "").is_err_and(|e| e.contains("400")) && count() == before + 6);
     server.status.store(204, Ordering::Relaxed);
     let leftovers = fs::read_dir(util::tmp_dir()).into_iter().flatten().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("fb-")).count();
@@ -661,14 +651,5 @@ pub fn self_test(report_path: &str) {
     let fi = feedback_info(&core);
     check("feedback info: configured, version, language", fi.configured && fi.version == version && fi.language == core.settings().language);
 
-    // The built-in destination: present, decodes to a Discord webhook, not stored as plain text.
-    if built_in.is_empty() {
-        note("INFO no bug-webhook.txt at build time: reports are not configured in this build".into());
-    } else {
-        check("built-in address decodes to a Discord webhook", built_in.starts_with("https://discord.com/api/webhooks/"));
-        let exe = std::env::current_exe().ok().and_then(|p| fs::read(p).ok()).unwrap_or_default();
-        let plain = built_in.as_bytes();
-        check("the address is not in the exe as plain text", !exe.is_empty() && !exe.windows(plain.len()).any(|w| w == plain));
-    }
     let _ = fs::write(report_path, lines.borrow().join("\n") + "\n");
 }

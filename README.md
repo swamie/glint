@@ -282,7 +282,7 @@ Clicking the logo, or Settings → Updates → What's new, lists what each relea
 
 The bug button in the top bar opens a dialog: what happened, optionally how to reach you, and whether to include the end of Glint's log. "What will be sent" shows everything first: your text, a few lines about this PC and Glint (version, Windows build, graphics card, capture setup) and the log's last 150 lines, with your Windows user folder replaced by `~`. Nothing is sent until you press Send; it then goes to the developers' Discord. One report per 30 seconds.
 
-For builders: the destination is not in the source. `src-tauri/bug-webhook.txt` (git-ignored; line 1 a Discord webhook URL, line 2 comma-separated user ids to mention) is read by `build.rs` and stored obfuscated in the program. Without the file the build works and the dialog points to GitHub issues instead. Obfuscation is not secrecy: anyone determined can recover a webhook from a program that uses it.
+For builders: nothing about the destination is in the program. Glint posts the report to the share Worker (`https://clips.glintclip.com/report`, source in `server/share`), and the Worker passes it on to a Discord webhook it holds as a secret. So every build can send reports, and the webhook cannot be pulled out of the app. The Worker allows one report per 30 seconds and 10 a day from one connection. See `server/share/README.md`, "Bug reports and feedback".
 
 **Feedback.** The heart button beside it asks "How do you like Glint?": one to five stars, a text and, if you want, how to reach you. Like a bug report it shows exactly what will be sent, nothing leaves the PC until you press Send, and it goes to the same place as the bug reports (no log file, only the Glint version and the language).
 
