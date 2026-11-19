@@ -17,3 +17,4 @@ MAX_MB = "9000"
 # or "site_name" (small grey line above the title). See README.md, "Testing the embed".
 EMBED_LINE = "description"
 # The upload key is a secret, not a var: `npx wrangler secret put UPLOAD_TOKEN`.
+# Bug reports: `npx wrangler secret put BUG_WEBHOOK_URL` (a Discord webhook). See README.md.
