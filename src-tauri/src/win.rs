@@ -30,6 +30,13 @@ pub struct Monitor {
     /// resolution has a different shape from this one.
     pub native_width: u32,
     pub native_height: u32,
+    /// What stays the same for this screen while Windows renumbers the monitors (another monitor
+    /// plugged in or asleep, the main monitor changed, a driver update): the monitor's device
+    /// interface path ("\\?\DISPLAY#DEL40F4#5&2b5b…#{e6f07b5f-…}", the screen and the port it is on).
+    /// The device name ("DISPLAY2") when Windows gives none. Settings remember monitors by it (0.1.52).
+    pub id: String,
+    /// The graphics card it is on ("NVIDIA GeForce RTX 3070"), for the log.
+    pub adapter: String,
 }
 
 fn wide_to_string(w: &[u16]) -> String {
@@ -62,8 +69,8 @@ pub fn monitors() -> Vec<Monitor> {
         }
         i += 1;
         let flags = dd.StateFlags;
-        if flags & 1 == 0 {
-            continue; // not attached to the desktop
+        if flags & 1 == 0 || flags & 8 != 0 {
+            continue; // not attached to the desktop, or a mirroring driver (a remote desktop's copy of a screen)
         }
         let mut dm = DEVMODEW { dmSize: size_of::<DEVMODEW>() as u16, ..Default::default() };
         if unsafe { EnumDisplaySettingsW(PCWSTR(dd.DeviceName.as_ptr()), ENUM_CURRENT_SETTINGS, &mut dm) }.as_bool() {
@@ -83,6 +90,8 @@ pub fn monitors() -> Vec<Monitor> {
             out.push(Monitor {
                 native_width,
                 native_height,
+                id: stable_id(&dd),
+                adapter: wide_to_string(&dd.DeviceString),
                 index: 0,
                 name: wide_to_string(&dd.DeviceName).trim_start_matches("\\\\.\\").to_string(),
                 width: dm.dmPelsWidth,
@@ -100,9 +109,64 @@ pub fn monitors() -> Vec<Monitor> {
         m.index = n as u32;
     }
     if out.is_empty() {
-        out.push(Monitor { index: 0, name: "DISPLAY1".into(), width: 1920, height: 1080, hz: 60, primary: true, x: 0, y: 0, native_width: 1920, native_height: 1080 });
+        out.push(Monitor { index: 0, name: "DISPLAY1".into(), width: 1920, height: 1080, hz: 60, primary: true, x: 0, y: 0, native_width: 1920, native_height: 1080, id: "DISPLAY1".into(), adapter: String::new() });
     }
     out
+}
+
+/// `Monitor::id` of every monitor, in `monitors()` order.
+pub fn monitor_ids() -> Vec<String> {
+    monitors().into_iter().map(|m| m.id).collect()
+}
+
+/// The `Monitor::id` of the display device `dd` (one of `EnumDisplayDevicesW(NULL, i)`): the device
+/// interface path of the first monitor attached to it, else its device name.
+fn stable_id(dd: &DISPLAY_DEVICEW) -> String {
+    const EDD_GET_DEVICE_INTERFACE_NAME: u32 = 1;
+    let mut first = String::new();
+    for j in 0..16u32 {
+        let mut mon = DISPLAY_DEVICEW { cb: size_of::<DISPLAY_DEVICEW>() as u32, ..Default::default() };
+        if !unsafe { EnumDisplayDevicesW(PCWSTR(dd.DeviceName.as_ptr()), j, &mut mon, EDD_GET_DEVICE_INTERFACE_NAME) }.as_bool() {
+            break;
+        }
+        let id = wide_to_string(&mon.DeviceID);
+        if id.is_empty() {
+            continue;
+        }
+        // The active monitor (flag 1) wins; a screen listed but off can come before it.
+        if mon.StateFlags & 1 != 0 {
+            return id;
+        }
+        if first.is_empty() {
+            first = id;
+        }
+    }
+    if !first.is_empty() {
+        return first;
+    }
+    wide_to_string(&dd.DeviceName).trim_start_matches("\\\\.\\").to_string()
+}
+
+/// Every monitor of `monitors()` in one log line each: what Glint numbers it, what Windows calls
+/// it, where it is, which card drives it and how ffmpeg will be told to capture it. Written when
+/// recording starts and whenever the list changes, so a "it records the wrong monitor" report has
+/// the whole picture in its log.
+pub fn describe_monitors(mons: &[Monitor]) -> Vec<String> {
+    let handles = monitor_handles();
+    let outputs = dxgi_outputs();
+    mons.iter()
+        .map(|m| {
+            let src = source_among(&m.name, &handles, &outputs);
+            let dda = match (src.dxgi_adapter, src.dxgi_output) {
+                (Some(a), Some(o)) => format!("card {a} output {o}"),
+                _ => "not found".into(),
+            };
+            format!(
+                "monitor {}: {}{} {}x{} @ {} Hz at ({}, {}) on \"{}\", handle {:#x}, Desktop Duplication {dda}, id {}",
+                m.index, m.name, if m.primary { " (main)" } else { "" }, m.width, m.height, m.hz, m.x, m.y, m.adapter, src.hmonitor, m.id
+            )
+        })
+        .collect()
 }
 
 /// How ffmpeg is told to capture one monitor of `monitors()` so that it cannot take another.
@@ -119,8 +183,11 @@ pub struct MonitorSource {
     pub name: String,
     /// The HMONITOR; 0 when Windows did not list a monitor of that name.
     pub hmonitor: u64,
-    /// Its index among the outputs of the first graphics adapter; None when it is not one of them.
+    /// Its index among the outputs of its graphics adapter (`dxgi_adapter`); None when no adapter lists it.
     pub dxgi_output: Option<u32>,
+    /// The graphics adapter that has it among its outputs, in DXGI's order (0.1.52: every adapter
+    /// is looked at, not only the first). Desktop Duplication must be run on that adapter.
+    pub dxgi_adapter: Option<u32>,
 }
 
 /// The device name of a monitor as an API gives it ("\\.\DISPLAY1", zero-terminated UTF-16), bare.
@@ -148,29 +215,38 @@ pub fn monitor_handles() -> Vec<(u64, String)> {
     out
 }
 
-/// The device names of the first graphics adapter's outputs, in the order Desktop Duplication counts them.
-pub fn dxgi_outputs() -> Vec<String> {
+/// The outputs of every graphics adapter as (adapter, output, device name), in the order Desktop
+/// Duplication counts them (`ddagrab`'s `output_idx` is an output of the adapter it runs on).
+/// Before 0.1.52 only the first adapter was read: a monitor on a second card (a laptop's external
+/// screen on its NVIDIA chip, a PC with two cards) was then captured by its Glint number, which
+/// is another monitor of the first card.
+pub fn dxgi_outputs() -> Vec<(u32, u32, String)> {
     use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
     let mut out = Vec::new();
     unsafe {
         let Ok(factory) = CreateDXGIFactory1::<IDXGIFactory1>() else { return out };
-        let Ok(adapter) = factory.EnumAdapters1(0) else { return out };
-        let mut i = 0u32;
-        while let Ok(output) = adapter.EnumOutputs(i) {
-            out.push(output.GetDesc().map(|d| device_name(&d.DeviceName)).unwrap_or_default());
-            i += 1;
+        let mut a = 0u32;
+        while let Ok(adapter) = factory.EnumAdapters1(a) {
+            let mut i = 0u32;
+            while let Ok(output) = adapter.EnumOutputs(i) {
+                out.push((a, i, output.GetDesc().map(|d| device_name(&d.DeviceName)).unwrap_or_default()));
+                i += 1;
+            }
+            a += 1;
         }
     }
     out
 }
 
 /// `MonitorSource` of the monitor called `name`, from the two lists (split out so it can be tested on made-up lists).
-pub fn source_among(name: &str, handles: &[(u64, String)], outputs: &[String]) -> MonitorSource {
+pub fn source_among(name: &str, handles: &[(u64, String)], outputs: &[(u32, u32, String)]) -> MonitorSource {
     let same = |n: &str| n.eq_ignore_ascii_case(name);
+    let out = outputs.iter().find(|(_, _, n)| same(n));
     MonitorSource {
         name: name.to_string(),
         hmonitor: handles.iter().find(|(_, n)| same(n)).map_or(0, |(h, _)| *h),
-        dxgi_output: outputs.iter().position(|n| same(n)).map(|i| i as u32),
+        dxgi_output: out.map(|(_, o, _)| *o),
+        dxgi_adapter: out.map(|(a, _, _)| *a),
     }
 }
 

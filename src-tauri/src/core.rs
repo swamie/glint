@@ -376,6 +376,8 @@ impl Core {
             let mut pending_mode: Option<Vec<(u32, u32, u32)>> = None;
             loop {
                 thread::sleep(std::time::Duration::from_secs(2));
+                // 0.1.52: a monitor plugged in, turned off or made the main one renumbers the others.
+                core.follow_monitors();
                 core.track_game();
 
                 let now = modes();
@@ -416,7 +418,53 @@ impl Core {
         self.settings.lock().unwrap().clone()
     }
 
+    /// 0.1.52: the monitor numbers in the settings follow their monitors (`Settings::follow_monitors`),
+    /// and the monitor list goes to the log whenever it changes. Called when Glint starts, before a
+    /// capture starts and every few seconds from the status poll; true when a number moved.
+    pub fn follow_monitors(&self) -> bool {
+        static LAST: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        let mons = win::monitors();
+        // The cheap part decides; the handles and the cards' outputs are only read for the log.
+        let key: Vec<String> = mons.iter().map(|m| format!("{} {} {} {}x{} {},{} {}", m.index, m.name, m.primary, m.width, m.height, m.x, m.y, m.id)).collect();
+        {
+            let mut last = LAST.lock().unwrap();
+            if *last != key {
+                util::log(&format!("monitors: {} connected{}", mons.len(), if last.is_empty() { "" } else { " (the list changed)" }));
+                for l in win::describe_monitors(&mons) {
+                    util::log(&format!("  {l}"));
+                }
+                *last = key;
+            }
+        }
+        let ids: Vec<String> = mons.iter().map(|m| m.id.clone()).collect();
+        let (changed, notes, now) = {
+            let mut s = self.settings.lock().unwrap();
+            let before = s.monitor;
+            let (keep, notes) = s.follow_monitors(&ids);
+            if keep {
+                s.save();
+            }
+            (keep && (!notes.is_empty() || s.monitor != before), notes, s.clone())
+        };
+        for n in &notes {
+            util::log(&format!("monitors: {n}"));
+        }
+        if changed {
+            hotkeys::set_binds(&now.keybinds);
+            if self.rec.is_running() {
+                let cfgs = capture_cfgs(&now);
+                if !cfgs.is_empty() && self.rec.current_cfgs() != cfgs {
+                    self.rec.start(cfgs);
+                }
+            }
+            self.emit("settings-changed", ());
+            self.emit("status-changed", ());
+        }
+        changed
+    }
+
     pub fn start_recording(&self) {
+        self.follow_monitors();
         // Game mode: look for the game first, so the capture starts on it rather than waiting 2 s.
         if crate::capmode::game_mode(&self.settings()) {
             self.track_game();
@@ -659,7 +707,7 @@ impl Core {
             }
             last.insert(id.to_string(), now);
         }
-        util::log(&format!("hotkey {} -> {} {}s (monitor {})", id, b.action, b.seconds, b.monitor));
+        util::log(&format!("hotkey {} -> {} {}s (monitor {}{})", id, b.action, b.seconds, b.monitor, if b.monitor_id.is_empty() { String::new() } else { format!(", {}", b.monitor_id) }));
         match b.action.as_str() {
             "clip" => self.clip(b.seconds, b.monitor),
             "toggle" => {
@@ -703,7 +751,7 @@ impl Core {
                 if to != cur {
                     s.monitor = to;
                     self.apply_settings(s);
-                    util::log(&format!("capture monitor: {cur} -> {to}"));
+                    util::log(&format!("capture monitor: {cur} -> {to} ({})", mons[to as usize].name));
                 }
                 let m = &mons[to as usize];
                 self.toast_on("Capture monitor", &format!("{} · {}×{}", m.name, m.width, m.height), to);
@@ -716,6 +764,12 @@ impl Core {
     }
 
     pub fn apply_settings(&self, mut new: Settings) {
+        {
+            // A monitor number changed by hand takes that monitor's id (0.1.52).
+            let ids = win::monitor_ids();
+            let old = self.settings.lock().unwrap().clone();
+            new.name_monitors(&old, &ids);
+        }
         for k in &mut new.keybinds {
             k.seconds = k.seconds.clamp(5, 3600);
             if k.id.is_empty() {

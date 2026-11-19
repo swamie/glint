@@ -20,11 +20,17 @@ pub struct Keybind {
     /// Monitor the "clip" action saves: -1 = the capture monitor (`Settings::monitor`),
     /// 0.. = an index into `win::monitors()`. An index that no longer exists counts as -1.
     pub monitor: i32,
+    /// `win::Monitor::id` of that monitor (0.1.52): the number above follows it when Windows
+    /// renumbers the monitors. Empty for -1 and for settings saved by an older version.
+    pub monitor_id: String,
 }
+
+/// A keybind's monitor number while its monitor is not connected (see `Settings::follow_monitors`).
+pub const LOST_MONITOR: i32 = 999;
 
 impl Default for Keybind {
     fn default() -> Self {
-        Keybind { id: util::new_id(), ctrl: false, shift: false, alt: false, win: false, key: String::new(), action: "clip".into(), seconds: 30, monitor: -1 }
+        Keybind { id: util::new_id(), ctrl: false, shift: false, alt: false, win: false, key: String::new(), action: "clip".into(), seconds: 30, monitor: -1, monitor_id: String::new() }
     }
 }
 
@@ -207,6 +213,8 @@ pub struct Settings {
     /// text). Default Game Date Time = "Overwatch 2026-11-14 13-35-44"; empty = the default.
     pub clip_name: Vec<crate::naming::NameBlock>,
     pub monitor: u32,
+    /// `win::Monitor::id` of the capture monitor (0.1.52), see `follow_monitors`.
+    pub monitor_id: String,
     /// Output height in pixels. 0 = native.
     pub height: u32,
     /// Shape of the clip. "auto" = widen a stretched resolution back to the
@@ -389,6 +397,7 @@ impl Default for Settings {
             game_folders: false,
             clip_name: crate::naming::default_blocks(),
             monitor: 0,
+            monitor_id: String::new(),
             height: 0,
             aspect: "auto".into(),
             fps: 60,
@@ -495,6 +504,88 @@ impl Settings {
     pub fn save(&self) {
         if let Ok(t) = serde_json::to_string_pretty(self) {
             let _ = fs::write(Self::file(), t);
+        }
+    }
+
+    /// 0.1.52: monitors are remembered by what they are (`ids`: `win::Monitor::id` of every monitor,
+    /// in `win::monitors()` order), not only by their number. The number was all that was saved
+    /// before, and Windows hands the numbers out again when a monitor is plugged in, turned off or
+    /// made the main one: the same setting then meant another screen.
+    ///
+    /// Each number follows its id to wherever that monitor is now. A capture monitor that is not
+    /// connected gives the main monitor (number 0) and a keybind's gives the capture monitor
+    /// (`LOST_MONITOR`), both keeping their id for when it is back. A number with no id yet (settings of an older
+    /// version) gets the id of the monitor it names today.
+    ///
+    /// Returns (a number or id changed that is worth saving, one log line per change).
+    pub fn follow_monitors(&mut self, ids: &[String]) -> (bool, Vec<String>) {
+        let at = |id: &str| ids.iter().position(|i| i.eq_ignore_ascii_case(id));
+        let (mut keep, mut notes) = (false, Vec::new());
+        if self.monitor_id.is_empty() {
+            let m = if (self.monitor as usize) < ids.len() { self.monitor } else { 0 };
+            if let Some(id) = ids.get(m as usize) {
+                self.monitor_id = id.clone();
+                keep = true;
+            }
+        } else {
+            match at(&self.monitor_id) {
+                Some(i) if i as u32 != self.monitor => {
+                    notes.push(format!("the capture monitor is now monitor {i} (was {}): Windows renumbered the monitors", self.monitor));
+                    self.monitor = i as u32;
+                    keep = true;
+                }
+                Some(_) => {}
+                None if self.monitor != 0 => {
+                    notes.push(format!("the capture monitor (was {}) is not connected: the main monitor is used until it is back", self.monitor));
+                    self.monitor = 0;
+                    keep = true;
+                }
+                None => {}
+            }
+        }
+        for k in &mut self.keybinds {
+            if k.monitor < 0 {
+                continue;
+            }
+            if k.monitor_id.is_empty() {
+                if let Some(id) = ids.get(k.monitor as usize) {
+                    k.monitor_id = id.clone();
+                    keep = true;
+                }
+                continue;
+            }
+            match at(&k.monitor_id) {
+                Some(i) if i as i32 != k.monitor => {
+                    notes.push(format!("keybind {}: its monitor is now monitor {i} (was {})", k.key, k.monitor));
+                    k.monitor = i as i32;
+                    keep = true;
+                }
+                Some(_) => {}
+                // Not connected: a number no monitor has, which always meant "the capture monitor"
+                // (and the Keybinds page shows it as a monitor that is not connected).
+                None if k.monitor != LOST_MONITOR => {
+                    k.monitor = LOST_MONITOR;
+                    keep = true;
+                }
+                None => {}
+            }
+        }
+        (keep, notes)
+    }
+
+    /// The settings as the window sends them, after `old`: a monitor number the user changed takes
+    /// the id of the monitor it names now (the window knows numbers only).
+    pub fn name_monitors(&mut self, old: &Settings, ids: &[String]) {
+        if self.monitor != old.monitor || self.monitor_id.is_empty() {
+            self.monitor_id = ids.get(self.monitor as usize).cloned().unwrap_or_default();
+        }
+        for k in &mut self.keybinds {
+            let before = old.keybinds.iter().find(|o| o.id == k.id);
+            if k.monitor < 0 {
+                k.monitor_id.clear();
+            } else if before.is_none_or(|o| o.monitor != k.monitor) || k.monitor_id.is_empty() {
+                k.monitor_id = ids.get(k.monitor as usize).cloned().unwrap_or_default();
+            }
         }
     }
 

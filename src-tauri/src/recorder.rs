@@ -786,12 +786,20 @@ pub fn retarget(mut args: Vec<String>, monitor: u32, src: Option<&crate::win::Mo
     let Some(src) = src else { return args };
     let wgc = format!("gfxcapture=monitor_idx={monitor}:");
     let dda = format!("ddagrab=output_idx={monitor}:");
+    let mut on_adapter = None;
     for a in args.iter_mut() {
         if src.hmonitor != 0 && a.contains(&wgc) {
             *a = a.replacen(&wgc, &format!("gfxcapture=hmonitor={}:", src.hmonitor), 1);
         } else if let Some(o) = src.dxgi_output.filter(|_| a.contains(&dda)) {
             *a = a.replacen(&dda, &format!("ddagrab=output_idx={o}:"), 1);
+            on_adapter = src.dxgi_adapter.filter(|n| *n != 0);
         }
+    }
+    // 0.1.52: a monitor on another graphics card than the first. Desktop Duplication counts the
+    // outputs of the card it runs on, and ffmpeg runs it on the first card unless told otherwise:
+    // output 0 of the second card was captured as output 0 of the first, another monitor.
+    if let (Some(n), Some(at)) = (on_adapter, args.iter().position(|a| a == "-filter_complex")) {
+        args.splice(at..at, ["-init_hw_device".to_string(), format!("d3d11va=glintdda:{n}"), "-filter_hw_device".to_string(), "glintdda".to_string()]);
     }
     args
 }
@@ -1289,7 +1297,7 @@ fn supervise(pipe: Arc<Pipe>) {
             let named = retarget(args.clone(), cfg.monitor, src.as_ref());
             if let Some(s) = src.as_ref().filter(|_| named != args) {
                 if note_source(cfg.monitor, s) {
-                    util::log(&format!("capture {}: {} named to ffmpeg by {}", cfg.monitor, s.name, if method == "wgc" { format!("its handle {:#x}", s.hmonitor) } else { format!("output {}", s.dxgi_output.unwrap_or(cfg.monitor)) }));
+                    util::log(&format!("capture {}: {} named to ffmpeg by {}", cfg.monitor, s.name, if method == "wgc" { format!("its handle {:#x}", s.hmonitor) } else { format!("output {} of graphics card {}", s.dxgi_output.unwrap_or(cfg.monitor), s.dxgi_adapter.unwrap_or(0)) }));
                 }
             }
             named
@@ -1693,13 +1701,19 @@ pub fn self_test(report_path: &str) {
             use crate::win::{source_among, MonitorSource};
             // Glint's order is "main first"; Windows lists this PC's monitors the other way round.
             let handles = vec![(0x20041u64, "DISPLAY2".to_string()), (0x10001u64, "DISPLAY1".to_string())];
-            let outputs = vec!["DISPLAY2".to_string(), "DISPLAY1".to_string()];
+            let outputs = vec![(0u32, 0u32, "DISPLAY2".to_string()), (0, 1, "DISPLAY1".to_string()), (1, 0, "DISPLAY3".to_string())];
             let main = source_among("DISPLAY1", &handles, &outputs);
-            check("monitor: found by its device name, whatever the order", main == MonitorSource { name: "DISPLAY1".into(), hmonitor: 0x10001, dxgi_output: Some(1) }, format!("{main:?}"));
+            check("monitor: found by its device name, whatever the order", main == MonitorSource { name: "DISPLAY1".into(), hmonitor: 0x10001, dxgi_output: Some(1), dxgi_adapter: Some(0) }, format!("{main:?}"));
             let filter = |method: &str, src: Option<&MonitorSource>| retarget(capture_args(&cfg(0, 35.0), "nvenc", method, false, true), 0, src).into_iter().find(|a| a.contains("gfxcapture=") || a.contains("ddagrab=")).unwrap_or_default();
             let (w, d) = (filter("wgc", Some(&main)), filter("dda", Some(&main)));
             check("monitor: Graphics Capture gets the handle, not a number", w.starts_with(&format!("gfxcapture=hmonitor={}:max_framerate=", 0x10001)) && !w.contains("monitor_idx"), w.clone());
             check("monitor: Desktop Duplication gets the monitor's own output", d.starts_with("ddagrab=output_idx=1:framerate="), d.clone());
+            // 0.1.52: a monitor on the second graphics card is output 0 of THAT card, and ffmpeg is told the card.
+            let far = source_among("DISPLAY3", &handles, &outputs);
+            let far_args = retarget(capture_args(&cfg(2, 35.0), "nvenc", "dda", false, true), 2, Some(&far));
+            let at = far_args.iter().position(|a| a == "-init_hw_device");
+            check("monitor: one on a second graphics card is captured on that card", far.dxgi_adapter == Some(1) && far_args.iter().any(|a| a.starts_with("ddagrab=output_idx=0:")) && at.is_some_and(|i| far_args[i + 1] == "d3d11va=glintdda:1" && far_args[i + 2] == "-filter_hw_device" && far_args[i + 4] == "-filter_complex"), format!("{far_args:?}"));
+            check("monitor: the first card's command names no card, as before", !retarget(capture_args(&cfg(0, 35.0), "nvenc", "dda", false, true), 0, Some(&main)).iter().any(|a| a == "-init_hw_device"), String::new());
             let gone = source_among("DISPLAY7", &handles, &outputs);
             check("monitor: an unknown monitor keeps its number", gone.hmonitor == 0 && gone.dxgi_output.is_none() && filter("wgc", Some(&gone)).starts_with("gfxcapture=monitor_idx=0:") && filter("dda", Some(&gone)).starts_with("ddagrab=output_idx=0:") && filter("wgc", None).starts_with("gfxcapture=monitor_idx=0:"), format!("{gone:?}"));
             let rest = |v: Vec<String>| v.into_iter().filter(|a| !a.contains("gfxcapture=")).collect::<Vec<_>>();
