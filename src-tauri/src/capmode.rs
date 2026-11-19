@@ -737,7 +737,7 @@ fn wi(hwnd: u64, pid: u32, exe: &str) -> WinInfo {
 }
 
 fn mon(index: u32, width: u32, height: u32, hz: u32) -> Monitor {
-    Monitor { index, name: format!("DISPLAY{}", index + 1), width, height, hz, primary: index == 0, x: 0, y: 0, native_width: width, native_height: height }
+    Monitor { index, name: format!("DISPLAY{}", index + 1), width, height, hz, primary: index == 0, x: 0, y: 0, native_width: width, native_height: height, id: format!("id{}", index + 1), adapter: String::new() }
 }
 
 pub fn self_test(report_path: &str) {
@@ -1029,6 +1029,33 @@ fn test_rebuild(r: &mut Report) {
     let mut m2 = mons.to_vec();
     m2[1].x = 2560;
     r.check("monitor of a window: by its device name first, then by position, else the main one", win::monitor_index_of(&m2, "DISPLAY2", -5, -5) == 1 && win::monitor_index_of(&m2, "", 2560, 0) == 1 && win::monitor_index_of(&m2, "DISPLAY9", 7, 7) == 0, "");
+    // 0.1.52: the settings remember monitors by id; the numbers follow when Windows renumbers them.
+    {
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        let mut st = Settings { monitor: 1, ..Settings::default() };
+        st.keybinds = vec![crate::settings::Keybind { id: "a".into(), key: "F9".into(), monitor: 2, ..Default::default() }, crate::settings::Keybind { id: "b".into(), key: "F10".into(), ..Default::default() }];
+        let (keep, notes) = st.follow_monitors(&ids(&["A", "B", "C"]));
+        r.check("monitors: settings of an older version take the ids of the monitors they name", keep && notes.is_empty() && st.monitor_id == "B" && st.keybinds[0].monitor_id == "C" && st.keybinds[1].monitor_id.is_empty() && st.monitor == 1, &format!("{} {:?}", st.monitor_id, notes));
+        // B becomes the main monitor: Windows' list is now B, A, C.
+        let (keep, notes) = st.follow_monitors(&ids(&["B", "A", "C"]));
+        r.check("monitors: the capture monitor follows its screen to its new number", keep && notes.len() == 1 && st.monitor == 0 && st.keybinds[0].monitor == 2 && st.keybinds[1].monitor == -1, &format!("{} {notes:?}", st.monitor));
+        // C is unplugged, then B too.
+        let _ = st.follow_monitors(&ids(&["B", "A"]));
+        r.check("monitors: a keybind whose monitor is gone clips the capture monitor, and says so", st.keybinds[0].monitor == crate::settings::LOST_MONITOR && st.keybinds[0].monitor_id == "C" && core::bind_monitor(&st, &st.keybinds[0], 2) == 0, &format!("{}", st.keybinds[0].monitor));
+        st.monitor = 1;
+        st.monitor_id = "A".into();
+        let _ = st.follow_monitors(&ids(&["B"]));
+        r.check("monitors: a capture monitor that is gone gives the main one and keeps its id", st.monitor == 0 && st.monitor_id == "A", &format!("{} {}", st.monitor, st.monitor_id));
+        let (_, notes) = st.follow_monitors(&ids(&["B", "C", "A"]));
+        r.check("monitors: both are back where their screens are when those return", st.monitor == 2 && st.keybinds[0].monitor == 1 && notes.len() == 2, &format!("{} {} {notes:?}", st.monitor, st.keybinds[0].monitor));
+        // The window sends numbers only: a number changed by hand takes the id of that monitor.
+        let old = st.clone();
+        st.monitor = 0;
+        st.keybinds[1].monitor = 1;
+        st.name_monitors(&old, &ids(&["B", "C", "A"]));
+        let quiet = st.clone().follow_monitors(&ids(&["B", "C", "A"]));
+        r.check("monitors: a monitor picked by hand is remembered by its id, and stays picked", st.monitor_id == "B" && st.keybinds[1].monitor_id == "C" && st.keybinds[0].monitor_id == "C" && quiet == (false, vec![]), &format!("{} {quiet:?}", st.monitor_id));
+    }
     // The menu says why each program counts.
     let lib = gamedetect::Library { installs: vec![gamedetect::Install { store: "epic", name: "Rocket League".into(), dir: r"d:\epic\rocketleague\".into() }] };
     let rl = wi(9, 90, r"D:\Epic\rocketleague\Binaries\Win64\RocketLeague.exe");
