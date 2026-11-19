@@ -2,8 +2,10 @@
 // The monitor picker (0.1.41): wherever Glint asks for a monitor (Settings → Capture, a clip keybind's monitor,
 // the keybind that switches the capture monitor), the monitors are drawn to scale in their real arrangement,
 // each with its number, resolution and refresh rate, the main one marked, the chosen one highlighted, and
-// inside each a small live picture of what is on it (monprev.rs `monitor_preview`, about once a second while
-// a picker is on screen and the window is visible; never otherwise). Click or arrow keys + Enter pick.
+// inside each a small picture of what is on it (monprev.rs `monitor_preview`). The pictures are a snapshot,
+// not a live feed: one grab per monitor when a picker comes on screen, reused by every redraw for
+// MP_FRESH_MS, and taken again only when a picker shows up (or the window comes back) after that. Nothing
+// runs on a timer, so an open picker costs no CPU. Click or arrow keys + Enter pick.
 //
 // monPick(opts) returns the markup. It carries a hidden native <select data-native> with the same data
 // attributes the page used before (data-set="monitor" data-num, or data-kb / data-kbf="monitor"), so app.js's
@@ -13,8 +15,8 @@
 //   in a small pop-over (the keybind rows).
 // Pure helpers (node-testable): mpLayout, mpLabel. Names here start with `mp` / `MP`; markup uses `mp-` classes.
 
-const MP = { pics: {}, fails: {}, timer: 0, busy: false, ticks: 0, pop: null, popFor: null };
-const MP_REFRESH_MS = 1000;
+const MP = { pics: {}, fails: {}, at: 0, busy: false, pop: null, popFor: null };
+const MP_FRESH_MS = 30000; // a snapshot is reused this long; after that the next picker on screen takes a new one
 const MP_PIC_WIDTH = 320;
 
 const mpEsc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -58,7 +60,7 @@ function mpSelect(opts, mons) {
 /** The map: every monitor to scale with its picture, number, size and rate. */
 function mpMap(mons, value, boxW, boxH, live) {
   const { rects } = mpLayout(mons, boxW, boxH);
-  const tip = t("A live picture of each monitor. A game in exclusive fullscreen can look black here.");
+  const tip = t("A picture of each monitor, taken when this opened. A game in exclusive fullscreen can look black here.");
   const cells = rects.map((r) => {
     const m = mons.find((x) => x.index === r.index);
     const on = m.index === value;
@@ -154,44 +156,50 @@ function mpOpenPop(btn) {
   mpWake();
 }
 
-/* ---------- live pictures ---------- */
+/* ---------- snapshot pictures ---------- */
 /** The maps that are on screen now (connected, laid out, the window visible). */
 function mpVisibleMaps() {
   if (typeof document === "undefined" || document.visibilityState !== "visible") return [];
   return [...document.querySelectorAll(".mp-map[data-live]")].filter((m) => m.isConnected && m.offsetParent !== null);
 }
 
-function mpWake() {
-  if (MP.timer || !mpVisibleMaps().length) return;
-  MP.timer = setTimeout(mpTick, 0);
+/** Put the cached pictures into every picker image on the page (a redraw already has them in its markup). */
+function mpShow(i) {
+  for (const img of document.querySelectorAll(`.mp-pic[data-mon="${i}"]`)) {
+    if (MP.fails[i] || !MP.pics[i]) { img.hidden = true; continue; }
+    if (img.getAttribute("src") !== MP.pics[i]) img.setAttribute("src", MP.pics[i]);
+    img.hidden = false;
+  }
 }
 
-async function mpTick() {
-  MP.timer = 0;
+/**
+ * A picker came on screen (page drawn, pop-over opened, window back in front). Takes one snapshot of each
+ * monitor it shows, unless the last snapshot is fresh; then the cached pictures are used as they are.
+ * A monitor that could not be grabbed shows its number and size only, and is tried again next snapshot.
+ */
+async function mpWake() {
+  if (MP.busy || typeof invoke !== "function") return;
   const maps = mpVisibleMaps();
-  if (!maps.length || typeof invoke !== "function") return; // nothing on screen: no picture is taken, the loop stops
-  if (!MP.busy) {
-    MP.busy = true;
-    MP.ticks++;
-    const wanted = [...new Set(maps.flatMap((m) => [...m.querySelectorAll(".mp-pic")].map((i) => +i.dataset.mon)))];
-    for (const i of wanted) {
-      // A monitor that could not be grabbed shows its number and size only; it is tried again now and then.
-      if (MP.fails[i] && MP.ticks % 5) continue;
+  if (!maps.length) return;
+  const wanted = [...new Set(maps.flatMap((m) => [...m.querySelectorAll(".mp-pic")].map((i) => +i.dataset.mon)))];
+  const fresh = Date.now() - MP.at < MP_FRESH_MS;
+  const todo = fresh ? wanted.filter((i) => !(i in MP.pics) && !(i in MP.fails)) : wanted;
+  if (!todo.length) return;
+  MP.busy = true;
+  try {
+    for (const i of todo) {
       try {
         MP.pics[i] = await invoke("monitor_preview", { index: i, width: MP_PIC_WIDTH });
         MP.fails[i] = false;
       } catch {
         MP.fails[i] = true;
       }
-      for (const img of document.querySelectorAll(`.mp-pic[data-mon="${i}"]`)) {
-        if (MP.fails[i] || !MP.pics[i]) { img.hidden = true; continue; }
-        if (img.getAttribute("src") !== MP.pics[i]) img.setAttribute("src", MP.pics[i]);
-        img.hidden = false;
-      }
+      mpShow(i);
     }
+    if (!fresh) MP.at = Date.now();
+  } finally {
     MP.busy = false;
   }
-  if (mpVisibleMaps().length) MP.timer = setTimeout(mpTick, MP_REFRESH_MS);
 }
 
 /* ---------- wiring ---------- */
@@ -229,6 +237,7 @@ if (typeof document !== "undefined") {
     }
   }, true);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") mpWake(); });
+  window.addEventListener("focus", () => mpWake()); // back from another window: a new snapshot if the last is stale
   window.addEventListener("resize", () => { if (MP.pop) mpClosePop(); });
 }
 
