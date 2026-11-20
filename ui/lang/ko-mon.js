@@ -15,4 +15,5 @@ glintAddLanguage("ko", "한국어", {
   "Next monitor": "다음 모니터",
   "Which monitor this keybind switches to": "이 단축키로 바꿀 모니터",
   "A keybind can switch the capture monitor: to the next monitor, or straight to one you pick. Your \"capture monitor\" clip keys, the tray and the Clip button follow it.": "단축키로 캡처 모니터를 바꿀 수 있어요. 다음 모니터로, 또는 고른 모니터로 바로 바꿔요. \"캡처 모니터\"로 설정한 클립 단축키와 트레이, 클립 버튼이 따라가요.",
+  "<b>{keys}</b> saves <b>{monitor}</b>, not the monitor chosen here: that keybind has its own monitor.": "<b>{keys}</b> 단축키는 여기서 고른 모니터가 아니라 <b>{monitor}</b>을(를) 저장해요. 이 단축키에 모니터가 따로 지정되어 있어요.",
 });

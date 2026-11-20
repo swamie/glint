@@ -151,6 +151,28 @@ pub fn resolve_monitor(s: &Settings, monitor: i32, count: usize) -> u32 {
     if monitor >= 0 && (monitor as usize) < count { monitor as u32 } else { capture_monitor(s, count) }
 }
 
+/// What a clip keybind with monitor number `monitor` saves, for the log: "the capture monitor,
+/// Monitor 1 (DISPLAY2, 2560x1440)" or "Monitor 2 (DISPLAY1, 1920x1080), which this keybind names;
+/// the capture monitor is Monitor 1 (DISPLAY2, 2560x1440)".
+pub fn clip_target_text(s: &Settings, mons: &[win::Monitor], monitor: i32) -> String {
+    let cap = capture_monitor(s, mons.len());
+    let to = resolve_monitor(s, monitor, mons.len());
+    let named = monitor >= 0 && (monitor as usize) < mons.len();
+    if !named {
+        let why = if monitor >= 0 { " (this keybind's own monitor is not connected)" } else { "" };
+        format!("the capture monitor, {}{why}", win::monitor_text(mons, cap))
+    } else if to == cap {
+        format!("{}, which this keybind names; it is also the capture monitor", win::monitor_text(mons, to))
+    } else {
+        format!("{}, which this keybind names; the capture monitor is {}", win::monitor_text(mons, to), win::monitor_text(mons, cap))
+    }
+}
+
+/// One log line per clip keybind: which monitor it saves (`clip_target_text`).
+pub fn keybind_targets(s: &Settings, mons: &[win::Monitor]) -> Vec<String> {
+    s.keybinds.iter().filter(|k| k.action == "clip" && !k.key.is_empty()).map(|k| format!("keybind {} ({}) clips {}", k.id, k.key, clip_target_text(s, mons, k.monitor))).collect()
+}
+
 /// Which monitors to buffer, and how long a clip each must be able to give:
 /// the capture monitor first, then every other monitor a clip keybind names,
 /// each once. A monitor's length is that of the longest clip keybind that can
@@ -424,6 +446,7 @@ impl Core {
     pub fn follow_monitors(&self) -> bool {
         static LAST: Mutex<Vec<String>> = Mutex::new(Vec::new());
         let mons = win::monitors();
+        let mut listed = false;
         // The cheap part decides; the handles and the cards' outputs are only read for the log.
         let key: Vec<String> = mons.iter().map(|m| format!("{} {} {} {}x{} {},{} {}", m.index, m.name, m.primary, m.width, m.height, m.x, m.y, m.id)).collect();
         {
@@ -434,6 +457,7 @@ impl Core {
                     util::log(&format!("  {l}"));
                 }
                 *last = key;
+                listed = true;
             }
         }
         let ids: Vec<String> = mons.iter().map(|m| m.id.clone()).collect();
@@ -448,6 +472,11 @@ impl Core {
         };
         for n in &notes {
             util::log(&format!("monitors: {n}"));
+        }
+        if listed || !notes.is_empty() {
+            for l in keybind_targets(&now, &mons) {
+                util::log(&format!("  {l}"));
+            }
         }
         if changed {
             hotkeys::set_binds(&now.keybinds);
@@ -648,7 +677,7 @@ impl Core {
         let (snap, desk, mic, cfg) = match snapped {
             Ok(v) => v,
             Err(e) => {
-                util::log(&format!("clip {seconds}s of monitor {mon}: nothing to save: {e}"));
+                util::log(&format!("clip {seconds}s of {}: nothing to save: {e}", win::monitor_text(&win::monitors(), mon)));
                 self.toast_on("Nothing to clip yet", &e, mon);
                 return Err(e);
             }
@@ -672,7 +701,7 @@ impl Core {
         let started = std::time::Instant::now();
         match if game_only { clip::write_game(&s, cap, &game) } else { clip::write(&s, cap, &game) } {
             Ok(meta) => {
-                util::log(&format!("clip {seconds}s of monitor {mon}: saved {:.1}s, {:.1} MB in {} ms -> {}", meta.duration, meta.size as f64 / 1e6, started.elapsed().as_millis(), meta.path));
+                util::log(&format!("clip {seconds}s of {}: saved {:.1}s, {:.1} MB in {} ms -> {}", win::monitor_text(&win::monitors(), mon), meta.duration, meta.size as f64 / 1e6, started.elapsed().as_millis(), meta.path));
                 self.lib.lock().unwrap().add(meta.clone());
                 self.emit("clips-changed", meta.id.clone());
                 // "last 30s" when the clip is as long as asked; its real length when the buffer held less.
@@ -681,7 +710,7 @@ impl Core {
                 Ok(meta)
             }
             Err(e) => {
-                util::log(&format!("clip {seconds}s of monitor {mon}: failed: {e}"));
+                util::log(&format!("clip {seconds}s of {}: failed: {e}", win::monitor_text(&win::monitors(), mon)));
                 self.toast_on("Clip failed", &e, mon);
                 Err(e)
             }
@@ -707,7 +736,14 @@ impl Core {
             }
             last.insert(id.to_string(), now);
         }
-        util::log(&format!("hotkey {} -> {} {}s (monitor {}{})", id, b.action, b.seconds, b.monitor, if b.monitor_id.is_empty() { String::new() } else { format!(", {}", b.monitor_id) }));
+        if b.action == "clip" {
+            // Which screen this press saves, in the window's own words: a keybind that names a
+            // monitor saves that one whatever Settings > Capture > Monitor says.
+            let s = self.settings();
+            util::log(&format!("hotkey {} -> clip {}s of {}", id, b.seconds, clip_target_text(&s, &win::monitors(), b.monitor)));
+        } else {
+            util::log(&format!("hotkey {} -> {} {}s (monitor {}{})", id, b.action, b.seconds, b.monitor, if b.monitor_id.is_empty() { String::new() } else { format!(", {}", b.monitor_id) }));
+        }
         match b.action.as_str() {
             "clip" => self.clip(b.seconds, b.monitor),
             "toggle" => {
@@ -751,10 +787,10 @@ impl Core {
                 if to != cur {
                     s.monitor = to;
                     self.apply_settings(s);
-                    util::log(&format!("capture monitor: {cur} -> {to} ({})", mons[to as usize].name));
+                    util::log(&format!("capture monitor: {} -> {}", win::monitor_text(&mons, cur), win::monitor_text(&mons, to)));
                 }
                 let m = &mons[to as usize];
-                self.toast_on("Capture monitor", &format!("{} · {}×{}", m.name, m.width, m.height), to);
+                self.toast_on("Capture monitor", &format!("Monitor {} · {}×{}", m.index + 1, m.width, m.height), to);
                 // The window re-reads the settings: its Monitor dropdown and keybind labels show the capture monitor.
                 self.emit("settings-changed", ());
                 self.emit("status-changed", ());

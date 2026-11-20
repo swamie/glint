@@ -15,4 +15,5 @@ glintAddLanguage("el", "Ελληνικά", {
   "Next monitor": "Επόμενη οθόνη",
   "Which monitor this keybind switches to": "Σε ποια οθόνη αλλάζει αυτή η συντόμευση",
   "A keybind can switch the capture monitor: to the next monitor, or straight to one you pick. Your \"capture monitor\" clip keys, the tray and the Clip button follow it.": "Μια συντόμευση μπορεί να αλλάζει την οθόνη καταγραφής: στην επόμενη οθόνη ή απευθείας σε όποια επιλέξετε. Οι συντομεύσεις κλιπ με «οθόνη καταγραφής», η περιοχή ειδοποιήσεων και το κουμπί Κλιπ την ακολουθούν.",
+  "<b>{keys}</b> saves <b>{monitor}</b>, not the monitor chosen here: that keybind has its own monitor.": "Το <b>{keys}</b> αποθηκεύει την <b>{monitor}</b>, όχι την οθόνη που επιλέχθηκε εδώ: αυτή η συντόμευση έχει δική της οθόνη.",
 });

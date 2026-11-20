@@ -136,9 +136,14 @@ fn system_text(core: &Core) -> String {
         let mons: Vec<String> = st
             .captures
             .iter()
-            .map(|c| format!("monitor {}{} {}x{} at {} fps (clips up to {} s{})", c.monitor + 1, if c.primary && st.captures.len() > 1 { " (main)" } else { "" }, c.width, c.height, c.fps, c.buffer_max.round(), if c.error.is_empty() { String::new() } else { format!(", error: {}", c.error) }))
+            .map(|c| format!("monitor {}{} {}x{} at {} fps (clips up to {} s{})", c.monitor + 1, if c.primary && st.captures.len() > 1 { " (capture monitor)" } else { "" }, c.width, c.height, c.fps, c.buffer_max.round(), if c.error.is_empty() { String::new() } else { format!(", error: {}", c.error) }))
             .collect();
         lines.push(format!("Capture: {}, encoder {}, method {}", mons.join("; "), st.encoder, st.method));
+        // Which monitor each clip keybind saves: one that names its own monitor ignores the capture monitor.
+        let all = win::monitors();
+        if all.len() > 1 {
+            lines.extend(crate::core::keybind_targets(&s, &all));
+        }
     } else {
         let height = if s.height == 0 { "native".to_string() } else { format!("{}p", s.height) };
         lines.push(format!("Capture: paused (settings: {height} at {} fps, encoder {}, method {})", s.fps, s.encoder, s.method));
