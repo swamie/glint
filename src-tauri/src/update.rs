@@ -96,7 +96,7 @@ pub fn newer(a: &str, b: &str) -> bool {
     x > y
 }
 
-fn curl() -> std::process::Command {
+pub(crate) fn curl() -> std::process::Command {
     let mut c = util::hidden_cmd(Path::new("curl.exe"));
     // A generic client name: GitHub requires a User-Agent, and nothing here should identify the user.
     c.args(["-sS", "-L", "--fail", "--retry", "2", "-H", "User-Agent: Glint-updater"]);
@@ -156,7 +156,7 @@ pub fn check() -> UpdateInfo {
     info
 }
 
-fn sha256(file: &Path) -> Option<String> {
+pub(crate) fn sha256(file: &Path) -> Option<String> {
     let out = util::hidden_cmd(Path::new("certutil.exe")).arg("-hashfile").arg(file).arg("SHA256").stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     String::from_utf8_lossy(&out.stdout)
         .lines()

@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "plugins": [
+    {
+      "id": "stream",
+      "name": "Stream",
+      "description": "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen and cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.",
+      "author": "Glint developers",
+      "version": "0.1.0",
+      "min_glint": "0.1.53",
+      "icon": "M12 9.8a2.2 2.2 0 1 0 0 4.4 2.2 2.2 0 0 0 0-4.4zM7.8 16.2a6 6 0 0 1 0-8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 19A10 10 0 0 1 5 5M19 5a10 10 0 0 1 0 14",
+      "tag": "Preview",
+      "files": [
+        {
+          "path": "plugin.json",
+          "sha256": "0a361160e071557eab96184ae85c21a0345e0872faf12b126b1f8a8a82c976a9",
+          "size": 526
+        },
+        {
+          "path": "stream.css",
+          "sha256": "4fc07835da22f71e8b1378749322110e44b3eb880e501d955eda34f130347974",
+          "size": 4809
+        },
+        {
+          "path": "stream.js",
+          "sha256": "a1f7430a7035d8b981c944d32a662cc783817e222baccf172a87fc27c64379e3",
+          "size": 57558
+        }
+      ]
+    }
+  ]
+}
