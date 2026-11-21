@@ -382,4 +382,7 @@ glintAddLanguage("ko", "한국어", {
   "Glint tells you when a clip keybind saves a different monitor than the one you chose for capture.": "클립 단축키가 캡처용으로 고른 모니터와 다른 모니터를 저장하면 Glint가 알려 줍니다.",
   "The time readout in the editor is easier to read.": "편집기의 시간 표시가 더 읽기 쉽습니다.",
   "The key shown on the Clip button no longer looks white at the bottom, and its letter sits in the middle.": "클립 버튼에 표시되는 키의 아래쪽이 더 이상 하얗게 보이지 않고, 글자가 가운데에 놓입니다.",
+  // 0.1.55
+  "A new plugin, Subtitles, a preview. It writes what is said in a clip on the picture, on your PC. Get it from Tools, then Plugins, and find it in the editor on the Overlays tab.": "새 플러그인 자막이 미리 보기로 추가되었습니다. 클립에서 말한 내용을 PC에서 바로 화면에 글자로 넣어 줍니다. 도구, 플러그인에서 설치하고 편집기의 오버레이 탭에서 사용하세요.",
+  "Fix the words of a subtitle, change its size, color and place, or save the subtitles as a file.": "자막의 글자를 고치고 크기, 색, 위치를 바꾸거나 자막을 파일로 저장할 수 있습니다.",
 });

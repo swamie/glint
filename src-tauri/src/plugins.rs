@@ -24,6 +24,16 @@
 //!     starts a process with are the ones the plugin's script last saved in its settings:
 //!     `plugins[<id>].procs[<name>] = { "args": [...], "audio": bool }`. So a keybind works while
 //!     the window is closed (the window, and with it every plugin script, is gone in the tray);
+//!   - downloads: larger files a plugin needs but does not carry (a program, a model). They are
+//!     listed in its manifest with their address, size and SHA-256:
+//!       "downloads": [ { "id": "whisper", "name": "whisper.cpp", "url": "https://...zip",
+//!                        "sha256": "...", "size": 123, "unzip": true, "run": "whisper-cli.exe" } ]
+//!     Nothing is fetched until the plugin's script asks (`plugin_dl_get`); a file that does not match
+//!     its size and sum is deleted. They live in `<data_dir>\plugin-files\<id>\dl\<download id>\`.
+//!     A download with `run` is a program of the plugin's: `plugin_proc_start` with `tool` runs it
+//!     instead of ffmpeg. In a process's arguments "{dl:<download id>}" is a download's file (or its
+//!     folder, when unzipped) and "{work}" the plugin's own scratch folder, which its script can
+//!     read text files from (`plugin_work_read`);
 //!   - the local API (PR #2), only when an installed plugin asks for it: see `start`.
 //!
 //! The marketplace: `REGISTRY/index.json` lists the official plugins and, for each, its files with
@@ -88,6 +98,23 @@ pub struct Manifest {
     pub css: String,
     pub api: bool,
     pub actions: Vec<Action>,
+    pub downloads: Vec<Download>,
+}
+
+/// A file a plugin needs but does not carry: fetched when its script asks, checked, kept outside its folder.
+#[derive(Deserialize, Serialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Download {
+    pub id: String,
+    pub name: String,
+    /// https only.
+    pub url: String,
+    pub sha256: String,
+    pub size: u64,
+    /// A zip, unpacked into the download's folder (the zip itself is not kept).
+    pub unzip: bool,
+    /// The file name of a program inside the unpacked folder that `plugin_proc_start` may run ("" = none).
+    pub run: String,
 }
 
 #[derive(Clone, Debug)]
@@ -412,7 +439,7 @@ pub fn plugin_set_enabled(id: String, on: bool) -> Result<Value, String> {
     Ok(state_json())
 }
 
-/// Remove an installed plugin's folder. Its settings stay in the settings file, for a later install.
+/// Remove an installed plugin's folder and its downloads. Its settings stay in the settings file, for a later install.
 #[tauri::command(async)]
 pub fn plugin_uninstall(id: String) -> Result<Value, String> {
     if !valid_id(&id) {
@@ -421,6 +448,9 @@ pub fn plugin_uninstall(id: String) -> Result<Value, String> {
     let p = find(&id).ok_or("This plugin is not installed")?;
     proc_stop_all(Some(&id));
     fs::remove_dir_all(&p.dir).map_err(|e| format!("Could not remove the plugin: {e}"))?;
+    // What it downloaded (a model can be hundreds of MB) and its scratch files go with it; pictures it was given stay.
+    let _ = fs::remove_dir_all(files_dir(&id).join("dl"));
+    let _ = fs::remove_dir_all(work_dir(&id));
     util::log(&format!("plugins: removed {id}"));
     Ok(state_json())
 }
@@ -471,6 +501,262 @@ pub fn plugin_file_drop(plugin: String, path: String) -> bool {
     p.parent() == Some(files_dir(&plugin).as_path()) && p.is_file() && fs::remove_file(&p).is_ok()
 }
 
+/* ---------- a plugin's downloads, its scratch folder and saving a text ---------- */
+
+const DL_MAX: u64 = 4 * 1024 * 1024 * 1024;
+/// "<plugin>/<download id>" of the downloads running now -> asked to stop.
+static DL_BUSY: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+
+fn dl_busy() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    DL_BUSY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn dl_dir(plugin: &str, id: &str) -> PathBuf {
+    files_dir(plugin).join("dl").join(id)
+}
+
+/// The scratch folder of a plugin's processes ("{work}").
+fn work_dir(plugin: &str) -> PathBuf {
+    files_dir(plugin).join("work")
+}
+
+/// The last part of a download's address, as a safe file name.
+fn dl_file_name(d: &Download) -> String {
+    let last = d.url.split(['?', '#']).next().unwrap_or("").rsplit('/').next().unwrap_or("");
+    let name: String = last.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')).take(80).collect();
+    if name.trim_matches('.').is_empty() { "download.bin".into() } else { name }
+}
+
+fn dl_valid(d: &Download) -> bool {
+    valid_id(&d.id) && d.url.starts_with("https://") && d.sha256.len() == 64 && d.sha256.chars().all(|c| c.is_ascii_hexdigit()) && d.size > 0 && d.size <= DL_MAX
+}
+
+/// Fetched, checked, and still the one the manifest names (a plugin's update may name a newer file).
+fn dl_installed(plugin: &str, d: &Download) -> bool {
+    let dir = dl_dir(plugin, &d.id);
+    let same = fs::read_to_string(dir.join(".ok")).is_ok_and(|t| t.trim() == d.sha256.to_lowercase());
+    same && if d.unzip { d.run.is_empty() || dl_program(plugin, d).is_some() } else { dir.join(dl_file_name(d)).is_file() }
+}
+
+/// Where "{dl:<id>}" points: the file, or the folder of an unzipped one.
+fn dl_path(plugin: &str, d: &Download) -> PathBuf {
+    if d.unzip { dl_dir(plugin, &d.id) } else { dl_dir(plugin, &d.id).join(dl_file_name(d)) }
+}
+
+/// The program `d.run` inside its unpacked folder (a zip may keep it a folder or two down).
+fn dl_program(plugin: &str, d: &Download) -> Option<PathBuf> {
+    fn search(dir: &std::path::Path, name: &str, depth: u32) -> Option<PathBuf> {
+        let entries: Vec<PathBuf> = fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).collect();
+        if let Some(hit) = entries.iter().find(|p| p.is_file() && p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(name))) {
+            return Some(hit.clone());
+        }
+        if depth == 0 {
+            return None;
+        }
+        entries.iter().filter(|p| p.is_dir()).find_map(|p| search(p, name, depth - 1))
+    }
+    if d.run.is_empty() || d.run.contains(['/', '\\']) || !fs::read_to_string(dl_dir(plugin, &d.id).join(".ok")).is_ok_and(|t| t.trim() == d.sha256.to_lowercase()) {
+        return None;
+    }
+    search(&dl_dir(plugin, &d.id), &d.run, 3)
+}
+
+/// "{work}" and "{dl:<id>}" in a process's arguments.
+fn place_args(plugin: &str, manifest: &Manifest, args: &[String]) -> Result<Vec<String>, String> {
+    let mut out = Vec::with_capacity(args.len());
+    for a in args {
+        let mut a = a.clone();
+        if a.contains("{work}") {
+            let w = work_dir(plugin);
+            fs::create_dir_all(&w).map_err(|e| format!("Cannot create the plugin's work folder: {e}"))?;
+            a = a.replace("{work}", &w.to_string_lossy());
+        }
+        for d in &manifest.downloads {
+            let key = format!("{{dl:{}}}", d.id);
+            if a.contains(&key) {
+                if !dl_installed(plugin, d) {
+                    return Err(format!("{} is not downloaded yet", if d.name.is_empty() { &d.id } else { &d.name }));
+                }
+                a = a.replace(&key, &dl_path(plugin, d).to_string_lossy());
+            }
+        }
+        out.push(a);
+    }
+    Ok(out)
+}
+
+fn dl_json(plugin: &str, d: &Download) -> Value {
+    let key = proc_key(plugin, &d.id);
+    json!({ "id": d.id, "name": if d.name.is_empty() { &d.id } else { &d.name }, "size": d.size, "installed": dl_installed(plugin, d), "busy": dl_busy().lock().unwrap().contains_key(&key) })
+}
+
+/// The downloads a plugin's manifest lists: [{ id, name, size, installed, busy }].
+#[tauri::command(async)]
+pub fn plugin_dl_state(plugin: String) -> Vec<Value> {
+    find(&plugin).map(|p| p.manifest.downloads.iter().map(|d| dl_json(&plugin, d)).collect()).unwrap_or_default()
+}
+
+/// Fetch one of a plugin's downloads, check it against the manifest's size and SHA-256, and (a zip)
+/// unpack it. Progress comes as "plugin-download" { plugin, id, phase: "download" | "check" |
+/// "unpack" | "done" | "error", done, total, error }. Returns the downloads' state.
+#[tauri::command(async)]
+pub fn plugin_dl_get<R: Runtime>(app: AppHandle<R>, plugin: String, id: String) -> Result<Vec<Value>, String> {
+    let p = installed().into_iter().find(|p| p.manifest.id == plugin).ok_or("This plugin is not installed or is switched off")?;
+    let d = p.manifest.downloads.iter().find(|d| d.id == id).cloned().ok_or("The plugin has no such download")?;
+    if !dl_valid(&d) {
+        return Err("The plugin's download is not described properly (an https address, a size and a SHA-256 are needed)".into());
+    }
+    if dl_installed(&plugin, &d) {
+        return Ok(plugin_dl_state(plugin));
+    }
+    let key = proc_key(&plugin, &id);
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut busy = dl_busy().lock().unwrap();
+        if busy.contains_key(&key) {
+            return Err("It is already being downloaded".into());
+        }
+        busy.insert(key.clone(), cancel.clone());
+    }
+    let emit = |phase: &str, done: u64, error: &str| {
+        let _ = app.emit("plugin-download", json!({ "plugin": plugin, "id": id, "phase": phase, "done": done, "total": d.size, "error": error }));
+    };
+    let dir = dl_dir(&plugin, &id);
+    let result = (|| -> Result<(), String> {
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).map_err(|e| format!("Cannot create the download's folder: {e}"))?;
+        let file = dir.join(dl_file_name(&d));
+        emit("download", 0, "");
+        let mut child = crate::update::curl().arg("-o").arg(&file).arg(&d.url).stderr(Stdio::piped()).spawn().map_err(|e| format!("Could not run curl.exe: {e}"))?;
+        util::track_child(&child);
+        let status = loop {
+            if cancel.load(Ordering::SeqCst) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Cancelled.".into());
+            }
+            match child.try_wait() {
+                Ok(Some(s)) => break s,
+                Ok(None) => {}
+                Err(e) => return Err(format!("The download failed: {e}")),
+            }
+            let have = fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+            if have > d.size {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("The download is larger than the plugin says, so it was not kept.".into());
+            }
+            emit("download", have, "");
+            std::thread::sleep(Duration::from_millis(300));
+        };
+        if !status.success() || !file.is_file() {
+            let mut why = String::new();
+            if let Some(mut e) = child.stderr.take() {
+                let _ = e.read_to_string(&mut why);
+            }
+            return Err(format!("The download failed. Check your internet connection and try again. ({})", util::last_lines(why.as_bytes(), 1)));
+        }
+        emit("check", d.size, "");
+        let size = fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+        let got = crate::update::sha256(&file).ok_or("The download could not be checked (certutil.exe did not run), so it was not kept")?;
+        if size != d.size || got != d.sha256.to_lowercase() {
+            return Err("The download does not match the plugin's checksum, so it was not kept.".into());
+        }
+        if d.unzip {
+            emit("unpack", d.size, "");
+            let out = util::hidden_cmd(std::path::Path::new("tar.exe")).arg("-xf").arg(&file).arg("-C").arg(&dir).stdin(Stdio::null()).stderr(Stdio::piped()).output().map_err(|e| format!("Could not run tar.exe: {e}"))?;
+            if !out.status.success() {
+                return Err(format!("The download could not be unpacked. ({})", util::last_lines(&out.stderr, 1)));
+            }
+            let _ = fs::remove_file(&file);
+        }
+        fs::write(dir.join(".ok"), d.sha256.to_lowercase()).map_err(|e| format!("Could not keep the download: {e}"))?;
+        if d.unzip && !d.run.is_empty() && dl_program(&plugin, &d).is_none() {
+            return Err(format!("{} was not in the download", d.run));
+        }
+        Ok(())
+    })();
+    dl_busy().lock().unwrap().remove(&key);
+    match result {
+        Ok(()) => {
+            util::log(&format!("plugins: {plugin} downloaded {id} ({} bytes, checksum ok)", d.size));
+            emit("done", d.size, "");
+            Ok(plugin_dl_state(plugin))
+        }
+        Err(e) => {
+            let _ = fs::remove_dir_all(&dir);
+            util::log(&format!("plugins: {plugin}'s download {id} failed: {e}"));
+            emit("error", 0, &e);
+            Err(e)
+        }
+    }
+}
+
+/// Stop a running download of a plugin.
+#[tauri::command(async)]
+pub fn plugin_dl_cancel(plugin: String, id: String) -> bool {
+    dl_busy().lock().unwrap().get(&proc_key(&plugin, &id)).map(|c| c.store(true, Ordering::SeqCst)).is_some()
+}
+
+/// Delete one of a plugin's downloads from the disk. Returns the downloads' state.
+#[tauri::command(async)]
+pub fn plugin_dl_remove(plugin: String, id: String) -> Result<Vec<Value>, String> {
+    if !valid_id(&plugin) || !valid_id(&id) {
+        return Err("That is not a plugin's download".into());
+    }
+    if dl_busy().lock().unwrap().contains_key(&proc_key(&plugin, &id)) {
+        return Err("It is being downloaded".into());
+    }
+    let dir = dl_dir(&plugin, &id);
+    if dir.exists() {
+        fs::remove_dir_all(&dir).map_err(|e| format!("Could not delete the download: {e}"))?;
+    }
+    Ok(plugin_dl_state(plugin))
+}
+
+/// A text file one of the plugin's processes wrote into its scratch folder ("{work}"), up to 16 MB.
+#[tauri::command(async)]
+pub fn plugin_work_read(plugin: String, name: String) -> Result<String, String> {
+    if !valid_id(&plugin) || name.is_empty() || name.contains(['/', '\\', ':']) || name.starts_with('.') {
+        return Err("That is not a file of the plugin's work folder".into());
+    }
+    let file = work_dir(&plugin).join(&name);
+    let meta = fs::metadata(&file).map_err(|_| "The plugin's process wrote no result")?;
+    if !meta.is_file() || meta.len() > 16 * 1024 * 1024 {
+        return Err("The plugin's result could not be read".into());
+    }
+    fs::read(&file).map(|b| String::from_utf8_lossy(&b).into_owned()).map_err(|e| format!("The plugin's result could not be read: {e}"))
+}
+
+/// Empty a plugin's scratch folder.
+#[tauri::command(async)]
+pub fn plugin_work_clear(plugin: String) -> bool {
+    valid_id(&plugin) && (!work_dir(&plugin).exists() || fs::remove_dir_all(work_dir(&plugin)).is_ok())
+}
+
+/// What a plugin may save through `plugin_save_text`.
+const SAVE_EXT: [&str; 5] = ["srt", "vtt", "txt", "csv", "json"];
+
+/// Ask the user where to save a text a plugin made (subtitles, say) and write it there: the path,
+/// or None when they cancelled. `name` is the file name offered; its ending picks the kind.
+#[tauri::command(async)]
+pub fn plugin_save_text(plugin: String, name: String, text: String) -> Result<Option<String>, String> {
+    if !installed().iter().any(|p| p.manifest.id == plugin) {
+        return Err("This plugin is not installed or is switched off".into());
+    }
+    let clean: String = name.chars().map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c }).take(120).collect();
+    let ext = clean.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    if !SAVE_EXT.contains(&ext.as_str()) {
+        return Err("A plugin can only save text files (.srt, .vtt, .txt, .csv or .json)".into());
+    }
+    let Some(mut file) = rfd::FileDialog::new().set_file_name(&clean).add_filter(ext.to_uppercase(), &[ext.as_str()]).save_file() else { return Ok(None) };
+    if !file.extension().is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(&ext)) {
+        file.set_extension(&ext); // never another kind of file than the one asked for
+    }
+    fs::write(&file, text.as_bytes()).map_err(|e| format!("Could not save the file: {e}"))?;
+    Ok(Some(file.to_string_lossy().into_owned()))
+}
+
 /// Restart Glint so that a plugin just installed, removed or switched takes effect. The new copy
 /// shows its window, and clips or stays paused as this one did.
 #[tauri::command(async)]
@@ -498,12 +784,14 @@ struct Proc {
     log: Mutex<VecDeque<String>>,
     /// How it ended: "" while running or when stopped on purpose, else the reason.
     error: Mutex<String>,
+    /// Its exit code once it has ended by itself (0 = it finished its work).
+    code: Mutex<Option<i32>>,
 }
 
 impl Proc {
     fn json(&self) -> Value {
         let log: Vec<String> = self.log.lock().unwrap().iter().cloned().collect();
-        json!({ "plugin": self.plugin, "name": self.name, "running": self.running.load(Ordering::SeqCst), "pid": self.pid, "started": self.started, "error": *self.error.lock().unwrap(), "log": log })
+        json!({ "plugin": self.plugin, "name": self.name, "running": self.running.load(Ordering::SeqCst), "pid": self.pid, "started": self.started, "error": *self.error.lock().unwrap(), "code": *self.code.lock().unwrap(), "log": log })
     }
 }
 
@@ -533,7 +821,10 @@ const AUDIO_DELAY: f64 = 0.25;
 /// to its stdin as s16le stereo, and "{audio_rate}" in `args` becomes its sample rate, so the
 /// arguments carry `-f s16le -ar {audio_rate} -ac 2 -i pipe:0`.
 /// `quiet`: its end is not announced with a toast (a short question to ffmpeg, such as its list of cameras, always "fails").
-fn proc_start(core: &Arc<Core>, plugin: &str, name: &str, args: &[String], audio: bool, quiet: bool) -> Result<Arc<Proc>, String> {
+/// `tool`: a download of the plugin with a `run` program (its manifest's `downloads`): that program
+/// is started instead of ffmpeg. "{work}" and "{dl:<id>}" in `args` become the plugin's scratch
+/// folder and a download's place.
+fn proc_start(core: &Arc<Core>, plugin: &str, name: &str, args: &[String], audio: bool, quiet: bool, tool: Option<&str>) -> Result<Arc<Proc>, String> {
     if !installed().iter().any(|p| p.manifest.id == plugin) {
         return Err("This plugin is not installed or is switched off".into());
     }
@@ -543,17 +834,25 @@ fn proc_start(core: &Arc<Core>, plugin: &str, name: &str, args: &[String], audio
     if proc_is_running(plugin, name) {
         return Err("It is already running".into());
     }
-    let ffmpeg = util::find_exe(&core.settings().ffmpeg_path, "ffmpeg").ok_or("ffmpeg.exe was not found. Install ffmpeg or set its path in Settings.")?;
+    let manifest = find(plugin).map(|p| p.manifest).unwrap_or_default();
+    let (program, what) = match tool.filter(|t| !t.is_empty()) {
+        Some(t) => {
+            let d = manifest.downloads.iter().find(|d| d.id == t && !d.run.is_empty()).ok_or("The plugin has no such program")?;
+            (dl_program(plugin, d).ok_or_else(|| format!("{} is not downloaded yet", if d.name.is_empty() { &d.id } else { &d.name }))?, if d.name.is_empty() { d.id.clone() } else { d.name.clone() })
+        }
+        None => (util::find_exe(&core.settings().ffmpeg_path, "ffmpeg").ok_or("ffmpeg.exe was not found. Install ffmpeg or set its path in Settings.")?, "ffmpeg".to_string()),
+    };
+    let args = place_args(plugin, &manifest, args)?;
     let now = util::now_secs();
     let rate = core.rec.live_audio(now - 0.05, now).map(|p| p.rate).filter(|r| *r > 0).unwrap_or(48_000);
     let args: Vec<String> = args.iter().map(|a| a.replace("{audio_rate}", &rate.to_string())).collect();
-    let mut child = util::hidden_cmd(&ffmpeg)
+    let mut child = util::hidden_cmd(&program)
         .args(&args)
         .stdin(if audio { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Could not start ffmpeg: {e}"))?;
+        .map_err(|e| format!("Could not start {what}: {e}"))?;
     util::track_child(&child); // ends with Glint
     let stderr = child.stderr.take();
     let stdin = child.stdin.take();
@@ -570,6 +869,7 @@ fn proc_start(core: &Arc<Core>, plugin: &str, name: &str, args: &[String], audio
         running: AtomicBool::new(true),
         log: Mutex::new(VecDeque::new()),
         error: Mutex::new(String::new()),
+        code: Mutex::new(None),
     });
     procs().lock().unwrap().insert(proc_key(plugin, name), p.clone());
     util::log(&format!("plugins: {plugin} started its process {name} (pid {}{})", p.pid, if audio { format!(", live audio at {rate} Hz") } else { String::new() }));
@@ -631,15 +931,16 @@ fn proc_start(core: &Arc<Core>, plugin: &str, name: &str, args: &[String], audio
         }
         let status = p2.child.lock().unwrap().take().and_then(|mut c| c.wait().ok());
         let on_purpose = p2.stopping.load(Ordering::SeqCst);
-        if !on_purpose {
+        *p2.code.lock().unwrap() = status.and_then(|s| s.code());
+        if !on_purpose && !status.is_some_and(|s| s.success()) {
             // The last line that is not a progress line says why.
             let why = p2.log.lock().unwrap().iter().rev().find(|l| !l.starts_with("frame=") && !l.starts_with("size=")).cloned().unwrap_or_default();
-            *p2.error.lock().unwrap() = if why.is_empty() { format!("ffmpeg ended ({})", status.map(|s| s.to_string()).unwrap_or_default()) } else { why };
+            *p2.error.lock().unwrap() = if why.is_empty() { format!("{what} ended ({})", status.map(|s| s.to_string()).unwrap_or_default()) } else { why };
         }
         p2.running.store(false, Ordering::SeqCst);
         util::log(&format!("plugins: {}'s process {} ended{}", p2.plugin, p2.name, if on_purpose { String::new() } else { format!(": {}", p2.error.lock().unwrap()) }));
         core2.emit("plugin-proc", p2.json());
-        if !on_purpose && !quiet && core2.settings().toast {
+        if !on_purpose && !quiet && !p2.error.lock().unwrap().is_empty() && core2.settings().toast {
             let name = find(&p2.plugin).map(|x| x.manifest.name).unwrap_or_else(|| p2.plugin.clone());
             let lang = core2.settings().language;
             let why = p2.error.lock().unwrap().clone();
@@ -678,8 +979,8 @@ fn proc_stop_all(plugin: Option<&str>) {
 }
 
 #[tauri::command(async)]
-pub fn plugin_proc_start(core: St, plugin: String, name: String, args: Vec<String>, audio: Option<bool>, quiet: Option<bool>) -> Result<Value, String> {
-    proc_start(core.inner(), &plugin, &name, &args, audio.unwrap_or(false), quiet.unwrap_or(false)).map(|p| p.json())
+pub fn plugin_proc_start(core: St, plugin: String, name: String, args: Vec<String>, audio: Option<bool>, quiet: Option<bool>, tool: Option<String>) -> Result<Value, String> {
+    proc_start(core.inner(), &plugin, &name, &args, audio.unwrap_or(false), quiet.unwrap_or(false), tool.as_deref()).map(|p| p.json())
 }
 
 #[tauri::command(async)]
@@ -691,7 +992,7 @@ pub fn plugin_proc_stop(plugin: String, name: String) -> Value {
 /// { running, started, pid, error, log } of a plugin's process ({ running: false } when it never ran).
 #[tauri::command(async)]
 pub fn plugin_proc_status(plugin: String, name: String) -> Value {
-    proc_get(&plugin, &name).map(|p| p.json()).unwrap_or_else(|| json!({ "plugin": plugin, "name": name, "running": false, "pid": 0, "started": 0, "error": "", "log": [] }))
+    proc_get(&plugin, &name).map(|p| p.json()).unwrap_or_else(|| json!({ "plugin": plugin, "name": name, "running": false, "pid": 0, "started": 0, "error": "", "code": null, "log": [] }))
 }
 
 /* ---------- keybinds ---------- */
@@ -722,7 +1023,7 @@ pub fn fire(core: &Arc<Core>, action: &str) {
             if args.is_empty() {
                 toast(&p.manifest.name, crate::lang::tr(&s.language, "Open Glint and set it up first"));
             } else {
-                match proc_start(core, id, &def.process, &args, saved["audio"].as_bool().unwrap_or(false), false) {
+                match proc_start(core, id, &def.process, &args, saved["audio"].as_bool().unwrap_or(false), false, None) {
                     Ok(_) => toast(if def.started.is_empty() { &p.manifest.name } else { &def.started }, ""),
                     Err(e) => toast(&p.manifest.name, &e),
                 }

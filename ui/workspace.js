@@ -68,6 +68,8 @@ const WS_SEC_TAB = { "e-speed-sec": "clip", "e-zoom": "clip", "e-cv": "clip", "e
 /** The tab an element of the inspector belongs to ("" for none: the hidden head, the tab strip itself). */
 function wsTabOf(el) {
   for (const c of el.classList) if (WS_SEC_TAB[c]) return WS_SEC_TAB[c];
+  // A plugin's section (plugins.js) names its tab; one that names none, or one that does not exist, is on Clip.
+  if (el.classList.contains("e-plug") && ["clip", "color", "overlays"].includes(el.dataset.tab)) return el.dataset.tab;
   return el.classList.contains("e-sec") ? "clip" : "";
 }
 function wsTabsMount(root, pane) {

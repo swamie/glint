@@ -304,6 +304,8 @@ Only official plugins can be installed from the marketplace for now. The list is
 
 **Stream (preview).** The first official plugin: go live to Twitch, YouTube or any RTMP server from a Stream page under Tools, with a "Start / stop streaming" keybind that also works while the window is closed. It streams a scene with Glint's desktop and microphone sound: the screen plus any cameras, pictures (PNG, JPEG or GIF, dropped on the preview) and blur boxes, each moved, sized, cropped, turned and stacked on the page's preview.
 
+**Subtitles (preview).** Turns what is said in a clip into subtitles on your PC. It adds a Subtitles section to the editor's Overlays tab: "Make subtitles" listens to the clips on the timeline and puts each line on the picture as a centred text. Retype a line in the list, change the size, place and color of all of them, or move and retime one like any text, on the picture or on the timeline. The lines are part of the exported clip, and "Save .srt file" writes them as a subtitle file timed for the finished clip. Speech is read by [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with a model you pick (fast, better or best); both are downloaded the first time (about 150 MB with the fast model), checked against a SHA-256, and then work without internet. The sound never leaves the PC. `node tools/subtitles-test.js` checks its arithmetic.
+
 For plugin authors and for publishing one: [plugins/README.md](plugins/README.md). How it works: `src-tauri/src/plugins.rs` and `ui/plugins.js`.
 
 ## Blur

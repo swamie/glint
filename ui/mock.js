@@ -500,7 +500,11 @@ if (!window.__TAURI__) {
     const KEY = "glint.mockPlugins";
     const read = () => { try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch { return {}; } };
     const write = (all) => { try { localStorage.setItem(KEY, JSON.stringify(all)); } catch {} };
-    const procs = {};
+    const procs = {}, work = {}, dlRun = {};
+    const DL_KEY = "glint.mockPluginDownloads";
+    let dls = {};
+    try { dls = JSON.parse(localStorage.getItem(DL_KEY) || "{}"); } catch {}
+    const dlSave = () => { try { localStorage.setItem(DL_KEY, JSON.stringify(dls)); } catch {} };
     let loaded = null;
     const running = (all) => Object.values(all).filter((p) => p.enabled).map((p) => `${p.manifest.id} ${p.manifest.version}`).join(",");
     const index = async () => { const r = await fetch("../plugins/index.json", { cache: "no-store" }); if (!r.ok) throw `Could not reach the plugin list: HTTP ${r.status}`; return r.json(); };
@@ -535,11 +539,24 @@ if (!window.__TAURI__) {
         return api.state();
       },
       set(id, change) { const all = read(); if (change === null) delete all[id]; else if (all[id]) Object.assign(all[id], change); write(all); },
-      procStatus: ({ plugin, name }) => ({ plugin, name, running: false, pid: 0, started: 0, error: "", log: [], ...(procs[`${plugin}/${name}`] || {}) }),
+      procStatus: ({ plugin, name }) => ({ plugin, name, running: false, pid: 0, started: 0, error: "", code: null, log: [], ...(procs[`${plugin}/${name}`] || {}) }),
       // A stream key with "bad" in it fails after two seconds, as a refused key does.
-      procStart({ plugin, name, args }) {
+      procStart({ plugin, name, args, tool }) {
         const k = `${plugin}/${name}`;
-        procs[k] = { running: true, pid: 4242, started: Date.now(), error: "", log: [] };
+        procs[k] = { running: true, pid: 4242, started: Date.now(), error: "", code: null, log: [] };
+        const end = (ms, change) => setTimeout(() => { if (!procs[k].running) return; Object.assign(procs[k], { running: false, code: 0 }, change || {}); window.__mockEmit("plugin-proc", api.procStatus({ plugin, name })); }, ms);
+        window.__mockPluginRuns = [...(window.__mockPluginRuns || []), { plugin, name, tool: tool || "", args }];
+        if (tool) { // a downloaded program (speech to text): progress in its messages, then its result in the work folder
+          if (!dls[`${plugin}/${tool}`]) throw `${tool} is not downloaded yet`;
+          const of = args[args.indexOf("-of") + 1] || "", file = of.split(/[\\/]/).pop() + ".json";
+          let pct = 0;
+          const tick = setInterval(() => { const q = procs[k]; if (!q.running) return clearInterval(tick); pct = Math.min(100, pct + 20); q.log.push(`whisper_print_progress_callback: progress = ${String(pct).padStart(3)}%`); }, 300);
+          const lines = ["Okay, push them now.", "He is one shot, behind the box!", "[BLANK_AUDIO]", "Nice, that is the round.", "This subtitle line is long enough that it has to be wrapped onto a second line of the picture", "Let's go again."];
+          work[`${plugin}/${file}`] = JSON.stringify({ result: { language: "en" }, transcription: lines.map((text, i) => ({ offsets: { from: 600 + i * 2400, to: 600 + i * 2400 + 1900 }, text: " " + text })) });
+          end(1800);
+          return api.procStatus({ plugin, name });
+        }
+        if (args.includes("pcm_s16le")) { end(300); return api.procStatus({ plugin, name }); } // a clip's sound written as a WAV for it
         if (args.includes("-list_devices")) { // ffmpeg's list of cameras: it ends at once, the names are in its messages
           Object.assign(procs[k], { running: false, error: "dummy: Immediate exit requested", log: ['[in#0 @ 000001] "fake_device_0" (video)', '[in#0 @ 000001]   Alternative name "@device_pnp_1"', '[in#0 @ 000001] "Logitech C920" (video)', '[in#0 @ 000001] "Microphone (USB Audio)" (audio)'] });
           setTimeout(() => window.__mockEmit("plugin-proc", api.procStatus({ plugin, name })), 150);
@@ -550,6 +567,26 @@ if (!window.__TAURI__) {
         if (/bad/.test(args[args.length - 1])) setTimeout(() => { Object.assign(procs[k], { running: false, error: "rtmp://live.twitch.tv/app/…: Input/output error" }); window.__mockEmit("plugin-proc", api.procStatus({ plugin, name })); }, 2000);
         return api.procStatus({ plugin, name });
       },
+      // A plugin's downloads: nothing is fetched here, the bar just fills.
+      dlState({ plugin }) { return (read()[plugin]?.manifest.downloads || []).map((d) => ({ id: d.id, name: d.name || d.id, size: d.size, installed: !!dls[`${plugin}/${d.id}`], busy: !!dlRun[`${plugin}/${d.id}`] })); },
+      async dlGet({ plugin, id }) {
+        const d = (read()[plugin]?.manifest.downloads || []).find((x) => x.id === id), k = `${plugin}/${id}`;
+        if (!d) throw "The plugin has no such download";
+        dlRun[k] = { cancel: false };
+        for (let i = 0; i <= 10; i++) {
+          if (dlRun[k].cancel) { delete dlRun[k]; window.__mockEmit("plugin-download", { plugin, id, phase: "error", done: 0, total: d.size, error: "Cancelled." }); throw "Cancelled."; }
+          window.__mockEmit("plugin-download", { plugin, id, phase: "download", done: (d.size * i) / 10, total: d.size, error: "" });
+          await new Promise((r) => setTimeout(r, 120));
+        }
+        delete dlRun[k];
+        dls[k] = true; dlSave();
+        window.__mockEmit("plugin-download", { plugin, id, phase: "done", done: d.size, total: d.size, error: "" });
+        return api.dlState({ plugin });
+      },
+      dlCancel({ plugin, id }) { const r = dlRun[`${plugin}/${id}`]; if (r) r.cancel = true; return !!r; },
+      dlRemove({ plugin, id }) { delete dls[`${plugin}/${id}`]; dlSave(); return api.dlState({ plugin }); },
+      workRead({ plugin, name }) { const x = work[`${plugin}/${name}`]; if (x === undefined) throw "The plugin's process wrote no result"; return x; },
+      workClear({ plugin }) { for (const k of Object.keys(work)) if (k.startsWith(plugin + "/")) delete work[k]; return true; },
       procStop({ plugin, name }) { const p = procs[`${plugin}/${name}`]; if (p) p.running = false; window.__mockEmit("plugin-proc", api.procStatus({ plugin, name })); return api.procStatus({ plugin, name }); },
     };
     return api;
@@ -1119,6 +1156,13 @@ if (!window.__TAURI__) {
           case "plugin_proc_start": return mockPlugins.procStart(args);
           case "plugin_proc_stop": return mockPlugins.procStop(args);
           case "plugin_proc_status": return mockPlugins.procStatus(args);
+          case "plugin_dl_state": return mockPlugins.dlState(args);
+          case "plugin_dl_get": return mockPlugins.dlGet(args);
+          case "plugin_dl_cancel": return mockPlugins.dlCancel(args);
+          case "plugin_dl_remove": return mockPlugins.dlRemove(args);
+          case "plugin_work_read": return mockPlugins.workRead(args);
+          case "plugin_work_clear": return mockPlugins.workClear(args);
+          case "plugin_save_text": window.__mockSavedText = { name: args.name, text: args.text }; return `C:\\Users\\you\\Videos\\${args.name}`;
           default: return null;
         }
       },
