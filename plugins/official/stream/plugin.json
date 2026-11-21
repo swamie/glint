@@ -1,7 +1,7 @@
 {
   "id": "stream",
   "name": "Stream",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen and cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.",
   "author": "Glint developers",
   "min_glint": "0.1.53",

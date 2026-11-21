@@ -425,6 +425,12 @@ pub fn plugin_uninstall(id: String) -> Result<Value, String> {
     Ok(state_json())
 }
 
+/// Whether Glint's window may open a camera: the user said yes to a plugin that is installed and
+/// on (`plugins[<id>].camera_access == "allow"`, set from the plugin's popup or its settings).
+pub fn camera_allowed(s: &crate::settings::Settings) -> bool {
+    installed().iter().any(|p| s.plugins.get(&p.manifest.id).map(|v| v["camera_access"] == "allow").unwrap_or(false))
+}
+
 /* ---------- a plugin's own files ---------- */
 
 /// What a plugin may keep a copy of: pictures.

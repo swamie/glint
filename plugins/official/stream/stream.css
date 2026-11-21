@@ -16,6 +16,8 @@
 .st-msg:empty { display: none; }
 .st-h { display: none; position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; box-sizing: border-box; background: var(--panel); border: 1.5px solid var(--accent); border-radius: 2px; cursor: crosshair; }
 .st-src.sel > .st-h { display: block; }
+.st-cam-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--line-2); border-left: 3px solid var(--warn); border-radius: var(--radius); color: var(--muted); font-size: 12.5px; line-height: 1.4; }
+.st-cam-note .btn { flex: none; }
 .st-hint { margin-top: 8px; color: var(--dim); font-size: 12px; }
 .st-side { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .st-list { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }

@@ -71,6 +71,7 @@ Glint.register({
 | `c.save()`, `c.render()`, `c.chrome()` (top bar and sidebar only), `c.go(page)`, `c.flash(text, bad)`, `c.fail(error)` | save the settings, redraw, open a page, show a message |
 | `c.glint` | Glint's own state, to read: `settings`, `status`, `monitors`, `hardware`, `version` |
 | `c.proc.start(name, args, { audio, quiet })`, `c.proc.stop(name)`, `c.proc.status(name)` | a process of the plugin: Glint's ffmpeg with the plugin's arguments |
+| `c.saveNow()`, `c.confirm({ title, text, ok, cancel })` | save and wait until the backend has the settings; Glint's own question: `"yes"`, `"no"`, or `null` when closed unanswered |
 | `c.invoke(command, args)` | any of Glint's backend commands |
 | `c.files.keep(path)`, `c.files.drop(path)`, `c.fileSrc(path)` | keep Glint's own copy of a picture the user gave the plugin (PNG, JPEG, GIF, WebP or BMP, up to 64 MB): `{ path, name, size }`; delete that copy; the address to show a local file from |
 
@@ -102,3 +103,7 @@ onSave: (c) => { c.s.procs = { live: { args: buildArgs(c), audio: true } }; }
 3. Commit both and merge to `main`. That is the release: Glint reads the list and the files from `main` of this repository, and installed copies are offered "Update to x.y.z".
 
 Glint installs a plugin only if every downloaded file matches the list, so a plugin changed without step 2 fails to install instead of installing something unlisted. GitHub can take a few minutes to serve a new list and new files together; an install in that window says to try again shortly.
+
+## Cameras
+
+Glint's window never shows the browser's own "wants to use your cameras" prompt. A plugin that opens a camera in the window (`navigator.mediaDevices.getUserMedia`) asks first with `c.confirm`, saves the answer as `camera_access` (`"allow"` or `"deny"`) in its settings with `c.saveNow()`, and only then opens the camera. Glint's backend answers the window's camera request from that setting (`src-tauri/src/camperm.rs`): allowed when an installed plugin that is switched on has `camera_access: "allow"`, refused otherwise. The microphone is always refused.

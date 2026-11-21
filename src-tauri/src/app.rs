@@ -47,6 +47,9 @@ pub fn show_main(app: &AppHandle) {
                 });
             }
         }
+        if let Ok(w) = &built {
+            crate::camperm::install(w, app.state::<Arc<Core>>().inner().clone()); // camera requests are answered from Glint's settings
+        }
         if built.is_ok() {
             let zoom = app.state::<Arc<Core>>().settings().ui_zoom;
             apply_zoom(&app, zoom);

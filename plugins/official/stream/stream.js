@@ -243,6 +243,12 @@ function videoRows(c) {
     + c.row(t("Bitrate"), t("Twitch takes up to about 6000 kbps. Stay under your upload speed"), c.select("bitrate", [2500, 3500, 4500, 6000, 8000, 12000, 20000].map((b) => [b, `${b} kbps`]), true))
     + c.row(t("Encoder"), t("Auto uses your graphics card: {name}", { name: encName[encoderOf({ s: { encoder: "auto" }, glint: g })] }), c.select("encoder", [["auto", t("Auto")], ["nvenc", encName.nvenc], ["amf", encName.amf], ["qsv", encName.qsv], ["x264", t("x264 (CPU, heavy)")]]));
 }
+function cameraRows(c) {
+  if (typeof c.confirm !== "function") return "";
+  if (!["ask", "allow", "deny"].includes(c.s.camera_access)) c.s.camera_access = "ask";
+  return c.row(t("Camera in the preview"), t("Whether Glint may open your camera to show it on the Stream page. A camera in your scene goes out on the stream either way"),
+    c.select("camera_access", [["ask", t("Ask me")], ["allow", t("Allowed")], ["deny", t("Not allowed")]]));
+}
 function audioRows(c) {
   const g = c.glint;
   const none = !g.settings.desktop_audio && !g.settings.mic;
@@ -281,12 +287,35 @@ function picStyle(x) {
   const [l, tp, r, b] = x.crop, kw = 1 - l - r, kh = 1 - tp - b;
   return `width:${pct(1 / kw)};height:${pct(1 / kh)};left:${pct(-l / kw)};top:${pct(-tp / kh)}`;
 }
+/* Camera access. Glint's window opens a camera only after the user said yes in Glint's own popup
+   (`camera_access`: "ask" until then, "allow" or "deny" after). Glint's backend answers the
+   window's camera request from the same setting, so the browser's own prompt never shows. */
+let camAsking = null;   // the popup, while it is open
+let camSkipped = false; // closed without an answer: not asked again until the page is opened again
+let camSaved;           // the camera_access the backend has
+// A Glint from before this (0.1.54) has no popup of its own and does not answer the window's request: there the browser's prompt is the question.
+const camAllowed = (c) => c.s.camera_access === "allow" || typeof c.confirm !== "function";
+function askCamera(c) {
+  if (camAsking) return camAsking;
+  camAsking = (async () => {
+    const answer = await c.confirm({
+      title: t("Let Glint use your camera?"),
+      text: t("Glint opens your camera to show it in the Stream preview. Nothing is recorded or sent until you go live. You can change this in the Stream settings."),
+      ok: t("Allow"), cancel: t("Don't allow"),
+    });
+    if (!answer) camSkipped = true;
+    else { c.s.camera_access = answer === "yes" ? "allow" : "deny"; await c.saveNow().catch(() => {}); camSaved = c.s.camera_access; }
+  })().finally(() => { camAsking = null; c.render(); });
+  return camAsking;
+}
+
 /** What a camera's box says while it has no picture. */
-function camMsg(x) {
+function camMsg(x, c) {
   if (!x.device) return t("Pick a camera");
   if (status.running) return t("On the stream now");
+  if (c && !camAllowed(c)) return t("Camera preview is off");
   const cm = cams[x.id];
-  return cm && cm.state === "failed" ? t("No preview of this camera") : cm && cm.state === "on" ? "" : x.device;
+  return cm && cm.state === "blocked" ? t("The camera is blocked") : cm && cm.state === "failed" ? t("No preview of this camera") : cm && cm.state === "on" ? "" : x.device;
 }
 
 /** Ask ffmpeg which cameras it can open (DirectShow): the answer comes back as the process "devices" ends. */
@@ -325,6 +354,8 @@ function gotDevices(st, c) {
 async function openCam(c, x) {
   const cm = (cams[x.id] = { name: x.device, state: "opening", stream: null });
   try {
+    // The backend answers the window's camera request from the saved setting: it has to have it first.
+    if (c.saveNow && camSaved !== c.s.camera_access) { await c.saveNow(); camSaved = c.s.camera_access; }
     const md = navigator.mediaDevices;
     const videos = async () => (await md.enumerateDevices()).filter((d) => d.kind === "videoinput");
     let list = await videos();
@@ -337,7 +368,11 @@ async function openCam(c, x) {
     cm.stream = stream; cm.state = "on";
     const got = stream.getVideoTracks()[0].getSettings();
     if (got.width && got.height) { x.aw = got.width; x.ah = got.height; }
-  } catch (e) { if (cams[x.id] === cm) cm.state = "failed"; }
+  } catch (e) {
+    if (cams[x.id] === cm) cm.state = e && e.name === "NotAllowedError" ? "blocked" : "failed";
+    if (cm.state === "blocked") c.render(); // the page says how to unblock it
+    return;
+  }
   paintCams(c);
 }
 function closeCam(id) {
@@ -348,7 +383,11 @@ function closeCam(id) {
 /** The cameras the preview shows right now are open, the others closed, and each picture is in its box. */
 function paintCams(c) {
   const stage = document.querySelector(".st-stage");
-  const want = stage && c.s.preview !== false && !status.running ? sources(c).filter((x) => x.type === "camera" && x.visible && x.device) : [];
+  let want = stage && c.s.preview !== false && !status.running ? sources(c).filter((x) => x.type === "camera" && x.visible && x.device) : [];
+  if (want.length && !camAllowed(c)) {
+    if (c.s.camera_access !== "deny" && !camSkipped) askCamera(c); // the first camera: Glint asks, once
+    want = [];
+  }
   for (const id of Object.keys(cams)) { const x = want.find((v) => v.id === id); if (!x || x.device !== cams[id].name) closeCam(id); }
   for (const x of want) if (!cams[x.id]) openCam(c, x);
   if (!stage) return;
@@ -357,7 +396,7 @@ function paintCams(c) {
     if (cm && cm.stream && v.srcObject !== cm.stream) v.srcObject = cm.stream;
     if ((!cm || !cm.stream) && v.srcObject) v.srcObject = null;
     const msg = v.parentNode.querySelector(".st-msg");
-    if (msg && x) msg.textContent = camMsg(x);
+    if (msg && x) msg.textContent = camMsg(x, c);
   }
 }
 /** While the preview is on screen: the screen's picture twice a second, the cameras live. Everything stops when the page is left. */
@@ -392,7 +431,7 @@ function stageHtml(c) {
       ? (on ? `<img data-shot alt="" draggable="false" style="${picStyle(x)}"${shot ? ` src="${shot}"` : ""}>` : "")
       : x.type === "blur" ? `<i class="st-blur" style="--blur:${f4((sigmaOf(x) / w) * 100)}cqw"></i>`
       : x.type === "image" ? `<img alt="" draggable="false" style="${picStyle(x)}" src="${esc(c.fileSrc(x.file))}">`
-      : `<video data-cam="${esc(x.id)}" muted autoplay playsinline style="${picStyle(x)}"></video><span class="st-msg">${esc(camMsg(x))}</span>`;
+      : `<video data-cam="${esc(x.id)}" muted autoplay playsinline style="${picStyle(x)}"></video><span class="st-msg">${esc(camMsg(x, c))}</span>`;
     const handles = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]].map(([hx, hy]) => `<i class="st-h" data-h="${hx},${hy}" style="left:${50 + hx * 50}%;top:${50 + hy * 50}%"></i>`).join("");
     return `<div class="st-src st-${x.type}${x.id === sel ? " sel" : ""}" data-src="${esc(x.id)}" style="${boxStyle(x)}"><div class="st-pic${x.flip ? " flip" : ""}">${pic}${!on && x.type !== "image" && x.type !== "blur" ? `<span class="st-msg">${esc(nameOf(x))}</span>` : ""}</div>${handles}</div>`;
   }).join("");
@@ -430,12 +469,20 @@ function propsHtml(c) {
     <div class="st-p"><span>${t("Opacity")}</span><div>${n("opacity", x.opacity, 5, 100, "%")}</div></div>
     <div class="st-p"><span></span><div><button class="btn sm" data-pact="fit">${t("Fit")}</button><button class="btn sm" data-pact="fill">${t("Fill")}</button><button class="btn sm" data-pact="reset">${t("Reset")}</button></div></div>`;
 }
+/** Under the preview, while a camera of the scene cannot be shown: why, and the button that changes it. */
+function camNoteHtml(c) {
+  const list = sources(c).filter((x) => x.type === "camera" && x.visible && x.device);
+  if (!list.length || c.s.preview === false || status.running) return "";
+  if (!camAllowed(c)) return `<div class="st-cam-note"><span>${t("Glint is not allowed to show your camera in the preview. The camera still goes out when you go live.")}</span><button class="btn sm" data-pact="cam-allow">${t("Allow camera")}</button></div>`;
+  if (list.some((x) => cams[x.id] && cams[x.id].state === "blocked")) return `<div class="st-cam-note"><span>${t("The camera is blocked for Glint. In Windows, open Settings → Privacy & security → Camera and let desktop apps use it, then try again.")}</span><button class="btn sm" data-pact="cam-retry">${t("Try again")}</button></div>`;
+  return "";
+}
 function sceneHtml(c) {
   if (devices === null && sources(c).some((x) => x.type === "camera")) askDevices(c);
   const on = c.s.preview !== false;
   return `<div class="section st-scene"><h2><span>${t("Scene")}</span><button class="btn sm${on ? " on" : ""}" data-pact="preview" title="${esc(t("The live picture of the screen and the cameras. Off uses nothing: the boxes can still be moved"))}">${on ? t("Preview on") : t("Preview off")}</button></h2>
     <div class="st-body">
-      <div class="st-left">${stageHtml(c)}<div class="st-hint">${t("Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop. Drop a PNG, JPEG or GIF here to add it.")}</div></div>
+      <div class="st-left">${stageHtml(c)}${camNoteHtml(c)}<div class="st-hint">${t("Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop. Drop a PNG, JPEG or GIF here to add it.")}</div></div>
       <div class="st-side"><div class="st-list">${listHtml(c)}</div><div class="st-add"><button class="btn sm" data-pact="cam-add">${ICON.camera}${t("Camera")}</button><button class="btn sm" data-pact="img-add">${ICON.image}${t("Picture")}</button><button class="btn sm" data-pact="blur-add">${ICON.blur}${t("Blur")}</button></div><div class="st-props">${propsHtml(c)}</div></div>
     </div></div>`;
 }
@@ -563,6 +610,8 @@ function sceneAct(name, el, c) {
   const list = sources(c), id = el.dataset.id, x = list.find((v) => v.id === (id || sel));
   const done = () => { sources(c); c.save(); c.render(); return true; };
   if (name === "preview") { c.s.preview = c.s.preview === false; return done(); }
+  if (name === "cam-allow") { c.s.camera_access = "allow"; camSkipped = false; c.saveNow().catch(() => {}).then(() => { camSaved = c.s.camera_access; c.render(); }); return true; }
+  if (name === "cam-retry") { for (const id of Object.keys(cams)) if (cams[id].state !== "on") closeCam(id); c.render(); return true; }
   if (name === "devices") { devices = null; askDevices(c); c.render(); return true; }
   if (name === "cam-add") {
     const { w, h } = sizeOf(c), free = (devices || []).find((d) => !list.some((v) => v.device === d)) || "";
@@ -603,7 +652,7 @@ function render(c) {
     ${statusHtml(c)}
     ${sceneHtml(c)}
     <div class="section"><h2>${t("Where to")}</h2>${whereRows(c)}</div>
-    <div class="section"><h2>${t("Video")}</h2>${videoRows(c)}</div>
+    <div class="section"><h2>${t("Video")}</h2>${videoRows(c)}${cameraRows(c)}</div>
     <div class="section"><h2>${t("Sound")}</h2>${audioRows(c)}</div>
     <div class="section"><h2>${t("Keybind")}</h2>
       ${c.row(t("Start and stop with a key"), hasBind ? t("Set on the Keybinds page. It works while Glint's window is closed too") : t("Adds “Start / stop streaming” to your keybinds, where you pick its key"),
@@ -627,7 +676,7 @@ async function go(c) {
 }
 
 Glint.register({
-  defaults: { service: "twitch", url: "", key: "", monitor: -1, height: 1080, fps: 60, bitrate: 6000, encoder: "auto", audio: true, preview: true, scene: { sources: [newScreen()] }, procs: {} },
+  defaults: { service: "twitch", url: "", key: "", monitor: -1, height: 1080, fps: 60, bitrate: 6000, encoder: "auto", audio: true, preview: true, camera_access: "ask", scene: { sources: [newScreen()] }, procs: {} },
   pages: [{
     id: "stream",
     title: "Stream",
@@ -636,7 +685,7 @@ Glint.register({
     after,
   }],
   settings: [
-    { title: "Stream", render: (c) => whereRows(c) + videoRows(c) + audioRows(c) },
+    { title: "Stream", render: (c) => whereRows(c) + videoRows(c) + cameraRows(c) + audioRows(c) },
   ],
   // The backend has already started or stopped the process when a keybind fires: only the page follows.
   topbar,
@@ -667,6 +716,7 @@ Glint.register({
   },
   lang: {
     ko: {
+      "Let Glint use your camera?": "Glint가 카메라를 사용해도 될까요?", "Glint opens your camera to show it in the Stream preview. Nothing is recorded or sent until you go live. You can change this in the Stream settings.": "Glint는 방송 미리 보기에 카메라를 보여 주려고 카메라를 열어요. 방송을 시작하기 전에는 아무것도 녹화되거나 전송되지 않아요. 방송 설정에서 바꿀 수 있어요.", "Allow": "허용", "Don't allow": "허용 안 함", "Camera preview is off": "카메라 미리 보기가 꺼져 있어요", "The camera is blocked": "카메라가 차단됐어요", "Glint is not allowed to show your camera in the preview. The camera still goes out when you go live.": "Glint가 미리 보기에 카메라를 보여 줄 수 없어요. 방송을 시작하면 카메라는 그대로 나가요.", "Allow camera": "카메라 허용", "The camera is blocked for Glint. In Windows, open Settings → Privacy & security → Camera and let desktop apps use it, then try again.": "Glint에서 카메라가 차단됐어요. Windows 설정 → 개인 정보 및 보안 → 카메라에서 데스크톱 앱의 카메라 사용을 허용한 뒤 다시 시도해 주세요.", "Try again": "다시 시도", "Camera in the preview": "미리 보기의 카메라", "Whether Glint may open your camera to show it on the Stream page. A camera in your scene goes out on the stream either way": "Glint가 방송 페이지에 카메라를 보여 주려고 카메라를 열어도 되는지 정해요. 장면에 있는 카메라는 어느 쪽이든 방송에 나가요", "Ask me": "물어보기", "Allowed": "허용됨", "Not allowed": "허용 안 됨",
       "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen and cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Glint에서 Twitch, YouTube 또는 RTMP 서버로 방송해요. 화면과 카메라를 장면에 배치할 수 있어요. 도구에 방송 페이지와 설정, 시작/종료 단축키가 추가돼요.", "<b>Preview.</b> Streams your screen, cameras and pictures with Glint's sound. Changes you make while live apply the next time you go live.": "<b>미리 보기.</b> 화면, 카메라, 사진을 Glint의 소리와 함께 방송해요. 방송 중에 바꾼 설정은 다음 방송부터 적용돼요.", "Screen": "화면", "Camera": "카메라", "Pick a camera": "카메라 선택", "On the stream now": "지금 방송에 나가는 중", "No preview of this camera": "이 카메라는 미리 볼 수 없어요", "Bring forward": "앞으로 가져오기", "Send back": "뒤로 보내기", "Remove": "제거", "Click a source to move, size, crop or turn it.": "소스를 클릭하면 옮기고, 크기를 바꾸고, 자르고, 돌릴 수 있어요.", "No camera found": "카메라를 찾지 못했어요", "Looking for cameras…": "카메라 찾는 중…", "Refresh": "새로 고침", "Position": "위치", "Size": "크기", "Turn": "회전", "Mirror": "좌우 반전", "Crop": "자르기", "L": "좌", "T": "상", "R": "우", "B": "하", "Opacity": "불투명도", "Fit": "맞추기", "Fill": "채우기", "Reset": "초기화", "Scene": "장면", "The live picture of the screen and the cameras. Off uses nothing: the boxes can still be moved": "화면과 카메라의 실시간 모습이에요. 끄면 자원을 쓰지 않고, 상자는 계속 옮길 수 있어요", "Preview on": "미리 보기 켜짐", "Preview off": "미리 보기 꺼짐", "Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop. Drop a PNG, JPEG or GIF here to add it.": "끌어서 옮겨요. 모서리를 끌면 크기가 바뀌고, Shift를 누르면 늘어나고, Alt를 누르면 잘려요. PNG, JPEG, GIF를 여기에 끌어다 놓으면 추가돼요.", "Blur": "블러", "Picture": "사진", "Strength": "강도", "Only PNG, JPEG and GIF pictures can be added": "PNG, JPEG, GIF 사진만 추가할 수 있어요", "{name} could not be opened as a picture": "{name}을(를) 사진으로 열 수 없어요",
       "Stream": "방송", "Go live from Glint": "Glint에서 바로 방송하기", "Go live": "방송 시작", "Stop streaming": "방송 종료", "Streaming": "방송 중", "Connecting…": "연결 중…", "Streaming for {time}": "{time}째 방송 중", "Connecting to the server…": "서버에 연결하는 중…",
       "Start / stop streaming": "방송 시작 / 종료", "Stream started": "방송을 시작했어요", "Stream stopped": "방송을 종료했어요",
@@ -690,6 +740,7 @@ Glint.register({
       "Open Keybinds": "단축키 열기", "Add keybind": "단축키 추가", "Preview": "미리 보기",
     },
     el: {
+      "Let Glint use your camera?": "Να χρησιμοποιήσει το Glint την κάμερά σου;", "Glint opens your camera to show it in the Stream preview. Nothing is recorded or sent until you go live. You can change this in the Stream settings.": "Το Glint ανοίγει την κάμερά σου για να τη δείξει στην προεπισκόπηση της Μετάδοσης. Τίποτα δεν καταγράφεται ούτε στέλνεται μέχρι να ξεκινήσεις μετάδοση. Μπορείς να το αλλάξεις στις ρυθμίσεις της Μετάδοσης.", "Allow": "Να επιτρέπεται", "Don't allow": "Να μην επιτρέπεται", "Camera preview is off": "Η προεπισκόπηση κάμερας είναι ανενεργή", "The camera is blocked": "Η κάμερα είναι αποκλεισμένη", "Glint is not allowed to show your camera in the preview. The camera still goes out when you go live.": "Το Glint δεν επιτρέπεται να δείξει την κάμερά σου στην προεπισκόπηση. Η κάμερα μεταδίδεται κανονικά όταν ξεκινήσεις μετάδοση.", "Allow camera": "Να επιτρέπεται η κάμερα", "The camera is blocked for Glint. In Windows, open Settings → Privacy & security → Camera and let desktop apps use it, then try again.": "Η κάμερα είναι αποκλεισμένη για το Glint. Στα Windows άνοιξε Ρυθμίσεις → Απόρρητο και ασφάλεια → Κάμερα, επίτρεψε στις εφαρμογές υπολογιστή να τη χρησιμοποιούν και δοκίμασε ξανά.", "Try again": "Δοκίμασε ξανά", "Camera in the preview": "Κάμερα στην προεπισκόπηση", "Whether Glint may open your camera to show it on the Stream page. A camera in your scene goes out on the stream either way": "Αν το Glint μπορεί να ανοίγει την κάμερά σου για να τη δείχνει στη σελίδα Μετάδοση. Μια κάμερα της σκηνής μεταδίδεται σε κάθε περίπτωση", "Ask me": "Να ερωτώμαι", "Allowed": "Επιτρέπεται", "Not allowed": "Δεν επιτρέπεται",
       "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen and cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Ζωντανή μετάδοση από το Glint σε Twitch, YouTube ή οποιονδήποτε διακομιστή RTMP, με την οθόνη και τις κάμερές σου τοποθετημένες σε σκηνή. Προσθέτει τη σελίδα Μετάδοση στα Εργαλεία, τις ρυθμίσεις της και συντόμευση για έναρξη και διακοπή.", "<b>Preview.</b> Streams your screen, cameras and pictures with Glint's sound. Changes you make while live apply the next time you go live.": "<b>Προεπισκόπηση.</b> Μεταδίδει την οθόνη, τις κάμερες και τις εικόνες σου με τον ήχο του Glint. Οι αλλαγές κατά τη μετάδοση ισχύουν από την επόμενη μετάδοση.", "Screen": "Οθόνη", "Camera": "Κάμερα", "Pick a camera": "Διάλεξε κάμερα", "On the stream now": "Στη μετάδοση τώρα", "No preview of this camera": "Χωρίς προεπισκόπηση για αυτή την κάμερα", "Bring forward": "Μεταφορά μπροστά", "Send back": "Μεταφορά πίσω", "Remove": "Αφαίρεση", "Click a source to move, size, crop or turn it.": "Κάνε κλικ σε μια πηγή για να τη μετακινήσεις, να αλλάξεις το μέγεθός της, να την περικόψεις ή να τη γυρίσεις.", "No camera found": "Δεν βρέθηκε κάμερα", "Looking for cameras…": "Αναζήτηση καμερών…", "Refresh": "Ανανέωση", "Position": "Θέση", "Size": "Μέγεθος", "Turn": "Περιστροφή", "Mirror": "Καθρέφτης", "Crop": "Περικοπή", "L": "Α", "T": "Π", "R": "Δ", "B": "Κ", "Opacity": "Αδιαφάνεια", "Fit": "Προσαρμογή", "Fill": "Γέμισμα", "Reset": "Επαναφορά", "Scene": "Σκηνή", "The live picture of the screen and the cameras. Off uses nothing: the boxes can still be moved": "Η ζωντανή εικόνα της οθόνης και των καμερών. Όταν είναι ανενεργή δεν χρησιμοποιεί τίποτα: τα πλαίσια μετακινούνται ακόμα", "Preview on": "Προεπισκόπηση ενεργή", "Preview off": "Προεπισκόπηση ανενεργή", "Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop. Drop a PNG, JPEG or GIF here to add it.": "Σύρε για μετακίνηση. Σύρε μια γωνία για αλλαγή μεγέθους, με Shift για τέντωμα, με Alt για περικοπή. Άφησε εδώ ένα PNG, JPEG ή GIF για να το προσθέσεις.", "Blur": "Θόλωμα", "Picture": "Εικόνα", "Strength": "Ένταση", "Only PNG, JPEG and GIF pictures can be added": "Μόνο εικόνες PNG, JPEG και GIF μπορούν να προστεθούν", "{name} could not be opened as a picture": "Το {name} δεν άνοιξε ως εικόνα",
       "Stream": "Μετάδοση", "Go live from Glint": "Ζωντανή μετάδοση από το Glint", "Go live": "Έναρξη μετάδοσης", "Stop streaming": "Διακοπή μετάδοσης", "Streaming": "Μετάδοση", "Connecting…": "Σύνδεση…", "Streaming for {time}": "Μετάδοση εδώ και {time}", "Connecting to the server…": "Σύνδεση με τον διακομιστή…",
       "Start / stop streaming": "Έναρξη / διακοπή μετάδοσης", "Stream started": "Η μετάδοση ξεκίνησε", "Stream stopped": "Η μετάδοση σταμάτησε",

@@ -22,7 +22,7 @@
 //   onProc(status, ctx)    one of its processes started or ended.
 //
 // `ctx` (also `Glint.ctx`): { id, s (its settings), key(name) (the data-set path of one), save(rerender),
-// row, toggle, select, number, text, t, esc, invoke, flash, fail, render, chrome (redraw the top bar and sidebar only),
+// row, toggle, select, number, text, t, esc, invoke, flash, fail, saveNow, confirm({ title, text, ok, cancel }), render, chrome (redraw the top bar and sidebar only),
 // go(page), glint (Glint's own state),
 // proc: { start(name, args, { audio, quiet }), stop(name), status(name) } }.
 
@@ -50,6 +50,10 @@ function plugCtx(info) {
     get s() { return plugSettingsOf(id); },
     key,
     save: (rerender = false) => saveSettings(rerender),
+    /** Save the settings and wait until Glint's backend has them (save() alone sends them a moment later). */
+    saveNow: async () => { plugBeforeSave(); clearTimeout(saveTimer); S.status = await invoke("save_settings", { settings: S.settings }); renderChrome(); },
+    /** Glint's own question, with a title: "yes", "no" (the other button), or null when it was closed without an answer. */
+    confirm: (q) => plugConfirm(q),
     row,
     toggle: (name) => toggle(key(name)),
     select: (name, opts, num = false) => select(key(name), opts, num),
@@ -144,6 +148,18 @@ function plugTopbarRender() {
     if (w._html !== part) { w._html = part; w.innerHTML = part; }
   }
   for (const w of [...el.children]) if (!seen.has(w.dataset.plugin)) w.remove();
+}
+
+/** A plugin's question in Glint's own prompt (the one ask() in app.js uses). Enter is yes; Escape or a click outside closes it unanswered. */
+function plugConfirm({ title = "", text = "", ok, cancel } = {}) {
+  return new Promise((resolve) => {
+    const el = $("#confirm");
+    el.innerHTML = `<div class="confirm-box plug-confirm">${title ? `<h3>${esc(title)}</h3>` : ""}<p>${esc(text)}</p><div class="confirm-row"><button class="btn" data-c="no">${esc(cancel || t("Cancel"))}</button><button class="btn primary" data-c="yes">${esc(ok || t("OK"))}</button></div></div>`;
+    el.hidden = false;
+    const done = (answer) => { el.hidden = true; el.innerHTML = ""; el.onclick = null; askKey = null; resolve(answer); };
+    askKey = (e) => { if (e.code === "Enter" || e.code === "NumpadEnter") done("yes"); else if (e.code === "Escape") done(null); };
+    el.onclick = (e) => { const b = e.target.closest("[data-c]"); if (b) done(b.dataset.c); else if (e.target === el) done(null); };
+  });
 }
 
 /** Files are over the window, left it, or were dropped: the open page's plugin gets them, with where (in the page's own pixels). */

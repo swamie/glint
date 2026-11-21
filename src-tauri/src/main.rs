@@ -5,6 +5,7 @@ mod audio;
 mod bench;
 mod blur;
 mod bugreport;
+mod camperm;
 mod capmode;
 mod capture2;
 mod clip;
