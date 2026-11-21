@@ -1114,6 +1114,19 @@ if (!window.__TAURI__) {
           case "plugin_set_enabled": mockPlugins.set(args.id, { enabled: args.on }); return mockPlugins.state();
           case "plugin_uninstall": mockPlugins.set(args.id, null); return mockPlugins.state();
           case "plugins_restart": location.reload(); return null;
+          case "plugin_open": return null;
+          case "plugin_http": { // Twitch, as far as the Stream plugin talks to it: sign in with a code, the account, its stream key
+            const u = args.url, body = new URLSearchParams(args.body || ""), ok = (o) => ({ status: 200, body: JSON.stringify(o) });
+            const tw = (window.__mockTwitch ||= { polls: 0, key: "live_999_fromtwitch", refreshOk: true });
+            if (u.endsWith("/oauth2/device")) { tw.polls = 0; return ok({ device_code: "dev123", user_code: "ABCD-EFGH", verification_uri: "https://www.twitch.tv/activate?device-code=ABCD-EFGH", expires_in: 1800, interval: 1 }); }
+            if (u.endsWith("/oauth2/token")) {
+              if (body.get("grant_type") === "refresh_token") return tw.refreshOk ? ok({ access_token: "acc2", refresh_token: "ref2" }) : { status: 400, body: JSON.stringify({ status: 400, message: "Invalid refresh token" }) };
+              return ++tw.polls < 2 ? { status: 400, body: JSON.stringify({ status: 400, message: "authorization_pending" }) } : ok({ access_token: "acc1", refresh_token: "ref1" });
+            }
+            if (u.includes("/helix/users")) return ok({ data: [{ id: "999", login: "voidkay", display_name: "VoidKay" }] });
+            if (u.includes("/helix/streams/key")) return ok({ data: [{ stream_key: tw.key }] });
+            return { status: 404, body: "" };
+          }
           case "plugin_file_keep": if (!/\.(png|jpe?g|gif|webp|bmp)$/i.test(args.path)) throw "Only pictures can be added: PNG, JPEG, GIF, WebP or BMP"; return { path: args.path, name: args.path.split(/[\\/]/).pop(), size: 1234 };
           case "plugin_file_drop": return true;
           case "plugin_proc_start": return mockPlugins.procStart(args);

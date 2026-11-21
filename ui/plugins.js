@@ -65,6 +65,10 @@ function plugCtx(info) {
     chrome: () => renderChrome(),
     go: (page) => goPage(page),
     get glint() { return { settings: S.settings, status: S.status, monitors: S.monitors, hardware: S.hardware, version: S.version }; },
+    /** A web request to one of the hosts the plugin's plugin.json names ("hosts"): { method, url, headers: ["Name: value"], body } -> { status, body }. */
+    http: (req) => invoke("plugin_http", { plugin: id, method: req.method || "GET", url: req.url, headers: req.headers || [], body: req.body ?? null }),
+    /** Open a page on one of those hosts in the user's browser. */
+    open: (url) => invoke("plugin_open", { plugin: id, url }),
     /** The address a local file is shown from (an <img>'s src). */
     fileSrc: (path) => T.core.convertFileSrc(path),
     /** The plugin's own copies of pictures the user gave it: keep(path) -> { path, name, size }, drop(path). */

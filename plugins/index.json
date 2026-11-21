@@ -13,18 +13,18 @@
       "files": [
         {
           "path": "plugin.json",
-          "sha256": "6c497da560282aa40238cb1d546f59b145289ce376241de9628906000277ad72",
-          "size": 526
+          "sha256": "58e0bb957a294be36b8167b29ccdb493b58ab6f8f2e61292d5b3582c34dd81b6",
+          "size": 589
         },
         {
           "path": "stream.css",
-          "sha256": "d0583488e6d91510959918ca96338994607c8c9ce58f20007e6ff0f57dd1837a",
-          "size": 5132
+          "sha256": "b7a0cb520710e82f02ef640dabc3facb9ead4d6087e71ef552c7f690ddee41fd",
+          "size": 5368
         },
         {
           "path": "stream.js",
-          "sha256": "25c555c1226e4363d4a7b1c051198d0268a5ae2c262c7c88728a909f4978fa10",
-          "size": 65415
+          "sha256": "200e9252ba18364844582c76cbbbaf8d1555f96f5505238c6a462672ca09e918",
+          "size": 74885
         }
       ]
     }

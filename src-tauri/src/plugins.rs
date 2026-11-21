@@ -87,6 +87,8 @@ pub struct Manifest {
     pub ui: String,
     pub css: String,
     pub api: bool,
+    /// The web hosts its script may talk to and open in the browser ("api.twitch.tv"): nothing else is reachable through `plugin_http` and `plugin_open`.
+    pub hosts: Vec<String>,
     pub actions: Vec<Action>,
 }
 
@@ -429,6 +431,73 @@ pub fn plugin_uninstall(id: String) -> Result<Value, String> {
 /// on (`plugins[<id>].camera_access == "allow"`, set from the plugin's popup or its settings).
 pub fn camera_allowed(s: &crate::settings::Settings) -> bool {
     installed().iter().any(|p| s.plugins.get(&p.manifest.id).map(|v| v["camera_access"] == "allow").unwrap_or(false))
+}
+
+/* ---------- the web, for a plugin ---------- */
+
+/// `url` is https and its host is one the plugin's manifest names: the plugin, or why not.
+fn web_allowed(plugin: &str, url: &str) -> Result<Plugin, String> {
+    let p = installed().into_iter().find(|p| p.manifest.id == plugin).ok_or("This plugin is not installed or is switched off")?;
+    let rest = url.strip_prefix("https://").ok_or("Only https addresses can be reached")?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // No port, no "user@": the host is exactly a name from the list.
+    if host.is_empty() || host.contains(['@', ':', '\\']) || url.chars().any(|c| c.is_control() || c == '"' || c == ' ') || !p.manifest.hosts.iter().any(|h| h.eq_ignore_ascii_case(host)) {
+        return Err(format!("{} may not reach that address", p.manifest.name));
+    }
+    Ok(p)
+}
+
+/// A line of a curl config file: `name = "value"`, with the value's quotes and backslashes escaped.
+fn curl_line(name: &str, value: &str) -> String {
+    let v: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+    format!("{name} = \"{}\"\n", v.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// One web request for a plugin's script, to a host its manifest names: { status, body }.
+/// Made by curl.exe, like Glint's own (update.rs). The address, headers and body go to curl on its
+/// stdin, not as arguments, so a token in them is never on a command line; nothing of them is logged.
+/// Redirects are not followed (they could lead off the list).
+#[tauri::command(async)]
+pub fn plugin_http(plugin: String, method: Option<String>, url: String, headers: Option<Vec<String>>, body: Option<String>) -> Result<Value, String> {
+    web_allowed(&plugin, &url)?;
+    let method = method.unwrap_or_else(|| "GET".into()).to_ascii_uppercase();
+    if !["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&method.as_str()) {
+        return Err("That kind of request is not supported".into());
+    }
+    let mut config = curl_line("url", &url) + &curl_line("request", &method);
+    for h in headers.unwrap_or_default().iter().take(20) {
+        config += &curl_line("header", h);
+    }
+    if let Some(b) = &body {
+        if b.len() > 256 * 1024 {
+            return Err("That request is too large".into());
+        }
+        config += &curl_line("data-raw", b);
+    }
+    let mut child = util::hidden_cmd(std::path::Path::new("curl.exe"))
+        .args(["-sS", "--max-time", "20", "--max-filesize", "2000000", "-H", "User-Agent: Glint", "-w", "\n%{http_code}", "-K", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Could not start curl: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(config.as_bytes());
+    }
+    let out = child.wait_with_output().map_err(|e| format!("The request failed: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("Could not reach the server: {}", util::last_lines(&out.stderr, 1)));
+    }
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let (body, status) = text.rsplit_once('\n').unwrap_or(("", text.as_str()));
+    Ok(json!({ "status": status.trim().parse::<u16>().unwrap_or(0), "body": body }))
+}
+
+/// Open a page in the user's browser, for a plugin: only an https address on a host its manifest names.
+#[tauri::command(async)]
+pub fn plugin_open(plugin: String, url: String) -> Result<(), String> {
+    web_allowed(&plugin, &url)?;
+    util::hidden_cmd(std::path::Path::new("rundll32.exe")).args(["url.dll,FileProtocolHandler", &url]).spawn().map(|_| ()).map_err(|e| format!("Could not open the browser: {e}"))
 }
 
 /* ---------- a plugin's own files ---------- */

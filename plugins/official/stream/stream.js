@@ -222,13 +222,96 @@ function statusHtml(c) {
   return `<div class="note bad"><b>${t("The stream stopped.")}</b> ${esc(status.error)}</div>`;
 }
 
+/* ---------- Twitch, without a stream key ----------
+   The user signs in on twitch.tv (Twitch's device code flow: Glint shows a code, the user approves it in
+   the browser, Glint asks Twitch until that is done) and Glint reads the channel's stream key itself.
+   The client ID names Glint to Twitch; it is public by design and there is no client secret. What is kept
+   in the plugin's settings: the access and refresh tokens, the account's name, and the key (so the
+   keybind can start a stream while the window is closed). */
+const TWITCH_CLIENT_ID = "o3o6kapmpm83ffraud9y773x9r75sg"; // Glint's app at dev.twitch.tv. Empty: the Stream page only offers the stream key.
+const TWITCH_SCOPE = "channel:read:stream_key";
+const twClient = (c) => (typeof c.http !== "function" ? "" : TWITCH_CLIENT_ID || String(c.s.twitch_client_id || "").trim()); // a Glint from before this cannot reach Twitch: the key box only
+const twAccount = (c) => (c.s.twitch && c.s.twitch.refresh ? c.s.twitch : null);
+let twSign = null; // signing in right now: { code, uri, timer }
+let twError = "";
+
+async function twCall(c, req) {
+  const r = await c.http(req);
+  let data = {};
+  try { data = JSON.parse(r.body); } catch (e) { /* not JSON: only the status counts */ }
+  return { status: r.status, data };
+}
+const twToken = (c, fields) => twCall(c, { method: "POST", url: "https://id.twitch.tv/oauth2/token", headers: ["Content-Type: application/x-www-form-urlencoded"], body: new URLSearchParams({ client_id: twClient(c), ...fields }).toString() });
+const twGet = (c, path, access) => twCall(c, { url: `https://api.twitch.tv/helix/${path}`, headers: [`Authorization: Bearer ${access}`, `Client-Id: ${twClient(c)}`] });
+
+/** With tokens in hand: whose they are and that channel's stream key, into the settings. */
+async function twLoad(c, tokens) {
+  const who = await twGet(c, "users", tokens.access_token);
+  const user = who.data.data && who.data.data[0];
+  if (who.status !== 200 || !user) throw new Error(t("Twitch did not say whose account this is"));
+  const got = await twGet(c, `streams/key?broadcaster_id=${encodeURIComponent(user.id)}`, tokens.access_token);
+  const key = got.data.data && got.data.data[0] && got.data.data[0].stream_key;
+  if (got.status !== 200 || !key) throw new Error(t("Twitch did not give the stream key"));
+  c.s.twitch = { access: tokens.access_token, refresh: tokens.refresh_token, id: user.id, login: user.login, name: user.display_name || user.login };
+  c.s.service = "twitch";
+  c.s.key = key;
+}
+function twStop() { if (twSign) clearTimeout(twSign.timer); twSign = null; }
+/** Start signing in: ask Twitch for a code, open its page, and ask every few seconds whether the user approved. */
+async function twConnect(c) {
+  twStop(); twError = "";
+  try {
+    const dev = await twCall(c, { method: "POST", url: "https://id.twitch.tv/oauth2/device", headers: ["Content-Type: application/x-www-form-urlencoded"], body: new URLSearchParams({ client_id: twClient(c), scopes: TWITCH_SCOPE }).toString() });
+    if (dev.status !== 200 || !dev.data.device_code) throw new Error(dev.data.message || t("Twitch did not answer"));
+    const sign = (twSign = { code: dev.data.user_code, uri: dev.data.verification_uri, timer: 0 });
+    const every = Math.max(1, +dev.data.interval || 5) * 1000, until = Date.now() + Math.max(60, +dev.data.expires_in || 900) * 1000;
+    const again = () => { sign.timer = setTimeout(ask, every); };
+    const ask = async () => {
+      if (twSign !== sign) return;
+      if (Date.now() > until) { twStop(); twError = t("The code ran out before it was approved. Try again."); return c.render(); }
+      try {
+        const r = await twToken(c, { scopes: TWITCH_SCOPE, device_code: dev.data.device_code, grant_type: "urn:ietf:params:oauth:grant-type:device_code" });
+        if (twSign !== sign) return;
+        if (r.status === 200 && r.data.access_token) { await twLoad(c, r.data); twStop(); await c.saveNow(); return c.render(); }
+        if (/pending|slow_down/i.test(r.data.message || "")) return again();
+        throw new Error(r.data.message || t("Twitch refused the sign-in"));
+      } catch (e) { if (twSign !== sign) return; twStop(); twError = String(e.message || e); c.render(); }
+    };
+    again();
+    c.render();
+    c.open(sign.uri).catch(() => {});
+  } catch (e) { twError = String(e.message || e); c.render(); }
+}
+/** When Glint opens: a fresh token, and the key again in case it was reset on Twitch. A refusal means signing in again. */
+async function twRenew(c) {
+  const acc = twAccount(c);
+  if (!acc || !twClient(c)) return;
+  try {
+    const r = await twToken(c, { grant_type: "refresh_token", refresh_token: acc.refresh });
+    if (r.status === 200 && r.data.access_token) { await twLoad(c, r.data); c.save(); }
+    else if (r.status === 400 || r.status === 401) { c.s.twitch = { ...acc, refresh: "", access: "", expired: true }; c.save(); }
+    else return; // Twitch could not be reached: what is saved stays
+    c.render();
+  } catch (e) { /* offline: the saved key still works */ }
+}
+function twRows(c) {
+  if (!twClient(c)) return "";
+  const acc = twAccount(c);
+  if (twSign) return c.row(t("Approve Glint on Twitch"), t("Your browser opened twitch.tv. Check that it shows this code, then press Authorize there"),
+    `<code class="st-code">${esc(twSign.code)}</code><button class="btn sm" data-pact="tw-open">${t("Open Twitch")}</button><button class="btn sm" data-pact="tw-cancel">${t("Cancel")}</button>`);
+  if (acc) return c.row(t("Twitch account"), t("Signed in as {name}. Glint reads your stream key from Twitch", { name: acc.name }), `<button class="btn sm" data-pact="tw-off">${t("Disconnect")}</button>`);
+  const hint = twError ? `${t("Could not sign in:")} ${twError}` : c.s.twitch && c.s.twitch.expired ? t("Twitch asks you to sign in again") : t("Sign in and Glint gets your stream key by itself. Or paste the key below");
+  return c.row(t("Twitch account"), hint, `<button class="btn sm primary" data-pact="tw-on">${t("Connect Twitch")}</button>`);
+}
+
 /** The settings, as sections: on the Stream page and, the same ones, on the Settings page. */
 function whereRows(c) {
   const s = c.s, service = serviceOf(s);
   return c.row(t("Service"), t("Other services work with Custom server: use the server address they give you"), c.select("service", [["twitch", "Twitch"], ["youtube", "YouTube"], ["custom", t("Custom server")]]))
     + (service === "custom" ? c.row(t("Server address"), t("Starts with rtmp:// or rtmps://"), c.text("url", { placeholder: "rtmp://", width: 340 })) : "")
-    + c.row(t("Stream key"), t("From your channel's dashboard. Anyone who has it can stream as you. It is saved on this PC, in Glint's settings file"),
-      `${c.text("key", { password: !showKey, width: 260 })}<button class="btn sm" data-pact="showkey">${showKey ? t("Hide") : t("Show")}</button>`);
+    + (service === "twitch" ? twRows(c) : "")
+    + (service === "twitch" && twAccount(c) ? "" : c.row(t("Stream key"), t("From your channel's dashboard. Anyone who has it can stream as you. It is saved on this PC, in Glint's settings file"),
+      `${c.text("key", { password: !showKey, width: 260 })}<button class="btn sm" data-pact="showkey">${showKey ? t("Hide") : t("Show")}</button>`));
 }
 function videoRows(c) {
   const g = c.glint, mon = monitorOf(c);
@@ -676,7 +759,7 @@ async function go(c) {
 }
 
 Glint.register({
-  defaults: { service: "twitch", url: "", key: "", monitor: -1, height: 1080, fps: 60, bitrate: 6000, encoder: "auto", audio: true, preview: true, camera_access: "ask", scene: { sources: [newScreen()] }, procs: {} },
+  defaults: { service: "twitch", url: "", key: "", monitor: -1, height: 1080, fps: 60, bitrate: 6000, encoder: "auto", audio: true, preview: true, camera_access: "ask", twitch: null, scene: { sources: [newScreen()] }, procs: {} },
   pages: [{
     id: "stream",
     title: "Stream",
@@ -695,6 +778,10 @@ Glint.register({
   onSave: (c) => { c.s.procs = { [PROC]: { args: buildArgs(c) || [], audio: !!c.s.audio } }; },
   onAct: (name, el, c) => {
     if (sceneAct(name, el, c)) return;
+    if (name === "tw-on") return twConnect(c);
+    if (name === "tw-open") return twSign && c.open(twSign.uri).catch(c.fail);
+    if (name === "tw-cancel") { twStop(); return c.render(); }
+    if (name === "tw-off") { twStop(); c.s.twitch = null; c.s.key = ""; c.save(); return c.render(); }
     if (name === "go") return go(c);
     if (name === "open") return c.go("p:stream:stream");
     if (name === "stop") return c.proc.stop(PROC).then((st) => { status = { ...st, running: false }; live = null; c.render(); }).catch(c.fail);
@@ -713,9 +800,11 @@ Glint.register({
     const now = { [PROC]: { args: buildArgs(c) || [], audio: !!c.s.audio } };
     if (JSON.stringify(c.s.procs) !== JSON.stringify(now)) c.save();
     refresh(c).then(() => { if (status.running) watch(c); });
+    twRenew(c);
   },
   lang: {
     ko: {
+      "Twitch did not say whose account this is": "Twitch가 어떤 계정인지 알려 주지 않았어요", "Twitch did not give the stream key": "Twitch가 스트림 키를 주지 않았어요", "Twitch did not answer": "Twitch가 응답하지 않았어요", "The code ran out before it was approved. Try again.": "승인하기 전에 코드가 만료됐어요. 다시 시도해 주세요.", "Twitch refused the sign-in": "Twitch가 로그인을 거부했어요", "Approve Glint on Twitch": "Twitch에서 Glint 승인하기", "Your browser opened twitch.tv. Check that it shows this code, then press Authorize there": "브라우저에 twitch.tv가 열렸어요. 이 코드가 보이는지 확인하고 거기서 승인을 눌러 주세요", "Open Twitch": "Twitch 열기", "Cancel": "취소", "Twitch account": "Twitch 계정", "Signed in as {name}. Glint reads your stream key from Twitch": "{name}(으)로 로그인됨. Glint가 Twitch에서 스트림 키를 읽어 와요", "Disconnect": "연결 해제", "Could not sign in:": "로그인하지 못했어요:", "Twitch asks you to sign in again": "Twitch에 다시 로그인해야 해요", "Sign in and Glint gets your stream key by itself. Or paste the key below": "로그인하면 Glint가 스트림 키를 알아서 가져와요. 아래에 키를 붙여 넣어도 돼요", "Connect Twitch": "Twitch 연결",
       "Let Glint use your camera?": "Glint가 카메라를 사용해도 될까요?", "Glint opens your camera to show it in the Stream preview. Nothing is recorded or sent until you go live. You can change this in the Stream settings.": "Glint는 방송 미리 보기에 카메라를 보여 주려고 카메라를 열어요. 방송을 시작하기 전에는 아무것도 녹화되거나 전송되지 않아요. 방송 설정에서 바꿀 수 있어요.", "Allow": "허용", "Don't allow": "허용 안 함", "Camera preview is off": "카메라 미리 보기가 꺼져 있어요", "The camera is blocked": "카메라가 차단됐어요", "Glint is not allowed to show your camera in the preview. The camera still goes out when you go live.": "Glint가 미리 보기에 카메라를 보여 줄 수 없어요. 방송을 시작하면 카메라는 그대로 나가요.", "Allow camera": "카메라 허용", "The camera is blocked for Glint. In Windows, open Settings → Privacy & security → Camera and let desktop apps use it, then try again.": "Glint에서 카메라가 차단됐어요. Windows 설정 → 개인 정보 및 보안 → 카메라에서 데스크톱 앱의 카메라 사용을 허용한 뒤 다시 시도해 주세요.", "Try again": "다시 시도", "Camera in the preview": "미리 보기의 카메라", "Whether Glint may open your camera to show it on the Stream page. A camera in your scene goes out on the stream either way": "Glint가 방송 페이지에 카메라를 보여 주려고 카메라를 열어도 되는지 정해요. 장면에 있는 카메라는 어느 쪽이든 방송에 나가요", "Ask me": "물어보기", "Allowed": "허용됨", "Not allowed": "허용 안 됨",
       "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen and cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Glint에서 Twitch, YouTube 또는 RTMP 서버로 방송해요. 화면과 카메라를 장면에 배치할 수 있어요. 도구에 방송 페이지와 설정, 시작/종료 단축키가 추가돼요.", "<b>Preview.</b> Streams your screen, cameras and pictures with Glint's sound. Changes you make while live apply the next time you go live.": "<b>미리 보기.</b> 화면, 카메라, 사진을 Glint의 소리와 함께 방송해요. 방송 중에 바꾼 설정은 다음 방송부터 적용돼요.", "Screen": "화면", "Camera": "카메라", "Pick a camera": "카메라 선택", "On the stream now": "지금 방송에 나가는 중", "No preview of this camera": "이 카메라는 미리 볼 수 없어요", "Bring forward": "앞으로 가져오기", "Send back": "뒤로 보내기", "Remove": "제거", "Click a source to move, size, crop or turn it.": "소스를 클릭하면 옮기고, 크기를 바꾸고, 자르고, 돌릴 수 있어요.", "No camera found": "카메라를 찾지 못했어요", "Looking for cameras…": "카메라 찾는 중…", "Refresh": "새로 고침", "Position": "위치", "Size": "크기", "Turn": "회전", "Mirror": "좌우 반전", "Crop": "자르기", "L": "좌", "T": "상", "R": "우", "B": "하", "Opacity": "불투명도", "Fit": "맞추기", "Fill": "채우기", "Reset": "초기화", "Scene": "장면", "The live picture of the screen and the cameras. Off uses nothing: the boxes can still be moved": "화면과 카메라의 실시간 모습이에요. 끄면 자원을 쓰지 않고, 상자는 계속 옮길 수 있어요", "Preview on": "미리 보기 켜짐", "Preview off": "미리 보기 꺼짐", "Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop. Drop a PNG, JPEG or GIF here to add it.": "끌어서 옮겨요. 모서리를 끌면 크기가 바뀌고, Shift를 누르면 늘어나고, Alt를 누르면 잘려요. PNG, JPEG, GIF를 여기에 끌어다 놓으면 추가돼요.", "Blur": "블러", "Picture": "사진", "Strength": "강도", "Only PNG, JPEG and GIF pictures can be added": "PNG, JPEG, GIF 사진만 추가할 수 있어요", "{name} could not be opened as a picture": "{name}을(를) 사진으로 열 수 없어요",
       "Stream": "방송", "Go live from Glint": "Glint에서 바로 방송하기", "Go live": "방송 시작", "Stop streaming": "방송 종료", "Streaming": "방송 중", "Connecting…": "연결 중…", "Streaming for {time}": "{time}째 방송 중", "Connecting to the server…": "서버에 연결하는 중…",
@@ -740,6 +829,7 @@ Glint.register({
       "Open Keybinds": "단축키 열기", "Add keybind": "단축키 추가", "Preview": "미리 보기",
     },
     el: {
+      "Twitch did not say whose account this is": "Το Twitch δεν είπε ποιανού είναι ο λογαριασμός", "Twitch did not give the stream key": "Το Twitch δεν έδωσε το κλειδί μετάδοσης", "Twitch did not answer": "Το Twitch δεν απάντησε", "The code ran out before it was approved. Try again.": "Ο κωδικός έληξε πριν εγκριθεί. Δοκίμασε ξανά.", "Twitch refused the sign-in": "Το Twitch αρνήθηκε τη σύνδεση", "Approve Glint on Twitch": "Έγκρινε το Glint στο Twitch", "Your browser opened twitch.tv. Check that it shows this code, then press Authorize there": "Ο περιηγητής σου άνοιξε το twitch.tv. Έλεγξε ότι δείχνει αυτόν τον κωδικό και πάτησε εκεί Εξουσιοδότηση", "Open Twitch": "Άνοιγμα Twitch", "Cancel": "Άκυρο", "Twitch account": "Λογαριασμός Twitch", "Signed in as {name}. Glint reads your stream key from Twitch": "Συνδεδεμένος ως {name}. Το Glint διαβάζει το κλειδί μετάδοσης από το Twitch", "Disconnect": "Αποσύνδεση", "Could not sign in:": "Η σύνδεση απέτυχε:", "Twitch asks you to sign in again": "Το Twitch ζητά να συνδεθείς ξανά", "Sign in and Glint gets your stream key by itself. Or paste the key below": "Συνδέσου και το Glint παίρνει μόνο του το κλειδί μετάδοσης. Ή επικόλλησε το κλειδί παρακάτω", "Connect Twitch": "Σύνδεση Twitch",
       "Let Glint use your camera?": "Να χρησιμοποιήσει το Glint την κάμερά σου;", "Glint opens your camera to show it in the Stream preview. Nothing is recorded or sent until you go live. You can change this in the Stream settings.": "Το Glint ανοίγει την κάμερά σου για να τη δείξει στην προεπισκόπηση της Μετάδοσης. Τίποτα δεν καταγράφεται ούτε στέλνεται μέχρι να ξεκινήσεις μετάδοση. Μπορείς να το αλλάξεις στις ρυθμίσεις της Μετάδοσης.", "Allow": "Να επιτρέπεται", "Don't allow": "Να μην επιτρέπεται", "Camera preview is off": "Η προεπισκόπηση κάμερας είναι ανενεργή", "The camera is blocked": "Η κάμερα είναι αποκλεισμένη", "Glint is not allowed to show your camera in the preview. The camera still goes out when you go live.": "Το Glint δεν επιτρέπεται να δείξει την κάμερά σου στην προεπισκόπηση. Η κάμερα μεταδίδεται κανονικά όταν ξεκινήσεις μετάδοση.", "Allow camera": "Να επιτρέπεται η κάμερα", "The camera is blocked for Glint. In Windows, open Settings → Privacy & security → Camera and let desktop apps use it, then try again.": "Η κάμερα είναι αποκλεισμένη για το Glint. Στα Windows άνοιξε Ρυθμίσεις → Απόρρητο και ασφάλεια → Κάμερα, επίτρεψε στις εφαρμογές υπολογιστή να τη χρησιμοποιούν και δοκίμασε ξανά.", "Try again": "Δοκίμασε ξανά", "Camera in the preview": "Κάμερα στην προεπισκόπηση", "Whether Glint may open your camera to show it on the Stream page. A camera in your scene goes out on the stream either way": "Αν το Glint μπορεί να ανοίγει την κάμερά σου για να τη δείχνει στη σελίδα Μετάδοση. Μια κάμερα της σκηνής μεταδίδεται σε κάθε περίπτωση", "Ask me": "Να ερωτώμαι", "Allowed": "Επιτρέπεται", "Not allowed": "Δεν επιτρέπεται",
       "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen and cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Ζωντανή μετάδοση από το Glint σε Twitch, YouTube ή οποιονδήποτε διακομιστή RTMP, με την οθόνη και τις κάμερές σου τοποθετημένες σε σκηνή. Προσθέτει τη σελίδα Μετάδοση στα Εργαλεία, τις ρυθμίσεις της και συντόμευση για έναρξη και διακοπή.", "<b>Preview.</b> Streams your screen, cameras and pictures with Glint's sound. Changes you make while live apply the next time you go live.": "<b>Προεπισκόπηση.</b> Μεταδίδει την οθόνη, τις κάμερες και τις εικόνες σου με τον ήχο του Glint. Οι αλλαγές κατά τη μετάδοση ισχύουν από την επόμενη μετάδοση.", "Screen": "Οθόνη", "Camera": "Κάμερα", "Pick a camera": "Διάλεξε κάμερα", "On the stream now": "Στη μετάδοση τώρα", "No preview of this camera": "Χωρίς προεπισκόπηση για αυτή την κάμερα", "Bring forward": "Μεταφορά μπροστά", "Send back": "Μεταφορά πίσω", "Remove": "Αφαίρεση", "Click a source to move, size, crop or turn it.": "Κάνε κλικ σε μια πηγή για να τη μετακινήσεις, να αλλάξεις το μέγεθός της, να την περικόψεις ή να τη γυρίσεις.", "No camera found": "Δεν βρέθηκε κάμερα", "Looking for cameras…": "Αναζήτηση καμερών…", "Refresh": "Ανανέωση", "Position": "Θέση", "Size": "Μέγεθος", "Turn": "Περιστροφή", "Mirror": "Καθρέφτης", "Crop": "Περικοπή", "L": "Α", "T": "Π", "R": "Δ", "B": "Κ", "Opacity": "Αδιαφάνεια", "Fit": "Προσαρμογή", "Fill": "Γέμισμα", "Reset": "Επαναφορά", "Scene": "Σκηνή", "The live picture of the screen and the cameras. Off uses nothing: the boxes can still be moved": "Η ζωντανή εικόνα της οθόνης και των καμερών. Όταν είναι ανενεργή δεν χρησιμοποιεί τίποτα: τα πλαίσια μετακινούνται ακόμα", "Preview on": "Προεπισκόπηση ενεργή", "Preview off": "Προεπισκόπηση ανενεργή", "Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop. Drop a PNG, JPEG or GIF here to add it.": "Σύρε για μετακίνηση. Σύρε μια γωνία για αλλαγή μεγέθους, με Shift για τέντωμα, με Alt για περικοπή. Άφησε εδώ ένα PNG, JPEG ή GIF για να το προσθέσεις.", "Blur": "Θόλωμα", "Picture": "Εικόνα", "Strength": "Ένταση", "Only PNG, JPEG and GIF pictures can be added": "Μόνο εικόνες PNG, JPEG και GIF μπορούν να προστεθούν", "{name} could not be opened as a picture": "Το {name} δεν άνοιξε ως εικόνα",
       "Stream": "Μετάδοση", "Go live from Glint": "Ζωντανή μετάδοση από το Glint", "Go live": "Έναρξη μετάδοσης", "Stop streaming": "Διακοπή μετάδοσης", "Streaming": "Μετάδοση", "Connecting…": "Σύνδεση…", "Streaming for {time}": "Μετάδοση εδώ και {time}", "Connecting to the server…": "Σύνδεση με τον διακομιστή…",

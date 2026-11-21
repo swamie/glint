@@ -1106,6 +1106,8 @@ pub fn run(minimized: bool) {
             crate::plugins::plugins_restart,
             crate::plugins::plugin_proc_start,
             crate::plugins::plugin_file_keep,
+            crate::plugins::plugin_http,
+            crate::plugins::plugin_open,
             crate::plugins::plugin_file_drop,
             crate::plugins::plugin_proc_stop,
             crate::plugins::plugin_proc_status,

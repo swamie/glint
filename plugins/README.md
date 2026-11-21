@@ -30,6 +30,7 @@ plugins/
 - `id` is the folder's name: lower-case letters, digits and dashes.
 - `ui` is a script run in Glint's window each time it opens. `css` is optional.
 - `actions` are what a keybind can carry. They are listed here, not in the script, because Glint's window (and every script in it) is gone while Glint sits in the tray. An action with a `process` starts or stops that process by itself; `started` and `stopped` are the overlay's words.
+- `hosts` lists the web hosts the script may reach: `c.http({ method, url, headers, body })` makes an https request to one of them (`{ status, body }`, made by Glint's backend, redirects not followed) and `c.open(url)` opens a page on one of them in the user's browser. Any other address is refused.
 - `api: true` asks for the local API (a port on 127.0.0.1 for a program of the plugin's own). See the top of `src-tauri/src/plugins.rs`.
 
 `market.json` beside it holds what only the marketplace card needs: `icon` (the `d` of one SVG path on a 24 x 24 grid) and `tag` (a short label such as "Preview").

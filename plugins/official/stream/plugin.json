@@ -6,6 +6,7 @@
   "author": "Glint developers",
   "min_glint": "0.1.53",
   "ui": "stream.js",
+  "hosts": ["id.twitch.tv", "api.twitch.tv", "www.twitch.tv"],
   "css": "stream.css",
   "actions": [
     { "id": "toggle", "label": "Start / stop streaming", "process": "live", "started": "Stream started", "stopped": "Stream stopped" }
