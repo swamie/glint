@@ -338,6 +338,7 @@ function renderChrome() {
   if (typeof updRender === "function") updRender(); // its tooltip is text too
   if (typeof jobsRender === "function") jobsRender(); // shown or hidden by a setting
   if (typeof capRender === "function") capRender(); // the GAME / DESKTOP switch (capmode.js)
+  if (typeof plugTopbarRender === "function") plugTopbarRender(); // what a plugin shows in the top bar (plugins.js)
   if (typeof sfxFromSettings === "function") sfxFromSettings(S.settings); // a sound setting applies at once
   // The sidebar can be folded to a strip of icons, so every item carries its name as a tooltip.
   document.documentElement.style.setProperty("--nav-op", String(clamp(+S.settings.nav_opacity || 60, 20, 100) / 100)); // the clip arrows in fullscreen (editor.css)

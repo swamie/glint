@@ -50,6 +50,7 @@ Glint.register({
     badge: (c) => "",                         // optional: a small label on its sidebar item
   }],
   settings: [{ title: "Hello", render: (c) => c.row(t("Text"), "", c.text("greeting")) }],  // sections on the Settings page
+  topbar: (c) => "",                          // markup for the top bar: a short status, e.g. "STREAMING: 1080p @ 60"
   actions: { toggle: (c) => c.render() },     // a keybind's action fired while the window is open
   onAct: (name, el, c) => {},                 // a click on an element with data-pact="name"
   onSave: (c) => {},                          // just before the settings are saved
@@ -66,7 +67,7 @@ Glint.register({
 | `c.s` | the plugin's own settings object. Saved inside Glint's settings file under `plugins.<id>`. |
 | `c.row(name, hint, control)` | one settings row, as on Glint's own pages |
 | `c.toggle(key)`, `c.select(key, [[value, label]], isNumber)`, `c.number(key, min, max)`, `c.text(key, { placeholder, password, width })` | controls bound to one of its settings. They save by themselves. |
-| `c.save()`, `c.render()`, `c.go(page)`, `c.flash(text, bad)`, `c.fail(error)` | save the settings, redraw, open a page, show a message |
+| `c.save()`, `c.render()`, `c.chrome()` (top bar and sidebar only), `c.go(page)`, `c.flash(text, bad)`, `c.fail(error)` | save the settings, redraw, open a page, show a message |
 | `c.glint` | Glint's own state, to read: `settings`, `status`, `monitors`, `hardware`, `version` |
 | `c.proc.start(name, args, { audio })`, `c.proc.stop(name)`, `c.proc.status(name)` | a process of the plugin: Glint's ffmpeg with the plugin's arguments |
 | `c.invoke(command, args)` | any of Glint's backend commands |

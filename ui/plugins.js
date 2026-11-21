@@ -13,12 +13,15 @@
 //   actions    { <action id>(ctx) }: run when a keybind with that action fires while the window is open.
 //              The actions themselves (id, label, the process they start) are listed in plugin.json,
 //              so a keybind also works while the window is closed.
+//   topbar(ctx)            markup for the top bar ("" for nothing): a short status such as "STREAMING: 1080p @ 60".
+//                          Use the classes .top-pill (a status the user can click) and .top-pill-btn (a small button in it).
 //   onAct(name, el, ctx)   a click on an element with data-pact="name" inside its page or sections.
 //   onSave(ctx)            just before the settings are saved: the place to work out derived values.
 //   onProc(status, ctx)    one of its processes started or ended.
 //
 // `ctx` (also `Glint.ctx`): { id, s (its settings), key(name) (the data-set path of one), save(rerender),
-// row, toggle, select, number, text, t, esc, invoke, flash, fail, render, go(page), glint (Glint's own state),
+// row, toggle, select, number, text, t, esc, invoke, flash, fail, render, chrome (redraw the top bar and sidebar only),
+// go(page), glint (Glint's own state),
 // proc: { start(name, args, { audio }), stop(name), status(name) } }.
 
 const PLUG = {
@@ -53,6 +56,7 @@ function plugCtx(info) {
     text: (name, opts = {}) => `<input class="field" type="${opts.password ? "password" : "text"}" data-set="${key(name)}" value="${esc(plugSettingsOf(id)[name] ?? "")}" placeholder="${esc(opts.placeholder || "")}" spellcheck="false" autocomplete="off" style="width:${opts.width || 300}px">`,
     t, esc, invoke, flash, fail,
     render: () => render(),
+    chrome: () => renderChrome(),
     go: (page) => goPage(page),
     get glint() { return { settings: S.settings, status: S.status, monitors: S.monitors, hardware: S.hardware, version: S.version }; },
     proc: {
@@ -113,6 +117,18 @@ function plugNavHtml(navItem) {
   }
   const updates = plugUpdates().length;
   return html + navItem("plugins", t("Plugins"), "plug", updates || 0);
+}
+
+/** The top bar's plugin slot: what each plugin's `topbar` gives, patched in place (it is redrawn every second). */
+function plugTopbarRender() {
+  const el = $("#plugin-slot");
+  if (!el) return;
+  let html = "";
+  for (const [id, p] of PLUG.defs) {
+    const part = p.def.topbar ? plugSafe(id, "topbar", () => p.def.topbar(p.ctx) || "") : "";
+    if (part) html += `<span class="plug-top" data-plugin="${esc(id)}">${part}</span>`;
+  }
+  chromeHtml(el, html);
 }
 
 /** Draw a page of the sidebar that is not one of Glint's own. False when it is not ours either. */

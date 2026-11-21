@@ -27,9 +27,21 @@
   .plug-icon { width: 44px; height: 44px; }
   .plug-actions { grid-column: 2; }
 }
-/* A plugin's page. .plug-live: a status pill a plugin may use ("LIVE"). */
-.plug-live { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px; border-radius: 999px; background: color-mix(in srgb, var(--danger) 18%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent); color: var(--danger); font: 700 12px var(--sans); font-variant-numeric: tabular-nums; }
-.plug-live::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: plug-pulse 1.4s ease-in-out infinite; }
+/* The top bar's plugin slot. .top-pill: a status with a pulsing dot that opens the plugin's page;
+   .top-pill-btn: a small button at its end (stop). Sized like the top bar's other controls. */
+#plugin-slot { display: flex; align-items: center; gap: 8px; }
+#plugin-slot:empty { display: none; }
+.plug-top { display: inline-flex; }
+.top-pill { display: inline-flex; align-items: center; height: 34px; border-radius: var(--radius); border: 1px solid color-mix(in srgb, var(--danger) 50%, var(--line-2)); background: color-mix(in srgb, var(--danger) 12%, var(--raised)); overflow: hidden; }
+.top-pill > button { display: inline-flex; align-items: center; gap: 8px; height: 100%; padding: 0 12px; border: 0; background: none; color: var(--text); font: 700 12px var(--sans); letter-spacing: .04em; white-space: nowrap; cursor: pointer; font-variant-numeric: tabular-nums; }
+.top-pill > button:hover { background: color-mix(in srgb, var(--danger) 16%, transparent); }
+.top-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); animation: plug-pulse 1.4s ease-in-out infinite; }
+.top-pill.wait .dot { background: var(--warn); }
+.top-pill b { color: var(--danger); font-weight: 700; }
+.top-pill.wait b { color: var(--warn); }
+.top-pill > .top-pill-btn { padding: 0 10px; border-left: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line-2)); color: var(--muted); }
+.top-pill > .top-pill-btn:hover { color: var(--danger); }
+.top-pill-btn svg { width: 12px; height: 12px; fill: currentColor; stroke: none; }
+@media (prefers-reduced-motion: reduce) { .top-pill .dot { animation: none; } }
+@media (max-width: 1100px) { .top-pill .top-pill-detail { display: none; } }
 @keyframes plug-pulse { 50% { opacity: .35; } }
-@media (prefers-reduced-motion: reduce) { .plug-live::before { animation: none; } }
-.plug-log { margin: 0; padding: 11px 18px; max-height: 150px; overflow: auto; font: 12px/1.5 var(--mono); color: var(--muted); white-space: pre-wrap; word-break: break-word; }

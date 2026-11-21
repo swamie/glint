@@ -15,6 +15,7 @@ const SERVICES = {
 let status = { running: false, started: 0, error: "", log: [] };
 let showKey = false;
 let poll = 0;
+let live = null; // what the running stream sends ("1080p @ 60"), for the top bar
 
 const even = (v) => Math.max(2, Math.floor(v / 2) * 2);
 const serviceOf = (s) => (SERVICES[s.service] ? s.service : "twitch");
@@ -92,37 +93,40 @@ function stats() {
   const fps = /fps=\s*([\d.]+)/.exec(line), br = /bitrate=\s*([\d.]+)kbits/.exec(line);
   return [fps && `${Math.round(+fps[1])} fps`, br && `${Math.round(+br[1])} kbps`].filter(Boolean).join(" · ");
 }
-const errors = () => (status.log || []).filter((l) => !l.startsWith("frame=") && !l.startsWith("size="));
 
-async function refresh(c, redraw = true) {
+/** Read the process's state again; the top bar follows, and the page too when the stream started or ended. */
+async function refresh(c) {
+  const was = status.running;
   try { status = await c.proc.status(PROC); } catch (e) { return; }
-  if (redraw && c.glint && isOpen()) paintLive(c);
+  if (status.running && !live) live = shape(c);
+  if (!status.running) live = null;
+  if (was !== status.running) c.render(); else c.chrome();
 }
-const isOpen = () => !!document.querySelector('.plug-page[data-plugin="stream"]');
-/** The live line and the head's button, on the page as drawn (no redraw while the user is in a field). */
-function paintLive(c) {
-  const el = document.querySelector('.plug-page[data-plugin="stream"] .st-head');
-  if (el) el.innerHTML = headHtml(c);
-  const log = document.querySelector('.plug-page[data-plugin="stream"] .st-status');
-  if (log) log.outerHTML = statusHtml(c);
-}
+/** While live, look every two seconds: the stream can end by itself, or by its keybind. */
 function watch(c) {
   clearInterval(poll);
-  poll = setInterval(() => { if (!status.running) return clearInterval(poll); if (isOpen()) refresh(c); }, 1000);
+  poll = setInterval(() => { if (!status.running) return clearInterval(poll); refresh(c); }, 2000);
+}
+/** What is being sent, as the top bar says it: "1080p @ 60". Taken when the stream starts. */
+const shape = (c) => `${sizeOf(c).h}p @ ${[30, 60].includes(+c.s.fps) ? +c.s.fps : 60}`;
+
+/** The top bar while live: "STREAMING: 1080p @ 60" (opens the Stream page) and a stop button. */
+function topbar(c) {
+  if (!status.running) return "";
+  const sending = !!stats();
+  const tip = sending ? `${t("Streaming for {time}", { time: uptime() })} · ${stats()}` : t("Connecting to the server…");
+  return `<span class="top-pill${sending ? "" : " wait"}"><button data-pact="open" title="${esc(tip)}"><i class="dot"></i><span><b>${sending ? t("STREAMING") : t("CONNECTING")}</b><span class="top-pill-detail">: ${esc(live || shape(c))}</span></span></button><button class="top-pill-btn" data-pact="stop" title="${esc(t("Stop streaming"))}" aria-label="${esc(t("Stop streaming"))}"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></svg></button></span>`;
 }
 
+/** The page's one button: Go live, or Stop streaming. What is live shows in the top bar. */
 function headHtml(c) {
-  if (status.running) {
-    const st = stats();
-    return `<span class="plug-live">${st ? t("LIVE") : t("Connecting…")} ${uptime()}</span>${st ? `<span class="small muted">${esc(st)}</span>` : ""}<button class="btn solid-danger" data-pact="stop">${t("Stop streaming")}</button>`;
-  }
+  if (status.running) return `<button class="btn solid-danger" data-pact="stop">${t("Stop streaming")}</button>`;
   const ready = !!buildArgs(c);
   return `<button class="btn primary" data-pact="go"${ready ? "" : " disabled"} title="${esc(ready ? "" : t("Choose where to stream and paste your stream key first"))}">${t("Go live")}</button>`;
 }
 function statusHtml(c) {
-  const lines = errors();
-  if (!status.error && !(status.running && lines.length)) return `<div class="st-status" hidden></div>`;
-  return `<div class="st-status note${status.error ? " bad" : ""}">${status.error ? `<b>${t("The stream stopped.")}</b> ${esc(status.error)}` : esc(lines.slice(-3).join("\n"))}</div>`;
+  if (!status.error) return "";
+  return `<div class="note bad"><b>${t("The stream stopped.")}</b> ${esc(status.error)}</div>`;
 }
 
 /** The settings, as sections: on the Stream page and, the same ones, on the Settings page. */
@@ -175,6 +179,7 @@ async function go(c) {
   if (!args) return c.flash(t("Choose where to stream and paste your stream key first"), true);
   try {
     status = await c.proc.start(PROC, args, { audio: !!c.s.audio });
+    live = shape(c);
     watch(c);
     c.render();
   } catch (e) { c.fail(e); }
@@ -187,19 +192,19 @@ Glint.register({
     title: "Stream",
     icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.200"/><path d="M7.800 16.200a6 6 0 0 1 0-8.400M16.200 7.800a6 6 0 0 1 0 8.400M5 19A10 10 0 0 1 5 5M19 5a10 10 0 0 1 0 14"/></svg>',
     render,
-    after: (c) => { refresh(c).then(() => { if (status.running) watch(c); }); },
-    badge: () => (status.running ? t("LIVE") : ""),
   }],
   settings: [
     { title: "Stream", render: (c) => whereRows(c) + videoRows(c) + audioRows(c) },
   ],
   // The backend has already started or stopped the process when a keybind fires: only the page follows.
-  actions: { toggle: (c) => refresh(c, false).then(() => { if (status.running) watch(c); c.render(); }) },
-  onProc: (st, c) => { if (st.name !== PROC) return; status = st; if (st.running) watch(c); c.render(); },
+  topbar,
+  actions: { toggle: (c) => refresh(c).then(() => { if (status.running) watch(c); }) },
+  onProc: (st, c) => { if (st.name !== PROC) return; status = st; live = st.running ? live || shape(c) : null; if (st.running) watch(c); c.render(); },
   onSave: (c) => { c.s.procs = { [PROC]: { args: buildArgs(c) || [], audio: !!c.s.audio } }; },
   onAct: (name, el, c) => {
     if (name === "go") return go(c);
-    if (name === "stop") return c.proc.stop(PROC).then((st) => { status = { ...st, running: false }; c.render(); }).catch(c.fail);
+    if (name === "open") return c.go("p:stream:stream");
+    if (name === "stop") return c.proc.stop(PROC).then((st) => { status = { ...st, running: false }; live = null; c.render(); }).catch(c.fail);
     if (name === "showkey") { showKey = !showKey; return c.render(); }
     if (name === "keybind") {
       const binds = c.glint.settings.keybinds;
@@ -214,11 +219,11 @@ Glint.register({
     // The keybind's arguments follow this PC as it is now (its monitors, its graphics card).
     const now = { [PROC]: { args: buildArgs(c) || [], audio: !!c.s.audio } };
     if (JSON.stringify(c.s.procs) !== JSON.stringify(now)) c.save();
-    refresh(c, false).then(() => { if (status.running) watch(c); c.render(); });
+    refresh(c).then(() => { if (status.running) watch(c); });
   },
   lang: {
     ko: {
-      "Stream": "방송", "Go live from Glint": "Glint에서 바로 방송하기", "Go live": "방송 시작", "Stop streaming": "방송 종료", "LIVE": "방송 중", "Connecting…": "연결 중…",
+      "Stream": "방송", "Go live from Glint": "Glint에서 바로 방송하기", "Go live": "방송 시작", "Stop streaming": "방송 종료", "STREAMING": "방송 중", "CONNECTING": "연결 중", "Streaming for {time}": "{time}째 방송 중", "Connecting to the server…": "서버에 연결하는 중…",
       "Start / stop streaming": "방송 시작 / 종료", "Stream started": "방송을 시작했어요", "Stream stopped": "방송을 종료했어요",
       "Go live from Glint to Twitch, YouTube or any RTMP server. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Glint에서 Twitch, YouTube 또는 RTMP 서버로 방송해요. 도구에 방송 페이지와 설정, 시작/종료 단축키가 추가돼요.",
       "Choose where to stream and paste your stream key first": "먼저 방송할 곳을 고르고 스트림 키를 붙여 넣어 주세요",
@@ -242,7 +247,7 @@ Glint.register({
       "Open Keybinds": "단축키 열기", "Add keybind": "단축키 추가", "Preview": "미리 보기",
     },
     el: {
-      "Stream": "Μετάδοση", "Go live from Glint": "Ζωντανή μετάδοση από το Glint", "Go live": "Έναρξη μετάδοσης", "Stop streaming": "Διακοπή μετάδοσης", "LIVE": "ΖΩΝΤΑΝΑ", "Connecting…": "Σύνδεση…",
+      "Stream": "Μετάδοση", "Go live from Glint": "Ζωντανή μετάδοση από το Glint", "Go live": "Έναρξη μετάδοσης", "Stop streaming": "Διακοπή μετάδοσης", "STREAMING": "ΜΕΤΑΔΟΣΗ", "CONNECTING": "ΣΥΝΔΕΣΗ", "Streaming for {time}": "Μετάδοση εδώ και {time}", "Connecting to the server…": "Σύνδεση με τον διακομιστή…",
       "Start / stop streaming": "Έναρξη / διακοπή μετάδοσης", "Stream started": "Η μετάδοση ξεκίνησε", "Stream stopped": "Η μετάδοση σταμάτησε",
       "Go live from Glint to Twitch, YouTube or any RTMP server. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Ζωντανή μετάδοση από το Glint σε Twitch, YouTube ή οποιονδήποτε διακομιστή RTMP. Προσθέτει τη σελίδα Μετάδοση στα Εργαλεία, τις ρυθμίσεις της και συντόμευση για έναρξη και διακοπή.",
       "Choose where to stream and paste your stream key first": "Διάλεξε πρώτα πού θα μεταδώσεις και επικόλλησε το κλειδί μετάδοσης",
