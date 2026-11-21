@@ -41,21 +41,11 @@
 .p-knob { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
 .e-defs, .p-audio { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: hidden; pointer-events: none; }
 .p-row button.p-text.open { background: rgba(255, 255, 255, .12); }
-/* Back / forward: the ring is a little larger than the other icons so the seconds fit inside it; the
-   button itself keeps the row's 32px. The number sits on the ring's centre (0.5 below the icon's). */
-.p-row button[data-p="back"], .p-row button[data-p="fwd"] { position: relative; }
-.p-row button[data-p="back"] > *, .p-row button[data-p="fwd"] > * { grid-area: 1 / 1; }
-.p-row button[data-p="back"] svg, .p-row button[data-p="fwd"] svg { width: 24px; height: 24px; stroke-width: 1.55; transition: transform .16s cubic-bezier(.2, .7, .3, 1); }
-.p-row .p-step { font: 700 9.5px/1 var(--sans); font-variant-numeric: tabular-nums; transform: translateY(.5px); pointer-events: none; transition: color .12s; }
-.p-row .p-step.two { font-size: 8.5px; letter-spacing: -.03em; }
-.p-row button[data-p="back"].open, .p-row button[data-p="fwd"].open { background: rgba(255, 255, 255, .12); }
-/* Hover: the ring leans the way it jumps and the seconds take the accent. Press: it turns further. */
-.p-row button[data-p="back"]:hover svg { transform: rotate(-14deg); }
-.p-row button[data-p="fwd"]:hover svg { transform: rotate(14deg); }
-.p-row button[data-p="back"]:hover .p-step, .p-row button[data-p="fwd"]:hover .p-step { color: var(--accent); }
-.p-row button[data-p="back"]:active svg { transform: rotate(-42deg); transition-duration: .06s; }
-.p-row button[data-p="fwd"]:active svg { transform: rotate(42deg); transition-duration: .06s; }
-@media (prefers-reduced-motion: reduce) { .p-row button[data-p="back"] svg, .p-row button[data-p="fwd"] svg { transition: none; } }
+/* Back / forward: "− 5" and "+ 5", a sign and the step's seconds, in the speed button's type. */
+.p-row button.p-skip { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 40px; padding: 0 7px; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.p-row button.p-skip .p-sign { font-size: 15px; line-height: 1; transform: translateY(-.5px); }
+.p-row button.p-skip.open { background: rgba(255, 255, 255, .12); }
+.p-row button.p-skip:active { background: rgba(255, 255, 255, .2); }
 
 /* A segment whose picture is hidden: black (the player is black behind the video), the audio plays on.
    Opacity, not visibility, so the video still takes clicks (play / pause). */
