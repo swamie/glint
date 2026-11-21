@@ -492,6 +492,68 @@ if (!window.__TAURI__) {
       }
     },
   };
+  // plugins: the marketplace is the repository's own plugins/ folder when the preview is served from the
+  // repository's root (node tools/serve.js <repo>, then /ui/index.html); installing fetches the real files and
+  // checks their SHA-256 as the backend does. What is installed is kept in localStorage, so the "restart"
+  // (a reload here) comes back with it. Served from ui/ alone, the marketplace cannot be reached.
+  const mockPlugins = (() => {
+    const KEY = "glint.mockPlugins";
+    const read = () => { try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch { return {}; } };
+    const write = (all) => { try { localStorage.setItem(KEY, JSON.stringify(all)); } catch {} };
+    const procs = {};
+    let loaded = null;
+    const running = (all) => Object.values(all).filter((p) => p.enabled).map((p) => `${p.manifest.id} ${p.manifest.version}`).join(",");
+    const index = async () => { const r = await fetch("../plugins/index.json", { cache: "no-store" }); if (!r.ok) throw `Could not reach the plugin list: HTTP ${r.status}`; return r.json(); };
+    const hex = async (buf) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", buf))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const api = {
+      boot() { const all = read(); loaded = running(all); return Object.values(all).filter((p) => p.enabled).map((p) => ({ id: p.manifest.id, name: p.manifest.name, version: p.manifest.version, author: p.manifest.author, js: p.js, css: p.css || "", actions: p.manifest.actions || [] })); },
+      state() {
+        const all = read();
+        return { installed: Object.values(all).map((p) => ({ id: p.manifest.id, name: p.manifest.name, version: p.manifest.version, description: p.manifest.description, author: p.manifest.author, enabled: p.enabled, official: p.official !== false, problem: "", actions: p.manifest.actions || [] })), restart: loaded !== null && loaded !== running(all), glint: state.version };
+      },
+      async market() {
+        try { const i = await index(); return { plugins: i.plugins.map(({ files, ...l }) => ({ ...l, size: files.reduce((n, f) => n + f.size, 0), too_new: false })), error: "", cached: false }; }
+        catch (e) { return { plugins: [], error: String(e?.message ?? e), cached: true }; }
+      },
+      async install(id) {
+        const l = (await index()).plugins.find((x) => x.id === id);
+        if (!l) throw "This plugin is no longer in the marketplace";
+        const got = {};
+        let done = 0;
+        for (const f of l.files) {
+          const buf = await (await fetch(`../plugins/official/${id}/${f.path}`, { cache: "no-store" })).arrayBuffer();
+          if (buf.byteLength !== f.size || (await hex(buf)) !== f.sha256) throw "The download does not match the marketplace's checksum, so it was not installed. If the plugin was just updated, try again in a few minutes.";
+          got[f.path] = new TextDecoder().decode(buf);
+          done += f.size;
+          window.__mockEmit("plugin-progress", { id, pct: 5 + (85 * done) / l.files.reduce((n, x) => n + x.size, 0) });
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        const manifest = JSON.parse(got["plugin.json"]);
+        const all = read();
+        all[id] = { manifest, js: got[manifest.ui] || "", css: got[manifest.css] || "", enabled: all[id] ? all[id].enabled : true, official: true };
+        write(all);
+        return api.state();
+      },
+      set(id, change) { const all = read(); if (change === null) delete all[id]; else if (all[id]) Object.assign(all[id], change); write(all); },
+      procStatus: ({ plugin, name }) => ({ plugin, name, running: false, pid: 0, started: 0, error: "", log: [], ...(procs[`${plugin}/${name}`] || {}) }),
+      // A stream key with "bad" in it fails after two seconds, as a refused key does.
+      procStart({ plugin, name, args }) {
+        const k = `${plugin}/${name}`;
+        procs[k] = { running: true, pid: 4242, started: Date.now(), error: "", log: [] };
+        if (args.includes("-list_devices")) { // ffmpeg's list of cameras: it ends at once, the names are in its messages
+          Object.assign(procs[k], { running: false, error: "dummy: Immediate exit requested", log: ['[in#0 @ 000001] "fake_device_0" (video)', '[in#0 @ 000001]   Alternative name "@device_pnp_1"', '[in#0 @ 000001] "Logitech C920" (video)', '[in#0 @ 000001] "Microphone (USB Audio)" (audio)'] });
+          setTimeout(() => window.__mockEmit("plugin-proc", api.procStatus({ plugin, name })), 150);
+          return api.procStatus({ plugin, name });
+        }
+        window.__mockPluginArgs = args;
+        const tick = setInterval(() => { const p = procs[k]; if (!p.running) return clearInterval(tick); const s = Math.round((Date.now() - p.started) / 1000); p.log.push(`frame=${s * 60} fps= 60 q=21.0 size=${s * 750}KiB time=00:00:${String(s).padStart(2, "0")}.00 bitrate=5998.3kbits/s speed=1x`); p.log = p.log.slice(-40); }, 2000);
+        if (/bad/.test(args[args.length - 1])) setTimeout(() => { Object.assign(procs[k], { running: false, error: "rtmp://live.twitch.tv/app/…: Input/output error" }); window.__mockEmit("plugin-proc", api.procStatus({ plugin, name })); }, 2000);
+        return api.procStatus({ plugin, name });
+      },
+      procStop({ plugin, name }) { const p = procs[`${plugin}/${name}`]; if (p) p.running = false; window.__mockEmit("plugin-proc", api.procStatus({ plugin, name })); return api.procStatus({ plugin, name }); },
+    };
+    return api;
+  })();
   window.__TAURI__ = {
     core: {
       convertFileSrc: (p) => p,
@@ -1034,6 +1096,29 @@ if (!window.__TAURI__) {
           // A comment with "fail" shows the "could not reach" error. window.__mockPolls holds the state.
           case "polls_list": return state.settings.polls === false ? [] : mockPolls.list();
           case "polls_vote": return mockPolls.vote(args);
+          // plugins (plugins.js): see mockPlugins below.
+          case "fire_keybind": { // a plugin's action: its process starts or stops with the arguments its script saved, as in plugins.rs
+            const k = state.settings.keybinds.find((x) => x.id === args.id);
+            const [kind, plugin, action] = String(k?.action || "").split(":");
+            if (kind !== "plugin") return null;
+            const name = "live", saved = state.settings.plugins?.[plugin]?.procs?.[name];
+            if (mockPlugins.procStatus({ plugin, name }).running) mockPlugins.procStop({ plugin, name });
+            else if (saved?.args?.length) mockPlugins.procStart({ plugin, name, args: saved.args });
+            window.__mockEmit("plugin-action", { plugin, action });
+            return null;
+          }
+          case "plugins_boot": return mockPlugins.boot();
+          case "plugins_state": return mockPlugins.state();
+          case "plugins_market": return mockPlugins.market();
+          case "plugin_install": return mockPlugins.install(args.id);
+          case "plugin_set_enabled": mockPlugins.set(args.id, { enabled: args.on }); return mockPlugins.state();
+          case "plugin_uninstall": mockPlugins.set(args.id, null); return mockPlugins.state();
+          case "plugins_restart": location.reload(); return null;
+          case "plugin_file_keep": if (!/\.(png|jpe?g|gif|webp|bmp)$/i.test(args.path)) throw "Only pictures can be added: PNG, JPEG, GIF, WebP or BMP"; return { path: args.path, name: args.path.split(/[\\/]/).pop(), size: 1234 };
+          case "plugin_file_drop": return true;
+          case "plugin_proc_start": return mockPlugins.procStart(args);
+          case "plugin_proc_stop": return mockPlugins.procStop(args);
+          case "plugin_proc_status": return mockPlugins.procStatus(args);
           default: return null;
         }
       },

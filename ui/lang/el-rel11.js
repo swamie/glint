@@ -374,4 +374,12 @@ glintAddLanguage("el", "Ελληνικά", {
   "In the editor, after you cut out the part under the playhead, Play continues from where the playhead is instead of showing the removed part.": "Στον επεξεργαστή, αφού κόψετε το κομμάτι κάτω από την κεφαλή αναπαραγωγής, η Αναπαραγωγή συνεχίζει από εκεί που βρίσκεται η κεφαλή αντί να δείχνει το κομμάτι που αφαιρέθηκε.",
   // 0.1.53
   "Text you type in the bug report and feedback boxes is easy to read again. Before, it was dark on a dark background.": "Το κείμενο που γράφετε στα πλαίσια αναφοράς σφάλματος και σχολίων διαβάζεται ξανά εύκολα. Πριν, ήταν σκούρο πάνω σε σκούρο φόντο.",
+  // 0.1.54
+  "Plugins. Open Tools, then Plugins, to add extras made by Glint's developers. A plugin gets its own page, settings and keybinds, and you can switch it off at any time.": "Πρόσθετα. Ανοίξτε τα Εργαλεία και μετά τα Πρόσθετα για να προσθέσετε επιπλέον λειτουργίες από τους δημιουργούς του Glint. Κάθε πρόσθετο έχει δική του σελίδα, ρυθμίσεις και συντομεύσεις, και μπορείτε να το απενεργοποιήσετε όποτε θέλετε.",
+  "The first plugin is Stream, a preview. Go live on Twitch, YouTube or your own server, arrange your screen, cameras, pictures and blur boxes in a scene, and see when you are live in the top bar.": "Το πρώτο πρόσθετο είναι το Stream, σε προεπισκόπηση. Μεταδώστε ζωντανά στο Twitch, στο YouTube ή σε δικό σας διακομιστή, τακτοποιήστε την οθόνη, τις κάμερες, τις εικόνες και τα πλαίσια θόλωσης σε μια σκηνή και δείτε στην επάνω γραμμή πότε είστε σε μετάδοση.",
+  "A new theme called Claude, with warm dark colors.": "Ένα νέο θέμα με το όνομα Claude, με ζεστά σκούρα χρώματα.",
+  "Monitors have the same number everywhere in Glint.": "Οι οθόνες έχουν τον ίδιο αριθμό παντού στο Glint.",
+  "Glint tells you when a clip keybind saves a different monitor than the one you chose for capture.": "Το Glint σάς ενημερώνει όταν μια συντόμευση κλιπ αποθηκεύει άλλη οθόνη από αυτήν που επιλέξατε για καταγραφή.",
+  "The time readout in the editor is easier to read.": "Η ένδειξη χρόνου στον επεξεργαστή διαβάζεται πιο εύκολα.",
+  "The key shown on the Clip button no longer looks white at the bottom, and its letter sits in the middle.": "Το πλήκτρο που εμφανίζεται στο κουμπί Κλιπ δεν φαίνεται πια λευκό στο κάτω μέρος και το γράμμα του βρίσκεται στο κέντρο.",
 });

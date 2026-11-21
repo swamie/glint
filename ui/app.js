@@ -201,6 +201,7 @@ function askFolder() {
 /* ---------- settings persistence ---------- */
 let saveTimer;
 function saveSettings(rerender = false) {
+  if (typeof plugBeforeSave === "function") plugBeforeSave(); // plugins.js: a plugin works out what follows from its settings
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try { S.status = await invoke("save_settings", { settings: S.settings }); renderChrome(); } catch (e) { fail(e); }
@@ -345,6 +346,7 @@ function renderChrome() {
   if (typeof updRender === "function") updRender(); // its tooltip is text too
   if (typeof jobsRender === "function") jobsRender(); // shown or hidden by a setting
   if (typeof capRender === "function") capRender(); // the GAME / DESKTOP switch (capmode.js)
+  if (typeof plugTopbarRender === "function") plugTopbarRender(); // what a plugin shows in the top bar (plugins.js)
   if (typeof sfxFromSettings === "function") sfxFromSettings(S.settings); // a sound setting applies at once
   // The sidebar can be folded to a strip of icons, so every item carries its name as a tooltip.
   document.documentElement.style.setProperty("--nav-op", String(clamp(+S.settings.nav_opacity || 60, 20, 100) / 100)); // the clip arrows in fullscreen (editor.css)
@@ -376,6 +378,8 @@ function renderChrome() {
     navItem("keybinds", t("Keybinds"), "keys", S.settings.keybinds.length) +
     navItem("recording", t("Capture"), "rec") +
     navItem("blur", t("Blur"), "blur") +
+    // plugins.js: the pages installed plugins add, then the Plugins page (the marketplace).
+    (typeof plugNavHtml === "function" ? plugNavHtml(navItem) : "") +
     // Settings is long: its categories are sub-items under it while the page is open. The item itself shows everything.
     navItem("settings", t("Settings"), "gear").replace(' active"', S.setCat ? '"' : ' active"') +
     `<div class="nav-sub" id="nav-settings"${S.page === "settings" ? "" : " hidden"}>${setCats().map(([id, name]) => `<button class="nav-item small${S.page === "settings" && S.setCat === id ? " active" : ""}" data-page="settings" data-setcat="${id}" data-hover title="${esc(name)}"><span class="label">${esc(name)}</span></button>`).join("")}</div>`;
@@ -1379,6 +1383,13 @@ const number = (path, min, max, step = 1) => `<input class="field" type="number"
 const pageHead = (title, sub) => `<div class="page-head"><div><h1>${title}</h1><div class="sub">${sub}</div></div></div>`;
 
 const DURATIONS = [15, 30, 60, 120, 180, 300, 600, 900, 1800];
+/** Keybind actions that plugins add (plugins.js), and the action a keybind already has when its plugin is off or gone
+ *  (kept in the list, so the keybind is not silently turned into something else). */
+const kbPluginActions = (current) => {
+  if (typeof plugKbActions !== "function") return String(current).startsWith("plugin:") ? [[current, current]] : [];
+  const missing = plugKbMissing(current);
+  return [...plugKbActions(), ...(missing ? [missing] : [])];
+};
 function renderKeybinds() {
   const s = S.settings;
   const seen = {};
@@ -1406,7 +1417,7 @@ function renderKeybinds() {
     return `<div class="kb-row${clip || (swap && multi) ? "" : " kb-other"}">
       <button class="kb-keys${listening ? " listening" : ""}${k.key ? "" : " unset"}" data-kb="${i}" data-act="capture">${listening ? t("Press a key combination…") : k.key ? comboHtml(k) : t("Click to set key")}</button>
       <select class="field kb-act" data-kb="${i}" data-kbf="action">
-        ${[["clip", t("Save a clip")], ["toggle", t("Pause / resume clipping")], ["show", t("Open Glint")], ["edit", t("Edit the last clip")], ...(multi || swap ? [["monitor", t("Switch the capture monitor")]] : [])].map(([v, l]) => `<option value="${v}"${k.action === v ? " selected" : ""}>${l}</option>`).join("")}
+        ${[["clip", t("Save a clip")], ["toggle", t("Pause / resume clipping")], ["show", t("Open Glint")], ["edit", t("Edit the last clip")], ...(multi || swap ? [["monitor", t("Switch the capture monitor")]] : []), ...kbPluginActions(k.action)].map(([v, l]) => `<option value="${v}"${k.action === v ? " selected" : ""}>${l}</option>`).join("")}
       </select>
       ${clip ? `<select class="field kb-len" data-kb="${i}" data-kbf="seconds">${durs.map((d) => `<option value="${d}"${k.seconds === d ? " selected" : ""}>${t("Last {length}", { length: fmtLen(d) })}</option>`).join("")}<option value="custom">${t("Custom…")}</option></select>` : ""}
       ${(clip || swap) && multi ? monSel : ""}
@@ -1499,7 +1510,7 @@ function renderRecording() {
 
 /** The Settings page's categories, the sub-items under "Settings" in the sidebar: [id, name]. Each section of
  *  the page carries one as data-cat. */
-const setCats = () => [["look", t("Appearance")], ["general", t("General")], ["audio", t("Audio and sounds")], ["overlay", t("Clip overlay")], ["program", t("Updates and program")]];
+const setCats = () => [["look", t("Appearance")], ["general", t("General")], ["audio", t("Audio and sounds")], ["overlay", t("Clip overlay")], ["program", t("Updates and program")], ...(typeof plugSetCats === "function" ? plugSetCats() : [])];
 
 function renderSettings() {
   const s = S.settings;
@@ -1573,6 +1584,7 @@ function renderSettings() {
     </div>
     ${typeof shareSettingsSection === "function" ? shareSettingsSection() : "" /* share.js: share links (optional) */}
     ${typeof depsSection === "function" ? inCat("program", depsSection()) : ""}
+    ${typeof plugSettingsHtml === "function" ? plugSettingsHtml() : "" /* plugins.js: the sections installed plugins add */}
     <p class="credits-text">${t("Eternal thanks to my friends {a} and {b}, who helped build this project alongside me. I really appreciate you both.", { a: "heaven", b: "rubust" })}
       ${t("And thank you to everyone who chooses Glint over the major clipping services. It keeps me motivated to keep working on it.")}</p>`;
   // The Capture page's settings can be found from here too: its sections are
@@ -1636,8 +1648,11 @@ function render() {
   const keep = $("#view").scrollTop;
   // "editor" is drawn by projects.js (renderEditorPage) and "compress" by compresspage.js (renderCompressPage).
   const later = (fn, title) => () => (typeof window[fn] === "function" ? window[fn]() : ($("#view").innerHTML = pageHead(title, "")));
-  ({ library: renderLibrary, favorites: renderLibrary, rendered: renderLibrary, keybinds: renderKeybinds, recording: renderRecording, blur: renderBlur, settings: renderSettings,
-    editor: later("renderEditorPage", t("Editor")), compress: later("renderCompressPage", t("Compress")), rules: later("renderRulesPage", t("Render rules")) })[S.page]();
+  const pages = { library: renderLibrary, favorites: renderLibrary, rendered: renderLibrary, keybinds: renderKeybinds, recording: renderRecording, blur: renderBlur, settings: renderSettings,
+    editor: later("renderEditorPage", t("Editor")), compress: later("renderCompressPage", t("Compress")), rules: later("renderRulesPage", t("Render rules")) };
+  // Not one of Glint's own pages: the Plugins page or a plugin's page (plugins.js). A page whose plugin is gone falls back to the Library.
+  if (pages[S.page]) pages[S.page]();
+  else if (!(typeof plugRenderPage === "function" && plugRenderPage(S.page))) { S.page = "library"; renderLibrary(); }
   $("#view").scrollTop = keep;
   renderSelBar();
 }
@@ -1925,6 +1940,7 @@ async function refreshClips() {
 async function refreshState() {
   const st = await invoke("get_state");
   Object.assign(S, { settings: st.settings, monitors: st.monitors, status: st.status, ffmpeg: st.ffmpeg, blur: st.blur, hardware: st.hardware || null, auto: st.auto || null });
+  if (typeof plugEnsureSettings === "function") plugEnsureSettings(); // plugins.js: a plugin's settings keep their defaults
   if (!S.sounds.length) S.sounds = (await invoke("list_sounds")) || [];
   window.applyGlintTheme(S.settings.theme, S.settings.custom_css);
   glintSetLanguage(S.settings.language || "en");

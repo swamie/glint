@@ -1092,8 +1092,25 @@ pub fn run(minimized: bool) {
             crate::monprev::monitor_preview,
             crate::capmode::game_mark,
             crate::polls::polls_list, // polls
-            crate::polls::polls_vote  // polls
+            crate::polls::polls_vote, // polls
+            // plugins (plugins.rs): the marketplace, what is installed, a plugin's processes, its local API
+            crate::plugins::plugins_boot,
+            crate::plugins::plugins_state,
+            crate::plugins::plugins_market,
+            crate::plugins::plugin_install,
+            crate::plugins::plugin_set_enabled,
+            crate::plugins::plugin_uninstall,
+            crate::plugins::plugins_restart,
+            crate::plugins::plugin_proc_start,
+            crate::plugins::plugin_file_keep,
+            crate::plugins::plugin_file_drop,
+            crate::plugins::plugin_proc_stop,
+            crate::plugins::plugin_proc_status,
+            crate::plugins::plugin_ready,
+            crate::plugins::plugin_reply
         ])
+        // Plugins: a page of the main window started, so the scripts it had loaded are gone.
+        .on_page_load(|webview, payload| crate::plugins::on_page_load(webview, payload.event() == tauri::webview::PageLoadEvent::Finished))
         .setup(move |app| {
             let handle = app.handle().clone();
             let core = setup_core;
@@ -1143,6 +1160,7 @@ pub fn run(minimized: bool) {
             });
 
             crate::polls::spawn(core.clone()); // polls: 30 s after start, then every 6 hours, only with the setting on
+            crate::plugins::start(handle.clone(), show_main); // plugins: the local API, only if an installed plugin asks for it
 
             let (tx, rx) = std::sync::mpsc::channel::<String>();
             hotkeys::start(tx);

@@ -387,6 +387,9 @@ pub struct Settings {
     pub blur_path: String,
     pub keybinds: Vec<Keybind>,
     pub blur: BlurSettings,
+    /// Plugins' own settings, one object per plugin id (plugins.rs). Glint keeps them as they
+    /// are: what is inside is the plugin's business. Empty with no plugin installed.
+    pub plugins: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for Settings {
@@ -485,6 +488,7 @@ impl Default for Settings {
             // Saved settings keep whatever keybinds they list.
             keybinds: vec![Keybind { id: "kb-30s".into(), key: "F8".into(), seconds: 30, ..Default::default() }],
             blur: BlurSettings::default(),
+            plugins: serde_json::Map::new(),
         }
     }
 }

@@ -31,6 +31,7 @@ mod livecheck;
 mod monprev;
 mod naming;
 mod polish;
+mod plugins; // optional add-ons in <data_dir>\plugins and their marketplace (off unless one is installed)
 mod polls; // polls from the developer
 mod procaudio;
 mod projects;

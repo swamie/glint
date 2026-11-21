@@ -40,6 +40,22 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.54", date: "2026-11-21",
+    new: [
+      t("Plugins. Open Tools, then Plugins, to add extras made by Glint's developers. A plugin gets its own page, settings and keybinds, and you can switch it off at any time."),
+      t("The first plugin is Stream, a preview. Go live on Twitch, YouTube or your own server, arrange your screen, cameras, pictures and blur boxes in a scene, and see when you are live in the top bar."),
+      t("A new theme called Claude, with warm dark colors."),
+    ],
+    improved: [
+      t("Monitors have the same number everywhere in Glint."),
+      t("Glint tells you when a clip keybind saves a different monitor than the one you chose for capture."),
+      t("The time readout in the editor is easier to read."),
+    ],
+    fixed: [
+      t("The key shown on the Clip button no longer looks white at the bottom, and its letter sits in the middle."),
+    ],
+  },
+  {
     version: "0.1.53", date: "2026-11-20",
     fixed: [
       t("Text you type in the bug report and feedback boxes is easy to read again. Before, it was dark on a dark background."),

@@ -374,4 +374,12 @@ glintAddLanguage("ko", "한국어", {
   "In the editor, after you cut out the part under the playhead, Play continues from where the playhead is instead of showing the removed part.": "편집기에서 재생 헤드 아래 부분을 잘라낸 뒤 재생하면, 지운 부분을 보여 주지 않고 재생 헤드가 있는 곳부터 이어집니다.",
   // 0.1.53
   "Text you type in the bug report and feedback boxes is easy to read again. Before, it was dark on a dark background.": "버그 신고와 의견 상자에 입력한 글자가 다시 잘 보입니다. 이전에는 어두운 배경에 어두운 글자로 표시되었습니다.",
+  // 0.1.54
+  "Plugins. Open Tools, then Plugins, to add extras made by Glint's developers. A plugin gets its own page, settings and keybinds, and you can switch it off at any time.": "플러그인이 생겼습니다. 도구에서 플러그인을 열면 Glint 개발자가 만든 추가 기능을 설치할 수 있습니다. 플러그인마다 자체 페이지와 설정, 단축키가 있고 언제든지 끌 수 있습니다.",
+  "The first plugin is Stream, a preview. Go live on Twitch, YouTube or your own server, arrange your screen, cameras, pictures and blur boxes in a scene, and see when you are live in the top bar.": "첫 번째 플러그인은 미리 보기 단계인 스트림입니다. Twitch, YouTube 또는 직접 정한 서버로 방송하고, 화면과 카메라, 그림, 흐림 상자를 장면에 배치하고, 방송 중인지 상단 바에서 확인할 수 있습니다.",
+  "A new theme called Claude, with warm dark colors.": "따뜻하고 어두운 색의 새 테마 Claude가 추가되었습니다.",
+  "Monitors have the same number everywhere in Glint.": "모니터 번호가 Glint 어디에서나 같습니다.",
+  "Glint tells you when a clip keybind saves a different monitor than the one you chose for capture.": "클립 단축키가 캡처용으로 고른 모니터와 다른 모니터를 저장하면 Glint가 알려 줍니다.",
+  "The time readout in the editor is easier to read.": "편집기의 시간 표시가 더 읽기 쉽습니다.",
+  "The key shown on the Clip button no longer looks white at the bottom, and its letter sits in the middle.": "클립 버튼에 표시되는 키의 아래쪽이 더 이상 하얗게 보이지 않고, 글자가 가운데에 놓입니다.",
 });

@@ -296,6 +296,16 @@ For builders: nothing about the destination is in the program. Glint posts the r
 
 **Apply recommended settings.** The button at the top of Capture works out encoder, capture method, resolution, frame rate, quality and buffer mode from this PC's graphics card, screen, memory and Windows version, lists every change with its reason, and applies them only after you agree. Results can be inconsistent: treat them as a start and tweak to your liking. Every choice that is on Auto shows what it is using, such as "Auto (NVIDIA NVENC)".
 
+## Plugins
+
+Glint can take optional add-ons that are not part of its own build, so a feature only a few people need does not have to sit in everyone's Glint. **Tools → Plugins** is the marketplace: it lists the official plugins, each with what it does and who made it. Install puts one in `%APPDATA%\Glint\plugins\`, and after a restart of Glint it is part of the program: it can add its own page under Tools, sections on the Settings page (found by the settings search like any other), and actions to the Keybinds page. Each plugin has a switch on the Plugins page to turn it off without removing it, and Remove takes it away again. With no plugin installed, nothing plugin-related runs and the marketplace is only asked for when its page is opened.
+
+Only official plugins can be installed from the marketplace for now. The list is `plugins/index.json` in this repository and the plugins are the folders in `plugins/official/`; Glint downloads a plugin's files from there over HTTPS and installs them only if every file matches the size and SHA-256 the list gives. Nothing about you or the PC is sent. A plugin folder put in `%APPDATA%\Glint\plugins\` by hand still loads, and the Plugins page marks it as not from the marketplace.
+
+**Stream (preview).** The first official plugin: go live to Twitch, YouTube or any RTMP server from a Stream page under Tools, with a "Start / stop streaming" keybind that also works while the window is closed. It streams a scene with Glint's desktop and microphone sound: the screen plus any cameras, pictures (PNG, JPEG or GIF, dropped on the preview) and blur boxes, each moved, sized, cropped, turned and stacked on the page's preview.
+
+For plugin authors and for publishing one: [plugins/README.md](plugins/README.md). How it works: `src-tauri/src/plugins.rs` and `ui/plugins.js`.
+
 ## Blur
 
 The Blur page starts with a live preview, which can be folded away with its Hide button (it is then not drawn at all): the same moving shapes drawn as the original and as Blur would render them with the current settings, following Blur's own maths (frames blended per output frame, weighting, gamma, interpolation, filters). It updates while a control is dragged, and a line under it says in plain numbers what will happen, including when a combination would do nothing. Quick presets set the common fields; less-used settings are in collapsible groups.
@@ -368,6 +378,7 @@ src-tauri/src/
   rules.rs      render rules: a chain of steps (color, Blur, upscale, compress, GIF, copy) as one job
   editor.rs     per-track audio, waveforms and film strip for the editor; export
   jobs.rs       background render queue
+  plugins.rs    plugins: the marketplace, installing with checksums, what is installed, a plugin's processes and keybind actions
   import.rs     import from other clipping software
   lang.rs       the backend's own texts (overlay, tray) in other languages
   update.rs     update check, download and swap from GitHub releases
@@ -375,6 +386,7 @@ src-tauri/src/
   core.rs       shared state, settings application, status
   app.rs        Tauri window, tray, toast, UI commands
   bench.rs      headless benchmark     keys.rs  hotkey self-test
+plugins/        index.json (the marketplace's list, made by tools/plugin-index.js), official/ (the official plugins), README.md (how to write one)
 tools/          i18n-check.js (translation coverage), serve.js (serve ui/ to a browser; mock.js stands in for the backend)
 ui/             index.html, style.css, app.js (library, settings), editor.js/.css (viewer, player, editor),
                 editmodel.js (the edit model), timeline.js/.css, jobs.js/.css (renders button), importer.js/.css,
