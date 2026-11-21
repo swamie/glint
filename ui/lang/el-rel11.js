@@ -382,4 +382,7 @@ glintAddLanguage("el", "Ελληνικά", {
   "Glint tells you when a clip keybind saves a different monitor than the one you chose for capture.": "Το Glint σάς ενημερώνει όταν μια συντόμευση κλιπ αποθηκεύει άλλη οθόνη από αυτήν που επιλέξατε για καταγραφή.",
   "The time readout in the editor is easier to read.": "Η ένδειξη χρόνου στον επεξεργαστή διαβάζεται πιο εύκολα.",
   "The key shown on the Clip button no longer looks white at the bottom, and its letter sits in the middle.": "Το πλήκτρο που εμφανίζεται στο κουμπί Κλιπ δεν φαίνεται πια λευκό στο κάτω μέρος και το γράμμα του βρίσκεται στο κέντρο.",
+  // 0.1.55
+  "A new plugin, Subtitles, a preview. It writes what is said in a clip on the picture, on your PC. Get it from Tools, then Plugins, and find it in the editor on the Overlays tab.": "Νέο πρόσθετο, οι Υπότιτλοι, σε προεπισκόπηση. Γράφει πάνω στην εικόνα όσα λέγονται σε ένα κλιπ, στο PC σας. Θα το βρείτε στα Εργαλεία, Πρόσθετα, και μετά στον επεξεργαστή, στην καρτέλα Επικαλύψεις.",
+  "Fix the words of a subtitle, change its size, color and place, or save the subtitles as a file.": "Διορθώστε τις λέξεις ενός υπότιτλου, αλλάξτε μέγεθος, χρώμα και θέση, ή αποθηκεύστε τους υπότιτλους ως αρχείο.",
 });

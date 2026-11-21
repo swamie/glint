@@ -40,6 +40,13 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.55", date: "2026-11-21",
+    new: [
+      t("A new plugin, Subtitles, a preview. It writes what is said in a clip on the picture, on your PC. Get it from Tools, then Plugins, and find it in the editor on the Overlays tab."),
+      t("Fix the words of a subtitle, change its size, color and place, or save the subtitles as a file."),
+    ],
+  },
+  {
     version: "0.1.54", date: "2026-11-21",
     new: [
       t("Plugins. Open Tools, then Plugins, to add extras made by Glint's developers. A plugin gets its own page, settings and keybinds, and you can switch it off at any time."),

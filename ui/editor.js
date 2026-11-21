@@ -972,6 +972,8 @@ function openClip(id) {
   // The canvas: another shape for the result (vertical for TikTok / Shorts), with pieces of the picture placed on it (canvas.js).
   if (typeof cvMount === "function") { try { S.player.cv = cvMount(root, c, S.player); } catch (e) { console.error("Glint: the canvas tools did not load", e); } }
   if (typeof zmMount === "function") { try { S.player.zm = zmMount(root, c, S.player); } catch (e) { console.error("Glint: the zoom tools did not load", e); } } // 0.1.41: Zoom (zoom.js)
+  // Installed plugins' own sections of the editor (plugins.js; 0.1.55), e.g. Subtitles.
+  if (typeof plugEditorMount === "function") { try { S.player.plug = plugEditorMount(root, c, S.player); } catch (e) { console.error("Glint: the plugins' editor sections did not load", e); } }
   // A project: the library's clips beside the editor, to add more (projects.js). P-HOOK 0.1.40: a single library
   // clip gets it too (shown only while editing; adding from it makes a project of the clip, projFromClip).
   if (typeof projMountPanel === "function") projMountPanel(root, id);
@@ -2560,6 +2562,7 @@ function mountPlayer(root, c) {
     P.cv?.sync(what); // before the overlays: they are placed on the canvas
     P.zm?.sync(what); // the Zoom section (0.1.41)
     P.ov?.sync(what);
+    P.plug?.sync(what); // plugins' sections (plugins.js)
     if (P.draft && typeof projDirty === "function") projDirty(P, what); // a project saves its edit (debounced)
   };
   /** Change the model: snapshot, run `fn`, then refresh the timeline and the preview.
@@ -2770,6 +2773,7 @@ function mountPlayer(root, c) {
     try { P.zm?.destroy(); } catch (e) { console.error("Glint: zoom destroy failed", e); }
     // The overlays too (0.1.41: their clip items' videos, observer and timer outlived the editor).
     try { P.ov?.destroy?.(); } catch (e) { console.error("Glint: overlays destroy failed", e); }
+    try { P.plug?.destroy(); } catch (e) { console.error("Glint: plugin sections destroy failed", e); }
     clearTimeout(vpendTimer);
     clearInterval(aftTimer);
     aftTimer = 0;

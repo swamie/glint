@@ -1106,6 +1106,13 @@ pub fn run(minimized: bool) {
             crate::plugins::plugin_file_drop,
             crate::plugins::plugin_proc_stop,
             crate::plugins::plugin_proc_status,
+            crate::plugins::plugin_dl_state,
+            crate::plugins::plugin_dl_get,
+            crate::plugins::plugin_dl_cancel,
+            crate::plugins::plugin_dl_remove,
+            crate::plugins::plugin_work_read,
+            crate::plugins::plugin_work_clear,
+            crate::plugins::plugin_save_text,
             crate::plugins::plugin_ready,
             crate::plugins::plugin_reply
         ])
