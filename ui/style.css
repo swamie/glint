@@ -114,6 +114,8 @@ kbd { font: 600 11px var(--sans); padding: 2px 6px; border-radius: 5px; backgrou
 /* The key's name sits in the exact middle: its box is trimmed to the capitals (cap height to baseline),
    so the keycap centers the letters themselves, not the font's taller line box, which sat them high. */
 #btn-clip .kc > span { display: block; text-box: trim-both cap alphabetic; }
+/* The words get the same trim, so their capitals sit on the same line as the key's name. */
+#btn-clip .clip-label { text-box: trim-both cap alphabetic; }
 #btn-clip:disabled .kc { color: var(--muted); }
 @media (max-width: 920px) {
   #btn-clip .clip-keys { display: none; }
