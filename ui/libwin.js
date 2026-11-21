@@ -117,7 +117,6 @@ function lwPaintFoot() {
   const btn = lw$("#lw-add"), n = LW.sel.length;
   btn.disabled = !n;
   btn.textContent = n > 1 ? t("Add {clips} to the editor", { clips: lwPlural(n) }) : t("Add to the editor");
-  lw$("#lw-hint").textContent = t("Drag clips onto the editor: on the timeline, or on the video to put them on the picture.");
 }
 
 async function lwLoad() {

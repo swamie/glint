@@ -5,7 +5,6 @@ glintAddLanguage("el", "Ελληνικά", {
   "Open the library in its own window, to drag clips from it into the editor": "Άνοιγμα της βιβλιοθήκης σε δικό της παράθυρο, για να σύρετε κλιπ από εκεί στον επεξεργαστή",
   "Add to the editor": "Προσθήκη στον επεξεργαστή",
   "Add {clips} to the editor": "Προσθήκη {clips} στον επεξεργαστή",
-  "Drag clips onto the editor: on the timeline, or on the video to put them on the picture.": "Σύρετε κλιπ στον επεξεργαστή: στη γραμμή χρόνου, ή πάνω στο βίντεο για να μπουν στην εικόνα.",
   "Could not reach the editor.": "Δεν ήταν δυνατή η επικοινωνία με τον επεξεργαστή.",
   "Could not start the drag. Use \"Add to the editor\" instead.": "Δεν ήταν δυνατή η έναρξη της μεταφοράς. Χρησιμοποιήστε την «Προσθήκη στον επεξεργαστή».",
   "Open a clip or a project in the editor first.": "Ανοίξτε πρώτα ένα κλιπ ή ένα έργο στον επεξεργαστή.",

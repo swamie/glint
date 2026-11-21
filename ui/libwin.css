@@ -14,8 +14,7 @@
 .lw-card { cursor: grab; }
 .lw-card .lw-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
 .lw-card h3 { font-size: 13px; margin-top: 8px; }
-.lw-foot { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--line); background: var(--panel); }
-.lw-hint { flex: 1; min-width: 0; color: var(--muted); font-size: 12px; }
+.lw-foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--line); background: var(--panel); }
 body.lw-dragging .lw-card.sel { opacity: .55; }
 body.lw-dragging .card:hover .thumb { transform: none; }
 .lw-body .flash { bottom: 58px; }
