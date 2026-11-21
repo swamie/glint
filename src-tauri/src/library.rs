@@ -180,6 +180,31 @@ pub struct Probe {
 
 /// Read stream layout and duration. `count_frames` also counts video packets (slower).
 pub fn probe(ffmpeg: &Path, file: &Path, count_frames: bool) -> Option<Probe> {
+    // One export asked for the same file two or three times, each an ffprobe run. An answer is
+    // kept for half a minute, for the file as it is now (same size and time of change).
+    type Key = (PathBuf, bool, u64, Option<std::time::SystemTime>);
+    static SEEN: std::sync::Mutex<Vec<(Key, Probe, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+    let key: Option<Key> = fs::metadata(file).ok().map(|m| (file.to_path_buf(), count_frames, m.len(), m.modified().ok()));
+    if let Some(key) = &key {
+        let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        seen.retain(|(_, _, at)| at.elapsed() < std::time::Duration::from_secs(30));
+        if let Some((_, p, _)) = seen.iter().find(|(k, _, _)| k == key) {
+            return Some(p.clone());
+        }
+    }
+    let p = probe_now(ffmpeg, file, count_frames)?;
+    // A file that is still being written (a changed size or time by now) is not remembered.
+    if let Some(key) = key.filter(|k| fs::metadata(file).ok().is_some_and(|m| m.len() == k.2 && m.modified().ok() == k.3) && p.duration > 0.0) {
+        let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        if seen.len() >= 64 {
+            seen.remove(0);
+        }
+        seen.push((key, p.clone(), std::time::Instant::now()));
+    }
+    Some(p)
+}
+
+fn probe_now(ffmpeg: &Path, file: &Path, count_frames: bool) -> Option<Probe> {
     let ffprobe = ffprobe_for(ffmpeg)?;
     let mut cmd = util::hidden_cmd(&ffprobe);
     cmd.args(["-v", "error"]);

@@ -304,7 +304,7 @@ fn export_with(s: &Settings, target: &Target, sources: &[Source], opts: &ExportO
         }
     }    // The project's track titles: over every source that is there (what a draft of them all had).
     let present: Vec<&Source> = sources.iter().filter(|x| !x.missing && Path::new(&x.path).is_file()).collect();
-    let (_, project) = track_titles(&ffmpeg, &present)?;
+    let (present_srcs, project) = track_titles(&ffmpeg, &present)?;
     let meta_for = |path: &Path, fps: u32| -> ClipMeta {
         let p = library::probe(&ffmpeg, path, false).unwrap_or_default();
         ClipMeta {
@@ -353,7 +353,12 @@ fn export_with(s: &Settings, target: &Target, sources: &[Source], opts: &ExportO
 
     // Several clips: the ones used, joined into a temporary working file.
     let chosen: Vec<&Source> = ks.iter().map(|&k| &sources[k]).collect();
-    let (srcs, _) = track_titles(&ffmpeg, &chosen)?;
+    // Each was read a moment ago with the rest of the project: that result is used again.
+    let again: Option<Vec<join::Src>> = chosen.iter().map(|c| present.iter().position(|x| std::ptr::eq(*x, *c)).and_then(|i| present_srcs.get(i).cloned())).collect();
+    let srcs = match again {
+        Some(srcs) => srcs,
+        None => track_titles(&ffmpeg, &chosen)?.0,
+    };
     let fps: Vec<u32> = chosen.iter().map(|x| x.fps).collect();
     let tmp = util::tmp_dir();
     let _ = std::fs::create_dir_all(&tmp);

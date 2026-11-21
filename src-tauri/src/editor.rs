@@ -570,6 +570,16 @@ fn audio_titles(ffmpeg: &Path, file: &Path) -> Result<Vec<Option<String>>, Strin
 
 /// Remove other clips' extracted audio once nobody has touched it for a day.
 fn remove_stale_dirs(tmp: &Path, keep: &str) {
+    // At most every ten minutes: this is asked for on every waveform, film strip and track list,
+    // and a folder only counts as stale after a day.
+    static SWEPT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    {
+        let mut at = SWEPT.lock().unwrap_or_else(|e| e.into_inner());
+        if at.is_some_and(|t| t.elapsed() < Duration::from_secs(600)) {
+            return;
+        }
+        *at = Some(std::time::Instant::now());
+    }
     let Ok(entries) = fs::read_dir(tmp) else { return };
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
@@ -887,7 +897,9 @@ thread_local! {
 /// 0.1.41: the child is tied to Glint's life (`util::track_child`); when its `out_time` does not advance
 /// for `STALL_SECS` it is ended and the export fails saying where it stopped; a cancel ends it too.
 fn run_with_progress(ffmpeg: &Path, args: &[String], expected: f64, progress: &mut dyn FnMut(f32)) -> Result<(), String> {
-    let mut cmd = util::hidden_cmd(ffmpeg);
+    // Below normal priority, like compressing and "Edit together": an export uses every core, and
+    // the game and the live capture come first.
+    let mut cmd = util::hidden_cmd_low(ffmpeg);
     cmd.args(args);
     let cancel = CANCEL.with(|c| c.borrow().clone());
     run_watched(cmd, expected, progress, cancel.as_deref())

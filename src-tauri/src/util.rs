@@ -113,6 +113,15 @@ pub fn hidden_cmd(program: &Path) -> Command {
     c
 }
 
+/// `hidden_cmd` below normal priority: long work that must not take the processor from the game
+/// or the live capture.
+pub fn hidden_cmd_low(program: &Path) -> Command {
+    const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+    let mut c = Command::new(gated(program));
+    c.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
+    c
+}
+
 pub fn hidden_cmd_prio(program: &Path) -> Command {
     let mut c = Command::new(gated(program));
     c.creation_flags(CREATE_NO_WINDOW | ABOVE_NORMAL_PRIORITY_CLASS);

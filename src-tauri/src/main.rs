@@ -16,6 +16,7 @@ mod detectwatch;
 mod e2e;
 mod edcache;
 mod editor;
+mod ffrun; // the shared ffmpeg runner of the background jobs
 mod gamedetect;
 mod games;
 mod gif;
