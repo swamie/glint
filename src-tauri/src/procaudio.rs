@@ -159,6 +159,7 @@ impl GameAudio {
         if st.cfg.as_ref() != Some(&cfg) {
             let mut ring = self.ring.lock().unwrap();
             ring.configure(RATE, cfg.max_secs);
+            ring.spill_in_background();
             ring.set_spill(cfg.window, cfg.dir.clone(), "g");
             st.cfg = Some(cfg.clone());
         }
