@@ -1,14 +1,17 @@
 // Stream: go live from Glint. An official Glint plugin (plugins/official/stream in Glint's repository).
 //
-// What it does: runs Glint's ffmpeg as the process "live", which captures a monitor (Desktop
-// Duplication), encodes it with the graphics card's encoder and sends it to an RTMP server.
+// What it does: a live stream of Glint's (src-tauri/src/live.rs), which is two kinds of ffmpeg with
+// Glint between them. The SENDER holds the connection to the RTMP server and encodes only the sound.
+// The FEEDER captures and encodes the picture; when its capture ends (Desktop Duplication loses the
+// screen each time a game enters or leaves exclusive fullscreen) Glint starts another and the
+// stream stays up. This file works out both command lines, what the picture is taken from
+// (a screen, the game, one window) and what the sound is mixed from, each part with its own volume.
 // The picture is a scene: the screen, cameras (DirectShow), pictures (PNG, JPEG, GIF: dropped on
 // the preview) and blur boxes, each moved, sized, cropped, turned and stacked on the Stream page's
-// preview. A scene that is only the whole screen keeps the
-// short capture chain; anything else is put together by ffmpeg's overlay filter.
-// Sound is Glint's own live desktop and microphone audio, handed to ffmpeg by Glint.
-// The arguments are worked out here and saved in the plugin's settings (`procs.live`), so the
-// keybind "Start / stop streaming" also works while Glint's window is closed.
+// preview. A scene that is only the whole screen keeps the short capture chain; anything else is
+// put together by ffmpeg's overlay filter.
+// Everything is saved in the plugin's settings (`procs.live`), so the keybind "Start / stop
+// streaming" also works while Glint's window is closed.
 const { ctx, t, esc } = Glint;
 const PROC = "live";
 const SERVICES = {
@@ -20,6 +23,8 @@ let status = { running: false, started: 0, error: "", log: [] };
 let showKey = false;
 let poll = 0;
 let live = null; // what the running stream sends ("1080p @ 60fps"), for the top bar
+let liveKey = ""; // the size, frame rate and encoder the running stream started with: only a picture of the same kind can replace it while live
+let ended = null; // the stream that just ended: { secs, link }
 
 const even = (v) => Math.max(2, Math.floor(v / 2) * 2);
 const serviceOf = (s) => (SERVICES[s.service] ? s.service : "twitch");
@@ -102,7 +107,7 @@ function shapeOf(c, x) {
 }
 
 /** The scene as ffmpeg's inputs and filter graph: every source cropped, sized, turned and laid over a black picture of the stream's size. */
-function sceneGraph(c, mon, fps, w, h) {
+function sceneGraph(c, fps, w, h) {
   const inputs = [], parts = [`color=c=black:s=${w}x${h}:r=${fps}[bg]`];
   let last = "bg", n = 0, cam = 0;
   for (const x of shown(c)) {
@@ -117,13 +122,13 @@ function sceneGraph(c, mon, fps, w, h) {
       continue;
     }
     let from;
-    if (x.type === "screen") from = `ddagrab=output_idx=${mon.index}:framerate=${fps}:draw_mouse=${c.glint.settings.cursor === false ? 0 : 1},hwdownload,format=bgra,`;
+    if (x.type === "screen") from = "{source},"; // Glint puts the capture here, as plain frames (live.rs)
     else {
-      // Input 0 is the sound; the cameras and pictures follow in the order of their layers.
+      // The feeder's inputs are the cameras and pictures, in the order of their layers.
       if (x.type === "camera") inputs.push("-f", "dshow", "-rtbufsize", "256M", "-thread_queue_size", "512", "-i", `video=${x.device}`);
       else if (isGif(x)) inputs.push("-stream_loop", "-1", "-i", x.file); // a GIF plays at its own speed, over and over
       else inputs.push("-loop", "1", "-framerate", "2", "-i", x.file); // a still picture: two frames a second are plenty
-      from = `[${++cam}:v]`;
+      from = `[${cam++}:v]`;
     }
     const [l, t, r, b] = x.crop, chain = [];
     if (l || t || r || b) chain.push(`crop=iw*${f4(1 - l - r)}:ih*${f4(1 - t - b)}:iw*${f4(l)}:ih*${f4(t)}`);
@@ -140,38 +145,104 @@ function sceneGraph(c, mon, fps, w, h) {
   return { inputs, parts, last };
 }
 
-/** ffmpeg's arguments for the stream, or null while the server or the key is missing. */
-function buildArgs(c) {
+/* ---------- what the picture is taken from, and the sound ---------- */
+
+const KINDS = ["monitor", "game", "window"];
+const kindOf = (c) => (KINDS.includes(c.s.source) ? c.s.source : "monitor");
+const DISCORD = ["Discord.exe", "DiscordPTB.exe", "DiscordCanary.exe"];
+let wins = null;      // the open windows, for the pickers (null: not asked yet)
+let winsBusy = false;
+let audioDevs = null; // { outputs, inputs }: the sound devices Windows has
+function askWindows(c, again) {
+  if (winsBusy || (wins && !again) || typeof c.windows !== "function") return;
+  winsBusy = true;
+  c.windows().then((list) => { wins = list || []; }).catch(() => { wins = wins || []; }).finally(() => { winsBusy = false; c.render(); });
+}
+function askAudioDevs(c) {
+  if (audioDevs) return;
+  audioDevs = { outputs: [], inputs: [] };
+  c.invoke("audio_devices").then((d) => { if (d) { audioDevs = d; c.render(); } }).catch(() => {});
+}
+/** The sound's parts, put right: each { on, vol (percent) }, the devices by name ("" = the Windows default). */
+function mixOf(c) {
+  const g = c.glint.settings;
+  const m = c.s.mix && typeof c.s.mix === "object" ? c.s.mix : (c.s.mix = {});
+  const part = (key, on) => {
+    const x = m[key] && typeof m[key] === "object" ? m[key] : (m[key] = { on });
+    x.on = !!x.on; x.vol = clamp(Math.round(num(x.vol, 100)), 0, 150);
+    return x;
+  };
+  // The first time: as Glint's own sound is set, which is what a stream used to send.
+  part("desktop", c.s.audio !== false && g.desktop_audio !== false).device = String(m.desktop.device || "");
+  part("mic", c.s.audio !== false && !!g.mic).device = String(m.mic.device || "");
+  part("game", true); part("discord", true);
+  const app = part("app", false);
+  app.exe = String(app.exe || "");
+  return m;
+}
+/** The sound as Glint's mixer takes it. The game and the programs only count while desktop audio is off: it holds them already. */
+function audioSpec(c) {
+  const m = mixOf(c), one = (x, on = x.on) => ({ on, gain: x.vol / 100 });
+  const split = !m.desktop.on, apps = [];
+  if (split && m.discord.on) for (const exe of DISCORD) apps.push({ exe, ...one(m.discord) });
+  if (split && m.app.on && m.app.exe && !DISCORD.includes(m.app.exe)) apps.push({ exe: m.app.exe, ...one(m.app) });
+  return { desktop: { ...one(m.desktop), device: m.desktop.device }, mic: { ...one(m.mic), device: m.mic.device }, game: one(m.game, split && m.game.on), apps };
+}
+/** The window picked for the picture, kept with its program and title so that it is found again another day. */
+function syncWindow(c) {
+  const w = (wins || []).find((x) => x.hwnd === c.s.window_hwnd);
+  if (w) { c.s.window_exe = w.exe; c.s.window_title = w.title; }
+}
+function sourceSpec(c, raw) {
+  const { w, h } = sizeOf(c);
+  return { kind: kindOf(c), monitor: monitorOf(c).index, hwnd: +c.s.window_hwnd || 0, exe: String(c.s.window_exe || ""), title: String(c.s.window_title || ""),
+    fps: [30, 60].includes(+c.s.fps) ? +c.s.fps : 60, cursor: c.glint.settings.cursor !== false, width: w, height: h, encoder: encoderOf(c), raw };
+}
+
+/** The stream for Glint to run: { send, feed, source, audio }, or null while the server or the key is missing. */
+function buildLive(c) {
   const s = c.s;
   const url = target(s);
   if (!url) return null;
-  const mon = monitorOf(c);
   const enc = encoderOf(c);
   const fps = [30, 60].includes(+s.fps) ? +s.fps : 60;
   const kbps = Math.min(51000, Math.max(500, +s.bitrate || 6000));
-  const { w, h, scaled } = sizeOf(c);
-  // The same capture chain as Glint's own Desktop Duplication capture (recorder.rs).
-  const scene = plain(c) ? null : sceneGraph(c, mon, fps, w, h);
-  let v = `ddagrab=output_idx=${mon.index}:framerate=${fps}:draw_mouse=${c.glint.settings.cursor === false ? 0 : 1}`;
-  if (scene) v = `${scene.parts.join(";")};[${scene.last}]format=${enc === "x264" ? "yuv420p" : "nv12"}`;
-  else if (scaled) v += `,hwdownload,format=bgra,scale=${w}:${h}:flags=bilinear${enc === "x264" ? "" : ",format=nv12"}`;
-  else if (enc === "x264") v += ",hwdownload,format=bgra";
-  else if (enc === "qsv") v += ",hwmap=derive_device=qsv,format=qsv";
+  const { w, h } = sizeOf(c);
+  const scene = plain(c) ? null : sceneGraph(c, fps, w, h);
+  // Every frame is stamped with the time since the stream began ("{t0}", filled in by Glint), so a
+  // feeder started later carries on where the clock is and stays in step with the sound.
+  const stamp = "settb=1/90000,setpts=(RTCTIME-{t0})/(TB*1000000)";
+  const graph = scene ? `${scene.parts.join(";")};[${scene.last}]format=${enc === "x264" ? "yuv420p" : "nv12"},${stamp}[v]` : `{source},${stamp}[v]`;
   const rate = `${kbps}k`, buf = `${kbps * 2}k`;
-  const a = ["-hide_banner", "-loglevel", "error", "-stats", "-stats_period", "2", "-nostdin"];
-  // Sound: Glint's live audio on stdin ("{audio_rate}" is filled in by Glint), or silence.
-  if (s.audio) a.push("-f", "s16le", "-ar", "{audio_rate}", "-ac", "2", "-thread_queue_size", "1024", "-i", "pipe:0");
-  else a.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
-  if (scene) a.push(...scene.inputs);
-  a.push("-filter_complex", `${v}[v]`, "-map", "[v]", "-map", "0:a");
-  if (enc === "nvenc") a.push("-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq", "-bf", "0", "-rc", "cbr", "-b:v", rate, "-maxrate", rate, "-bufsize", buf, "-forced-idr", "1");
-  else if (enc === "amf") a.push("-c:v", "h264_amf", "-usage", "transcoding", "-quality", "speed", "-bf", "0", "-rc", "cbr", "-b:v", rate, "-maxrate", rate, "-bufsize", buf);
-  else if (enc === "qsv") a.push("-c:v", "h264_qsv", "-preset", "veryfast", "-bf", "0", "-b:v", rate, "-maxrate", rate, "-bufsize", buf);
-  else a.push("-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-b:v", rate, "-maxrate", rate, "-bufsize", buf);
-  // A keyframe every two seconds, which is what streaming services ask for.
-  a.push("-g", String(fps * 2), "-force_key_frames", "expr:gte(t,n_forced*2)");
-  a.push("-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-f", "flv", url);
-  return a;
+  const feed = ["-hide_banner", "-loglevel", "error", "-nostats", "-nostdin"];
+  if (scene) feed.push(...scene.inputs);
+  feed.push("-filter_complex", graph, "-map", "[v]");
+  if (enc === "nvenc") feed.push("-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq", "-bf", "0", "-rc", "cbr", "-b:v", rate, "-maxrate", rate, "-bufsize", buf, "-forced-idr", "1");
+  else if (enc === "amf") feed.push("-c:v", "h264_amf", "-usage", "transcoding", "-quality", "speed", "-bf", "0", "-rc", "cbr", "-b:v", rate, "-maxrate", rate, "-bufsize", buf);
+  else if (enc === "qsv") feed.push("-c:v", "h264_qsv", "-preset", "veryfast", "-bf", "0", "-b:v", rate, "-maxrate", rate, "-bufsize", buf);
+  else feed.push("-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-b:v", rate, "-maxrate", rate, "-bufsize", buf);
+  // A keyframe every two seconds, which is what streaming services ask for (by the clock: a feeder that starts late starts its own count).
+  feed.push("-g", String(fps * 2), "-force_key_frames", "expr:if(isnan(prev_forced_t),1,gte(t,prev_forced_t+2))", "-fps_mode", "vfr");
+  feed.push("-f", "mpegts", "-flush_packets", "1", "-muxdelay", "0", "-muxpreload", "0", "pipe:1");
+  // The sender: the sound from Glint's mixer on stdin, the video from Glint ("{video}") copied as it is.
+  const send = ["-hide_banner", "-loglevel", "error", "-stats", "-stats_period", "2", "-nostdin", "-copyts",
+    "-f", "s16le", "-ar", "{audio_rate}", "-ac", "2", "-thread_queue_size", "1024", "-i", "pipe:0",
+    "-fflags", "+discardcorrupt", "-probesize", "500000", "-analyzeduration", "500000", "-thread_queue_size", "1024", "-f", "mpegts", "-i", "{video}",
+    "-map", "1:v", "-map", "0:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-f", "flv", url];
+  return { send, feed, source: sourceSpec(c, !!scene), audio: audioSpec(c) };
+}
+/** What a picture must share with the running stream's to take its place while live. */
+const shapeKey = (c) => { const { w, h } = sizeOf(c); return [w, h, [30, 60].includes(+c.s.fps) ? +c.s.fps : 60, encoderOf(c), +c.s.bitrate].join(" "); };
+/** What the keybind starts: the stream as the settings have it now. */
+const savedProcs = (c) => { const spec = buildLive(c); return { [PROC]: spec ? { args: [], audio: false, live: spec } : { args: [], audio: false } }; };
+/** While live: the sound follows at once; the picture's source and scene with a new capture (about a second of still picture). */
+function pushLive(c) {
+  if (!status.running || typeof c.proc.update !== "function") return;
+  const spec = buildLive(c);
+  if (!spec) return;
+  const change = { audio: spec.audio };
+  if (liveKey && liveKey === shapeKey(c)) { change.source = spec.source; change.feed = spec.feed; }
+  c.proc.update(PROC, change).catch(() => {});
 }
 
 const uptime = () => {
@@ -191,8 +262,8 @@ function stats() {
 async function refresh(c) {
   const was = status.running;
   try { status = await c.proc.status(PROC); } catch (e) { return; }
-  if (status.running && !live) live = shape(c);
-  if (!status.running) live = null;
+  if (status.running && !live) { live = shape(c); liveKey = liveKey || shapeKey(c); }
+  if (!status.running) { live = null; liveKey = ""; }
   if (was !== status.running) c.render(); else c.chrome();
 }
 /** While live, look every two seconds: the stream can end by itself, or by its keybind. */
@@ -206,20 +277,50 @@ const shape = (c) => `${sizeOf(c).h}p @ ${[30, 60].includes(+c.s.fps) ? +c.s.fps
 /** The top bar while live: an ordinary top bar button, "Streaming 1080p @ 60fps" (it opens the Stream page), joined to a stop button. */
 function topbar(c) {
   if (!status.running) return "";
-  const sending = !!stats();
-  const tip = sending ? `${t("Streaming for {time}", { time: uptime() })} · ${stats()}` : t("Connecting to the server…");
-  return `<span class="top-group${sending ? " live" : ""}"><button class="btn" data-pact="open" title="${esc(tip)}"><i class="top-dot${sending ? "" : " idle"}"></i><span class="top-label">${sending ? t("Streaming") : t("Connecting…")}</span><span class="top-muted top-detail top-label">${esc(live || shape(c))}</span></button><button class="btn top-icon" data-pact="stop" title="${esc(t("Stop streaming"))}" aria-label="${esc(t("Stop streaming"))}"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.500"/></svg></button></span>`;
+  const state = (status.live && status.live.state) || "";
+  const sending = !!stats() && state !== "reconnecting";
+  const tip = state === "reconnecting" ? t("The connection was lost. Connecting again…") : sending ? `${t("Streaming for {time}", { time: uptime() })} · ${stats()}` : t("Connecting to the server…");
+  const label = state === "reconnecting" ? t("Reconnecting…") : sending ? t("Streaming") : t("Connecting…");
+  return `<span class="top-group${sending ? " live" : ""}"><button class="btn" data-pact="open" title="${esc(tip)}"><i class="top-dot${sending ? "" : " idle"}"></i><span class="top-label">${label}</span><span class="top-muted top-detail top-label">${esc(live || shape(c))}</span></button><button class="btn top-icon" data-pact="stop" title="${esc(t("Stop streaming"))}" aria-label="${esc(t("Stop streaming"))}"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.500"/></svg></button></span>`;
 }
 
-/** The page's one button: Go live, or Stop streaming. What is live shows in the top bar. */
+/** Where viewers watch: the Twitch channel of the account, else the link the user gave. */
+function linkOf(c) {
+  const acc = twAccount(c);
+  if (serviceOf(c.s) === "twitch" && acc && acc.login) return `https://www.twitch.tv/${acc.login}`;
+  const link = String(c.s.link || "").trim();
+  return /^https:\/\/\S+$/i.test(link) ? link : "";
+}
+/** The page's button: Go live. While live the stop button is the top bar's, and this is the stream's link. */
 function headHtml(c) {
-  if (status.running) return `<button class="btn solid-danger" data-pact="stop">${t("Stop streaming")}</button>`;
-  const ready = !!buildArgs(c);
+  if (status.running) return linkOf(c) ? `<button class="btn" data-pact="copy-link">${t("Copy stream link")}</button>` : "";
+  const ready = !!buildLive(c);
   return `<button class="btn primary" data-pact="go"${ready ? "" : " disabled"} title="${esc(ready ? "" : t("Choose where to stream and paste your stream key first"))}">${t("Go live")}</button>`;
 }
 function statusHtml(c) {
-  if (!status.error) return "";
-  return `<div class="note bad"><b>${t("The stream stopped.")}</b> ${esc(status.error)}</div>`;
+  const lv = status.running ? status.live || {} : {};
+  if (lv.state === "reconnecting") return `<div class="note bad"><b>${t("The connection was lost.")}</b> ${t("Glint is connecting again by itself.")} ${esc(lv.note || "")}</div>`;
+  if (lv.state === "recovering") return `<div class="note">${t("The screen capture stopped and is starting again. The stream is still up.")}</div>`;
+  if (status.running && lv.showing === "card") return `<div class="note">${kindOf(c) === "game" ? t("No game is on screen, so viewers see a black picture until it is back.") : t("The window is closed or minimized, so viewers see a black picture until it is back.")}</div>`;
+  if (status.error) return `<div class="note bad"><b>${t("The stream stopped.")}</b> ${esc(status.error)}</div>`;
+  if (ended && !status.running) return `<div class="note st-ended"><span><b>${t("The stream ended.")}</b> ${t("You were live for {time}.", { time: clock(ended.secs) })}</span>${ended.link ? `<button class="btn sm" data-pact="copy-ended">${t("Copy stream link")}</button>` : ""}</div>`;
+  return "";
+}
+const clock = (s) => { const p = (n) => String(n).padStart(2, "0"); return `${Math.floor(s / 3600)}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`; };
+/** The stream is over: how long it was, and its link (on Twitch the recording, when the channel keeps them). */
+function noteEnded(c, started) {
+  const secs = Math.max(0, Math.floor((Date.now() - (started || Date.now())) / 1000));
+  const mine = (ended = { secs, link: linkOf(c) });
+  const acc = twAccount(c);
+  if (serviceOf(c.s) !== "twitch" || !acc || !started) return;
+  // Twitch lists the recording a little after the stream ends.
+  setTimeout(async () => {
+    try {
+      const r = await twApi(c, "GET", `videos?user_id=${encodeURIComponent(acc.id)}&type=archive&first=1`);
+      const v = r.data.data && r.data.data[0];
+      if (ended === mine && v && v.url && Date.parse(v.created_at) > started - 120000) { mine.link = v.url; c.render(); }
+    } catch (e) { /* the channel's link stays */ }
+  }, 4000);
 }
 
 /* ---------- Twitch, without a stream key ----------
@@ -229,7 +330,7 @@ function statusHtml(c) {
    in the plugin's settings: the access and refresh tokens, the account's name, and the key (so the
    keybind can start a stream while the window is closed). */
 const TWITCH_CLIENT_ID = "o3o6kapmpm83ffraud9y773x9r75sg"; // Glint's app at dev.twitch.tv. Empty: the Stream page only offers the stream key.
-const TWITCH_SCOPE = "channel:read:stream_key";
+const TWITCH_SCOPE = "channel:read:stream_key channel:manage:broadcast"; // the key, and the stream's title, category and tags
 const twClient = (c) => (typeof c.http !== "function" ? "" : TWITCH_CLIENT_ID || String(c.s.twitch_client_id || "").trim()); // a Glint from before this cannot reach Twitch: the key box only
 const twAccount = (c) => (c.s.twitch && c.s.twitch.refresh ? c.s.twitch : null);
 let twSign = null; // signing in right now: { code, uri, timer }
@@ -252,11 +353,82 @@ async function twLoad(c, tokens) {
   const got = await twGet(c, `streams/key?broadcaster_id=${encodeURIComponent(user.id)}`, tokens.access_token);
   const key = got.data.data && got.data.data[0] && got.data.data[0].stream_key;
   if (got.status !== 200 || !key) throw new Error(t("Twitch did not give the stream key"));
-  c.s.twitch = { access: tokens.access_token, refresh: tokens.refresh_token, id: user.id, login: user.login, name: user.display_name || user.login };
+  const scope = Array.isArray(tokens.scope) ? tokens.scope.join(" ") : (c.s.twitch && c.s.twitch.id === user.id && c.s.twitch.scope) || "";
+  c.s.twitch = { access: tokens.access_token, refresh: tokens.refresh_token, id: user.id, login: user.login, name: user.display_name || user.login, scope };
   c.s.service = "twitch";
   c.s.key = key;
 }
 function twStop() { if (twSign) clearTimeout(twSign.timer); twSign = null; }
+
+/* The stream's title, category and tags, set from Glint (Twitch calls this the channel's information; it has
+   no public / private switch). Needs the "channel:manage:broadcast" permission: an account connected
+   before Glint asked for it is asked to connect once more. */
+const twCanManage = (c) => { const acc = twAccount(c); return !!acc && /channel:manage:broadcast/.test(acc.scope || ""); };
+let twInfo = { busy: false, error: "", done: 0, loaded: false };
+/** A call to Twitch's API as the account. A token that ran out is renewed once and the call made again. */
+async function twApi(c, method, path, body) {
+  const call = () => twCall(c, { method, url: `https://api.twitch.tv/helix/${path}`, headers: [`Authorization: Bearer ${twAccount(c).access}`, `Client-Id: ${twClient(c)}`, ...(body ? ["Content-Type: application/json"] : [])], body: body ? JSON.stringify(body) : undefined });
+  let r = await call();
+  if (r.status === 401 && twAccount(c)) {
+    const fresh = await twToken(c, { grant_type: "refresh_token", refresh_token: twAccount(c).refresh });
+    if (fresh.status === 200 && fresh.data.access_token) { await twLoad(c, fresh.data); c.save(); r = await call(); }
+  }
+  return r;
+}
+const twTags = (text) => String(text || "").split(",").map((x) => x.replace(/[^\p{L}\p{N}]/gu, "").slice(0, 25)).filter(Boolean).slice(0, 10);
+/** What the channel says now, into the boxes (once per run of Glint, and never over something typed). */
+async function twReadInfo(c) {
+  if (twInfo.loaded || !twCanManage(c)) return;
+  twInfo.loaded = true;
+  try {
+    const r = await twApi(c, "GET", `channels?broadcaster_id=${encodeURIComponent(twAccount(c).id)}`);
+    const ch = r.data.data && r.data.data[0];
+    if (r.status !== 200 || !ch) return;
+    if (!c.s.tw_title) c.s.tw_title = ch.title || "";
+    if (!c.s.tw_category) c.s.tw_category = ch.game_name || "";
+    if (!c.s.tw_tags) c.s.tw_tags = (ch.tags || []).join(", ");
+    c.s.tw_sent = JSON.stringify([ch.title || "", ch.game_name || "", (ch.tags || []).join(", ")]);
+    c.save(); c.render();
+  } catch (e) { /* offline: the boxes stay as they are */ }
+}
+/** Send the title, category and tags to Twitch. `quiet`: on going live, and only when something changed. */
+async function twSendInfo(c, quiet) {
+  if (!twCanManage(c) || twInfo.busy) return;
+  const title = String(c.s.tw_title || "").trim().slice(0, 140), category = String(c.s.tw_category || "").trim(), tags = twTags(c.s.tw_tags);
+  const now = JSON.stringify([title, category, tags.join(", ")]);
+  if (quiet && (now === c.s.tw_sent || !title)) return;
+  twInfo = { ...twInfo, busy: true, error: "" };
+  if (!quiet) c.render();
+  try {
+    if (!title) throw new Error(t("Give the stream a title first"));
+    const body = { title, tags };
+    if (category) {
+      // The category by its exact name, else the first one Twitch finds for the words.
+      let g = await twApi(c, "GET", `games?name=${encodeURIComponent(category)}`);
+      let hit = g.data.data && g.data.data[0];
+      if (!hit) { g = await twApi(c, "GET", `search/categories?first=1&query=${encodeURIComponent(category)}`); hit = g.data.data && g.data.data[0]; }
+      if (!hit) throw new Error(t("Twitch has no category called {name}", { name: category }));
+      body.game_id = hit.id; c.s.tw_category = hit.name;
+    } else body.game_id = "";
+    const r = await twApi(c, "PATCH", `channels?broadcaster_id=${encodeURIComponent(twAccount(c).id)}`, body);
+    if (r.status !== 204 && r.status !== 200) throw new Error(r.data.message || t("Twitch did not take the change"));
+    c.s.tw_title = title; c.s.tw_tags = tags.join(", ");
+    c.s.tw_sent = JSON.stringify([title, c.s.tw_category, tags.join(", ")]);
+    twInfo = { ...twInfo, busy: false, done: Date.now() };
+    c.save();
+  } catch (e) { twInfo = { ...twInfo, busy: false, error: String(e.message || e) }; }
+  c.render();
+}
+function infoRows(c) {
+  if (serviceOf(c.s) !== "twitch" || !twAccount(c)) return "";
+  if (!twCanManage(c)) return c.row(t("Title and category"), t("To set your stream's title, category and tags from Glint, connect Twitch once more: Glint asks for that permission now"), `<button class="btn sm" data-pact="tw-on">${t("Connect again")}</button>`);
+  twReadInfo(c);
+  const hint = twInfo.error ? `${t("Twitch did not take the change:")} ${esc(twInfo.error)}` : Date.now() - twInfo.done < 6000 ? t("Updated on Twitch") : c.s.tw_title && JSON.stringify([String(c.s.tw_title).trim(), String(c.s.tw_category || "").trim(), twTags(c.s.tw_tags).join(", ")]) !== c.s.tw_sent ? t("Not on Twitch yet. It is also sent when you go live") : t("Works while you are live too");
+  return c.row(t("Title"), t("What viewers see above your stream"), c.text("tw_title", { placeholder: t("Stream title"), width: 340 }))
+    + c.row(t("Category"), t("The game or kind of stream, by its name on Twitch"), c.text("tw_category", { placeholder: "Just Chatting", width: 260 }))
+    + c.row(t("Tags"), t("Up to 10, with commas between them"), c.text("tw_tags", { placeholder: "English, FPS", width: 340 }))
+    + c.row(t("Update on Twitch"), hint, `<button class="btn sm${twInfo.busy ? "" : " primary"}" data-pact="tw-info"${twInfo.busy ? " disabled" : ""}>${twInfo.busy ? t("Updating…") : t("Update")}</button>`);
+}
 /** Start signing in: ask Twitch for a code, open its page, and ask every few seconds whether the user approved. */
 async function twConnect(c) {
   twStop(); twError = "";
@@ -311,7 +483,9 @@ function whereRows(c) {
     + (service === "custom" ? c.row(t("Server address"), t("Starts with rtmp:// or rtmps://"), c.text("url", { placeholder: "rtmp://", width: 340 })) : "")
     + (service === "twitch" ? twRows(c) : "")
     + (service === "twitch" && twAccount(c) ? "" : c.row(t("Stream key"), t("From your channel's dashboard. Anyone who has it can stream as you. It is saved on this PC, in Glint's settings file"),
-      `${c.text("key", { password: !showKey, width: 260 })}<button class="btn sm" data-pact="showkey">${showKey ? t("Hide") : t("Show")}</button>`));
+      `${c.text("key", { password: !showKey, width: 260 })}<button class="btn sm" data-pact="showkey">${showKey ? t("Hide") : t("Show")}</button>`))
+    + (service === "twitch" && twAccount(c) ? "" : c.row(t("Your stream's link"), t("Optional. Where viewers watch you: Glint offers it to copy while you are live and after"), c.text("link", { placeholder: "https://", width: 340 })))
+    + infoRows(c);
 }
 function videoRows(c) {
   const g = c.glint, mon = monitorOf(c);
@@ -320,7 +494,16 @@ function videoRows(c) {
   if (!heights.includes(c.s.height)) c.s.height = 0; // a height this monitor does not have below its own: its own
   const { w, h } = sizeOf(c);
   const encName = { nvenc: "NVIDIA NVENC", amf: "AMD AMF", qsv: "Intel Quick Sync", x264: "x264 (CPU)" };
-  return c.row(t("Monitor"), t("The screen that is streamed"), c.select("monitor", [[-1, t("Capture monitor ({name})", { name: cap.name })], ...(g.monitors || []).map((m) => [m.index, `${m.name} · ${m.width}×${m.height}`])], true))
+  const kind = kindOf(c);
+  if (kind === "window") askWindows(c);
+  const picked = (wins || []).find((x) => x.hwnd === c.s.window_hwnd);
+  const winOpts = [[0, wins ? t("Pick a window") : t("Looking for windows…")], ...(!picked && c.s.window_title ? [[c.s.window_hwnd, `${c.s.window_title} (${t("not open")})`]] : []), ...(wins || []).map((x) => [x.hwnd, `${x.title.slice(0, 60)} · ${x.exe}`])];
+  const game = (g.status && g.status.game) || "";
+  return c.row(t("What to show"), kind === "game" ? (game ? t("Only {game}. While it is minimized or closed, viewers see a black picture", { game }) : t("Only the game Glint sees. While none is on screen, viewers see a black picture"))
+      : kind === "window" ? t("Only one window, whatever is in front of it. Needs Windows 11") : t("A whole screen, with everything on it"),
+      c.select("source", [["monitor", t("Display")], ["game", t("Game")], ["window", t("Window")]]))
+    + (kind === "window" ? c.row(t("Window"), t("A window that stands still sends no new picture, so a stream of it can stall. Minimized, it shows black"), `${c.select("window_hwnd", winOpts, true)}<button class="btn sm" data-pact="wins">${t("Refresh")}</button>`) : "")
+    + (kind === "monitor" ? c.row(t("Monitor"), t("The screen that is streamed"), c.select("monitor", [[-1, t("Capture monitor ({name})", { name: cap.name })], ...(g.monitors || []).map((m) => [m.index, `${m.name} · ${m.width}×${m.height}`])], true)) : "")
     + c.row(t("Resolution"), t("Streams as {size}. Lower needs less upload speed", { size: `${w}×${h}` }), c.select("height", [...heights.map((x) => [x, `${x}p`]), [0, t("Native")]], true))
     + c.row(t("Frame rate"), "", c.select("fps", [[30, "30 fps"], [60, "60 fps"]], true))
     + c.row(t("Bitrate"), t("Twitch takes up to about 6000 kbps. Stay under your upload speed"), c.select("bitrate", [2500, 3500, 4500, 6000, 8000, 12000, 20000].map((b) => [b, `${b} kbps`]), true))
@@ -333,13 +516,21 @@ function cameraRows(c) {
     c.select("camera_access", [["ask", t("Ask me")], ["allow", t("Allowed")], ["deny", t("Not allowed")]]));
 }
 function audioRows(c) {
-  const g = c.glint;
-  const none = !g.settings.desktop_audio && !g.settings.mic;
-  const hint = !c.s.audio ? t("Off: the stream is silent")
-    : none ? t("Desktop audio and the microphone are both off in Settings, so the stream would be silent")
-    : !(g.status && g.status.recording) ? t("Clipping is paused, and the sound comes from the same capture: the stream is silent until you resume")
-    : t("Desktop sound and your microphone, as set in Settings → Audio and sounds");
-  return c.row(t("Send Glint's sound"), hint, c.toggle("audio"));
+  askAudioDevs(c);
+  const m = mixOf(c), g = c.glint, split = !m.desktop.on;
+  if (split && m.app.on) askWindows(c);
+  const vol = (key, off) => `<input class="range st-vol" type="range" min="0" max="150" step="5" data-set="${c.key(`mix.${key}.vol`)}" data-num value="${m[key].vol}"${off ? " disabled" : ""}><span class="range-val">${m[key].vol}%</span>`;
+  const sw = (key, off) => `<label class="switch"><input type="checkbox" data-set="${c.key(`mix.${key}.on`)}" ${m[key].on ? "checked" : ""}${off ? " disabled" : ""}><i></i></label>`;
+  const dev = (key, list) => { const cur = m[key].device, names = list.map((d) => d.name); return c.select(`mix.${key}.device`, [["", t("Windows default")], ...(cur && !names.includes(cur) ? [[cur, `${cur} (${t("not connected")})`]] : []), ...names.map((n) => [n, n])]); };
+  const part = (title, hint, key, extra = "") => `<div class="st-part${split ? "" : " off"}">${c.row(title, hint, `${extra}${vol(key, !split || !m[key].on)}${sw(key, !split)}`)}</div>`;
+  const game = (g.status && g.status.game) || "";
+  const exes = [...new Set([...(wins || []).map((x) => x.exe), ...(m.app.exe ? [m.app.exe] : [])])].filter((x) => !DISCORD.includes(x)).sort((a, b) => a.localeCompare(b));
+  return c.row(t("Desktop audio"), t("Everything this PC plays: the game, Discord, music. Switch it off to choose programs one by one"), `${dev("desktop", audioDevs.outputs)}${vol("desktop", !m.desktop.on)}${sw("desktop")}`)
+    + c.row(t("Microphone"), "", `${dev("mic", audioDevs.inputs)}${vol("mic", !m.mic.on)}${sw("mic")}`)
+    + part(t("Game audio"), !split ? t("Part of desktop audio") : game ? t("Only the sound of {game}", { game }) : t("Only the sound of the game Glint sees"), "game")
+    + part(t("Discord"), !split ? t("Part of desktop audio") : t("Voice chat and Discord's own sounds"), "discord")
+    + part(t("Another program"), !split ? t("Part of desktop audio") : t("The sound of one more program, such as a browser or a music player"), "app",
+      `<select class="field st-app" data-set="${c.key("mix.app.exe")}"${split ? "" : " disabled"}><option value="">${esc(t("Pick a program"))}</option>${exes.map((x) => `<option${x === m.app.exe ? " selected" : ""}>${esc(x)}</option>`).join("")}</select>`);
 }
 
 /* ---------- the scene's preview ---------- */
@@ -364,7 +555,7 @@ const ICON = {
   bin: '<svg viewBox="0 0 24 24"><path d="M4.500 7h15M9.500 7V4.500h5V7M6.500 7l.8 12.500h9.400L17.500 7"/></svg>',
 };
 const pct = (v) => `${+(v * 100).toFixed(3)}%`;
-const nameOf = (x) => (x.type === "screen" ? t("Screen") : x.type === "blur" ? t("Blur") : x.type === "image" ? x.name || t("Picture") : x.device || t("Camera"));
+const nameOf = (x) => (x.type === "screen" ? { monitor: t("Screen"), game: t("Game"), window: t("Window") }[kindOf(ctx)] : x.type === "blur" ? t("Blur") : x.type === "image" ? x.name || t("Picture") : x.device || t("Camera"));
 const boxStyle = (x) => `left:${pct(x.x)};top:${pct(x.y)};width:${pct(x.w)};height:${pct(x.h)};transform:rotate(${x.rot}deg);opacity:${x.opacity / 100}`;
 function picStyle(x) {
   const [l, tp, r, b] = x.crop, kw = 1 - l - r, kh = 1 - tp - b;
@@ -655,6 +846,8 @@ function pointerDown(e, c, stage) {
   window.addEventListener("pointercancel", up);
 }
 function after(c, root) {
+  // A key or an address typed in: the Go live button follows without the page being drawn again (which would take the cursor).
+  root.addEventListener("change", (e) => { const head = root.querySelector(".st-head"); if (head && e.target.matches("input.field")) setTimeout(() => { head.innerHTML = headHtml(c); }, 0); });
   const stage = root.querySelector(".st-stage");
   if (!stage) return;
   stage.addEventListener("pointerdown", (e) => pointerDown(e, c, stage));
@@ -731,7 +924,7 @@ function sceneAct(name, el, c) {
 function render(c) {
   const hasBind = (c.glint.settings.keybinds || []).some((k) => k.action === "plugin:stream:toggle");
   return `<div class="page-head"><div><h1>${t("Stream")}</h1><div class="sub">${t("Go live from Glint")}</div></div><div class="head-actions st-head">${headHtml(c)}</div></div>
-    <div class="note">${t("<b>Preview.</b> Streams your screen, cameras and pictures with Glint's sound. Changes you make while live apply the next time you go live.")}</div>
+    <div class="note">${t("<b>Preview.</b> Streams your screen, a game or a window, with cameras and pictures over it. Sound changes apply at once while live; a change to the picture pauses it for a second.")}</div>
     ${statusHtml(c)}
     ${sceneHtml(c)}
     <div class="section"><h2>${t("Where to")}</h2>${whereRows(c)}</div>
@@ -744,22 +937,30 @@ function render(c) {
 }
 
 async function go(c) {
-  const args = buildArgs(c);
-  if (!args) return c.flash(t("Choose where to stream and paste your stream key first"), true);
+  const spec = buildLive(c);
+  if (!spec) return c.flash(t("Choose where to stream and paste your stream key first"), true);
+  if (typeof c.proc.live !== "function") return c.flash(t("Update Glint to go live with this version of Stream"), true);
   try {
     // A camera is one program's at a time: the preview lets go of them before ffmpeg opens them.
     const held = Object.keys(cams);
     held.forEach(closeCam);
     if (held.length) await new Promise((r) => setTimeout(r, 400));
-    status = await c.proc.start(PROC, args, { audio: !!c.s.audio });
-    live = shape(c);
+    ended = null;
+    status = await c.proc.live(PROC, spec);
+    live = shape(c); liveKey = shapeKey(c);
     watch(c);
     c.render();
+    twSendInfo(c, true); // a title typed and not sent yet goes with the stream
   } catch (e) { c.fail(e); }
+}
+/** Put the stream's link on the clipboard. */
+function copyLink(c, link) {
+  if (!link) return;
+  (typeof c.copy === "function" ? c.copy(link) : navigator.clipboard.writeText(link)).then(() => c.flash(t("Link copied: {link}", { link }))).catch(c.fail);
 }
 
 Glint.register({
-  defaults: { service: "twitch", url: "", key: "", monitor: -1, height: 1080, fps: 60, bitrate: 6000, encoder: "auto", audio: true, preview: true, camera_access: "ask", twitch: null, scene: { sources: [newScreen()] }, procs: {} },
+  defaults: { service: "twitch", url: "", key: "", link: "", source: "monitor", window_hwnd: 0, window_exe: "", window_title: "", monitor: -1, height: 1080, fps: 60, bitrate: 6000, encoder: "auto", audio: true, mix: null, preview: true, camera_access: "ask", twitch: null, tw_title: "", tw_category: "", tw_tags: "", tw_sent: "", scene: { sources: [newScreen()] }, procs: {} },
   pages: [{
     id: "stream",
     title: "Stream",
@@ -774,8 +975,15 @@ Glint.register({
   topbar,
   onDrop,
   actions: { toggle: (c) => refresh(c).then(() => { if (status.running) watch(c); }) },
-  onProc: (st, c) => { if (st.name === "devices") { if (!st.running) gotDevices(st, c); return; } if (st.name !== PROC) return; status = st; live = st.running ? live || shape(c) : null; if (st.running) watch(c); c.render(); },
-  onSave: (c) => { c.s.procs = { [PROC]: { args: buildArgs(c) || [], audio: !!c.s.audio } }; },
+  onProc: (st, c) => {
+    if (st.name === "devices") { if (!st.running) gotDevices(st, c); return; }
+    if (st.name !== PROC) return;
+    if (status.running && !st.running && !st.error) noteEnded(c, status.started);
+    status = st; live = st.running ? live || shape(c) : null;
+    if (st.running) { liveKey = liveKey || shapeKey(c); watch(c); } else liveKey = "";
+    c.render();
+  },
+  onSave: (c) => { mixOf(c); syncWindow(c); c.s.procs = savedProcs(c); pushLive(c); },
   onAct: (name, el, c) => {
     if (sceneAct(name, el, c)) return;
     if (name === "tw-on") return twConnect(c);
@@ -784,7 +992,11 @@ Glint.register({
     if (name === "tw-off") { twStop(); c.s.twitch = null; c.s.key = ""; c.save(); return c.render(); }
     if (name === "go") return go(c);
     if (name === "open") return c.go("p:stream:stream");
-    if (name === "stop") return c.proc.stop(PROC).then((st) => { status = { ...st, running: false }; live = null; c.render(); }).catch(c.fail);
+    if (name === "stop") { const started = status.started; return c.proc.stop(PROC).then((st) => { if (status.running) noteEnded(c, started); status = { ...st, running: false, error: "" }; live = null; liveKey = ""; c.render(); }).catch(c.fail); }
+    if (name === "copy-link") return copyLink(c, linkOf(c));
+    if (name === "copy-ended") return copyLink(c, ended && ended.link);
+    if (name === "tw-info") return twSendInfo(c, false);
+    if (name === "wins") { askWindows(c, true); return; }
     if (name === "showkey") { showKey = !showKey; return c.render(); }
     if (name === "keybind") {
       const binds = c.glint.settings.keybinds;
@@ -797,16 +1009,17 @@ Glint.register({
   },
   start: (c) => {
     // The keybind's arguments follow this PC as it is now (its monitors, its graphics card).
-    const now = { [PROC]: { args: buildArgs(c) || [], audio: !!c.s.audio } };
-    if (JSON.stringify(c.s.procs) !== JSON.stringify(now)) c.save();
+    mixOf(c);
+    if (JSON.stringify(c.s.procs) !== JSON.stringify(savedProcs(c))) c.save();
     refresh(c).then(() => { if (status.running) watch(c); });
     twRenew(c);
   },
   lang: {
     ko: {
+      "The connection was lost. Connecting again…": "연결이 끊겼어요. 다시 연결하는 중…", "Reconnecting…": "다시 연결 중…", "Copy stream link": "방송 링크 복사", "The connection was lost.": "연결이 끊겼어요.", "Glint is connecting again by itself.": "Glint가 알아서 다시 연결하고 있어요.", "The screen capture stopped and is starting again. The stream is still up.": "화면 캡처가 멈춰서 다시 시작하는 중이에요. 방송은 계속되고 있어요.", "No game is on screen, so viewers see a black picture until it is back.": "화면에 게임이 없어서, 게임이 돌아올 때까지 시청자에게 검은 화면이 보여요.", "The window is closed or minimized, so viewers see a black picture until it is back.": "창이 닫혔거나 최소화돼서, 창이 돌아올 때까지 시청자에게 검은 화면이 보여요.", "The stream ended.": "방송이 끝났어요.", "You were live for {time}.": "{time} 동안 방송했어요.", "Give the stream a title first": "먼저 방송 제목을 정해 주세요", "Twitch has no category called {name}": "Twitch에 {name}(이)라는 카테고리가 없어요", "Twitch did not take the change": "Twitch가 변경을 받아들이지 않았어요", "Title and category": "제목과 카테고리", "To set your stream's title, category and tags from Glint, connect Twitch once more: Glint asks for that permission now": "Glint에서 방송 제목과 카테고리, 태그를 정하려면 Twitch를 한 번 더 연결해 주세요. 이제 Glint가 그 권한을 요청해요", "Connect again": "다시 연결", "Twitch did not take the change:": "Twitch가 변경을 받아들이지 않았어요:", "Updated on Twitch": "Twitch에 반영됐어요", "Not on Twitch yet. It is also sent when you go live": "아직 Twitch에 반영되지 않았어요. 방송을 시작할 때도 전송돼요", "Works while you are live too": "방송 중에도 바꿀 수 있어요", "Title": "제목", "What viewers see above your stream": "시청자가 방송 위에서 보는 문구", "Stream title": "방송 제목", "Category": "카테고리", "The game or kind of stream, by its name on Twitch": "게임이나 방송 종류를 Twitch에 있는 이름으로 적어 주세요", "Tags": "태그", "Up to 10, with commas between them": "최대 10개, 쉼표로 구분", "Update on Twitch": "Twitch에 반영", "Updating…": "반영하는 중…", "Update": "반영", "Your stream's link": "내 방송 링크", "Optional. Where viewers watch you: Glint offers it to copy while you are live and after": "선택 사항이에요. 시청자가 방송을 보는 주소로, 방송 중과 방송 후에 Glint에서 복사할 수 있어요", "Pick a window": "창 선택", "Looking for windows…": "창 찾는 중…", "not open": "열려 있지 않음", "What to show": "보여 줄 화면", "Only {game}. While it is minimized or closed, viewers see a black picture": "{game}만 보여 줘요. 최소화되거나 닫혀 있는 동안에는 시청자에게 검은 화면이 보여요", "Only the game Glint sees. While none is on screen, viewers see a black picture": "Glint가 인식한 게임만 보여 줘요. 화면에 게임이 없는 동안에는 시청자에게 검은 화면이 보여요", "Only one window, whatever is in front of it. Needs Windows 11": "다른 창이 앞에 있어도 창 하나만 보여 줘요. Windows 11이 필요해요", "A whole screen, with everything on it": "화면 전체와 그 위의 모든 것", "Display": "디스플레이", "Game": "게임", "Window": "창", "A window that stands still sends no new picture, so a stream of it can stall. Minimized, it shows black": "움직임이 없는 창은 새 화면을 보내지 않아서 방송이 멈칫할 수 있어요. 최소화하면 검은 화면이 나와요", "Windows default": "Windows 기본값", "not connected": "연결되지 않음", "Desktop audio": "데스크톱 오디오", "Everything this PC plays: the game, Discord, music. Switch it off to choose programs one by one": "이 PC에서 나는 모든 소리예요. 게임, Discord, 음악이 다 들어가요. 끄면 프로그램을 하나씩 고를 수 있어요", "Microphone": "마이크", "Game audio": "게임 오디오", "Part of desktop audio": "데스크톱 오디오에 포함돼요", "Only the sound of {game}": "{game}의 소리만", "Only the sound of the game Glint sees": "Glint가 인식한 게임의 소리만", "Discord": "Discord", "Voice chat and Discord's own sounds": "음성 채팅과 Discord 자체 소리", "Another program": "다른 프로그램", "The sound of one more program, such as a browser or a music player": "브라우저나 음악 플레이어 같은 프로그램 하나의 소리", "Pick a program": "프로그램 선택", "<b>Preview.</b> Streams your screen, a game or a window, with cameras and pictures over it. Sound changes apply at once while live; a change to the picture pauses it for a second.": "<b>미리 보기.</b> 화면이나 게임, 창을 카메라와 사진을 얹어 방송해요. 방송 중에 소리를 바꾸면 바로 적용되고, 화면을 바꾸면 화면이 1초쯤 멈춰요.", "Update Glint to go live with this version of Stream": "이 버전의 방송 플러그인으로 방송하려면 Glint를 업데이트해 주세요", "Link copied: {link}": "링크를 복사했어요: {link}", "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen, a game or a window and your cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Glint에서 Twitch, YouTube 또는 RTMP 서버로 방송해요. 화면이나 게임, 창과 카메라를 장면에 배치할 수 있어요. 도구에 방송 페이지와 설정, 시작/종료 단축키가 추가돼요.",
       "Twitch did not say whose account this is": "Twitch가 어떤 계정인지 알려 주지 않았어요", "Twitch did not give the stream key": "Twitch가 스트림 키를 주지 않았어요", "Twitch did not answer": "Twitch가 응답하지 않았어요", "The code ran out before it was approved. Try again.": "승인하기 전에 코드가 만료됐어요. 다시 시도해 주세요.", "Twitch refused the sign-in": "Twitch가 로그인을 거부했어요", "Approve Glint on Twitch": "Twitch에서 Glint 승인하기", "Your browser opened twitch.tv. Check that it shows this code, then press Authorize there": "브라우저에 twitch.tv가 열렸어요. 이 코드가 보이는지 확인하고 거기서 승인을 눌러 주세요", "Open Twitch": "Twitch 열기", "Cancel": "취소", "Twitch account": "Twitch 계정", "Signed in as {name}. Glint reads your stream key from Twitch": "{name}(으)로 로그인됨. Glint가 Twitch에서 스트림 키를 읽어 와요", "Disconnect": "연결 해제", "Could not sign in:": "로그인하지 못했어요:", "Twitch asks you to sign in again": "Twitch에 다시 로그인해야 해요", "Sign in and Glint gets your stream key by itself. Or paste the key below": "로그인하면 Glint가 스트림 키를 알아서 가져와요. 아래에 키를 붙여 넣어도 돼요", "Connect Twitch": "Twitch 연결",
       "Let Glint use your camera?": "Glint가 카메라를 사용해도 될까요?", "Glint opens your camera to show it in the Stream preview. Nothing is recorded or sent until you go live. You can change this in the Stream settings.": "Glint는 방송 미리 보기에 카메라를 보여 주려고 카메라를 열어요. 방송을 시작하기 전에는 아무것도 녹화되거나 전송되지 않아요. 방송 설정에서 바꿀 수 있어요.", "Allow": "허용", "Don't allow": "허용 안 함", "Camera preview is off": "카메라 미리 보기가 꺼져 있어요", "The camera is blocked": "카메라가 차단됐어요", "Glint is not allowed to show your camera in the preview. The camera still goes out when you go live.": "Glint가 미리 보기에 카메라를 보여 줄 수 없어요. 방송을 시작하면 카메라는 그대로 나가요.", "Allow camera": "카메라 허용", "The camera is blocked for Glint. In Windows, open Settings → Privacy & security → Camera and let desktop apps use it, then try again.": "Glint에서 카메라가 차단됐어요. Windows 설정 → 개인 정보 및 보안 → 카메라에서 데스크톱 앱의 카메라 사용을 허용한 뒤 다시 시도해 주세요.", "Try again": "다시 시도", "Camera in the preview": "미리 보기의 카메라", "Whether Glint may open your camera to show it on the Stream page. A camera in your scene goes out on the stream either way": "Glint가 방송 페이지에 카메라를 보여 주려고 카메라를 열어도 되는지 정해요. 장면에 있는 카메라는 어느 쪽이든 방송에 나가요", "Ask me": "물어보기", "Allowed": "허용됨", "Not allowed": "허용 안 됨",
-      "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen and cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Glint에서 Twitch, YouTube 또는 RTMP 서버로 방송해요. 화면과 카메라를 장면에 배치할 수 있어요. 도구에 방송 페이지와 설정, 시작/종료 단축키가 추가돼요.", "<b>Preview.</b> Streams your screen, cameras and pictures with Glint's sound. Changes you make while live apply the next time you go live.": "<b>미리 보기.</b> 화면, 카메라, 사진을 Glint의 소리와 함께 방송해요. 방송 중에 바꾼 설정은 다음 방송부터 적용돼요.", "Screen": "화면", "Camera": "카메라", "Pick a camera": "카메라 선택", "On the stream now": "지금 방송에 나가는 중", "No preview of this camera": "이 카메라는 미리 볼 수 없어요", "Bring forward": "앞으로 가져오기", "Send back": "뒤로 보내기", "Remove": "제거", "Click a source to move, size, crop or turn it.": "소스를 클릭하면 옮기고, 크기를 바꾸고, 자르고, 돌릴 수 있어요.", "No camera found": "카메라를 찾지 못했어요", "Looking for cameras…": "카메라 찾는 중…", "Refresh": "새로 고침", "Position": "위치", "Size": "크기", "Turn": "회전", "Mirror": "좌우 반전", "Crop": "자르기", "L": "좌", "T": "상", "R": "우", "B": "하", "Opacity": "불투명도", "Fit": "맞추기", "Fill": "채우기", "Reset": "초기화", "Scene": "장면", "The live picture of the screen and the cameras. Off uses nothing: the boxes can still be moved": "화면과 카메라의 실시간 모습이에요. 끄면 자원을 쓰지 않고, 상자는 계속 옮길 수 있어요", "Preview on": "미리 보기 켜짐", "Preview off": "미리 보기 꺼짐", "Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop. Drop a PNG, JPEG or GIF here to add it.": "끌어서 옮겨요. 모서리를 끌면 크기가 바뀌고, Shift를 누르면 늘어나고, Alt를 누르면 잘려요. PNG, JPEG, GIF를 여기에 끌어다 놓으면 추가돼요.", "Blur": "블러", "Picture": "사진", "Strength": "강도", "Only PNG, JPEG and GIF pictures can be added": "PNG, JPEG, GIF 사진만 추가할 수 있어요", "{name} could not be opened as a picture": "{name}을(를) 사진으로 열 수 없어요",
+      "Screen": "화면", "Camera": "카메라", "Pick a camera": "카메라 선택", "On the stream now": "지금 방송에 나가는 중", "No preview of this camera": "이 카메라는 미리 볼 수 없어요", "Bring forward": "앞으로 가져오기", "Send back": "뒤로 보내기", "Remove": "제거", "Click a source to move, size, crop or turn it.": "소스를 클릭하면 옮기고, 크기를 바꾸고, 자르고, 돌릴 수 있어요.", "No camera found": "카메라를 찾지 못했어요", "Looking for cameras…": "카메라 찾는 중…", "Refresh": "새로 고침", "Position": "위치", "Size": "크기", "Turn": "회전", "Mirror": "좌우 반전", "Crop": "자르기", "L": "좌", "T": "상", "R": "우", "B": "하", "Opacity": "불투명도", "Fit": "맞추기", "Fill": "채우기", "Reset": "초기화", "Scene": "장면", "The live picture of the screen and the cameras. Off uses nothing: the boxes can still be moved": "화면과 카메라의 실시간 모습이에요. 끄면 자원을 쓰지 않고, 상자는 계속 옮길 수 있어요", "Preview on": "미리 보기 켜짐", "Preview off": "미리 보기 꺼짐", "Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop. Drop a PNG, JPEG or GIF here to add it.": "끌어서 옮겨요. 모서리를 끌면 크기가 바뀌고, Shift를 누르면 늘어나고, Alt를 누르면 잘려요. PNG, JPEG, GIF를 여기에 끌어다 놓으면 추가돼요.", "Blur": "블러", "Picture": "사진", "Strength": "강도", "Only PNG, JPEG and GIF pictures can be added": "PNG, JPEG, GIF 사진만 추가할 수 있어요", "{name} could not be opened as a picture": "{name}을(를) 사진으로 열 수 없어요",
       "Stream": "방송", "Go live from Glint": "Glint에서 바로 방송하기", "Go live": "방송 시작", "Stop streaming": "방송 종료", "Streaming": "방송 중", "Connecting…": "연결 중…", "Streaming for {time}": "{time}째 방송 중", "Connecting to the server…": "서버에 연결하는 중…",
       "Start / stop streaming": "방송 시작 / 종료", "Stream started": "방송을 시작했어요", "Stream stopped": "방송을 종료했어요",
       "Choose where to stream and paste your stream key first": "먼저 방송할 곳을 고르고 스트림 키를 붙여 넣어 주세요",
@@ -820,18 +1033,15 @@ Glint.register({
       "Resolution": "해상도", "Streams as {size}. Lower needs less upload speed": "{size}로 방송해요. 낮을수록 업로드 속도가 덜 필요해요", "Native": "원본",
       "Frame rate": "프레임 속도", "Bitrate": "비트레이트", "Twitch takes up to about 6000 kbps. Stay under your upload speed": "Twitch는 약 6000 kbps까지 받아요. 내 업로드 속도보다 낮게 잡아 주세요",
       "Encoder": "인코더", "Auto uses your graphics card: {name}": "자동은 그래픽 카드를 써요: {name}", "Auto": "자동", "x264 (CPU, heavy)": "x264 (CPU, 무거움)",
-      "Send Glint's sound": "Glint의 소리 보내기", "Off: the stream is silent": "꺼짐: 방송에 소리가 없어요",
-      "Desktop audio and the microphone are both off in Settings, so the stream would be silent": "설정에서 데스크톱 오디오와 마이크가 모두 꺼져 있어서 방송에 소리가 없어요",
-      "Clipping is paused, and the sound comes from the same capture: the stream is silent until you resume": "클리핑이 일시 정지됐어요. 소리는 같은 캡처에서 오기 때문에 다시 시작할 때까지 방송에 소리가 없어요",
-      "Desktop sound and your microphone, as set in Settings → Audio and sounds": "설정 → 오디오와 소리에서 정한 데스크톱 소리와 마이크",
       "Start and stop with a key": "키로 시작하고 종료하기", "Set on the Keybinds page. It works while Glint's window is closed too": "단축키 페이지에서 정해요. Glint 창이 닫혀 있어도 작동해요",
       "Adds “Start / stop streaming” to your keybinds, where you pick its key": "단축키에 “방송 시작 / 종료”를 추가해요. 거기서 키를 정하면 돼요",
       "Open Keybinds": "단축키 열기", "Add keybind": "단축키 추가", "Preview": "미리 보기",
     },
     el: {
+      "The connection was lost. Connecting again…": "Η σύνδεση χάθηκε. Γίνεται ξανά σύνδεση…", "Reconnecting…": "Επανασύνδεση…", "Copy stream link": "Αντιγραφή συνδέσμου μετάδοσης", "The connection was lost.": "Η σύνδεση χάθηκε.", "Glint is connecting again by itself.": "Το Glint συνδέεται ξανά μόνο του.", "The screen capture stopped and is starting again. The stream is still up.": "Η καταγραφή οθόνης σταμάτησε και ξεκινά ξανά. Η μετάδοση συνεχίζεται.", "No game is on screen, so viewers see a black picture until it is back.": "Δεν υπάρχει παιχνίδι στην οθόνη, οπότε οι θεατές βλέπουν μαύρη εικόνα μέχρι να επιστρέψει.", "The window is closed or minimized, so viewers see a black picture until it is back.": "Το παράθυρο είναι κλειστό ή ελαχιστοποιημένο, οπότε οι θεατές βλέπουν μαύρη εικόνα μέχρι να επιστρέψει.", "The stream ended.": "Η μετάδοση τελείωσε.", "You were live for {time}.": "Ήσουν σε μετάδοση για {time}.", "Give the stream a title first": "Δώσε πρώτα έναν τίτλο στη μετάδοση", "Twitch has no category called {name}": "Το Twitch δεν έχει κατηγορία με όνομα {name}", "Twitch did not take the change": "Το Twitch δεν δέχτηκε την αλλαγή", "Title and category": "Τίτλος και κατηγορία", "To set your stream's title, category and tags from Glint, connect Twitch once more: Glint asks for that permission now": "Για να ορίζεις τίτλο, κατηγορία και ετικέτες της μετάδοσης από το Glint, σύνδεσε ξανά το Twitch: το Glint ζητά πλέον αυτή την άδεια", "Connect again": "Σύνδεση ξανά", "Twitch did not take the change:": "Το Twitch δεν δέχτηκε την αλλαγή:", "Updated on Twitch": "Ενημερώθηκε στο Twitch", "Not on Twitch yet. It is also sent when you go live": "Δεν έχει σταλεί ακόμη στο Twitch. Στέλνεται και όταν ξεκινάς μετάδοση", "Works while you are live too": "Λειτουργεί και κατά τη μετάδοση", "Title": "Τίτλος", "What viewers see above your stream": "Αυτό που βλέπουν οι θεατές πάνω από τη μετάδοσή σου", "Stream title": "Τίτλος μετάδοσης", "Category": "Κατηγορία", "The game or kind of stream, by its name on Twitch": "Το παιχνίδι ή το είδος της μετάδοσης, με το όνομά του στο Twitch", "Tags": "Ετικέτες", "Up to 10, with commas between them": "Έως 10, χωρισμένες με κόμματα", "Update on Twitch": "Ενημέρωση στο Twitch", "Updating…": "Ενημέρωση…", "Update": "Ενημέρωση", "Your stream's link": "Ο σύνδεσμος της μετάδοσής σου", "Optional. Where viewers watch you: Glint offers it to copy while you are live and after": "Προαιρετικό. Εκεί όπου σε βλέπουν οι θεατές: το Glint τον προσφέρει για αντιγραφή κατά τη μετάδοση και μετά", "Pick a window": "Διάλεξε παράθυρο", "Looking for windows…": "Αναζήτηση παραθύρων…", "not open": "δεν είναι ανοιχτό", "What to show": "Τι να φαίνεται", "Only {game}. While it is minimized or closed, viewers see a black picture": "Μόνο το {game}. Όσο είναι ελαχιστοποιημένο ή κλειστό, οι θεατές βλέπουν μαύρη εικόνα", "Only the game Glint sees. While none is on screen, viewers see a black picture": "Μόνο το παιχνίδι που βλέπει το Glint. Όσο δεν υπάρχει κανένα στην οθόνη, οι θεατές βλέπουν μαύρη εικόνα", "Only one window, whatever is in front of it. Needs Windows 11": "Μόνο ένα παράθυρο, ό,τι κι αν βρίσκεται μπροστά του. Χρειάζεται Windows 11", "A whole screen, with everything on it": "Ολόκληρη οθόνη, με ό,τι υπάρχει πάνω της", "Display": "Οθόνη", "Game": "Παιχνίδι", "Window": "Παράθυρο", "A window that stands still sends no new picture, so a stream of it can stall. Minimized, it shows black": "Ένα παράθυρο που μένει ακίνητο δεν στέλνει νέα εικόνα, οπότε η μετάδοσή του μπορεί να κολλήσει. Ελαχιστοποιημένο, δείχνει μαύρο", "Windows default": "Προεπιλογή των Windows", "not connected": "μη συνδεδεμένη", "Desktop audio": "Ήχος επιφάνειας εργασίας", "Everything this PC plays: the game, Discord, music. Switch it off to choose programs one by one": "Ό,τι παίζει αυτός ο υπολογιστής: το παιχνίδι, το Discord, η μουσική. Απενεργοποίησέ το για να διαλέξεις προγράμματα ένα ένα", "Microphone": "Μικρόφωνο", "Game audio": "Ήχος παιχνιδιού", "Part of desktop audio": "Μέρος του ήχου επιφάνειας εργασίας", "Only the sound of {game}": "Μόνο ο ήχος του {game}", "Only the sound of the game Glint sees": "Μόνο ο ήχος του παιχνιδιού που βλέπει το Glint", "Discord": "Discord", "Voice chat and Discord's own sounds": "Φωνητική συνομιλία και οι ήχοι του ίδιου του Discord", "Another program": "Άλλο πρόγραμμα", "The sound of one more program, such as a browser or a music player": "Ο ήχος ενός ακόμη προγράμματος, όπως ένας περιηγητής ή ένα πρόγραμμα μουσικής", "Pick a program": "Διάλεξε πρόγραμμα", "<b>Preview.</b> Streams your screen, a game or a window, with cameras and pictures over it. Sound changes apply at once while live; a change to the picture pauses it for a second.": "<b>Προεπισκόπηση.</b> Μεταδίδει την οθόνη σου, ένα παιχνίδι ή ένα παράθυρο, με κάμερες και εικόνες από πάνω. Οι αλλαγές στον ήχο ισχύουν αμέσως κατά τη μετάδοση· μια αλλαγή στην εικόνα την παγώνει για ένα δευτερόλεπτο.", "Update Glint to go live with this version of Stream": "Ενημέρωσε το Glint για να μεταδώσεις με αυτή την έκδοση της Μετάδοσης", "Link copied: {link}": "Ο σύνδεσμος αντιγράφηκε: {link}", "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen, a game or a window and your cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Ζωντανή μετάδοση από το Glint σε Twitch, YouTube ή οποιονδήποτε διακομιστή RTMP, με την οθόνη σου, ένα παιχνίδι ή ένα παράθυρο και τις κάμερές σου τοποθετημένες σε σκηνή. Προσθέτει τη σελίδα Μετάδοση στα Εργαλεία, τις ρυθμίσεις της και συντόμευση για έναρξη και διακοπή.",
       "Twitch did not say whose account this is": "Το Twitch δεν είπε ποιανού είναι ο λογαριασμός", "Twitch did not give the stream key": "Το Twitch δεν έδωσε το κλειδί μετάδοσης", "Twitch did not answer": "Το Twitch δεν απάντησε", "The code ran out before it was approved. Try again.": "Ο κωδικός έληξε πριν εγκριθεί. Δοκίμασε ξανά.", "Twitch refused the sign-in": "Το Twitch αρνήθηκε τη σύνδεση", "Approve Glint on Twitch": "Έγκρινε το Glint στο Twitch", "Your browser opened twitch.tv. Check that it shows this code, then press Authorize there": "Ο περιηγητής σου άνοιξε το twitch.tv. Έλεγξε ότι δείχνει αυτόν τον κωδικό και πάτησε εκεί Εξουσιοδότηση", "Open Twitch": "Άνοιγμα Twitch", "Cancel": "Άκυρο", "Twitch account": "Λογαριασμός Twitch", "Signed in as {name}. Glint reads your stream key from Twitch": "Συνδεδεμένος ως {name}. Το Glint διαβάζει το κλειδί μετάδοσης από το Twitch", "Disconnect": "Αποσύνδεση", "Could not sign in:": "Η σύνδεση απέτυχε:", "Twitch asks you to sign in again": "Το Twitch ζητά να συνδεθείς ξανά", "Sign in and Glint gets your stream key by itself. Or paste the key below": "Συνδέσου και το Glint παίρνει μόνο του το κλειδί μετάδοσης. Ή επικόλλησε το κλειδί παρακάτω", "Connect Twitch": "Σύνδεση Twitch",
       "Let Glint use your camera?": "Να χρησιμοποιήσει το Glint την κάμερά σου;", "Glint opens your camera to show it in the Stream preview. Nothing is recorded or sent until you go live. You can change this in the Stream settings.": "Το Glint ανοίγει την κάμερά σου για να τη δείξει στην προεπισκόπηση της Μετάδοσης. Τίποτα δεν καταγράφεται ούτε στέλνεται μέχρι να ξεκινήσεις μετάδοση. Μπορείς να το αλλάξεις στις ρυθμίσεις της Μετάδοσης.", "Allow": "Να επιτρέπεται", "Don't allow": "Να μην επιτρέπεται", "Camera preview is off": "Η προεπισκόπηση κάμερας είναι ανενεργή", "The camera is blocked": "Η κάμερα είναι αποκλεισμένη", "Glint is not allowed to show your camera in the preview. The camera still goes out when you go live.": "Το Glint δεν επιτρέπεται να δείξει την κάμερά σου στην προεπισκόπηση. Η κάμερα μεταδίδεται κανονικά όταν ξεκινήσεις μετάδοση.", "Allow camera": "Να επιτρέπεται η κάμερα", "The camera is blocked for Glint. In Windows, open Settings → Privacy & security → Camera and let desktop apps use it, then try again.": "Η κάμερα είναι αποκλεισμένη για το Glint. Στα Windows άνοιξε Ρυθμίσεις → Απόρρητο και ασφάλεια → Κάμερα, επίτρεψε στις εφαρμογές υπολογιστή να τη χρησιμοποιούν και δοκίμασε ξανά.", "Try again": "Δοκίμασε ξανά", "Camera in the preview": "Κάμερα στην προεπισκόπηση", "Whether Glint may open your camera to show it on the Stream page. A camera in your scene goes out on the stream either way": "Αν το Glint μπορεί να ανοίγει την κάμερά σου για να τη δείχνει στη σελίδα Μετάδοση. Μια κάμερα της σκηνής μεταδίδεται σε κάθε περίπτωση", "Ask me": "Να ερωτώμαι", "Allowed": "Επιτρέπεται", "Not allowed": "Δεν επιτρέπεται",
-      "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen and cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Ζωντανή μετάδοση από το Glint σε Twitch, YouTube ή οποιονδήποτε διακομιστή RTMP, με την οθόνη και τις κάμερές σου τοποθετημένες σε σκηνή. Προσθέτει τη σελίδα Μετάδοση στα Εργαλεία, τις ρυθμίσεις της και συντόμευση για έναρξη και διακοπή.", "<b>Preview.</b> Streams your screen, cameras and pictures with Glint's sound. Changes you make while live apply the next time you go live.": "<b>Προεπισκόπηση.</b> Μεταδίδει την οθόνη, τις κάμερες και τις εικόνες σου με τον ήχο του Glint. Οι αλλαγές κατά τη μετάδοση ισχύουν από την επόμενη μετάδοση.", "Screen": "Οθόνη", "Camera": "Κάμερα", "Pick a camera": "Διάλεξε κάμερα", "On the stream now": "Στη μετάδοση τώρα", "No preview of this camera": "Χωρίς προεπισκόπηση για αυτή την κάμερα", "Bring forward": "Μεταφορά μπροστά", "Send back": "Μεταφορά πίσω", "Remove": "Αφαίρεση", "Click a source to move, size, crop or turn it.": "Κάνε κλικ σε μια πηγή για να τη μετακινήσεις, να αλλάξεις το μέγεθός της, να την περικόψεις ή να τη γυρίσεις.", "No camera found": "Δεν βρέθηκε κάμερα", "Looking for cameras…": "Αναζήτηση καμερών…", "Refresh": "Ανανέωση", "Position": "Θέση", "Size": "Μέγεθος", "Turn": "Περιστροφή", "Mirror": "Καθρέφτης", "Crop": "Περικοπή", "L": "Α", "T": "Π", "R": "Δ", "B": "Κ", "Opacity": "Αδιαφάνεια", "Fit": "Προσαρμογή", "Fill": "Γέμισμα", "Reset": "Επαναφορά", "Scene": "Σκηνή", "The live picture of the screen and the cameras. Off uses nothing: the boxes can still be moved": "Η ζωντανή εικόνα της οθόνης και των καμερών. Όταν είναι ανενεργή δεν χρησιμοποιεί τίποτα: τα πλαίσια μετακινούνται ακόμα", "Preview on": "Προεπισκόπηση ενεργή", "Preview off": "Προεπισκόπηση ανενεργή", "Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop. Drop a PNG, JPEG or GIF here to add it.": "Σύρε για μετακίνηση. Σύρε μια γωνία για αλλαγή μεγέθους, με Shift για τέντωμα, με Alt για περικοπή. Άφησε εδώ ένα PNG, JPEG ή GIF για να το προσθέσεις.", "Blur": "Θόλωμα", "Picture": "Εικόνα", "Strength": "Ένταση", "Only PNG, JPEG and GIF pictures can be added": "Μόνο εικόνες PNG, JPEG και GIF μπορούν να προστεθούν", "{name} could not be opened as a picture": "Το {name} δεν άνοιξε ως εικόνα",
+      "Screen": "Οθόνη", "Camera": "Κάμερα", "Pick a camera": "Διάλεξε κάμερα", "On the stream now": "Στη μετάδοση τώρα", "No preview of this camera": "Χωρίς προεπισκόπηση για αυτή την κάμερα", "Bring forward": "Μεταφορά μπροστά", "Send back": "Μεταφορά πίσω", "Remove": "Αφαίρεση", "Click a source to move, size, crop or turn it.": "Κάνε κλικ σε μια πηγή για να τη μετακινήσεις, να αλλάξεις το μέγεθός της, να την περικόψεις ή να τη γυρίσεις.", "No camera found": "Δεν βρέθηκε κάμερα", "Looking for cameras…": "Αναζήτηση καμερών…", "Refresh": "Ανανέωση", "Position": "Θέση", "Size": "Μέγεθος", "Turn": "Περιστροφή", "Mirror": "Καθρέφτης", "Crop": "Περικοπή", "L": "Α", "T": "Π", "R": "Δ", "B": "Κ", "Opacity": "Αδιαφάνεια", "Fit": "Προσαρμογή", "Fill": "Γέμισμα", "Reset": "Επαναφορά", "Scene": "Σκηνή", "The live picture of the screen and the cameras. Off uses nothing: the boxes can still be moved": "Η ζωντανή εικόνα της οθόνης και των καμερών. Όταν είναι ανενεργή δεν χρησιμοποιεί τίποτα: τα πλαίσια μετακινούνται ακόμα", "Preview on": "Προεπισκόπηση ενεργή", "Preview off": "Προεπισκόπηση ανενεργή", "Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop. Drop a PNG, JPEG or GIF here to add it.": "Σύρε για μετακίνηση. Σύρε μια γωνία για αλλαγή μεγέθους, με Shift για τέντωμα, με Alt για περικοπή. Άφησε εδώ ένα PNG, JPEG ή GIF για να το προσθέσεις.", "Blur": "Θόλωμα", "Picture": "Εικόνα", "Strength": "Ένταση", "Only PNG, JPEG and GIF pictures can be added": "Μόνο εικόνες PNG, JPEG και GIF μπορούν να προστεθούν", "{name} could not be opened as a picture": "Το {name} δεν άνοιξε ως εικόνα",
       "Stream": "Μετάδοση", "Go live from Glint": "Ζωντανή μετάδοση από το Glint", "Go live": "Έναρξη μετάδοσης", "Stop streaming": "Διακοπή μετάδοσης", "Streaming": "Μετάδοση", "Connecting…": "Σύνδεση…", "Streaming for {time}": "Μετάδοση εδώ και {time}", "Connecting to the server…": "Σύνδεση με τον διακομιστή…",
       "Start / stop streaming": "Έναρξη / διακοπή μετάδοσης", "Stream started": "Η μετάδοση ξεκίνησε", "Stream stopped": "Η μετάδοση σταμάτησε",
       "Choose where to stream and paste your stream key first": "Διάλεξε πρώτα πού θα μεταδώσεις και επικόλλησε το κλειδί μετάδοσης",
@@ -845,10 +1055,6 @@ Glint.register({
       "Resolution": "Ανάλυση", "Streams as {size}. Lower needs less upload speed": "Μεταδίδει σε {size}. Χαμηλότερη ανάλυση θέλει μικρότερη ταχύτητα αποστολής", "Native": "Εγγενής",
       "Frame rate": "Ρυθμός καρέ", "Bitrate": "Ρυθμός bit", "Twitch takes up to about 6000 kbps. Stay under your upload speed": "Το Twitch δέχεται έως περίπου 6000 kbps. Μείνε κάτω από την ταχύτητα αποστολής σου",
       "Encoder": "Κωδικοποιητής", "Auto uses your graphics card: {name}": "Το Αυτόματο χρησιμοποιεί την κάρτα γραφικών σου: {name}", "Auto": "Αυτόματο", "x264 (CPU, heavy)": "x264 (CPU, βαρύ)",
-      "Send Glint's sound": "Αποστολή του ήχου του Glint", "Off: the stream is silent": "Ανενεργό: η μετάδοση δεν έχει ήχο",
-      "Desktop audio and the microphone are both off in Settings, so the stream would be silent": "Ο ήχος επιφάνειας εργασίας και το μικρόφωνο είναι ανενεργά στις Ρυθμίσεις, άρα η μετάδοση δεν θα έχει ήχο",
-      "Clipping is paused, and the sound comes from the same capture: the stream is silent until you resume": "Η καταγραφή κλιπ είναι σε παύση και ο ήχος έρχεται από την ίδια καταγραφή: η μετάδοση δεν έχει ήχο μέχρι να συνεχίσεις",
-      "Desktop sound and your microphone, as set in Settings → Audio and sounds": "Ήχος επιφάνειας εργασίας και μικρόφωνο, όπως ορίζονται στις Ρυθμίσεις → Ήχος και ήχοι",
       "Start and stop with a key": "Έναρξη και διακοπή με πλήκτρο", "Set on the Keybinds page. It works while Glint's window is closed too": "Ορίζεται στη σελίδα Συντομεύσεις. Δουλεύει και όταν το παράθυρο του Glint είναι κλειστό",
       "Adds “Start / stop streaming” to your keybinds, where you pick its key": "Προσθέτει το «Έναρξη / διακοπή μετάδοσης» στις συντομεύσεις σου, όπου διαλέγεις το πλήκτρο",
       "Open Keybinds": "Άνοιγμα Συντομεύσεων", "Add keybind": "Προσθήκη συντόμευσης", "Preview": "Προεπισκόπηση",

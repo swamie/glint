@@ -1110,6 +1110,9 @@ pub fn run(minimized: bool) {
             crate::plugins::plugin_open,
             crate::plugins::plugin_file_drop,
             crate::plugins::plugin_proc_stop,
+            crate::plugins::plugin_live_start,
+            crate::plugins::plugin_live_update,
+            crate::plugins::plugin_windows,
             crate::plugins::plugin_proc_status,
             crate::plugins::plugin_ready,
             crate::plugins::plugin_reply

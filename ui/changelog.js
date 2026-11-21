@@ -40,6 +40,16 @@
  */
 const wnReleases = () => [
   {
+    version: "0.1.55", date: "2026-11-21",
+    new: [
+      t("Stream 0.2, in Tools, then Plugins: set your Twitch title, category and tags from Glint, copy your stream's link, show only a game or one window, and give desktop sound, your microphone, the game, Discord and one more program a volume each, on the devices you pick."),
+    ],
+    fixed: [
+      t("A live stream no longer ends when you switch into or out of a fullscreen game. The picture pauses for a moment and the stream carries on."),
+      t("If the connection to the streaming service drops, Glint connects again by itself and tells you when it cannot."),
+    ],
+  },
+  {
     version: "0.1.54", date: "2026-11-21",
     new: [
       t("Plugins. Open Tools, then Plugins, to add extras made by Glint's developers. A plugin gets its own page, settings and keybinds, and you can switch it off at any time."),

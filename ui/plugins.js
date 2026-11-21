@@ -24,7 +24,8 @@
 // `ctx` (also `Glint.ctx`): { id, s (its settings), key(name) (the data-set path of one), save(rerender),
 // row, toggle, select, number, text, t, esc, invoke, flash, fail, saveNow, confirm({ title, text, ok, cancel }), render, chrome (redraw the top bar and sidebar only),
 // go(page), glint (Glint's own state),
-// proc: { start(name, args, { audio, quiet }), stop(name), status(name) } }.
+// proc: { start(name, args, { audio, quiet }), stop(name), status(name), live(name, spec), update(name, spec) },
+// windows(), copy(text) }.
 
 const PLUG = {
   defs: new Map(),   // plugin id -> { info (from plugins_boot), def (what it registered), ctx }
@@ -80,7 +81,15 @@ function plugCtx(info) {
       start: (name, args, opts = {}) => invoke("plugin_proc_start", { plugin: id, name, args, audio: !!opts.audio, quiet: !!opts.quiet }),
       stop: (name) => invoke("plugin_proc_stop", { plugin: id, name }),
       status: (name) => invoke("plugin_proc_status", { plugin: id, name }),
+      /** A live stream (0.1.55): a sender that holds the connection and a feeder Glint restarts when its capture ends. spec: { send, feed, source, audio }. */
+      live: (name, spec, opts = {}) => invoke("plugin_live_start", { plugin: id, name, spec, quiet: !!opts.quiet }),
+      /** Change a running live stream: { audio } at once, { source } or { feed } with a new feeder. */
+      update: (name, spec) => invoke("plugin_live_update", { plugin: id, name, spec }),
     },
+    /** The windows a live stream can show: [{ hwnd, title, exe, minimized }]. */
+    windows: () => invoke("plugin_windows"),
+    /** Put text on the clipboard. */
+    copy: (text) => copyText(text),
   };
 }
 

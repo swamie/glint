@@ -382,4 +382,8 @@ glintAddLanguage("el", "Ελληνικά", {
   "Glint tells you when a clip keybind saves a different monitor than the one you chose for capture.": "Το Glint σάς ενημερώνει όταν μια συντόμευση κλιπ αποθηκεύει άλλη οθόνη από αυτήν που επιλέξατε για καταγραφή.",
   "The time readout in the editor is easier to read.": "Η ένδειξη χρόνου στον επεξεργαστή διαβάζεται πιο εύκολα.",
   "The key shown on the Clip button no longer looks white at the bottom, and its letter sits in the middle.": "Το πλήκτρο που εμφανίζεται στο κουμπί Κλιπ δεν φαίνεται πια λευκό στο κάτω μέρος και το γράμμα του βρίσκεται στο κέντρο.",
+  // 0.1.55
+  "A live stream no longer ends when you switch into or out of a fullscreen game. The picture pauses for a moment and the stream carries on.": "Μια ζωντανή μετάδοση δεν σταματά πια όταν μπαίνετε ή βγαίνετε από παιχνίδι σε πλήρη οθόνη. Η εικόνα παγώνει για μια στιγμή και η μετάδοση συνεχίζεται.",
+  "If the connection to the streaming service drops, Glint connects again by itself and tells you when it cannot.": "Αν χαθεί η σύνδεση με την υπηρεσία μετάδοσης, το Glint συνδέεται ξανά μόνο του και σας ενημερώνει όταν δεν μπορεί.",
+  "Stream 0.2, in Tools, then Plugins: set your Twitch title, category and tags from Glint, copy your stream's link, show only a game or one window, and give desktop sound, your microphone, the game, Discord and one more program a volume each, on the devices you pick.": "Μετάδοση 0.2, στα Εργαλεία και μετά Πρόσθετα: ορίστε τίτλο, κατηγορία και ετικέτες Twitch από το Glint, αντιγράψτε τον σύνδεσμο της μετάδοσης, δείξτε μόνο ένα παιχνίδι ή ένα παράθυρο, και δώστε ξεχωριστή ένταση στον ήχο επιφάνειας εργασίας, στο μικρόφωνο, στο παιχνίδι, στο Discord και σε ένα ακόμη πρόγραμμα, στις συσκευές που επιλέγετε.",
 });

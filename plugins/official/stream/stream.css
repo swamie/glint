@@ -53,3 +53,11 @@ span.st-ib { cursor: default; }
 .st-crop .st-n > input[type="number"] { width: 44px; padding-left: 18px; }
 @media (max-width: 1100px) { .st-body { grid-template-columns: minmax(0, 1fr); } }
 .st-code { padding: 4px 10px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--raised); color: var(--text); font: 600 14px var(--mono, ui-monospace, monospace); letter-spacing: .08em; user-select: all; }
+/* The sound's parts: a volume and a switch each. The programs are dimmed while desktop audio holds them already. */
+.st-vol { width: 120px; }
+.st-vol:disabled { opacity: .4; }
+.st-part.off .txt { opacity: .55; }
+.st-app { width: 170px; }
+.plug-page .row .ctl select.field { max-width: 260px; }
+.st-ended { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.st-ended .btn { flex: none; }

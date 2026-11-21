@@ -4,27 +4,27 @@
     {
       "id": "stream",
       "name": "Stream",
-      "description": "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen and cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.",
+      "description": "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen, a game or a window and your cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.",
       "author": "Glint developers",
-      "version": "0.1.1",
-      "min_glint": "0.1.53",
+      "version": "0.2.0",
+      "min_glint": "0.1.55",
       "icon": "M12 9.8a2.2 2.2 0 1 0 0 4.4 2.2 2.2 0 0 0 0-4.4zM7.8 16.2a6 6 0 0 1 0-8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 19A10 10 0 0 1 5 5M19 5a10 10 0 0 1 0 14",
       "tag": "Preview",
       "files": [
         {
           "path": "plugin.json",
-          "sha256": "58e0bb957a294be36b8167b29ccdb493b58ab6f8f2e61292d5b3582c34dd81b6",
-          "size": 589
+          "sha256": "1cc787af453537f9c173d36c874fd208cf1ff1fbba741fe0c6f3963bde480776",
+          "size": 614
         },
         {
           "path": "stream.css",
-          "sha256": "b7a0cb520710e82f02ef640dabc3facb9ead4d6087e71ef552c7f690ddee41fd",
-          "size": 5368
+          "sha256": "26bb1d8acd0056767149ff35682ba2f586cb3dd811cc3aca98a842d2dad6b815",
+          "size": 5787
         },
         {
           "path": "stream.js",
-          "sha256": "200e9252ba18364844582c76cbbbaf8d1555f96f5505238c6a462672ca09e918",
-          "size": 74885
+          "sha256": "3cecf53fe0c805de4b87ff8e86af5b7b657654255f3b727dcee1fbc089305dee",
+          "size": 102503
         }
       ]
     }

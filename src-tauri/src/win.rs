@@ -342,6 +342,27 @@ pub fn descendants(root: u32) -> Vec<u32> {
     out
 }
 
+/// The processes whose program file is called `name` ("Discord.exe", any case) and whose parent is
+/// not one of them: the top of each of its process trees. A program made of many processes
+/// (a browser, Discord) plays its sound from a child; capturing a tree from its top gets all of it.
+pub fn root_pids(name: &str) -> Vec<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
+    let mut same: Vec<(u32, u32)> = Vec::new(); // (pid, parent) of the processes called `name`
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return Vec::new() };
+        let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut ok = Process32FirstW(snap, &mut e).is_ok();
+        while ok {
+            if e.th32ProcessID != 0 && wide_to_string(&e.szExeFile).eq_ignore_ascii_case(name) {
+                same.push((e.th32ProcessID, e.th32ParentProcessID));
+            }
+            ok = Process32NextW(snap, &mut e).is_ok();
+        }
+        let _ = CloseHandle(snap);
+    }
+    same.iter().filter(|(_, parent)| !same.iter().any(|(pid, _)| pid == parent)).map(|(pid, _)| *pid).collect()
+}
+
 /// The full path of every running program this user may look at (others are left out).
 /// One ToolHelp snapshot plus one query per process: a few milliseconds.
 pub fn process_paths() -> Vec<String> {

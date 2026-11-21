@@ -382,4 +382,8 @@ glintAddLanguage("ko", "한국어", {
   "Glint tells you when a clip keybind saves a different monitor than the one you chose for capture.": "클립 단축키가 캡처용으로 고른 모니터와 다른 모니터를 저장하면 Glint가 알려 줍니다.",
   "The time readout in the editor is easier to read.": "편집기의 시간 표시가 더 읽기 쉽습니다.",
   "The key shown on the Clip button no longer looks white at the bottom, and its letter sits in the middle.": "클립 버튼에 표시되는 키의 아래쪽이 더 이상 하얗게 보이지 않고, 글자가 가운데에 놓입니다.",
+  // 0.1.55
+  "A live stream no longer ends when you switch into or out of a fullscreen game. The picture pauses for a moment and the stream carries on.": "전체 화면 게임으로 들어가거나 나올 때 방송이 더 이상 끊기지 않습니다. 화면이 잠깐 멈췄다가 방송이 이어집니다.",
+  "If the connection to the streaming service drops, Glint connects again by itself and tells you when it cannot.": "방송 서비스와 연결이 끊기면 Glint가 스스로 다시 연결하고, 연결할 수 없으면 알려 줍니다.",
+  "Stream 0.2, in Tools, then Plugins: set your Twitch title, category and tags from Glint, copy your stream's link, show only a game or one window, and give desktop sound, your microphone, the game, Discord and one more program a volume each, on the devices you pick.": "도구의 플러그인에 있는 스트림 0.2: Twitch 제목과 카테고리, 태그를 Glint에서 정하고, 방송 링크를 복사하고, 게임이나 창 하나만 보여 주고, 데스크톱 소리와 마이크, 게임, Discord, 다른 프로그램 하나의 음량을 고른 장치에서 따로 조절할 수 있습니다.",
 });

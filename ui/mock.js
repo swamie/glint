@@ -550,6 +550,21 @@ if (!window.__TAURI__) {
         if (/bad/.test(args[args.length - 1])) setTimeout(() => { Object.assign(procs[k], { running: false, error: "rtmp://live.twitch.tv/app/…: Input/output error" }); window.__mockEmit("plugin-proc", api.procStatus({ plugin, name })); }, 2000);
         return api.procStatus({ plugin, name });
       },
+      // A live stream (live.rs): a key with "bad" in it loses its connection, tries again, then gives up.
+      liveStart({ plugin, name, spec }) {
+        const k = `${plugin}/${name}`;
+        const p = (procs[k] = { running: true, pid: 4243, started: Date.now(), error: "", log: [], live: { state: "starting", note: "", restarts: 0, reconnects: 0, showing: spec.source.kind === "monitor" ? "monitor" : window.__mockNoGame ? "card" : "window" } });
+        window.__mockLiveSpec = spec;
+        const emit = () => window.__mockEmit("plugin-proc", api.procStatus({ plugin, name }));
+        const tick = setInterval(() => { if (!p.running) return clearInterval(tick); const s = Math.round((Date.now() - p.started) / 1000); p.log.push(`frame=${s * 60} fps= 60 q=-1.0 size=${s * 750}KiB time=00:00:${String(s).padStart(2, "0")}.00 bitrate=5998.3kbits/s speed=1x`); p.log = p.log.slice(-40); }, 2000);
+        setTimeout(() => { if (p.running) { p.live.state = "live"; emit(); } }, 600);
+        if (/bad/.test(spec.send[spec.send.length - 1])) {
+          setTimeout(() => { if (p.running) { p.live.state = "reconnecting"; p.live.note = "rtmp://live.twitch.tv/…: Input/output error"; p.live.reconnects = 1; emit(); } }, 2000);
+          setTimeout(() => { if (p.running) { Object.assign(p, { running: false, error: "rtmp://live.twitch.tv/…: Input/output error" }); emit(); } }, 6000);
+        }
+        return api.procStatus({ plugin, name });
+      },
+      liveUpdate({ plugin, name, spec }) { (window.__mockLiveUpdates ||= []).push(spec); return api.procStatus({ plugin, name }); },
       procStop({ plugin, name }) { const p = procs[`${plugin}/${name}`]; if (p) p.running = false; window.__mockEmit("plugin-proc", api.procStatus({ plugin, name })); return api.procStatus({ plugin, name }); },
     };
     return api;
@@ -1103,6 +1118,7 @@ if (!window.__TAURI__) {
             if (kind !== "plugin") return null;
             const name = "live", saved = state.settings.plugins?.[plugin]?.procs?.[name];
             if (mockPlugins.procStatus({ plugin, name }).running) mockPlugins.procStop({ plugin, name });
+            else if (saved?.live) mockPlugins.liveStart({ plugin, name, spec: saved.live });
             else if (saved?.args?.length) mockPlugins.procStart({ plugin, name, args: saved.args });
             window.__mockEmit("plugin-action", { plugin, action });
             return null;
@@ -1120,15 +1136,30 @@ if (!window.__TAURI__) {
             const tw = (window.__mockTwitch ||= { polls: 0, key: "live_999_fromtwitch", refreshOk: true });
             if (u.endsWith("/oauth2/device")) { tw.polls = 0; return ok({ device_code: "dev123", user_code: "ABCD-EFGH", verification_uri: "https://www.twitch.tv/activate?device-code=ABCD-EFGH", expires_in: 1800, interval: 1 }); }
             if (u.endsWith("/oauth2/token")) {
-              if (body.get("grant_type") === "refresh_token") return tw.refreshOk ? ok({ access_token: "acc2", refresh_token: "ref2" }) : { status: 400, body: JSON.stringify({ status: 400, message: "Invalid refresh token" }) };
-              return ++tw.polls < 2 ? { status: 400, body: JSON.stringify({ status: 400, message: "authorization_pending" }) } : ok({ access_token: "acc1", refresh_token: "ref1" });
+              if (body.get("grant_type") === "refresh_token") return tw.refreshOk ? ok({ access_token: "acc2", refresh_token: "ref2", scope: tw.oldScope ? ["channel:read:stream_key"] : ["channel:read:stream_key", "channel:manage:broadcast"] }) : { status: 400, body: JSON.stringify({ status: 400, message: "Invalid refresh token" }) };
+              return ++tw.polls < 2 ? { status: 400, body: JSON.stringify({ status: 400, message: "authorization_pending" }) } : ok({ access_token: "acc1", refresh_token: "ref1", scope: ["channel:read:stream_key", "channel:manage:broadcast"] });
             }
+            if (u.includes("/helix/channels")) {
+              if (args.method === "PATCH") { tw.channel = { ...(tw.channel || {}), ...JSON.parse(args.body) }; (window.__mockTwitchPatches ||= []).push(JSON.parse(args.body)); return { status: 204, body: "" }; }
+              return ok({ data: [{ title: "Ranked grind, come say hi", game_name: "Overwatch 2", game_id: "515025", tags: ["English", "FPS"] }] });
+            }
+            if (u.includes("/helix/games")) { const n = new URL(u).searchParams.get("name"); return ok({ data: /overwatch 2|just chatting/i.test(n) ? [{ id: "515025", name: n }] : [] }); }
+            if (u.includes("/helix/search/categories")) { const q = new URL(u).searchParams.get("query"); return ok({ data: /zzz/.test(q) ? [] : [{ id: "33214", name: q.replace(/^./, (x) => x.toUpperCase()) }] }); }
+            if (u.includes("/helix/videos")) return ok({ data: [{ url: "https://www.twitch.tv/videos/2299887766", created_at: new Date().toISOString() }] });
             if (u.includes("/helix/users")) return ok({ data: [{ id: "999", login: "voidkay", display_name: "VoidKay" }] });
             if (u.includes("/helix/streams/key")) return ok({ data: [{ stream_key: tw.key }] });
             return { status: 404, body: "" };
           }
           case "plugin_file_keep": if (!/\.(png|jpe?g|gif|webp|bmp)$/i.test(args.path)) throw "Only pictures can be added: PNG, JPEG, GIF, WebP or BMP"; return { path: args.path, name: args.path.split(/[\\/]/).pop(), size: 1234 };
           case "plugin_file_drop": return true;
+          case "plugin_live_start": return mockPlugins.liveStart(args);
+          case "plugin_live_update": return mockPlugins.liveUpdate(args);
+          case "plugin_windows": return [
+            { hwnd: 197342, title: "Overwatch", exe: "Overwatch.exe", minimized: false, excluded: false },
+            { hwnd: 263010, title: "#general | Glint - Discord", exe: "Discord.exe", minimized: false, excluded: false },
+            { hwnd: 329558, title: "lofi beats - YouTube - Google Chrome", exe: "chrome.exe", minimized: false, excluded: false },
+            { hwnd: 461120, title: "Spotify Premium", exe: "Spotify.exe", minimized: true, excluded: false },
+          ];
           case "plugin_proc_start": return mockPlugins.procStart(args);
           case "plugin_proc_stop": return mockPlugins.procStop(args);
           case "plugin_proc_status": return mockPlugins.procStatus(args);

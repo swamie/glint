@@ -424,6 +424,17 @@ pub fn levels() -> Levels {
 }
 
 fn build_stream(device: &cpal::Device, loopback: bool, ring: Arc<Mutex<AudioRing>>, max_secs: f64, failed: Arc<AtomicBool>) -> Option<Stream> {
+    build_stream_as(device, loopback, ring, max_secs, failed, true)
+}
+
+/// A capture of `device` into `ring` for something other than clips (a live stream's own mixer,
+/// live.rs): the sound as it is, without the clip mixer's fader and without moving its meters.
+pub fn build_tap(device: &cpal::Device, loopback: bool, ring: Arc<Mutex<AudioRing>>, max_secs: f64, failed: Arc<AtomicBool>) -> Option<Stream> {
+    build_stream_as(device, loopback, ring, max_secs, failed, false)
+}
+
+/// `clip`: this is the capture clips are cut from (the mixer's fader and meter apply).
+fn build_stream_as(device: &cpal::Device, loopback: bool, ring: Arc<Mutex<AudioRing>>, max_secs: f64, failed: Arc<AtomicBool>, clip: bool) -> Option<Stream> {
     let source = if loopback { Source::Desktop } else { Source::Mic };
     let cfg = if loopback { device.default_output_config().ok()? } else { device.default_input_config().ok()? };
     let rate = cfg.sample_rate().0;
@@ -444,7 +455,7 @@ fn build_stream(device: &cpal::Device, loopback: bool, ring: Arc<Mutex<AudioRing
                     let now = now_secs();
                     scratch.clear();
                     // The mixer's fader for this source, and the loudest sample of the packet for its meter.
-                    let g = gain(source);
+                    let g = if clip { gain(source) } else { 1.0 };
                     let (mut pl, mut pr) = (0f32, 0f32);
                     for f in data.chunks_exact(ch.max(1)) {
                         for (dst, s) in frame.iter_mut().zip(f.iter()) {
@@ -457,7 +468,9 @@ fn build_stream(device: &cpal::Device, loopback: bool, ring: Arc<Mutex<AudioRing
                         scratch.push(to_i16(l));
                         scratch.push(to_i16(r));
                     }
-                    note_peak(source, pl, pr);
+                    if clip {
+                        note_peak(source, pl, pr);
+                    }
                     if let Ok(mut ring) = ring.lock() {
                         ring.push(&scratch, now);
                     }
@@ -479,7 +492,7 @@ fn build_stream(device: &cpal::Device, loopback: bool, ring: Arc<Mutex<AudioRing
     Some(stream)
 }
 
-fn device_name(d: &Option<cpal::Device>) -> String {
+pub fn device_name(d: &Option<cpal::Device>) -> String {
     d.as_ref().and_then(|d| d.name().ok()).unwrap_or_default()
 }
 
@@ -514,7 +527,7 @@ pub fn pick(names: &[String], want: &str) -> Option<usize> {
 }
 
 /// The device to capture: the chosen one when it is there, else the Windows default.
-fn open_device(host: &cpal::Host, output: bool, want: &str) -> Option<cpal::Device> {
+pub fn open_device(host: &cpal::Host, output: bool, want: &str) -> Option<cpal::Device> {
     if !want.trim().is_empty() {
         let devs: Vec<cpal::Device> = match if output { host.output_devices() } else { host.input_devices() } {
             Ok(d) => d.collect(),

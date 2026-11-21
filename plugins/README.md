@@ -74,6 +74,7 @@ Glint.register({
 | `c.proc.start(name, args, { audio, quiet })`, `c.proc.stop(name)`, `c.proc.status(name)` | a process of the plugin: Glint's ffmpeg with the plugin's arguments |
 | `c.saveNow()`, `c.confirm({ title, text, ok, cancel })` | save and wait until the backend has the settings; Glint's own question: `"yes"`, `"no"`, or `null` when closed unanswered |
 | `c.invoke(command, args)` | any of Glint's backend commands |
+| `c.windows()`, `c.copy(text)` | the open windows, `[{ hwnd, title, exe, minimized }]`; put text on the clipboard |
 | `c.files.keep(path)`, `c.files.drop(path)`, `c.fileSrc(path)` | keep Glint's own copy of a picture the user gave the plugin (PNG, JPEG, GIF, WebP or BMP, up to 64 MB): `{ path, name, size }`; delete that copy; the address to show a local file from |
 
 Use Glint's own markup (`page-head`, `section`, `row`, `btn`, `note`, `field`) and its CSS variables so a plugin's page looks like the rest of the program and follows the user's theme.
@@ -91,6 +92,19 @@ For a keybind to start a process while the window is closed, save the arguments 
 ```js
 onSave: (c) => { c.s.procs = { live: { args: buildArgs(c), audio: true } }; }
 ```
+
+### Live streams
+
+A stream made of one ffmpeg ends whenever its capture does, and a screen capture ends every time a game enters or leaves exclusive fullscreen. `c.proc.live("live", spec)` (Glint 0.1.55, `src-tauri/src/live.rs`) runs a stream as two kinds of ffmpeg with Glint between them:
+
+- `spec.send`: the sender, which holds the connection. `{video}` is where it reads the finished video from (MPEG-TS, to be copied, with `-copyts`); the sound is 16-bit stereo at `{audio_rate}` on its stdin.
+- `spec.feed`: the feeder, which captures and encodes the picture and writes MPEG-TS to `pipe:1`. Glint starts a new one whenever it ends, and the sender never notices. `{source}` in its filter graph is the capture, as frames the encoder takes; `{t0}` is the stream's start in microseconds, for `setpts=(RTCTIME-{t0})/(TB*1000000)`, which keeps picture and sound in step over any number of feeders.
+- `spec.source`: `{ kind: "monitor" | "game" | "window", monitor, hwnd, exe, title, fps, cursor, width, height, encoder, raw }`. `game` is the game Glint sees: its window, its screen while it is in exclusive fullscreen, a black picture while it is minimized or gone. `raw: true` asks for plain BGRA frames, for a filter graph of the plugin's own.
+- `spec.audio`: `{ desktop: { on, gain, device }, mic: { on, gain, device }, game: { on, gain }, apps: [{ exe, on, gain }] }`. Glint mixes these from captures of its own. `game` and `apps` are single programs' sound; `desktop` is everything a device plays, which includes them.
+
+`c.proc.update("live", { audio })` changes the sound at once while live; `{ source }` or `{ feed }` take effect with a new feeder. `c.proc.status` and `onProc` carry `live: { state: "starting" | "live" | "recovering" | "reconnecting", note, restarts, reconnects, showing }`. When the sender ends, Glint connects again a few times, waiting longer each time, before the stream ends with the reason. `c.windows()` lists the open windows for a picker.
+
+For the keybind, save the stream as `c.s.procs = { live: { live: spec } }`.
 
 ## Trying a plugin without publishing it
 
