@@ -14,9 +14,6 @@ const ED_SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
 const ED_SEEK_STEPS = [1, 2, 3, 5, 10, 15, 30];
 const edSeekStep = () => { try { const n = +localStorage.getItem("glint.seekStep"); return ED_SEEK_STEPS.includes(n) ? n : 5; } catch { return 5; } };
 const edSetSeekStep = (n) => { try { localStorage.setItem("glint.seekStep", String(n)); } catch {} };
-// The back / forward buttons read "− 5" and "+ 5": a sign, then the step's seconds (.p-step, filled in
-// by paintStep so it always is the real step).
-const edStepIcon = (fwd) => `<span class="p-sign">${fwd ? "+" : "\u2212"}</span><span class="p-step">${edSeekStep()}</span>`;
 // 0.1.41 (P): Sharpness, 0..1 (0 = off). A color or preset without it reads as 0 (edCol).
 // 0.1.45: Temperature -1 (cool) .. +1 (warm) and Glow 0..1, the same way (0 = off, absent reads as 0).
 const ED_COLOR_KEYS = ["brightness", "contrast", "saturation", "gamma", "sharpness", "temperature", "glow"];
@@ -910,8 +907,8 @@ function openClip(id) {
             </div>
             <div class="p-row">
               <button data-p="play" tabindex="-1" aria-label="${L("Play or pause")}">${PICON.pause}</button>
-              <button data-p="back" class="p-text p-skip" tabindex="-1" aria-label="${L("Back 5 seconds")}">${edStepIcon(false)}</button>
-              <button data-p="fwd" class="p-text p-skip" tabindex="-1" aria-label="${L("Forward 5 seconds")}">${edStepIcon(true)}</button>
+              <button data-p="back" tabindex="-1" aria-label="${L("Back 5 seconds")}">${PICON.back}</button>
+              <button data-p="fwd" tabindex="-1" aria-label="${L("Forward 5 seconds")}">${PICON.fwd}</button>
               <button data-p="mute" tabindex="-1" aria-label="${L("Mute")}">${PICON.vol}</button>
               <input class="p-vol" type="range" min="0" max="1" step="0.02" aria-label="${L("Volume")}">
               <span class="p-clock">0:00 / ${fmtClock(c.duration)}</span>
@@ -2880,7 +2877,6 @@ function mountPlayer(root, c) {
       const b = el(`[data-p="${p}"]`);
       b.setAttribute("aria-label", text);
       b.title = `${text}\n${hint}`;
-      b.querySelector(".p-step").textContent = n;
     }
   };
   paintStep();

@@ -41,11 +41,6 @@
 .p-knob { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
 .e-defs, .p-audio { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: hidden; pointer-events: none; }
 .p-row button.p-text.open { background: rgba(255, 255, 255, .12); }
-/* Back / forward: "− 5" and "+ 5", a sign and the step's seconds, in the speed button's type. */
-.p-row button.p-skip { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 40px; padding: 0 7px; font-size: 13.5px; font-variant-numeric: tabular-nums; }
-.p-row button.p-skip .p-sign { font-size: 15px; line-height: 1; transform: translateY(-.5px); }
-.p-row button.p-skip.open { background: rgba(255, 255, 255, .12); }
-.p-row button.p-skip:active { background: rgba(255, 255, 255, .2); }
 
 /* A segment whose picture is hidden: black (the player is black behind the video), the audio plays on.
    Opacity, not visibility, so the video still takes clicks (play / pause). */
