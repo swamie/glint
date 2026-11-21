@@ -386,7 +386,7 @@ function renderChrome() {
   // The clip button: the keys of the clip keybind it stands for as keycaps, then "Clip 30s".
   // Its tooltip keeps the full sentence: "F8 to clip the last 30s". In narrow windows the keycaps go (style.css).
   const clipKb = quickBind();
-  chromeHtml($("#btn-clip .clip-keys"), clipKb ? comboParts(clipKb).map((p) => `<kbd class="kc">${esc(p)}</kbd>`).join("") : "");
+  chromeHtml($("#btn-clip .clip-keys"), clipKb ? comboParts(clipKb).map((p) => `<kbd class="kc"><span>${esc(p)}</span></kbd>`).join("") : "");
   if ($("#btn-clip .clip-keys").hidden !== !clipKb) $("#btn-clip .clip-keys").hidden = !clipKb;
   chromeText($("#btn-clip .clip-label"), t("Clip {length}", { length: fmtLen(quickSecs()) }));
   chromeAttr($("#btn-clip"), "title", clipKb

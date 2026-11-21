@@ -105,14 +105,17 @@ kbd { font: 600 11px var(--sans); padding: 2px 6px; border-radius: 5px; backgrou
 #btn-clip:not(:disabled):active { background: var(--raised); transform: translateY(1px); }
 /* Paused: the button is plainly off, but its keycaps and words stay readable (no .btn:disabled fade). */
 #btn-clip:disabled { opacity: 1; color: var(--muted); background: var(--panel); border-color: var(--line-2); }
-/* A keycap: its own border, a face a little lighter than the button, a thicker bottom edge. */
+/* A keycap: a face a little lighter than the button and one even edge all round. The bottom edge used
+   to be thicker, and in that light edge color it read as the key turning white at the bottom. */
 #btn-clip .kc { display: inline-grid; place-items: center; flex: none; min-width: 20px; height: 20px; padding: 0 5px; box-sizing: border-box;
   font: 700 10.5px/1 var(--sans); color: var(--text); border-radius: 5px;
   background: color-mix(in srgb, var(--raised-2) 86%, #fff);
-  /* One edge color all round, the bottom edge thicker: it used to be darker than the button under it,
-     so the keycap seemed to lose its color at the bottom (the owner's report, 0.1.24). */
-  border: 1px solid color-mix(in srgb, var(--line-2) 55%, var(--text)); border-bottom-width: 2px; }
-#btn-clip:not(:disabled):active .kc { border-bottom-width: 1px; margin-top: 1px; }
+  border: 1px solid color-mix(in srgb, var(--line-2) 55%, var(--text)); }
+/* The key's name sits in the exact middle: its box is trimmed to the capitals (cap height to baseline),
+   so the keycap centers the letters themselves, not the font's taller line box, which sat them high. */
+#btn-clip .kc > span { display: block; text-box: trim-both cap alphabetic; }
+/* The words get the same trim, so their capitals sit on the same line as the key's name. */
+#btn-clip .clip-label { text-box: trim-both cap alphabetic; }
 #btn-clip:disabled .kc { color: var(--muted); }
 @media (max-width: 920px) {
   #btn-clip .clip-keys { display: none; }
