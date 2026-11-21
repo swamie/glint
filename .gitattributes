@@ -1,0 +1,2 @@
+plugins/official/** text eol=lf
+plugins/index.json text eol=lf

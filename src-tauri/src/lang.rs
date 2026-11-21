@@ -16,6 +16,9 @@ const KO: &[(&str, &str)] = &[
     ("Resume clipping to save clips", "클립을 저장하려면 클리핑을 재개해 주세요"),
     ("Clipping resumed", "클리핑 재개됨"),
     ("Clipping paused", "클리핑 일시 정지됨"),
+    // plugins.rs: a plugin's process ended by itself; a keybind for a process that was never set up
+    ("Stopped", "중지됨"),
+    ("Open Glint and set it up first", "Glint를 열어 먼저 설정해 주세요"),
     ("Replay buffer is filling", "리플레이 버퍼 채우는 중"),
     ("Replay buffer cleared", "리플레이 버퍼 비움"),
     ("Captured last {len} of {game}", "{game} · 최근 {len}"),
@@ -45,6 +48,8 @@ const EL: &[(&str, &str)] = &[
     ("Resume clipping to save clips", "Συνεχίστε την καταγραφή για να αποθηκεύσετε κλιπ"),
     ("Clipping resumed", "Η καταγραφή κλιπ συνεχίζεται"),
     ("Clipping paused", "Η καταγραφή κλιπ σε παύση"),
+    ("Stopped", "Διακόπηκε"),
+    ("Open Glint and set it up first", "Άνοιξε το Glint και ρύθμισέ το πρώτα"),
     ("Replay buffer is filling", "Το buffer γεμίζει"),
     ("Replay buffer cleared", "Το buffer άδειασε"),
     ("Captured last {len} of {game}", "{game} · Τελευταία {len}"),

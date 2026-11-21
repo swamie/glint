@@ -716,6 +716,9 @@ impl Core {
                 self.toast(if on { "Clipping resumed" } else { "Clipping paused" }, if on { "Replay buffer is filling" } else { "Replay buffer cleared" });
                 self.emit("status-changed", ());
             }
+            // A plugin's own action ("plugin:<id>:<action>", plugins.rs): nothing happens when its
+            // plugin is not installed or is switched off.
+            a if a.starts_with("plugin:") => crate::plugins::fire(self, a),
             "show" => {
                 if let Some(app) = self.app.get() {
                     crate::app::show_main(app);

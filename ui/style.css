@@ -109,10 +109,11 @@ kbd { font: 600 11px var(--sans); padding: 2px 6px; border-radius: 5px; backgrou
 #btn-clip .kc { display: inline-grid; place-items: center; flex: none; min-width: 20px; height: 20px; padding: 0 5px; box-sizing: border-box;
   font: 700 10.5px/1 var(--sans); color: var(--text); border-radius: 5px;
   background: color-mix(in srgb, var(--raised-2) 86%, #fff);
-  /* One edge color all round, the bottom edge thicker: it used to be darker than the button under it,
-     so the keycap seemed to lose its color at the bottom (the owner's report, 0.1.24). */
-  border: 1px solid color-mix(in srgb, var(--line-2) 55%, var(--text)); border-bottom-width: 2px; }
-#btn-clip:not(:disabled):active .kc { border-bottom-width: 1px; margin-top: 1px; }
+  /* One thin edge of one color all round. The bottom edge used to be twice as thick: with this light edge
+     color the keycap looked as if it turned white at the bottom (the owner's report, 0.1.53). Its depth now
+     comes from a soft shadow under it, which is darker than the button, not lighter. */
+  border: 1px solid color-mix(in srgb, var(--line-2) 55%, var(--text)); box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+#btn-clip:not(:disabled):active .kc { box-shadow: none; }
 #btn-clip:disabled .kc { color: var(--muted); }
 @media (max-width: 920px) {
   #btn-clip .clip-keys { display: none; }

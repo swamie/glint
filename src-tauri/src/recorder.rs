@@ -1186,6 +1186,27 @@ impl Recorder {
         Ok((snap, desk.map(Plan::read), mic.map(Plan::read), pipe.cfg_now()))
     }
 
+    /// The desktop and microphone audio of the wall-clock range `a..b` (`util::now_secs` times),
+    /// mixed to one stereo track, for a plugin's process that takes Glint's live audio (plugins.rs).
+    /// None while neither is being captured. The microphone is left out when its sample rate
+    /// differs from the desktop's.
+    pub fn live_audio(&self, a: f64, b: f64) -> Option<Pcm> {
+        let desk = self.inner.desk.lock().unwrap().plan(&[(a, b)]);
+        let mic = self.inner.mic.lock().unwrap().plan(&[(a, b)]);
+        match (desk.map(Plan::read), mic.map(Plan::read)) {
+            (Some(mut d), Some(m)) => {
+                if d.rate == m.rate {
+                    for (x, y) in d.data.iter_mut().zip(m.data.iter()) {
+                        *x = x.saturating_add(*y);
+                    }
+                }
+                Some(d)
+            }
+            (Some(one), None) | (None, Some(one)) => Some(one),
+            (None, None) => None,
+        }
+    }
+
     /// GAME mode's clip of the game (0.1.46): the game's capture only, parked or not; never another
     /// monitor's. An error when there is none (no game was recorded since GAME was switched on).
     pub fn snapshot_game(&self, secs: f64) -> Result<(Snapshot, Option<Pcm>, Option<Pcm>, CaptureCfg), String> {
