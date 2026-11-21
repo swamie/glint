@@ -15,7 +15,7 @@ const SERVICES = {
 let status = { running: false, started: 0, error: "", log: [] };
 let showKey = false;
 let poll = 0;
-let live = null; // what the running stream sends ("1080p @ 60"), for the top bar
+let live = null; // what the running stream sends ("1080p @ 60fps"), for the top bar
 
 const even = (v) => Math.max(2, Math.floor(v / 2) * 2);
 const serviceOf = (s) => (SERVICES[s.service] ? s.service : "twitch");
@@ -107,15 +107,15 @@ function watch(c) {
   clearInterval(poll);
   poll = setInterval(() => { if (!status.running) return clearInterval(poll); refresh(c); }, 2000);
 }
-/** What is being sent, as the top bar says it: "1080p @ 60". Taken when the stream starts. */
-const shape = (c) => `${sizeOf(c).h}p @ ${[30, 60].includes(+c.s.fps) ? +c.s.fps : 60}`;
+/** What is being sent, as the top bar says it: "1080p @ 60fps". Taken when the stream starts. */
+const shape = (c) => `${sizeOf(c).h}p @ ${[30, 60].includes(+c.s.fps) ? +c.s.fps : 60}fps`;
 
-/** The top bar while live: an ordinary top bar button, "Streaming 1080p @ 60" (it opens the Stream page), joined to a stop button. */
+/** The top bar while live: an ordinary top bar button, "Streaming 1080p @ 60fps" (it opens the Stream page), joined to a stop button. */
 function topbar(c) {
   if (!status.running) return "";
   const sending = !!stats();
   const tip = sending ? `${t("Streaming for {time}", { time: uptime() })} · ${stats()}` : t("Connecting to the server…");
-  return `<span class="top-group"><button class="btn" data-pact="open" title="${esc(tip)}"><i class="top-dot${sending ? "" : " idle"}"></i><span>${sending ? t("Streaming") : t("Connecting…")}</span><span class="top-muted top-detail">${esc(live || shape(c))}</span></button><button class="btn top-icon" data-pact="stop" title="${esc(t("Stop streaming"))}" aria-label="${esc(t("Stop streaming"))}"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.500"/></svg></button></span>`;
+  return `<span class="top-group${sending ? " live" : ""}"><button class="btn" data-pact="open" title="${esc(tip)}"><i class="top-dot${sending ? "" : " idle"}"></i><span class="top-label">${sending ? t("Streaming") : t("Connecting…")}</span><span class="top-muted top-detail top-label">${esc(live || shape(c))}</span></button><button class="btn top-icon" data-pact="stop" title="${esc(t("Stop streaming"))}" aria-label="${esc(t("Stop streaming"))}"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.500"/></svg></button></span>`;
 }
 
 /** The page's one button: Go live, or Stop streaming. What is live shows in the top bar. */

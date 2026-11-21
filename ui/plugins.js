@@ -123,12 +123,18 @@ function plugNavHtml(navItem) {
 function plugTopbarRender() {
   const el = $("#plugin-slot");
   if (!el) return;
-  let html = "";
+  // Each plugin's wrapper stays in place and only its inside is redrawn, so an animation on the wrapper
+  // (its fade-in, a pulsing outline) is not restarted every time the plugin's text changes.
+  const seen = new Set();
   for (const [id, p] of PLUG.defs) {
     const part = p.def.topbar ? plugSafe(id, "topbar", () => p.def.topbar(p.ctx) || "") : "";
-    if (part) html += `<span class="plug-top" data-plugin="${esc(id)}">${part}</span>`;
+    if (!part) continue;
+    seen.add(id);
+    let w = [...el.children].find((x) => x.dataset.plugin === id);
+    if (!w) { w = document.createElement("span"); w.className = "plug-top"; w.dataset.plugin = id; el.appendChild(w); }
+    if (w._html !== part) { w._html = part; w.innerHTML = part; }
   }
-  chromeHtml(el, html);
+  for (const w of [...el.children]) if (!seen.has(w.dataset.plugin)) w.remove();
 }
 
 /** Draw a page of the sidebar that is not one of Glint's own. False when it is not ours either. */
