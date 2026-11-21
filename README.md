@@ -286,6 +286,13 @@ For builders: nothing about the destination is in the program. Glint posts the r
 
 **Feedback.** The heart button beside it asks "How do you like Glint?": one to five stars, a text and, if you want, how to reach you. Like a bug report it shows exactly what will be sent, nothing leaves the PC until you press Send, and it goes to the same place as the bug reports (no log file, only the Glint version and the language).
 
+## Glint Doctor (optional support tool)
+
+For a problem a bug report does not explain, the developer can send a user Glint Doctor: a separate program, run once, that collects Glint's log, settings and a few facts about the PC, takes personal data out, shows the user everything first and sends it with a one-time support code to a Cloudflare Worker the developer runs. There Claude reads it and writes a diagnosis with patch instructions for the developer. The API key stays on the Worker; the tool only holds the code, which works once. Glint itself does not change and does not need it.
+
+- The tool: `tools/glint-doctor` (its README says how to build it and what it reads and removes).
+- The Worker: `server/doctor` (its README says how to deploy it, set its secrets, mint a code, give it to a user and read the report).
+
 ## Recommended settings, interface size, language
 
 - Capture settings that suit this PC carry a blue outline and a "Recommended" tag; others offer "Use recommended". The graphics card is read from the registry. Choosing an encoder (or Blur GPU type) made for another brand of card, or the CPU encoder, asks for confirmation first.

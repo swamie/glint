@@ -1,0 +1,29 @@
+# Glint Doctor: a one-time support tool. A separate program, not part of the
+# Glint build: it has its own (empty) workspace so `cargo` in src-tauri never
+# sees it, and Glint itself is not changed by it. See README.md.
+[package]
+name = "glint-doctor"
+version = "0.1.0"
+edition = "2021"
+description = "One-time diagnostics for Glint, sent to the developer"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "glint-doctor"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
