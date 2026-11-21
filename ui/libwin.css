@@ -1,0 +1,20 @@
+/* The library in a window of its own (libwin.html, libwin.js). Colors and the card styles come from style.css. */
+#lw { display: grid; grid-template-rows: 46px 1fr auto; height: 100vh; border: 1px solid var(--line); }
+.lw-top { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 0 0 0 12px; border-bottom: 1px solid var(--line); }
+.lw-logo { width: 22px; height: 22px; pointer-events: none; }
+.lw-name { flex: none; font-weight: 600; }
+.lw-search { flex: 0 1 260px; min-width: 90px; width: auto; height: 30px; }
+.lw-game { flex: 0 1 170px; min-width: 80px; height: 30px; padding: 0 8px; background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--radius); color: var(--text); outline: 0; }
+.lw-game:focus-visible { border-color: var(--accent); }
+.lw-space { flex: 1; align-self: stretch; min-width: 12px; }
+.lw-top .winctl { margin-left: 0; }
+.lw-top .winctl button { width: 40px; }
+.lw-view { overflow-y: auto; padding: 16px 16px 20px; outline: 0; }
+.lw-view .grid { gap: 16px 14px; --card-w: 170px; }
+.lw-card { cursor: grab; }
+.lw-card .lw-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.lw-card h3 { font-size: 13px; margin-top: 8px; }
+.lw-foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--line); background: var(--panel); }
+body.lw-dragging .lw-card.sel { opacity: .55; }
+body.lw-dragging .card:hover .thumb { transform: none; }
+.lw-body .flash { bottom: 58px; }

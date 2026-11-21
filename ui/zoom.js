@@ -139,15 +139,23 @@ function zmMount(root, c, P) {
     if (st.dead) return;
     const mm = m();
     const title = `<div class="e-title">${esc(t("Zoom"))}</div>`;
-    if (!mm) { sec.innerHTML = `${title}<div class="small">${esc(t("Loading…"))}</div>`; return; }
+    if (!mm) { st.html = null; sec.innerHTML = `${title}<div class="small">${esc(t("Loading…"))}</div>`; return; }
     const p = piece(), now = tm(), keys = p?.keys || [], val = Math.round(pct() * 100);
     st.sig = keySig();
-    sec.innerHTML = `${title}
+    const html = `${title}
       <div class="e-line zm-line"><input type="range" class="zm-range" min="100" max="${ZM_MAX * 100}" step="5" value="${val}" aria-label="${esc(t("Zoom amount"))}">
         <input type="number" class="field zm-num" min="100" max="${ZM_MAX * 100}" step="10" value="${val}" aria-label="${esc(t("Zoom amount"))}"><span class="small">%</span></div>
       ${typeof kfControls === "function" ? kfControls(keys, now, !!p?.smooth) : ""}
       <div class="e-line"><button type="button" class="btn sm" data-zm="reset"${p && (keys.length || val !== 100) ? "" : " disabled"}>${esc(t("Reset zoom"))}</button>
         <span class="small zm-hint">${esc(val > 100 ? t("Drag on the picture to move the zoom.") : t("Right-click the picture to zoom in there."))}</span></div>`;
+    // Rebuilt only when it would read differently: this runs on every sync of the editor. When it
+    // is left alone, the two fields still take the value a rebuild would have given them.
+    if (html === st.html && sec.querySelector(".zm-range")) {
+      for (const f of sec.querySelectorAll(".zm-range, .zm-num")) if (f.value !== String(val)) f.value = String(val);
+      return;
+    }
+    st.html = html;
+    sec.innerHTML = html;
   }
   /** What the section shows: redrawn when it changes (the playhead passing a key, the zoom there). */
   const keySig = () => { const p = piece(), now = tm(); return `${Math.round(pct() * 100)}|${p ? (p.keys || []).map((k) => k.t).join(",") : ""}|${p?.smooth ? 1 : 0}|${p && p.keys ? kfIndexAt(p.keys, now) : -1}|${p && p.keys ? `${kfPrev(p.keys, now)}|${kfNext(p.keys, now)}` : ""}`; };

@@ -20,11 +20,16 @@
 //   onAct(name, el, ctx)   a click on an element with data-pact="name" inside its page or sections.
 //   onSave(ctx)            just before the settings are saved: the place to work out derived values.
 //   onProc(status, ctx)    one of its processes started or ended.
+//   onDownload(p, ctx)     one of its downloads moved on: { id, phase, done, total, error }.
+//   editor     { title, tab, render(ed, ctx), onOpen(ed, ctx), onSync(ed, what, ctx), onClose(ed, ctx) }: a section in the
+//              editor's side pane (tab: "clip", "color" or "overlays"). `ed` is the open editor: see plugEditorHandle below.
 //
 // `ctx` (also `Glint.ctx`): { id, s (its settings), key(name) (the data-set path of one), save(rerender),
-// row, toggle, select, number, text, t, esc, invoke, flash, fail, render, chrome (redraw the top bar and sidebar only),
+// row, toggle, select, number, text, t, esc, invoke, flash, fail, saveNow, confirm({ title, text, ok, cancel }), render, chrome (redraw the top bar and sidebar only),
 // go(page), glint (Glint's own state),
-// proc: { start(name, args, { audio, quiet }), stop(name), status(name) } }.
+// proc: { start(name, args, { audio, quiet, tool }), stop(name), status(name), run(name, args, opts), live(name, spec), update(name, spec) },
+// dl: { state(), get(id), cancel(id), remove(id) }, work: { read(name), clear() }, saveText(name, text),
+// editor() (the open editor's handle, or null), windows(), copy(text) }.
 
 const PLUG = {
   defs: new Map(),   // plugin id -> { info (from plugins_boot), def (what it registered), ctx }
@@ -33,6 +38,7 @@ const PLUG = {
   market: null,      // plugins_market: { plugins: [...], error, cached }
   marketBusy: false,
   busy: {},          // plugin id -> percent of a running install
+  ed: null,          // the open editor's plugin sections (plugEditorMount)
   ready: false,
 };
 ICON.plug = '<svg viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6.500 8h11v4.500a5.500 5.500 0 0 1-11 0zM12 18v3"/></svg>';
@@ -50,6 +56,10 @@ function plugCtx(info) {
     get s() { return plugSettingsOf(id); },
     key,
     save: (rerender = false) => saveSettings(rerender),
+    /** Save the settings and wait until Glint's backend has them (save() alone sends them a moment later). */
+    saveNow: async () => { plugBeforeSave(); clearTimeout(saveTimer); S.status = await invoke("save_settings", { settings: S.settings }); renderChrome(); },
+    /** Glint's own question, with a title: "yes", "no" (the other button), or null when it was closed without an answer. */
+    confirm: (q) => plugConfirm(q),
     row,
     toggle: (name) => toggle(key(name)),
     select: (name, opts, num = false) => select(key(name), opts, num),
@@ -61,6 +71,10 @@ function plugCtx(info) {
     chrome: () => renderChrome(),
     go: (page) => goPage(page),
     get glint() { return { settings: S.settings, status: S.status, monitors: S.monitors, hardware: S.hardware, version: S.version }; },
+    /** A web request to one of the hosts the plugin's plugin.json names ("hosts"): { method, url, headers: ["Name: value"], body } -> { status, body }. */
+    http: (req) => invoke("plugin_http", { plugin: id, method: req.method || "GET", url: req.url, headers: req.headers || [], body: req.body ?? null }),
+    /** Open a page on one of those hosts in the user's browser. */
+    open: (url) => invoke("plugin_open", { plugin: id, url }),
     /** The address a local file is shown from (an <img>'s src). */
     fileSrc: (path) => T.core.convertFileSrc(path),
     /** The plugin's own copies of pictures the user gave it: keep(path) -> { path, name, size }, drop(path). */
@@ -69,10 +83,46 @@ function plugCtx(info) {
       drop: (path) => invoke("plugin_file_drop", { plugin: id, path }),
     },
     proc: {
-      start: (name, args, opts = {}) => invoke("plugin_proc_start", { plugin: id, name, args, audio: !!opts.audio, quiet: !!opts.quiet }),
+      /** opts.tool: one of the plugin's downloads with a program (plugin.json "downloads"): that runs instead of ffmpeg. */
+      start: (name, args, opts = {}) => invoke("plugin_proc_start", { plugin: id, name, args, audio: !!opts.audio, quiet: !!opts.quiet, tool: opts.tool || null }),
       stop: (name) => invoke("plugin_proc_stop", { plugin: id, name }),
       status: (name) => invoke("plugin_proc_status", { plugin: id, name }),
+      /** Start a process that does one job and wait for its end: its last status ({ code, error, log }).
+       *  opts.onTick(status) is called about twice a second while it runs (its last lines are in status.log). */
+      async run(name, args, opts = {}) {
+        await invoke("plugin_proc_start", { plugin: id, name, args, audio: false, quiet: true, tool: opts.tool || null });
+        for (;;) {
+          await new Promise((r) => setTimeout(r, 400));
+          const st = await invoke("plugin_proc_status", { plugin: id, name });
+          if (!st.running) return st;
+          if (opts.onTick) plugSafe(id, "onTick", () => opts.onTick(st));
+        }
+      },
+      /** A live stream (0.1.55): a sender that holds the connection and a feeder Glint restarts when its capture ends. spec: { send, feed, source, audio }. */
+      live: (name, spec, opts = {}) => invoke("plugin_live_start", { plugin: id, name, spec, quiet: !!opts.quiet }),
+      /** Change a running live stream: { audio } at once, { source } or { feed } with a new feeder. */
+      update: (name, spec) => invoke("plugin_live_update", { plugin: id, name, spec }),
     },
+    /** The plugin's downloads (plugin.json "downloads"): files it needs but does not carry, checked when they arrive. */
+    dl: {
+      state: () => invoke("plugin_dl_state", { plugin: id }),
+      get: (dl) => invoke("plugin_dl_get", { plugin: id, id: dl }),
+      cancel: (dl) => invoke("plugin_dl_cancel", { plugin: id, id: dl }),
+      remove: (dl) => invoke("plugin_dl_remove", { plugin: id, id: dl }),
+    },
+    /** The scratch folder its processes write to ("{work}" in their arguments). */
+    work: {
+      read: (name) => invoke("plugin_work_read", { plugin: id, name }),
+      clear: () => invoke("plugin_work_clear", { plugin: id }),
+    },
+    /** A save dialog for a text the plugin made (.srt, .vtt, .txt, .csv, .json): the path, or null when cancelled. */
+    saveText: (name, text) => invoke("plugin_save_text", { plugin: id, name, text }),
+    /** The open editor (plugEditorHandle), or null. */
+    editor: () => PLUG.ed?.byId?.[id] || null,
+    /** The windows a live stream can show: [{ hwnd, title, exe, minimized }]. */
+    windows: () => invoke("plugin_windows"),
+    /** Put text on the clipboard. */
+    copy: (text) => copyText(text),
   };
 }
 
@@ -146,6 +196,18 @@ function plugTopbarRender() {
   for (const w of [...el.children]) if (!seen.has(w.dataset.plugin)) w.remove();
 }
 
+/** A plugin's question in Glint's own prompt (the one ask() in app.js uses). Enter is yes; Escape or a click outside closes it unanswered. */
+function plugConfirm({ title = "", text = "", ok, cancel } = {}) {
+  return new Promise((resolve) => {
+    const el = $("#confirm");
+    el.innerHTML = `<div class="confirm-box plug-confirm">${title ? `<h3>${esc(title)}</h3>` : ""}<p>${esc(text)}</p><div class="confirm-row"><button class="btn" data-c="no">${esc(cancel || t("Cancel"))}</button><button class="btn primary" data-c="yes">${esc(ok || t("OK"))}</button></div></div>`;
+    el.hidden = false;
+    const done = (answer) => { el.hidden = true; el.innerHTML = ""; el.onclick = null; askKey = null; resolve(answer); };
+    askKey = (e) => { if (e.code === "Enter" || e.code === "NumpadEnter") done("yes"); else if (e.code === "Escape") done(null); };
+    el.onclick = (e) => { const b = e.target.closest("[data-c]"); if (b) done(b.dataset.c); else if (e.target === el) done(null); };
+  });
+}
+
 /** Files are over the window, left it, or were dropped: the open page's plugin gets them, with where (in the page's own pixels). */
 function plugDrop(ev, payload) {
   const host = $("#view .plug-page");
@@ -193,6 +255,104 @@ function plugKbMissing(action) {
 
 function plugBeforeSave() {
   for (const [id, p] of PLUG.defs) if (p.def.onSave) plugSafe(id, "onSave", () => p.def.onSave(p.ctx));
+}
+
+/* ---------- the editor ---------- */
+
+/**
+ * What a plugin's `editor` works with: the editor that is open on clip `c` (player `P`, ui/editor.js).
+ *   clip                    { id, title, path, width, height, duration, virtual }
+ *   model                   the edit model (ui/editmodel.js), to read. Change it only inside change().
+ *   editing                 the editor's tools are showing
+ *   time(), seek(sec)       the playhead, in timeline seconds
+ *   change(fn)              one undo step: fn(model) changes the model; the timeline and the picture follow. False if nothing changed.
+ *   redraw()                draw the plugin's section again
+ *   footage()               what the main row shows, in timeline order: [{ at, len, speed, path, from, tracks, missing }]:
+ *                           `len` timeline seconds from `at` show the file `path` from its second `from`, at `speed`;
+ *                           tracks: that file's audio streams [{ index, title }]. Gaps are left out.
+ *   removedAt(sec)          true when timeline second `sec` is cut out of the result
+ *   outRange(from, to)      a timeline range in seconds of the finished clip ({ from, to }), or null when none of it is kept
+ *   picture()               { width, height } of the result's picture
+ *   textWidth(text, size)   a line's width as a fraction of the picture's width (`size`: its height as a fraction of the picture's)
+ *   texts(tag)              the text items on the picture that carry `tag`, in time order
+ *   select(id)              select an item on the picture (null: none)
+ * A text item: { id, kind: "text", from, to, x, y, text, color, size, outline, align: "center" (x is its middle), tag }.
+ */
+function plugEditorHandle(root, c, P, redraw) {
+  const pic = () => {
+    const cs = P.cv?.size?.(), v = root.querySelector(".player video");
+    return cs ? { width: cs.width, height: cs.height } : { width: (c.virtual ? c.width : v?.videoWidth) || c.width || 1920, height: (c.virtual ? c.height : v?.videoHeight) || c.height || 1080 };
+  };
+  return {
+    clip: { id: c.id, title: c.title, path: c.path || "", width: c.width, height: c.height, duration: c.duration, virtual: !!c.virtual },
+    get model() { return P.model; },
+    get editing() { return !!P.editing; },
+    time: () => P.time(),
+    seek: (sec) => P.seek(sec, false, true),
+    change: (fn) => P.edit("overlay", fn),
+    redraw,
+    footage() {
+      const m = P.model;
+      if (!m) return [];
+      const VS = P.sources?.();
+      const own = (m.tracksAll && m.tracksAll.length ? m.tracksAll : m.audio.filter((r) => r.kind === "track")).map((x) => ({ index: x.index, title: x.title || "" }));
+      return emSrcSpans(m, 0, m.duration).filter((sp) => !sp.gap).map((sp) => {
+        const speed = sp.speed || 1;
+        if (!VS) return { at: sp.tl, len: sp.len, speed, path: c.path || "", from: sp.src, tracks: own, missing: !c.path };
+        const k = emSourceAt(VS, sp.src + 1e-4), src = VS[k] || {};
+        return { at: sp.tl, len: sp.len, speed, path: src.path || "", from: Math.max(0, sp.src - (src.start || 0)), tracks: (src.tracksAll || src.tracks || []).map((x) => ({ index: x.index, title: x.title || "" })), missing: !!src.missing || !src.path };
+      });
+    },
+    removedAt(sec) { const m = P.model; return !!m && !!m.removed[emSegmentAt(m, sec)]; },
+    outRange(from, to) { const m = P.model; return m ? emOutRange(m, from, to) : null; },
+    picture: pic,
+    textWidth(text, size) { const { width, height } = pic(); return ovMeasure(String(text), size * height) / width; },
+    texts(tag) { return (P.model?.overlays || []).filter((o) => o.kind === "text" && o.tag === tag).sort((a, b) => a.from - b.from); },
+    select: (id) => P.ov?.select?.(id),
+  };
+}
+
+/** The editor opened (ui/editor.js, openClip): every plugin with an `editor` gets its section. Returns { sync(what), destroy() } or null. */
+function plugEditorMount(root, c, P) {
+  const pane = root.querySelector(".v-edit"), before = pane?.querySelector(".e-export");
+  const list = [...PLUG.defs].filter(([, p]) => p.def.editor);
+  if (!pane || !list.length) return null;
+  const mine = { handle: null, dead: false };
+  const parts = list.map(([id, p]) => {
+    const sec = document.createElement("section");
+    sec.className = "e-sec e-plug";
+    sec.dataset.plugin = id;
+    // Its tab of the inspector (workspace.js): "clip" (the default), "color" or "overlays", where it comes first.
+    const tab = ["color", "overlays"].includes(p.def.editor.tab) ? p.def.editor.tab : "clip";
+    sec.dataset.tab = tab;
+    pane.insertBefore(sec, (tab === "overlays" && pane.querySelector(":scope > .e-ov")) || before);
+    const draw = () => {
+      if (mine.dead) return;
+      // A text box being typed in keeps its place: the section is not redrawn under the caret.
+      if (sec.contains(document.activeElement) && document.activeElement.matches("input[type=text], textarea")) { sec._late = true; return; }
+      sec._late = false;
+      const top = sec.querySelector("[data-keep-scroll]")?.scrollTop || 0;
+      sec.innerHTML = `<div class="e-title">${esc(t(p.def.editor.title || p.info.name))}</div>` + plugSafe(id, "editor", () => p.def.editor.render(ed, p.ctx) || "", "");
+      const sc = sec.querySelector("[data-keep-scroll]");
+      if (sc) sc.scrollTop = top;
+    };
+    const ed = plugEditorHandle(root, c, P, draw);
+    sec.addEventListener("focusout", () => setTimeout(() => { if (sec._late) draw(); }, 0));
+    return { id, p, sec, ed, draw };
+  });
+  mine.handle = parts[0]?.ed || null;
+  mine.byId = Object.fromEntries(parts.map((x) => [x.id, x.ed]));
+  PLUG.ed = mine;
+  for (const x of parts) { x.draw(); if (x.p.def.editor.onOpen) plugSafe(x.id, "editor.onOpen", () => x.p.def.editor.onOpen(x.ed, x.p.ctx)); }
+  return {
+    /** After any change of the model (P.edSync), and when the editor's tools are shown or hidden ("edit"). */
+    sync(what) { for (const x of parts) { if (x.p.def.editor.onSync) plugSafe(x.id, "editor.onSync", () => x.p.def.editor.onSync(x.ed, what, x.p.ctx)); x.draw(); } },
+    destroy() {
+      for (const x of parts) { if (x.p.def.editor.onClose) plugSafe(x.id, "editor.onClose", () => x.p.def.editor.onClose(x.ed, x.p.ctx)); x.sec.remove(); }
+      mine.dead = true;
+      if (PLUG.ed === mine) PLUG.ed = null;
+    },
+  };
 }
 
 /* ---------- the marketplace page ---------- */
@@ -334,6 +494,10 @@ document.addEventListener("change", async (e) => {
   });
   // Files dragged from Explorer onto Glint's window go to the plugin whose page is open (its onDrop).
   for (const ev of ["tauri://drag-enter", "tauri://drag-leave", "tauri://drag-drop"]) T.event.listen(ev, ({ payload }) => plugDrop(ev, payload || {}));
+  T.event.listen("plugin-download", ({ payload: d }) => {
+    const p = d && PLUG.defs.get(d.plugin);
+    if (p?.def.onDownload) plugSafe(d.plugin, "onDownload", () => p.def.onDownload(d, p.ctx));
+  });
   T.event.listen("plugin-proc", ({ payload: st }) => {
     const p = st && PLUG.defs.get(st.plugin);
     if (p?.def.onProc) plugSafe(st.plugin, "onProc", () => p.def.onProc(st, p.ctx));

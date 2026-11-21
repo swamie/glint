@@ -184,6 +184,9 @@ fn load() -> Vec<Stored> {
     Vec::new()
 }
 
+/// When projects.json.bak was last refreshed in this run.
+static BAK: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
 fn save(list: &[Stored]) {
     if UNREADABLE.load(std::sync::atomic::Ordering::SeqCst) {
         util::log("projects: not saved (projects.json could not be read; it is kept as it was)");
@@ -191,8 +194,17 @@ fn save(list: &[Stored]) {
     }
     if let Ok(t) = serde_json::to_string(list) {
         let tmp = file().with_extension("json.tmp");
-        // The last good file stays as projects.json.bak.
-        if file().is_file() {
+        // The last good file stays as projects.json.bak: copied at the first save of a run and then at
+        // most once a minute (the editor saves every few seconds while it is used).
+        let due = {
+            let mut at = BAK.lock().unwrap_or_else(|e| e.into_inner());
+            let due = !at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(60));
+            if due {
+                *at = Some(std::time::Instant::now());
+            }
+            due
+        };
+        if due && file().is_file() {
             let _ = fs::copy(file(), file().with_extension("json.bak"));
         }
         if fs::write(&tmp, t).is_ok() && fs::rename(&tmp, file()).is_err() {
@@ -204,6 +216,7 @@ fn save(list: &[Stored]) {
 /// Tests: forget that projects.json was unreadable.
 pub fn test_reset_unreadable() {
     UNREADABLE.store(false, std::sync::atomic::Ordering::SeqCst);
+    *BAK.lock().unwrap_or_else(|e| e.into_inner()) = None; // the next save copies the .bak again
 }
 
 /// Change project `id` in the store. None when there is no such project.

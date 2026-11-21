@@ -4,27 +4,54 @@
     {
       "id": "stream",
       "name": "Stream",
-      "description": "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen and cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.",
+      "description": "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen, a game or a window and your cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.",
       "author": "Glint developers",
-      "version": "0.1.0",
-      "min_glint": "0.1.53",
+      "version": "0.2.0",
+      "min_glint": "0.1.55",
       "icon": "M12 9.8a2.2 2.2 0 1 0 0 4.4 2.2 2.2 0 0 0 0-4.4zM7.8 16.2a6 6 0 0 1 0-8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 19A10 10 0 0 1 5 5M19 5a10 10 0 0 1 0 14",
       "tag": "Preview",
       "files": [
         {
           "path": "plugin.json",
-          "sha256": "0a361160e071557eab96184ae85c21a0345e0872faf12b126b1f8a8a82c976a9",
-          "size": 526
+          "sha256": "1cc787af453537f9c173d36c874fd208cf1ff1fbba741fe0c6f3963bde480776",
+          "size": 614
         },
         {
           "path": "stream.css",
-          "sha256": "4fc07835da22f71e8b1378749322110e44b3eb880e501d955eda34f130347974",
-          "size": 4809
+          "sha256": "26bb1d8acd0056767149ff35682ba2f586cb3dd811cc3aca98a842d2dad6b815",
+          "size": 5787
         },
         {
           "path": "stream.js",
-          "sha256": "a1f7430a7035d8b981c944d32a662cc783817e222baccf172a87fc27c64379e3",
-          "size": 57558
+          "sha256": "3cecf53fe0c805de4b87ff8e86af5b7b657654255f3b727dcee1fbc089305dee",
+          "size": 102503
+        }
+      ]
+    },
+    {
+      "id": "subtitles",
+      "name": "Subtitles",
+      "description": "Turns what is said in a clip into subtitles, on this PC. Adds a Subtitles section to the editor: make them with one click, fix the words, style them, and they are part of the exported clip. Can also save an .srt file.",
+      "author": "Glint developers",
+      "version": "0.1.0",
+      "min_glint": "0.1.55",
+      "icon": "M3 6h18v12H3zM6.5 11H11M13.5 11h4M6.5 14.500h3M12 14.500h5.500",
+      "tag": "Preview",
+      "files": [
+        {
+          "path": "plugin.json",
+          "sha256": "32ae09cfa3395fe73948876dba7a426ed1027ac8fe37097202f5831222ffa997",
+          "size": 1560
+        },
+        {
+          "path": "subtitles.css",
+          "sha256": "0068b3160ab733cdcde28143d8f8644ff71171780b6c910c450f8566d34b40d9",
+          "size": 2861
+        },
+        {
+          "path": "subtitles.js",
+          "sha256": "d3ad461b489c05e7d33909b53a0d3e7463b93147f3b5b7d617cd5d84bf0b59f4",
+          "size": 32460
         }
       ]
     }

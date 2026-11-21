@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -25,8 +25,85 @@ struct Chunk {
     /// The file with the samples (s16le stereo). `None` = the piece was pure
     /// silence, which needs no file: loopback is silent most of the time.
     seg: Option<Arc<Seg>>,
+    /// A piece whose file is written by the writer thread (`Pending`); `seg` is None then.
+    pending: Option<Arc<Pending>>,
     first: u64,
     frames: usize,
+}
+
+impl Chunk {
+    /// Whether the piece has (or is getting) a file.
+    fn stored(&self) -> bool {
+        self.seg.is_some() || self.pending.is_some()
+    }
+}
+
+/// A piece on its way to a file. The capture thread only hands it over; the writer thread makes
+/// the file, so the sound card's callback never waits for the disk. Until the file is there (and
+/// for good when it cannot be written) the samples are read from `ram`.
+struct Pending {
+    ram: Mutex<Option<Vec<i16>>>,
+    seg: OnceLock<Arc<Seg>>,
+}
+
+struct SpillJob {
+    piece: Arc<Pending>,
+    dir: PathBuf,
+    tag: &'static str,
+    /// Set when the write fails: the ring then stops moving audio out of RAM.
+    broken: Arc<AtomicBool>,
+}
+
+/// The samples as the bytes of an s16le file.
+fn le_bytes(samples: &[i16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(samples.len() * 2);
+    for s in samples {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    out
+}
+
+/// Samples `s..e` of `buf`, copied a block at a time.
+fn copy_range(buf: &VecDeque<i16>, s: usize, e: usize) -> Vec<i16> {
+    let (a, b) = buf.as_slices();
+    let mut out = Vec::with_capacity(e.saturating_sub(s));
+    if s < a.len() {
+        out.extend_from_slice(&a[s..e.min(a.len())]);
+    }
+    if e > a.len() {
+        out.extend_from_slice(&b[s.saturating_sub(a.len())..e - a.len()]);
+    }
+    out
+}
+
+/// Hand a piece to the writer thread (started on first use).
+fn spill_later(job: SpillJob) {
+    static TX: OnceLock<Mutex<std::sync::mpsc::Sender<SpillJob>>> = OnceLock::new();
+    let tx = TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<SpillJob>();
+        std::thread::spawn(move || {
+            for job in rx {
+                let bytes = match job.piece.ram.lock().unwrap_or_else(|e| e.into_inner()).as_deref() {
+                    Some(samples) => le_bytes(samples),
+                    None => continue,
+                };
+                match Seg::create(&job.dir, job.tag).and_then(|seg| seg.write_at(&bytes, 0).map(|_| seg)) {
+                    Ok(seg) => {
+                        // The file first, then the RAM copy goes: a reader always finds one of them.
+                        let _ = job.piece.seg.set(Arc::new(seg));
+                        *job.piece.ram.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                    }
+                    Err(e) => {
+                        if !job.broken.swap(true, Ordering::SeqCst) {
+                            crate::util::log(&format!("audio buffer: cannot write to {} ({e}); staying in RAM", job.dir.display()));
+                        }
+                    }
+                }
+            }
+        });
+        Mutex::new(tx)
+    });
+    let _ = tx.lock().unwrap_or_else(|e| e.into_inner()).send(job);
 }
 
 /// One step of reading audio out of the ring.
@@ -91,6 +168,10 @@ pub struct AudioRing {
     disk_bytes: usize,
     /// A write failed: stay in RAM until the capture is started again.
     broken: bool,
+    /// The same, set by the writer thread.
+    broken_bg: Arc<AtomicBool>,
+    /// Files are written by the writer thread (the live capture) instead of in `push` (the self-tests).
+    background: bool,
 }
 
 impl AudioRing {
@@ -109,7 +190,15 @@ impl AudioRing {
             disk_frames: 0,
             disk_bytes: 0,
             broken: false,
+            broken_bg: Arc::new(AtomicBool::new(false)),
+            background: false,
         }
+    }
+
+    /// Write the files on the writer thread from now on: `push` is called by the sound card's
+    /// callback, which must not wait for the disk.
+    pub fn spill_in_background(&mut self) {
+        self.background = true;
     }
 
     pub fn configure(&mut self, rate: u32, max_secs: f64) {
@@ -129,6 +218,7 @@ impl AudioRing {
         self.dir = dir;
         self.tag = tag;
         self.broken = false;
+        self.broken_bg = Arc::new(AtomicBool::new(false)); // a new flag: a late failure of the old folder does not count
         if window.is_some() {
             self.trim();
             self.buf.shrink_to_fit();
@@ -152,10 +242,25 @@ impl AudioRing {
     /// Move the oldest `n` frames of `buf` out of RAM. False if the file could not be written.
     fn spill_chunk(&mut self, n: usize) -> bool {
         let first = self.written - (self.buf.len() / 2) as u64;
-        let seg = if self.buf.range(..n * 2).all(|s| *s == 0) {
+        let silent = {
+            let (a, b) = self.buf.as_slices();
+            let in_a = (n * 2).min(a.len());
+            a[..in_a].iter().all(|s| *s == 0) && b[..n * 2 - in_a].iter().all(|s| *s == 0)
+        };
+        if !silent && self.background {
+            let samples = copy_range(&self.buf, 0, n * 2);
+            let piece = Arc::new(Pending { ram: Mutex::new(Some(samples)), seg: OnceLock::new() });
+            spill_later(SpillJob { piece: piece.clone(), dir: self.dir.clone(), tag: self.tag, broken: self.broken_bg.clone() });
+            self.buf.drain(..n * 2);
+            self.disk_bytes += n * 4;
+            self.disk_frames += n;
+            self.chunks.push_back(Chunk { seg: None, pending: Some(piece), first, frames: n });
+            return true;
+        }
+        let seg = if silent {
             None
         } else {
-            let bytes: Vec<u8> = self.buf.range(..n * 2).flat_map(|s| s.to_le_bytes()).collect();
+            let bytes = le_bytes(&copy_range(&self.buf, 0, n * 2));
             match Seg::create(&self.dir, self.tag).and_then(|seg| seg.write_at(&bytes, 0).map(|_| seg)) {
                 Ok(seg) => Some(Arc::new(seg)),
                 Err(e) => {
@@ -170,7 +275,7 @@ impl AudioRing {
             self.disk_bytes += n * 4;
         }
         self.disk_frames += n;
-        self.chunks.push_back(Chunk { seg, first, frames: n });
+        self.chunks.push_back(Chunk { seg, pending: None, first, frames: n });
         true
     }
 
@@ -178,7 +283,7 @@ impl AudioRing {
         if let Some(window) = self.window {
             let chunk = self.rate as usize * CHUNK_SECS;
             let keep = (window * self.rate as f64) as usize;
-            while !self.broken && self.buf.len() / 2 >= keep + chunk {
+            while !self.broken && !self.broken_bg.load(Ordering::Relaxed) && self.buf.len() / 2 >= keep + chunk {
                 if !self.spill_chunk(chunk) {
                     break;
                 }
@@ -193,7 +298,7 @@ impl AudioRing {
             }
             total -= c.frames;
             self.disk_frames -= c.frames;
-            if c.seg.is_some() {
+            if c.stored() {
                 self.disk_bytes -= c.frames * 4;
             }
             self.chunks.pop_front();
@@ -307,9 +412,19 @@ impl AudioRing {
                     let (c0, c1) = (c.first as i64, c.first as i64 + c.frames as i64);
                     let (x, y) = (lo.max(c0), hi.min(c1));
                     if y > x {
-                        parts.push(match &c.seg {
-                            Some(seg) => Part::Disk { seg: seg.clone(), off: (x - c0) as u64 * 4, frames: (y - x) as usize },
-                            None => Part::Silence((y - x) as usize),
+                        let on_disk = |seg: &Arc<Seg>| Part::Disk { seg: seg.clone(), off: (x - c0) as u64 * 4, frames: (y - x) as usize };
+                        parts.push(match (&c.seg, &c.pending) {
+                            (Some(seg), _) => on_disk(seg),
+                            (None, Some(p)) => match p.seg.get() {
+                                Some(seg) => on_disk(seg),
+                                // Not in its file yet (or it could not be written): from the piece's RAM copy.
+                                None => match p.ram.lock().unwrap_or_else(|e| e.into_inner()).as_deref() {
+                                    Some(samples) => Part::Ram(samples[(x - c0) as usize * 2..(y - c0) as usize * 2].to_vec()),
+                                    // The writer finished in between: the file is there now.
+                                    None => p.seg.get().map(on_disk).unwrap_or(Part::Silence((y - x) as usize)),
+                                },
+                            },
+                            (None, None) => Part::Silence((y - x) as usize),
                         });
                     }
                 }
@@ -317,7 +432,7 @@ impl AudioRing {
                 if hi > x {
                     let s = ((x - buf_first) * 2) as usize;
                     let e = ((hi - buf_first) * 2) as usize;
-                    parts.push(Part::Ram(self.buf.range(s..e).copied().collect()));
+                    parts.push(Part::Ram(copy_range(&self.buf, s, e)));
                 }
             }
             if ib > hi {
@@ -424,6 +539,17 @@ pub fn levels() -> Levels {
 }
 
 fn build_stream(device: &cpal::Device, loopback: bool, ring: Arc<Mutex<AudioRing>>, max_secs: f64, failed: Arc<AtomicBool>) -> Option<Stream> {
+    build_stream_as(device, loopback, ring, max_secs, failed, true)
+}
+
+/// A capture of `device` into `ring` for something other than clips (a live stream's own mixer,
+/// live.rs): the sound as it is, without the clip mixer's fader and without moving its meters.
+pub fn build_tap(device: &cpal::Device, loopback: bool, ring: Arc<Mutex<AudioRing>>, max_secs: f64, failed: Arc<AtomicBool>) -> Option<Stream> {
+    build_stream_as(device, loopback, ring, max_secs, failed, false)
+}
+
+/// `clip`: this is the capture clips are cut from (the mixer's fader and meter apply).
+fn build_stream_as(device: &cpal::Device, loopback: bool, ring: Arc<Mutex<AudioRing>>, max_secs: f64, failed: Arc<AtomicBool>, clip: bool) -> Option<Stream> {
     let source = if loopback { Source::Desktop } else { Source::Mic };
     let cfg = if loopback { device.default_output_config().ok()? } else { device.default_input_config().ok()? };
     let rate = cfg.sample_rate().0;
@@ -444,7 +570,7 @@ fn build_stream(device: &cpal::Device, loopback: bool, ring: Arc<Mutex<AudioRing
                     let now = now_secs();
                     scratch.clear();
                     // The mixer's fader for this source, and the loudest sample of the packet for its meter.
-                    let g = gain(source);
+                    let g = if clip { gain(source) } else { 1.0 };
                     let (mut pl, mut pr) = (0f32, 0f32);
                     for f in data.chunks_exact(ch.max(1)) {
                         for (dst, s) in frame.iter_mut().zip(f.iter()) {
@@ -457,7 +583,9 @@ fn build_stream(device: &cpal::Device, loopback: bool, ring: Arc<Mutex<AudioRing
                         scratch.push(to_i16(l));
                         scratch.push(to_i16(r));
                     }
-                    note_peak(source, pl, pr);
+                    if clip {
+                        note_peak(source, pl, pr);
+                    }
                     if let Ok(mut ring) = ring.lock() {
                         ring.push(&scratch, now);
                     }
@@ -479,7 +607,7 @@ fn build_stream(device: &cpal::Device, loopback: bool, ring: Arc<Mutex<AudioRing
     Some(stream)
 }
 
-fn device_name(d: &Option<cpal::Device>) -> String {
+pub fn device_name(d: &Option<cpal::Device>) -> String {
     d.as_ref().and_then(|d| d.name().ok()).unwrap_or_default()
 }
 
@@ -514,7 +642,7 @@ pub fn pick(names: &[String], want: &str) -> Option<usize> {
 }
 
 /// The device to capture: the chosen one when it is there, else the Windows default.
-fn open_device(host: &cpal::Host, output: bool, want: &str) -> Option<cpal::Device> {
+pub fn open_device(host: &cpal::Host, output: bool, want: &str) -> Option<cpal::Device> {
     if !want.trim().is_empty() {
         let devs: Vec<cpal::Device> = match if output { host.output_devices() } else { host.input_devices() } {
             Ok(d) => d.collect(),

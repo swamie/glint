@@ -48,6 +48,29 @@ pub struct ClipMeta {
 
 pub struct Library {
     pub clips: Vec<ClipMeta>,
+    /// Batches open right now (`batch`): while there is one, `save` only notes that there is something to write.
+    hold: u32,
+    dirty: bool,
+}
+
+/// While this lives, changes to the library are written once, when it is dropped, not once per clip
+/// (deleting, moving or renaming many clips wrote the whole of library.json for each of them).
+pub struct Batch<'a>(&'a std::sync::Mutex<Library>);
+
+/// Open a batch on `lib`. The lock is not held in between: only the writing waits.
+pub fn batch(lib: &std::sync::Mutex<Library>) -> Batch<'_> {
+    lib.lock().unwrap_or_else(|e| e.into_inner()).hold += 1;
+    Batch(lib)
+}
+
+impl Drop for Batch<'_> {
+    fn drop(&mut self) {
+        let mut l = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        l.hold = l.hold.saturating_sub(1);
+        if l.hold == 0 && l.dirty {
+            l.save();
+        }
+    }
 }
 
 impl Library {
@@ -58,12 +81,17 @@ impl Library {
     pub fn load() -> Self {
         let mut clips: Vec<ClipMeta> = fs::read_to_string(Self::file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         clips.retain(|c| c.cloud_only || Path::new(&c.path).is_file());
-        Library { clips }
+        Library { clips, hold: 0, dirty: false }
     }
 
-    pub fn save(&self) {
+    pub fn save(&mut self) {
+        if self.hold > 0 {
+            self.dirty = true; // written when the batch ends
+            return;
+        }
+        self.dirty = false;
         if let Ok(t) = serde_json::to_string(&self.clips) {
-            let _ = fs::write(Self::file(), t);
+            let _ = util::write_atomic(&Self::file(), t);
         }
     }
 
@@ -152,6 +180,31 @@ pub struct Probe {
 
 /// Read stream layout and duration. `count_frames` also counts video packets (slower).
 pub fn probe(ffmpeg: &Path, file: &Path, count_frames: bool) -> Option<Probe> {
+    // One export asked for the same file two or three times, each an ffprobe run. An answer is
+    // kept for half a minute, for the file as it is now (same size and time of change).
+    type Key = (PathBuf, bool, u64, Option<std::time::SystemTime>);
+    static SEEN: std::sync::Mutex<Vec<(Key, Probe, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+    let key: Option<Key> = fs::metadata(file).ok().map(|m| (file.to_path_buf(), count_frames, m.len(), m.modified().ok()));
+    if let Some(key) = &key {
+        let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        seen.retain(|(_, _, at)| at.elapsed() < std::time::Duration::from_secs(30));
+        if let Some((_, p, _)) = seen.iter().find(|(k, _, _)| k == key) {
+            return Some(p.clone());
+        }
+    }
+    let p = probe_now(ffmpeg, file, count_frames)?;
+    // A file that is still being written (a changed size or time by now) is not remembered.
+    if let Some(key) = key.filter(|k| fs::metadata(file).ok().is_some_and(|m| m.len() == k.2 && m.modified().ok() == k.3) && p.duration > 0.0) {
+        let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        if seen.len() >= 64 {
+            seen.remove(0);
+        }
+        seen.push((key, p.clone(), std::time::Instant::now()));
+    }
+    Some(p)
+}
+
+fn probe_now(ffmpeg: &Path, file: &Path, count_frames: bool) -> Option<Probe> {
     let ffprobe = ffprobe_for(ffmpeg)?;
     let mut cmd = util::hidden_cmd(&ffprobe);
     cmd.args(["-v", "error"]);

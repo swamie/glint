@@ -88,7 +88,7 @@ document.addEventListener("change", (e) => {
 /* "Reload icon" (0.1.18), beside the toggle: put the icon on the window, the taskbar and a rebuilt
    tray icon right now, even when nothing changed (syncThemeIcon sends only changes). */
 function iconReloadButton() {
-  return `<button type="button" class="btn sm" data-icon-reload title="${esc(t("Puts the icon on Glint's window, its taskbar button and the tray again, right now. A pinned taskbar shortcut and the Start menu keep the program's own icon: Windows does not let a program change those."))}">${ICON.refresh}${esc(t("Reload icon"))}</button>`;
+  return `<button type="button" class="btn sm" data-icon-reload title="${esc(t("Puts the icon on Glint's window, its taskbar button, the tray and Glint's shortcuts (a pinned taskbar button, the Start menu) again, right now."))}">${ICON.refresh}${esc(t("Reload icon"))}</button>`;
 }
 document.addEventListener("click", async (e) => {
   const btn = e.target.closest?.("[data-icon-reload]");

@@ -32,15 +32,58 @@ pub fn data_dir() -> PathBuf {
     dir
 }
 
-/// Append a line to `<data dir>/glint.log` (trimmed once it passes 1 MB).
+/// Write a whole file so that a crash or power cut mid-write leaves the old file, not half of the
+/// new one: the bytes go to `<name>.tmp` beside it, which then takes the file's place. Where the
+/// swap is refused (a scanner holding the file open), the file is written in place as before.
+pub fn write_atomic(path: &Path, data: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(".tmp");
+    let tmp = path.with_file_name(name);
+    let swapped = fs::write(&tmp, data.as_ref()).and_then(|_| fs::rename(&tmp, path));
+    if swapped.is_err() {
+        let _ = fs::remove_file(&tmp);
+        return fs::write(path, data.as_ref());
+    }
+    Ok(())
+}
+
+/// The open log file: (file, its folder, bytes written so far).
+static LOG: std::sync::Mutex<Option<(fs::File, PathBuf, u64)>> = std::sync::Mutex::new(None);
+
+/// Append a line to `<data dir>/glint.log` (trimmed once it passes 1 MB). The file stays open
+/// between lines; it is opened again when the data folder changes (the self-tests set their own).
 pub fn log(msg: &str) {
     use std::io::Write;
-    let path = data_dir().join("glint.log");
-    if fs::metadata(&path).map(|m| m.len() > 1_000_000).unwrap_or(false) {
-        let _ = fs::remove_file(&path);
+    let dir = match std::env::var_os("GLINT_DATA_DIR") {
+        Some(d) => PathBuf::from(d),
+        None => PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()).join("Glint"),
+    };
+    let mut g = LOG.lock().unwrap_or_else(|e| e.into_inner());
+    if g.as_ref().is_some_and(|(_, d, len)| *d != dir || *len > 1_000_000) {
+        let full = g.as_ref().is_some_and(|(_, d, len)| *d == dir && *len > 1_000_000);
+        *g = None; // closes the file
+        if full {
+            let _ = fs::remove_file(dir.join("glint.log"));
+        }
     }
-    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "{} {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"), msg);
+    if g.is_none() {
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("glint.log");
+        if fs::metadata(&path).map(|m| m.len() > 1_000_000).unwrap_or(false) {
+            let _ = fs::remove_file(&path);
+        }
+        // Others may read, write and delete it meanwhile (the bug report reads it, a second Glint appends).
+        let Ok(f) = fs::OpenOptions::new().create(true).append(true).open(&path) else { return };
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        *g = Some((f, dir, len));
+    }
+    if let Some((f, _, len)) = g.as_mut() {
+        let line = format!("{} {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"), msg);
+        if f.write_all(line.as_bytes()).is_err() {
+            *g = None; // the next line opens it again
+            return;
+        }
+        *len += line.len() as u64;
     }
 }
 
@@ -70,6 +113,28 @@ pub fn hidden_cmd(program: &Path) -> Command {
     c
 }
 
+/// What the editor's export runs at (`Settings::export_priority`): 0 low, 1 normal, 2 high.
+static EXPORT_PRIORITY: AtomicU32 = AtomicU32::new(0);
+
+/// Take the export priority from the settings (at start and whenever they are saved).
+pub fn set_export_priority(name: &str) {
+    EXPORT_PRIORITY.store(match name { "normal" => 1, "high" => 2, _ => 0 }, Ordering::Relaxed);
+}
+
+/// `hidden_cmd` at the priority chosen for the editor's export. Low by default: an export uses
+/// every core, and the game and the live capture come first.
+pub fn hidden_cmd_export(program: &Path) -> Command {
+    const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+    let class = match EXPORT_PRIORITY.load(Ordering::Relaxed) {
+        1 => 0,
+        2 => ABOVE_NORMAL_PRIORITY_CLASS,
+        _ => BELOW_NORMAL_PRIORITY_CLASS,
+    };
+    let mut c = Command::new(gated(program));
+    c.creation_flags(CREATE_NO_WINDOW | class);
+    c
+}
+
 pub fn hidden_cmd_prio(program: &Path) -> Command {
     let mut c = Command::new(gated(program));
     c.creation_flags(CREATE_NO_WINDOW | ABOVE_NORMAL_PRIORITY_CLASS);
@@ -79,6 +144,36 @@ pub fn hidden_cmd_prio(program: &Path) -> Command {
 /// Locate a tool: explicit path, next to our exe, `%LOCALAPPDATA%\Glint\bin`, then PATH. Scoop shims are
 /// resolved to the real exe so kill() and CPU stats hit the right process.
 pub fn find_exe(custom: &str, name: &str) -> Option<PathBuf> {
+    // Asked many times a second (each status, watch tick, thumbnail and job): the answer is kept for
+    // a few seconds, as long as the file is still there. A tool that was not found is looked for
+    // again every time, so one that "Check and repair" just installed is seen at once.
+    const KEEP: std::time::Duration = std::time::Duration::from_secs(5);
+    {
+        let mut g = FOUND.lock().unwrap_or_else(|e| e.into_inner());
+        g.retain(|(_, _, _, at)| at.elapsed() < KEEP);
+        if let Some((_, _, p, _)) = g.iter().find(|(c, n, _, _)| c == custom && n == name) {
+            if p.is_file() {
+                return Some(p.clone());
+            }
+        }
+    }
+    let found = find_exe_now(custom, name);
+    let mut g = FOUND.lock().unwrap_or_else(|e| e.into_inner());
+    g.retain(|(c, n, _, _)| !(c == custom && n == name));
+    if let Some(p) = &found {
+        g.push((custom.to_string(), name.to_string(), p.clone(), Instant::now()));
+    }
+    found
+}
+
+static FOUND: std::sync::Mutex<Vec<(String, String, PathBuf, Instant)>> = std::sync::Mutex::new(Vec::new());
+
+/// Forget what `find_exe` remembers (tools were installed, replaced or removed).
+pub fn forget_exes() {
+    FOUND.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+fn find_exe_now(custom: &str, name: &str) -> Option<PathBuf> {
     let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
     let path_dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
     find_exe_in(custom, name, exe_dir.as_deref(), &crate::deps::local_bin_dir(), &path_dirs)

@@ -202,6 +202,176 @@ fn set_window_icons(hwnd: isize, rgba: &[u8], w: u32, h: u32) -> bool {
     ok
 }
 
+/* ---------- the icon on shortcuts (a pinned taskbar button, the Start menu, the desktop) ---------- */
+
+/// Sizes written into the themed .ico: what the taskbar, the Start menu and the desktop ask for at 100 % to 250 % scaling.
+const ICO_SIZES: [u32; 8] = [16, 20, 24, 32, 40, 48, 64, 256];
+
+/// `rgba` (w x h) as a multi-size .ico file: 32-bit bitmaps, and a PNG for the 256 px picture.
+pub fn ico_bytes(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
+    let mut images: Vec<(u32, Vec<u8>)> = Vec::new();
+    for n in ICO_SIZES {
+        let px = scale_rgba(rgba, w, h, n);
+        let mut data = Vec::new();
+        if n >= 256 {
+            let mut enc = png::Encoder::new(&mut data, n, n);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            let ok = enc.write_header().and_then(|mut wr| wr.write_image_data(&px)).is_ok();
+            if !ok {
+                continue;
+            }
+        } else {
+            // BITMAPINFOHEADER (height doubled: picture + mask), the rows bottom-up as BGRA, then an all-0 mask.
+            data.extend_from_slice(&40u32.to_le_bytes());
+            data.extend_from_slice(&(n as i32).to_le_bytes());
+            data.extend_from_slice(&(n as i32 * 2).to_le_bytes());
+            data.extend_from_slice(&1u16.to_le_bytes());
+            data.extend_from_slice(&32u16.to_le_bytes());
+            data.extend_from_slice(&[0u8; 24]);
+            for row in px.chunks_exact(n as usize * 4).rev() {
+                data.extend(row.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]));
+            }
+            data.resize(data.len() + (n.div_ceil(32) * 4 * n) as usize, 0);
+        }
+        images.push((n, data));
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(&[0, 0, 1, 0]);
+    out.extend_from_slice(&(images.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * images.len() as u32;
+    for (n, data) in &images {
+        let side = if *n >= 256 { 0 } else { *n as u8 };
+        out.extend_from_slice(&[side, side, 0, 0, 1, 0, 32, 0]);
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+        offset += data.len() as u32;
+    }
+    for (_, data) in &images {
+        out.extend_from_slice(data);
+    }
+    out
+}
+
+/// The themed icon as a file for shortcuts to point at, or `None` for the stock icon (the exe's own).
+/// The colors are in the file's name: Windows remembers an icon by its path, so a new color needs a
+/// new path to be drawn again. Files of earlier colors are removed.
+fn themed_ico_file(s: &Settings) -> Option<std::path::PathBuf> {
+    let dir = util::data_dir().join("icon");
+    let hex = |c: &str| parse_color(c).map(|c| format!("{:02x}{:02x}{:02x}", c[0], c[1], c[2])).unwrap_or_default();
+    let name = format!("glint-{}-{}.ico", hex(&s.icon_accent), hex(&s.icon_accent_2));
+    let themed = themed_rgba(s);
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            if themed.is_none() || e.file_name().to_string_lossy() != name {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    let (rgba, w, h) = themed?;
+    let path = dir.join(name);
+    if !path.is_file() {
+        std::fs::create_dir_all(&dir).ok()?;
+        std::fs::write(&path, ico_bytes(&rgba, w, h)).ok()?;
+    }
+    Some(path)
+}
+
+/// Glint's own shortcuts get the themed icon too: the pinned taskbar button, the Start menu entry and
+/// the desktop shortcut draw the icon their .lnk names, never the window's, so `WM_SETICON` does not
+/// reach them. Every .lnk in those folders that starts this exe is pointed at the themed .ico (or back
+/// at the exe for the stock icon), and the shell is told to draw it again. Returns how many changed.
+#[cfg(windows)]
+fn sync_shortcut_icons(s: &Settings) -> usize {
+    use std::path::PathBuf;
+    use windows::core::{Interface, HSTRING};
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, STGM_READ};
+    use windows::Win32::UI::Shell::{IShellLinkW, SHChangeNotify, ShellLink, SHCNE_ASSOCCHANGED, SHCNE_UPDATEITEM, SHCNF_FLUSHNOWAIT, SHCNF_IDLIST, SHCNF_PATHW};
+    let Ok(exe) = std::env::current_exe() else { return 0 };
+    let ico = themed_ico_file(s);
+    let want = ico.as_deref().unwrap_or(&exe).to_path_buf();
+    let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
+    let mut folders: Vec<PathBuf> = Vec::new();
+    if let Some(a) = env("APPDATA") {
+        folders.push(a.join(r"Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar"));
+        folders.push(a.join(r"Microsoft\Internet Explorer\Quick Launch\User Pinned\StartMenu"));
+        folders.push(a.join(r"Microsoft\Windows\Start Menu\Programs"));
+        folders.push(a.join(r"Microsoft\Windows\Start Menu\Programs\Startup"));
+    }
+    if let Some(u) = env("USERPROFILE") {
+        folders.push(u.join("Desktop"));
+        folders.push(u.join(r"OneDrive\Desktop"));
+    }
+    let text = |b: &[u16]| String::from_utf16_lossy(&b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())]);
+    let same = |a: &str, b: &Path| a.replace('/', "\\").eq_ignore_ascii_case(&b.to_string_lossy());
+    let mut changed = 0;
+    unsafe {
+        let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        for link in folders.iter().filter_map(|f| std::fs::read_dir(f).ok()).flat_map(|rd| rd.flatten()).map(|e| e.path()) {
+            if !link.extension().is_some_and(|x| x.eq_ignore_ascii_case("lnk")) {
+                continue;
+            }
+            let Ok(sl) = CoCreateInstance::<_, IShellLinkW>(&ShellLink, None, CLSCTX_INPROC_SERVER) else { break };
+            let Ok(pf) = sl.cast::<IPersistFile>() else { break };
+            let file = HSTRING::from(link.as_os_str());
+            if pf.Load(&file, STGM_READ).is_err() {
+                continue;
+            }
+            let mut target = [0u16; 1024];
+            if sl.GetPath(&mut target, std::ptr::null_mut(), 0).is_err() || !same(&text(&target), &exe) {
+                continue;
+            }
+            let (mut now, mut index) = ([0u16; 1024], 0i32);
+            let _ = sl.GetIconLocation(&mut now, &mut index);
+            let now = text(&now);
+            // A shortcut with no icon of its own already draws the exe's.
+            if (same(&now, &want) && index == 0) || (now.is_empty() && ico.is_none()) {
+                continue;
+            }
+            if sl.SetIconLocation(&HSTRING::from(want.as_os_str()), 0).is_err() || pf.Save(&file, true).is_err() {
+                continue;
+            }
+            let wide: Vec<u16> = file.as_wide().iter().copied().chain([0]).collect();
+            SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, Some(wide.as_ptr() as *const _), None);
+            changed += 1;
+        }
+        if changed > 0 {
+            // The taskbar keeps a pinned button's picture until icons are announced as changed.
+            SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, None, None);
+        }
+        if com {
+            CoUninitialize();
+        }
+    }
+    changed
+}
+
+/// `sync_shortcut_icons` off the calling thread (COM and file work), one run at a time.
+fn sync_shortcut_icons_bg(s: &Settings) {
+    #[cfg(windows)]
+    {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        static LATEST: AtomicU32 = AtomicU32::new(0);
+        let s = s.clone();
+        let turn = LATEST.fetch_add(1, Ordering::SeqCst) + 1;
+        thread::spawn(move || {
+            // Dragging a color sends many changes: only the last one is written to the shortcuts.
+            thread::sleep(Duration::from_millis(500));
+            if LATEST.load(Ordering::SeqCst) != turn {
+                return;
+            }
+            let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+            let n = sync_shortcut_icons(&s);
+            if n > 0 {
+                util::log(&format!("icon: {n} shortcut(s) now show the {} icon", if themed_rgba(&s).is_some() { "themed" } else { "stock" }));
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = (s, themed_ico_file as fn(&Settings) -> Option<std::path::PathBuf>);
+}
+
 /// What `apply_icon` reached: the main window (open) and the tray icon.
 #[derive(serde::Serialize, Default, Debug, Clone, Copy)]
 pub struct IconApplied {
@@ -210,7 +380,8 @@ pub struct IconApplied {
 }
 
 /// Put the icon these settings ask for on the main window (taskbar button, title bar,
-/// Alt+Tab) and the tray. `rebuild_tray`: also take the tray icon away and add it again
+/// Alt+Tab), the tray, and Glint's shortcuts (a pinned taskbar button, the Start menu).
+/// `rebuild_tray`: also take the tray icon away and add it again
 /// (the "Reload icon" button), for a tray that kept showing an old picture.
 pub fn apply_icon_with(app: &tauri::AppHandle, s: &Settings, rebuild_tray: bool) -> IconApplied {
     use tauri::image::Image;
@@ -238,6 +409,7 @@ pub fn apply_icon_with(app: &tauri::AppHandle, s: &Settings, rebuild_tray: bool)
             let _ = tray.set_visible(true);
         }
     }
+    sync_shortcut_icons_bg(s);
     done
 }
 
@@ -265,8 +437,7 @@ pub fn set_app_icon(app: tauri::AppHandle, core: tauri::State<'_, Arc<Core>>, on
 }
 
 /// Settings → "Reload icon": the same, right now, on the window, the taskbar and a rebuilt tray icon.
-/// A pinned taskbar shortcut or a Start menu tile shows the exe's own icon: Windows does not let a
-/// program change that, so it stays as it is.
+/// A pinned taskbar button and the Start menu draw their shortcut's icon: `sync_shortcut_icons`.
 #[tauri::command]
 pub fn reload_app_icon(app: tauri::AppHandle, core: tauri::State<'_, Arc<Core>>, on: bool, accent: String, accent2: String) -> IconApplied {
     let s = store_icon(&core, on, accent, accent2);
@@ -985,6 +1156,19 @@ pub fn self_test(report_path: &str) {
             let flat = vec![200u8, 100, 50, 255].repeat(4);
             r.check("scaling a flat color keeps it; transparent stays transparent", scale_rgba(&flat, 2, 2, 1) == vec![200, 100, 50, 255] && scale_rgba(&[9, 9, 9, 0, 9, 9, 9, 0], 2, 1, 1)[3] == 0 && scale_rgba(&[], 0, 0, 4).len() == 64, "");
             let half = [255u8, 0, 0, 255, 0, 0, 255, 0]; // a red pixel beside a fully transparent blue one
+            // The .ico that shortcuts are pointed at: every size, each entry inside the file.
+            let ico = ico_bytes(&crimson, w, h);
+            let count = ico.get(4).copied().unwrap_or(0) as usize;
+            let entries_ok = ico.len() > 6 + 16 * count
+                && (0..count).all(|k| {
+                    let e = &ico[6 + 16 * k..22 + 16 * k];
+                    let len = u32::from_le_bytes([e[8], e[9], e[10], e[11]]) as usize;
+                    let off = u32::from_le_bytes([e[12], e[13], e[14], e[15]]) as usize;
+                    let n = ICO_SIZES[k] as usize;
+                    let want = if n >= 256 { None } else { Some(40 + n * n * 4 + n.div_ceil(32) * 4 * n) };
+                    off + len <= ico.len() && want.is_none_or(|w| w == len) && (n < 256 || ico[off..].starts_with(&[0x89, b'P', b'N', b'G']))
+                });
+            r.check("the shortcut .ico holds every size", ico[..4] == [0, 0, 1, 0] && count == ICO_SIZES.len() && entries_ok, &format!("{count} pictures, {} bytes", ico.len()));
             let s1 = scale_rgba(&half, 2, 1, 1);
             r.check("a transparent pixel adds no color to its neighbour", s1[0] == 255 && s1[2] == 0 && (127..=128).contains(&s1[3]), &format!("{s1:?}"));
             // The Windows part on a hidden window of our own: never shown, destroyed again.

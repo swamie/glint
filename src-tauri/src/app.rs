@@ -37,6 +37,15 @@ pub fn show_main(app: &AppHandle) {
             .center()
             .build();
         if let Ok(w) = &built {
+            // The library window (open_library_window) belongs to this one: it goes when the main window goes.
+            let owner = app.clone();
+            w.on_window_event(move |e| {
+                if matches!(e, tauri::WindowEvent::Destroyed) {
+                    if let Some(l) = owner.get_webview_window(LIBRARY_WINDOW) {
+                        let _ = l.close();
+                    }
+                }
+            });
             // No classic caption flashing in while the window is resized fast (win::calm_frame).
             if let Ok(h) = w.hwnd() {
                 let hwnd = h.0 as isize;
@@ -47,10 +56,55 @@ pub fn show_main(app: &AppHandle) {
                 });
             }
         }
+        if let Ok(w) = &built {
+            crate::camperm::install(w, app.state::<Arc<Core>>().inner().clone()); // camera requests are answered from Glint's settings
+        }
         if built.is_ok() {
             let zoom = app.state::<Arc<Core>>().settings().ui_zoom;
             apply_zoom(&app, zoom);
             crate::polish::apply_icon(&app, &app.state::<Arc<Core>>().settings()); // the theme-colored icon, if on
+        }
+    });
+}
+
+/// The label of the library window (ui/libwin.html): the clips in a window of their own, beside the editor.
+const LIBRARY_WINDOW: &str = "library";
+
+/// Open (or bring to the front) the library window: the editor's "Library in its own window" button.
+/// Clips are dragged out of it as files (tauri-plugin-drag), so a drop on the editor is the same drop
+/// as a file from Explorer (ui/editor.js edDropInit), on any monitor.
+#[tauri::command]
+fn open_library_window(app: AppHandle) {
+    if let Some(w) = app.get_webview_window(LIBRARY_WINDOW) {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    // Window creation must not run on the event-loop thread.
+    thread::spawn(move || {
+        let built = WebviewWindowBuilder::new(&app, LIBRARY_WINDOW, WebviewUrl::App("libwin.html".into()))
+            .title("Glint Library")
+            .inner_size(760.0, 620.0)
+            .min_inner_size(380.0, 320.0)
+            .decorations(false)
+            .background_color(tauri::window::Color(7, 10, 16, 255))
+            // Files dropped on this window are not for it. Without Tauri's handler its drag events are not
+            // sent at all, so the editor's listener (which hears every window's) never takes them for its own.
+            .disable_drag_drop_handler()
+            .build();
+        match &built {
+            Ok(w) => {
+                if let Ok(h) = w.hwnd() {
+                    let hwnd = h.0 as isize;
+                    let _ = app.run_on_main_thread(move || {
+                        let _ = win::calm_frame(hwnd);
+                    });
+                }
+                let zoom = app.state::<Arc<Core>>().settings().ui_zoom;
+                let _ = w.set_zoom(zoom.clamp(50, 200) as f64 / 100.0);
+            }
+            Err(e) => util::log(&format!("library window: could not create it: {e}")),
         }
     });
 }
@@ -187,8 +241,10 @@ fn save_settings(app: AppHandle, core: St, settings: Settings) -> Status {
 
 /// Scale the whole interface, like the browser's own zoom. `percent` is 50..=200.
 fn apply_zoom(app: &AppHandle, percent: u32) {
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.set_zoom(percent.clamp(50, 200) as f64 / 100.0);
+    for label in ["main", LIBRARY_WINDOW] {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.set_zoom(percent.clamp(50, 200) as f64 / 100.0);
+        }
     }
 }
 
@@ -296,6 +352,7 @@ pub fn files_to_clipboard(paths: &[&str]) -> Result<(), String> {
 fn delete_clips(core: St, ids: Vec<String>) -> Result<usize, String> {
     let mut done = 0;
     let mut failed = 0;
+    let _once = library::batch(&core.lib); // library.json is written once, at the end
     for id in &ids {
         let Some(meta) = core.lib.lock().unwrap().get_saved(id).ok() else { continue };
         if Path::new(&meta.path).exists() && trash::delete(&meta.path).is_err() {
@@ -975,8 +1032,11 @@ pub fn run(minimized: bool) {
                 show_main(app);
             }
         }))
+        // Starts a file drag out of the library window (ui/libwin.js).
+        .plugin(tauri_plugin_drag::init())
         .manage(core)
         .invoke_handler(tauri::generate_handler![
+            open_library_window,
             get_state,
             save_settings,
             get_status,
@@ -1103,9 +1163,21 @@ pub fn run(minimized: bool) {
             crate::plugins::plugins_restart,
             crate::plugins::plugin_proc_start,
             crate::plugins::plugin_file_keep,
+            crate::plugins::plugin_http,
+            crate::plugins::plugin_open,
             crate::plugins::plugin_file_drop,
             crate::plugins::plugin_proc_stop,
+            crate::plugins::plugin_live_start,
+            crate::plugins::plugin_live_update,
+            crate::plugins::plugin_windows,
             crate::plugins::plugin_proc_status,
+            crate::plugins::plugin_dl_state,
+            crate::plugins::plugin_dl_get,
+            crate::plugins::plugin_dl_cancel,
+            crate::plugins::plugin_dl_remove,
+            crate::plugins::plugin_work_read,
+            crate::plugins::plugin_work_clear,
+            crate::plugins::plugin_save_text,
             crate::plugins::plugin_ready,
             crate::plugins::plugin_reply
         ])

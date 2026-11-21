@@ -942,6 +942,7 @@ function openClip(id) {
         <div class="v-pane v-edit">
           <div class="e-head"><div class="e-h${draft ? " e-h-draft" : ""}">${draft ? esc(c.title) : L("Edit")}</div>
             <button type="button" class="e-ibtn" data-v="shortcuts" aria-label="${L("Keyboard shortcuts")}" title="${L("Keyboard shortcuts")}">${ICON.keys}</button>
+            <button type="button" class="e-ibtn" data-v="library-window" aria-label="${L("Library in its own window")}" title="${L("Open the library in its own window, to drag clips from it into the editor")}">${PICON.libwin}</button>
             <button type="button" class="e-ibtn e-fsbtn" data-v="editor-full" aria-pressed="false"></button>
             <button class="btn sm" data-v="edit-done">${draft ? L("Close") : L("Done")}</button></div>
           ${draft ? `<div class="small e-draft-note">${L("Export saves the result as a new clip. The clips themselves stay as they are.")}</div>` : ""}
@@ -972,6 +973,8 @@ function openClip(id) {
   // The canvas: another shape for the result (vertical for TikTok / Shorts), with pieces of the picture placed on it (canvas.js).
   if (typeof cvMount === "function") { try { S.player.cv = cvMount(root, c, S.player); } catch (e) { console.error("Glint: the canvas tools did not load", e); } }
   if (typeof zmMount === "function") { try { S.player.zm = zmMount(root, c, S.player); } catch (e) { console.error("Glint: the zoom tools did not load", e); } } // 0.1.41: Zoom (zoom.js)
+  // Installed plugins' own sections of the editor (plugins.js; 0.1.55), e.g. Subtitles.
+  if (typeof plugEditorMount === "function") { try { S.player.plug = plugEditorMount(root, c, S.player); } catch (e) { console.error("Glint: the plugins' editor sections did not load", e); } }
   // A project: the library's clips beside the editor, to add more (projects.js). P-HOOK 0.1.40: a single library
   // clip gets it too (shown only while editing; adding from it makes a project of the clip, projFromClip).
   if (typeof projMountPanel === "function") projMountPanel(root, id);
@@ -1794,17 +1797,21 @@ function mountPlayer(root, c) {
   }
 
   /* ----- drawing ----- */
+  const paintShown = {}; // what paint() last wrote: { at, clock }
   function paint() {
     if (dead) return;
     guard(tlNow());
     applyRate(); // the piece being played may have another speed (0.1.41); only touches what differs
     if (playing()) prepStandby(false); // the next jump's first frame waits in the standby (0.1.41)
     const now = tlNow(), m = ed();
-    el(".p-prog").style.width = pct(toBar(now));
-    el(".p-knob").style.left = pct(toBar(now));
-    el(".p-clock").textContent = m
-      ? `${fmtClock(emSrcToOut(m, Math.min(now, emEnd(m))) / barSpeed())} / ${fmtClock(emSrcToOut(m, emEnd(m)) / barSpeed())}`
+    // Every frame while playing: the bar and the clock are written only when what they show changed.
+    const at = pct(toBar(now));
+    if (at !== paintShown.at) { paintShown.at = at; el(".p-prog").style.width = at; el(".p-knob").style.left = at; }
+    const end = m ? emEnd(m) : 0;
+    const clock = m
+      ? `${fmtClock(emSrcToOut(m, Math.min(now, end)) / barSpeed())} / ${fmtClock(emSrcToOut(m, end) / barSpeed())}`
       : `${fmtClock(now)} / ${fmtClock(dur())}`;
+    if (clock !== paintShown.clock) { paintShown.clock = clock; el(".p-clock").textContent = clock; }
     if (v.buffered.length) { const b = v.buffered.end(v.buffered.length - 1); el(".p-buf").style.width = pct(toBar(pm() ? emFromSrc(m, VS && vk >= 0 ? VS[vk].start + b : b) : b)); }
     if (P.editing) levels(now);
     applyColor();
@@ -1933,32 +1940,41 @@ function mountPlayer(root, c) {
   /** Edit mode: the whole editor (video, timeline, side column) fullscreen, or back. */
   P.editorFull = () => (document.fullscreenElement ? leaveFull() : root.requestFullscreen().catch((e) => console.warn("Glint: fullscreen refused", e)));
   P.isEditorFull = () => document.fullscreenElement === root;
-  // Outside edit mode the video alone goes fullscreen; in edit mode that would hide the timeline.
+  /** Edit mode: the video alone fullscreen (the player with its controls and the overlays drawn on the picture), or
+      back. From the fullscreen editor it goes on top of it, and leaving it returns to the fullscreen editor. */
+  P.videoFull = () => (document.fullscreenElement === box ? leaveFull() : box.requestFullscreen().catch((e) => console.warn("Glint: fullscreen refused", e)));
+  P.isVideoFull = () => document.fullscreenElement === box;
+  // The player's own button, a double-click on the video and (outside edit mode) F: the video alone goes fullscreen.
+  // While editing, the whole editor fullscreen is the header's button and the "fullscreen" shortcut (P.editorFull).
   // The fullscreen element is #modal, not the player (0.1.25): the previous / next arrows live in #modal, so they
   // are drawn in fullscreen too, and the next clip opens without leaving fullscreen (openClip only replaces
   // what is inside #modal). editor.css lays it out by `#modal.fs`.
-  P.fullscreen = () => (P.editing ? P.editorFull() : document.fullscreenElement ? leaveFull() : document.getElementById("modal").requestFullscreen().catch((e) => console.warn("Glint: fullscreen refused", e)));
+  P.fullscreen = () => (P.editing ? P.videoFull() : document.fullscreenElement ? leaveFull() : document.getElementById("modal").requestFullscreen().catch((e) => console.warn("Glint: fullscreen refused", e)));
   /** Show the controls again (the pointer moved over something that is not the player, such as an arrow). */
   P.wake = () => wake();
   // app.js's prompt (#confirm) and messages (#flash) live outside the viewer, and
   // only the fullscreen element is drawn in fullscreen: move them into it meanwhile.
-  function adoptOverlays(on) {
+  function adoptOverlays(host) {
     const home = document.getElementById("modal");
     for (const id of ["confirm", "flash"]) { // back in index.html's order: #modal, #confirm, #flash
       const node = document.getElementById(id);
       if (!node) continue;
-      if (on && node.parentNode !== root) root.appendChild(node);
-      else if (!on && node.parentNode === root) {
+      if (host) { if (node.parentNode !== host) host.appendChild(node); }
+      else if (node.parentNode === root || node.parentNode === box) {
         const before = id === "flash" ? document.getElementById("confirm") || home : home;
-        if (before && before.parentNode !== root) before.after(node); else document.body.appendChild(node);
+        if (before && !root.contains(before)) before.after(node); else document.body.appendChild(node);
       }
     }
   }
   function onFullscreen() {
     if (dead) return;
-    const on = P.isEditorFull();
+    const on = P.isEditorFull(), vid = P.isVideoFull();
     root.classList.toggle("e-full", on);
-    adoptOverlays(on);
+    adoptOverlays(on ? root : vid ? box : null);
+    const fb = el('[data-p="full"]');
+    fb.innerHTML = vid ? ED_ICON_UNFULL : PICON.full;
+    fb.setAttribute("aria-label", vid ? t("Leave fullscreen") : t("Fullscreen"));
+    if (vid) wake(); // the controls show on the way in, and hide again while it plays
     P.ed?.fullChanged?.(on);
     tl((h) => h.refresh()); // the timeline's width may have changed
   }
@@ -2560,6 +2576,7 @@ function mountPlayer(root, c) {
     P.cv?.sync(what); // before the overlays: they are placed on the canvas
     P.zm?.sync(what); // the Zoom section (0.1.41)
     P.ov?.sync(what);
+    P.plug?.sync(what); // plugins' sections (plugins.js)
     if (P.draft && typeof projDirty === "function") projDirty(P, what); // a project saves its edit (debounced)
   };
   /** Change the model: snapshot, run `fn`, then refresh the timeline and the preview.
@@ -2770,6 +2787,7 @@ function mountPlayer(root, c) {
     try { P.zm?.destroy(); } catch (e) { console.error("Glint: zoom destroy failed", e); }
     // The overlays too (0.1.41: their clip items' videos, observer and timer outlived the editor).
     try { P.ov?.destroy?.(); } catch (e) { console.error("Glint: overlays destroy failed", e); }
+    try { P.plug?.destroy(); } catch (e) { console.error("Glint: plugin sections destroy failed", e); }
     clearTimeout(vpendTimer);
     clearInterval(aftTimer);
     aftTimer = 0;
@@ -2959,7 +2977,9 @@ function mountEditor(root, c, P) {
   function renderSpeed() {
     const m = model(), ps = pieceSp(), own = ps.n > 0;
     speedBtn.disabled = !m;
-    speedBtn.innerHTML = `<span>${own ? +ps.speed.toFixed(2) : m ? m.speed : 1}x</span>${ED_CHEV}`;
+    // Written only when it changed: this runs on every sync of the editor.
+    const speedText = `${own ? +ps.speed.toFixed(2) : m ? m.speed : 1}x`;
+    if (speedBtn.dataset.shown !== speedText) { speedBtn.dataset.shown = speedText; speedBtn.innerHTML = `<span>${speedText}</span>${ED_CHEV}`; }
     speedBtn.setAttribute("aria-label", own ? t("Speed of the selected clip") : t("Clip speed"));
     $(".e-speed-title", pane).textContent = own ? (ps.n > 1 ? t("Speed of the {n} selected clips", { n: ps.n }) : t("Speed of the selected clip")) : t("Speed");
     const numW = $(".e-speed-numw", pane), num = $(".e-speed-num", pane);
@@ -3115,7 +3135,7 @@ function mountEditor(root, c, P) {
     else {
       lines.push(edReplaceOn() && !c.draft ? t("The clip will be {len} long.", { len: fmtDurMs(emResultDuration(m)) }) : t("New clip, {len} long.", { len: fmtDurMs(emResultDuration(m)) }));
       lines.push(emIsPlainCut(m) ? t("Quick cut, no quality loss.") : t("Re-encodes the video."));
-      if (emToOpts(m).audio.length && m.audio.length > 1) lines.push(t("The audio is mixed into one track."));
+      if (m.audio.length > 1 && emToOpts(m).audio.length) lines.push(t("The audio is mixed into one track."));
       if (m.canvas) lines.push(t("The picture is {w} × {h}.", { w: m.canvas.width, h: m.canvas.height }));
     }
     // Replace instead of saving beside the original. A project asks which of its clips go when it is exported.
@@ -3584,6 +3604,11 @@ async function viewerAction(act) {
     else if (act === "edit-done" || act === "trim-cancel") S.player.setEdit(false);
     else if (act === "shortcuts") S.player.openKeys();
     else if (act === "editor-full") S.player.editorFull();
+    else if (act === "library-window") {
+      // A window cannot come to the front over a fullscreen editor: the editor leaves fullscreen first.
+      if (document.fullscreenElement) { try { await document.exitFullscreen(); } catch {} }
+      await invoke("open_library_window");
+    }
     else if (act === "export") await edExport(false);
     else if (act === "export-blur") await edExport(true);
     else if (act === "blur") { S.jobs[id] = { pct: 0, state: "running", message: "" }; $("#v-blur").innerHTML = blurPanel(c); await invoke("blur_clip", { id }); }

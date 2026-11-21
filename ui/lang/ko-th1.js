@@ -25,6 +25,9 @@ glintAddLanguage("ko", "한국어", {
   "the file did not answer within {n} s": "파일이 {n}초 안에 응답하지 않았어요",
   "ffmpeg could not read the video: {error}": "ffmpeg가 영상을 읽지 못했어요: {error}",
   "Refresh thumbnails: make the missing ones again (F5). Hold Ctrl while clicking, or press Ctrl+F5, to make all of them again.": "썸네일 새로 고침: 없는 썸네일을 다시 만들어요(F5). Ctrl을 누른 채 클릭하거나 Ctrl+F5를 누르면 전부 다시 만들어요.",
+  "Export priority": "내보내기 우선순위",
+  "How much of the processor an export in the editor may take. Low keeps games and the recording smooth. High finishes sooner when the processor is busy, and the PC may stutter until it is done": "편집기에서 내보낼 때 프로세서를 얼마나 쓸지 정합니다. 낮음은 게임과 녹화를 부드럽게 유지합니다. 높음은 프로세서가 바쁠 때 더 빨리 끝나지만, 끝날 때까지 PC가 끊길 수 있습니다",
+  "Normal": "보통",
   "Read video on the graphics card when exporting": "내보낼 때 그래픽 카드로 영상 읽기",
   "Takes work off the processor during an export in the editor; the export is not faster. NVIDIA cards only. If the card cannot do it, Glint reads the video the normal way": "편집기에서 내보내는 동안 프로세서의 일을 덜어줘요. 내보내기가 빨라지지는 않아요. NVIDIA 카드만 돼요. 카드가 못 하면 Glint가 평소 방식으로 영상을 읽어요",
 });

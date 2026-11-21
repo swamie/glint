@@ -105,8 +105,27 @@ function emNew(duration, tracks) {
 
 /** Segments in order: [{ i, start, end, removed }]. */
 function emSegments(m) {
-  const edges = [0, ...m.cuts, m.duration];
-  return m.removed.map((removed, i) => ({ i, start: edges[i], end: edges[i + 1], removed }));
+  return emMemo(m, "segments", () => {
+    const edges = [0, ...m.cuts, m.duration];
+    return m.removed.map((removed, i) => ({ i, start: edges[i], end: edges[i + 1], removed }));
+  });
+}
+
+/* While a timeline redraw runs (emHold), the model does not change, and the lists made from it
+ * (segments, kept ranges, parts) are built once per model instead of once per call: drawing a
+ * waveform asked for them for every bar. Outside emHold every call builds its own list, as
+ * before. Code that runs inside emHold must not change the model or the lists it is given. */
+let EM_HOLD = 0, EM_MEMO = null;
+function emHold(fn) {
+  EM_HOLD++;
+  EM_MEMO ||= new WeakMap();
+  try { return fn(); } finally { if (--EM_HOLD === 0) EM_MEMO = null; }
+}
+function emMemo(m, key, make) {
+  if (!EM_HOLD || !m || typeof m !== "object") return make();
+  let c = EM_MEMO.get(m);
+  if (!c) EM_MEMO.set(m, (c = {}));
+  return key in c ? c[key] : (c[key] = make());
 }
 
 /** Index of the segment that holds source time `t`. */
@@ -410,8 +429,10 @@ function emSetParts(m, starts, titles) {
 /** The parts in display order: [{ i, at, end, src, len, title }] (at / end: timeline seconds); [] without parts. */
 function emParts(m) {
   if (!m.parts) return [];
-  let at = 0;
-  return m.parts.map((p, i) => { const o = { i, at, end: at + p.len, src: p.src, len: p.len, title: p.title, ...(p.gap ? { gap: true } : {}), ...(emPartSp(p) !== 1 ? { speed: emPartSp(p) } : {}) }; at += p.len; return o; });
+  return emMemo(m, "parts", () => {
+    let at = 0;
+    return m.parts.map((p, i) => { const o = { i, at, end: at + p.len, src: p.src, len: p.len, title: p.title, ...(p.gap ? { gap: true } : {}), ...(emPartSp(p) !== 1 ? { speed: emPartSp(p) } : {}) }; at += p.len; return o; });
+  });
 }
 
 /** Timeline seconds of the part borders (where each part after the first starts). */
@@ -1298,14 +1319,16 @@ function emStateLoad(m, s) {
 
 /** The kept parts as merged source ranges: [{ start, end }]. */
 function emKept(m) {
-  const out = [];
-  for (const s of emSegments(m)) {
-    if (s.removed) continue;
-    const last = out[out.length - 1];
-    if (last && Math.abs(last.end - s.start) < EM_EPS) last.end = s.end;
-    else out.push({ start: s.start, end: s.end });
-  }
-  return out;
+  return emMemo(m, "kept", () => {
+    const out = [];
+    for (const s of emSegments(m)) {
+      if (s.removed) continue;
+      const last = out[out.length - 1];
+      if (last && Math.abs(last.end - s.start) < EM_EPS) last.end = s.end;
+      else out.push({ start: s.start, end: s.end });
+    }
+    return out;
+  });
 }
 
 /** Length of the finished clip before speed is applied. */

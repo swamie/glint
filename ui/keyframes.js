@@ -21,7 +21,7 @@
  * same output time. src-tauri/src/editor.rs turns the points into ffmpeg expressions.
  */
 
-const KF_NEAR = 0.03;        // a keyframe this close to the playhead (seconds) is "at the playhead"
+const KF_NEAR = 0.03;        // (until 0.1.54: a keyframe this close to the playhead, in seconds, was "at the playhead")
 const KF_MAX = 200;          // keys kept per item
 const KF_STEP = 1 / 15;      // a smooth move cut short by a cut is sent as points this far apart (output seconds)
 const KF_STEPS_MAX = 12;     // ... at most this many per piece of a move
@@ -38,21 +38,30 @@ const kfR = (x, k = 100000) => Math.round(x * k) / k;
 const kfEase = (u) => u * u * (3 - 2 * u);
 /** True if the thing has keyframes. */
 const kfHas = (o) => !!(o && Array.isArray(o.keys) && o.keys.length);
-/** Index of the key at `tm` (within KF_NEAR; the nearest), or -1. */
+/** The open clip's frame rate (60 when none is open or it is unknown). */
+const kfFps = () => { const f = typeof S !== "undefined" && S && S.player && S.player.clipMeta ? +S.player.clipMeta.fps : 0; return f > 0 && Number.isFinite(f) ? f : 60; };
+/** The frame (counted from 0) that timeline second `tm` lies in. The small allowance keeps a time that was
+ *  rounded when saved, or stepped to frame by frame, in its own frame. */
+const kfFrame = (tm) => Math.floor(tm * kfFps() + 0.05);
+/** Index of the key at `tm`, or -1. Only a key on the very same frame counts: one frame beside a keyframe is free
+ *  for a keyframe of its own (it used to be anything within 0.03 s, which at 60 fps was two frames either side). */
 function kfIndexAt(keys, tm) {
-  let best = -1, d = KF_NEAR;
-  (keys || []).forEach((k, i) => { const e = Math.abs(k.t - tm); if (e <= d) { d = e; best = i; } });
+  const f = kfFrame(tm);
+  let best = -1, d = Infinity;
+  (keys || []).forEach((k, i) => { if (kfFrame(k.t) !== f) return; const e = Math.abs(k.t - tm); if (e < d) { d = e; best = i; } });
   return best;
 }
-/** Time of the last key before `tm` (one at the playhead does not count), or null. */
+/** Time of the last key before `tm` (one on the playhead's frame does not count), or null. */
 function kfPrev(keys, tm) {
+  const f = kfFrame(tm);
   let out = null;
-  for (const k of keys || []) if (k.t < tm - KF_NEAR) out = k.t;
+  for (const k of keys || []) if (kfFrame(k.t) < f) out = k.t;
   return out;
 }
-/** Time of the first key after `tm`, or null. */
+/** Time of the first key after `tm` (on a later frame), or null. */
 function kfNext(keys, tm) {
-  for (const k of keys || []) if (k.t > tm + KF_NEAR) return k.t;
+  const f = kfFrame(tm);
+  for (const k of keys || []) if (kfFrame(k.t) > f) return k.t;
   return null;
 }
 /** The values of `fields` at timeline second `tm`: held before the first key and after the last. */
@@ -72,7 +81,7 @@ function kfPut(keys, tm, vals) {
   const list = (keys || []).map((k) => ({ ...k }));
   const i = kfIndexAt(list, tm);
   if (i >= 0) Object.assign(list[i], vals);
-  else list.push({ t: Math.max(0, kfR(tm, 10000)), ...vals });
+  else list.push({ t: Math.max(0, kfR(tm)), ...vals });
   list.sort((a, b) => a.t - b.t);
   return list.slice(0, KF_MAX);
 }
@@ -82,9 +91,10 @@ function kfPut(keys, tm, vals) {
 function kfRetime(keys, from, to, D) {
   const i = (keys || []).findIndex((k) => Math.abs(k.t - from) < 1e-6);
   if (i < 0) return from;
-  const gap = KF_NEAR * 2 + 0.001, lo = i > 0 ? keys[i - 1].t + gap : 0, hi = i < keys.length - 1 ? keys[i + 1].t - gap : D;
+  // At least one frame from each neighbour, so every keyframe keeps a frame of its own.
+  const gap = 1 / kfFps(), lo = i > 0 ? keys[i - 1].t + gap : 0, hi = i < keys.length - 1 ? keys[i + 1].t - gap : D;
   if (hi < lo) return from;
-  keys[i].t = kfR(kfClamp(to, lo, hi), 1000);
+  keys[i].t = kfR(kfClamp(to, lo, hi));
   return keys[i].t;
 }
 const kfDrop = (keys, tm) => { const i = kfIndexAt(keys, tm); return i < 0 ? keys.slice() : keys.filter((_, k) => k !== i); };
@@ -287,5 +297,5 @@ function kfControls(keys, tm, smooth) {
 
 // Lets the pure functions be tested under Node; ignored in the app.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { kfRetime, KF_NEAR, KF_STEP, KF_UNIFORM, kfEase, kfHas, kfIndexAt, kfPrev, kfNext, kfValues, kfPut, kfDrop, kfShift, kfNormOv, kfNormPiece, kfOvT, kfOvMid, kfOvBake, kfOvAt, kfOvMoveT, kfOvResizeT, kfOvFrame, kfPieceKey, kfPieceBoxes, kfPieceAt, kfPieceSet, kfPieceRefit, kfOutTrack, kfOvTrack, kfPieceTrack };
+  module.exports = { kfRetime, kfFps, kfFrame, KF_NEAR, KF_STEP, KF_UNIFORM, kfEase, kfHas, kfIndexAt, kfPrev, kfNext, kfValues, kfPut, kfDrop, kfShift, kfNormOv, kfNormPiece, kfOvT, kfOvMid, kfOvBake, kfOvAt, kfOvMoveT, kfOvResizeT, kfOvFrame, kfPieceKey, kfPieceBoxes, kfPieceAt, kfPieceSet, kfPieceRefit, kfOutTrack, kfOvTrack, kfPieceTrack };
 }

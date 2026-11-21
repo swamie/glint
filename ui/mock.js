@@ -51,7 +51,7 @@ if (!window.__TAURI__) {
       toast: true, toast_pos: "tr", toast_opacity: 96, toast_scale: 100, toast_secs: 3.5, toast_length: true, toast_game: true, toast_mic: true,
       ui_zoom: 100, blur_parallel: 2, language: "en", aspect: "auto", theme: "glint", custom_css: "", icon_theme: false, icon_accent: "", icon_accent_2: "", card_tags: [], nav_opacity: 60, theme_order: [], gif: { width: 480, fps: 20, max_mb: 0, copy: false }, upscale: { height: 2160, filter: "sharp", quality: "high", encoder: "auto" }, rules: [], rules_after_export: "", canvas_presets: [], discord_app_id: "", color_presets: [{ name: "Mine", brightness: 1.05, contrast: 1.1, saturation: 1.2, gamma: 1 }], editor_keys: {}, toast_compact: false, show_empty_main: false, renders_button: "auto", autostart: false, close_to_tray: true, update_check: true, polls: true /* polls */, update_auto: true,
       compress_mb: 10, ui_sounds: false, ui_sounds_hover: false, ui_sounds_volume: 50,
-      compress: { sizes: [10, 20, 50, 500], preset: "veryfast", audio_kbps: 0, max_height: 0, max_fps: 0, audio: "first", dest: "beside", dest_dir: "", copy: true }, theme_colors: {}, theme_presets: [{ id: "tp-mock1", name: "Night pink", base: "midnight", colors: { accent: "#ff7ab8" }, css: "" }], theme_preset: "", backdrop: "" /* backdrop */, hw_decode: "off", folder_colors: { "Best of": "#e5484d" },
+      compress: { sizes: [10, 20, 50, 500], preset: "veryfast", audio_kbps: 0, max_height: 0, max_fps: 0, audio: "first", dest: "beside", dest_dir: "", copy: true }, theme_colors: {}, theme_presets: [{ id: "tp-mock1", name: "Night pink", base: "midnight", colors: { accent: "#ff7ab8" }, css: "" }], theme_preset: "", backdrop: "" /* backdrop */, hw_decode: "off", export_priority: "low", folder_colors: { "Best of": "#e5484d" },
       ffmpeg_path: "", blur_path: "",
       keybinds: [
         { id: "a", ctrl: false, shift: false, alt: false, win: false, key: "F8", action: "clip", seconds: 30, monitor: -1 },
@@ -500,7 +500,11 @@ if (!window.__TAURI__) {
     const KEY = "glint.mockPlugins";
     const read = () => { try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch { return {}; } };
     const write = (all) => { try { localStorage.setItem(KEY, JSON.stringify(all)); } catch {} };
-    const procs = {};
+    const procs = {}, work = {}, dlRun = {};
+    const DL_KEY = "glint.mockPluginDownloads";
+    let dls = {};
+    try { dls = JSON.parse(localStorage.getItem(DL_KEY) || "{}"); } catch {}
+    const dlSave = () => { try { localStorage.setItem(DL_KEY, JSON.stringify(dls)); } catch {} };
     let loaded = null;
     const running = (all) => Object.values(all).filter((p) => p.enabled).map((p) => `${p.manifest.id} ${p.manifest.version}`).join(",");
     const index = async () => { const r = await fetch("../plugins/index.json", { cache: "no-store" }); if (!r.ok) throw `Could not reach the plugin list: HTTP ${r.status}`; return r.json(); };
@@ -535,11 +539,24 @@ if (!window.__TAURI__) {
         return api.state();
       },
       set(id, change) { const all = read(); if (change === null) delete all[id]; else if (all[id]) Object.assign(all[id], change); write(all); },
-      procStatus: ({ plugin, name }) => ({ plugin, name, running: false, pid: 0, started: 0, error: "", log: [], ...(procs[`${plugin}/${name}`] || {}) }),
+      procStatus: ({ plugin, name }) => ({ plugin, name, running: false, pid: 0, started: 0, error: "", code: null, log: [], ...(procs[`${plugin}/${name}`] || {}) }),
       // A stream key with "bad" in it fails after two seconds, as a refused key does.
-      procStart({ plugin, name, args }) {
+      procStart({ plugin, name, args, tool }) {
         const k = `${plugin}/${name}`;
-        procs[k] = { running: true, pid: 4242, started: Date.now(), error: "", log: [] };
+        procs[k] = { running: true, pid: 4242, started: Date.now(), error: "", code: null, log: [] };
+        const end = (ms, change) => setTimeout(() => { if (!procs[k].running) return; Object.assign(procs[k], { running: false, code: 0 }, change || {}); window.__mockEmit("plugin-proc", api.procStatus({ plugin, name })); }, ms);
+        window.__mockPluginRuns = [...(window.__mockPluginRuns || []), { plugin, name, tool: tool || "", args }];
+        if (tool) { // a downloaded program (speech to text): progress in its messages, then its result in the work folder
+          if (!dls[`${plugin}/${tool}`]) throw `${tool} is not downloaded yet`;
+          const of = args[args.indexOf("-of") + 1] || "", file = of.split(/[\\/]/).pop() + ".json";
+          let pct = 0;
+          const tick = setInterval(() => { const q = procs[k]; if (!q.running) return clearInterval(tick); pct = Math.min(100, pct + 20); q.log.push(`whisper_print_progress_callback: progress = ${String(pct).padStart(3)}%`); }, 300);
+          const lines = ["Okay, push them now.", "He is one shot, behind the box!", "[BLANK_AUDIO]", "Nice, that is the round.", "This subtitle line is long enough that it has to be wrapped onto a second line of the picture", "Let's go again."];
+          work[`${plugin}/${file}`] = JSON.stringify({ result: { language: "en" }, transcription: lines.map((text, i) => ({ offsets: { from: 600 + i * 2400, to: 600 + i * 2400 + 1900 }, text: " " + text })) });
+          end(1800);
+          return api.procStatus({ plugin, name });
+        }
+        if (args.includes("pcm_s16le")) { end(300); return api.procStatus({ plugin, name }); } // a clip's sound written as a WAV for it
         if (args.includes("-list_devices")) { // ffmpeg's list of cameras: it ends at once, the names are in its messages
           Object.assign(procs[k], { running: false, error: "dummy: Immediate exit requested", log: ['[in#0 @ 000001] "fake_device_0" (video)', '[in#0 @ 000001]   Alternative name "@device_pnp_1"', '[in#0 @ 000001] "Logitech C920" (video)', '[in#0 @ 000001] "Microphone (USB Audio)" (audio)'] });
           setTimeout(() => window.__mockEmit("plugin-proc", api.procStatus({ plugin, name })), 150);
@@ -550,6 +567,41 @@ if (!window.__TAURI__) {
         if (/bad/.test(args[args.length - 1])) setTimeout(() => { Object.assign(procs[k], { running: false, error: "rtmp://live.twitch.tv/app/…: Input/output error" }); window.__mockEmit("plugin-proc", api.procStatus({ plugin, name })); }, 2000);
         return api.procStatus({ plugin, name });
       },
+      // A plugin's downloads: nothing is fetched here, the bar just fills.
+      dlState({ plugin }) { return (read()[plugin]?.manifest.downloads || []).map((d) => ({ id: d.id, name: d.name || d.id, size: d.size, installed: !!dls[`${plugin}/${d.id}`], busy: !!dlRun[`${plugin}/${d.id}`] })); },
+      async dlGet({ plugin, id }) {
+        const d = (read()[plugin]?.manifest.downloads || []).find((x) => x.id === id), k = `${plugin}/${id}`;
+        if (!d) throw "The plugin has no such download";
+        dlRun[k] = { cancel: false };
+        for (let i = 0; i <= 10; i++) {
+          if (dlRun[k].cancel) { delete dlRun[k]; window.__mockEmit("plugin-download", { plugin, id, phase: "error", done: 0, total: d.size, error: "Cancelled." }); throw "Cancelled."; }
+          window.__mockEmit("plugin-download", { plugin, id, phase: "download", done: (d.size * i) / 10, total: d.size, error: "" });
+          await new Promise((r) => setTimeout(r, 120));
+        }
+        delete dlRun[k];
+        dls[k] = true; dlSave();
+        window.__mockEmit("plugin-download", { plugin, id, phase: "done", done: d.size, total: d.size, error: "" });
+        return api.dlState({ plugin });
+      },
+      dlCancel({ plugin, id }) { const r = dlRun[`${plugin}/${id}`]; if (r) r.cancel = true; return !!r; },
+      dlRemove({ plugin, id }) { delete dls[`${plugin}/${id}`]; dlSave(); return api.dlState({ plugin }); },
+      workRead({ plugin, name }) { const x = work[`${plugin}/${name}`]; if (x === undefined) throw "The plugin's process wrote no result"; return x; },
+      workClear({ plugin }) { for (const k of Object.keys(work)) if (k.startsWith(plugin + "/")) delete work[k]; return true; },
+      // A live stream (live.rs): a key with "bad" in it loses its connection, tries again, then gives up.
+      liveStart({ plugin, name, spec }) {
+        const k = `${plugin}/${name}`;
+        const p = (procs[k] = { running: true, pid: 4243, started: Date.now(), error: "", log: [], live: { state: "starting", note: "", restarts: 0, reconnects: 0, showing: spec.source.kind === "monitor" ? "monitor" : window.__mockNoGame ? "card" : "window" } });
+        window.__mockLiveSpec = spec;
+        const emit = () => window.__mockEmit("plugin-proc", api.procStatus({ plugin, name }));
+        const tick = setInterval(() => { if (!p.running) return clearInterval(tick); const s = Math.round((Date.now() - p.started) / 1000); p.log.push(`frame=${s * 60} fps= 60 q=-1.0 size=${s * 750}KiB time=00:00:${String(s).padStart(2, "0")}.00 bitrate=5998.3kbits/s speed=1x`); p.log = p.log.slice(-40); }, 2000);
+        setTimeout(() => { if (p.running) { p.live.state = "live"; emit(); } }, 600);
+        if (/bad/.test(spec.send[spec.send.length - 1])) {
+          setTimeout(() => { if (p.running) { p.live.state = "reconnecting"; p.live.note = "rtmp://live.twitch.tv/…: Input/output error"; p.live.reconnects = 1; emit(); } }, 2000);
+          setTimeout(() => { if (p.running) { Object.assign(p, { running: false, error: "rtmp://live.twitch.tv/…: Input/output error" }); emit(); } }, 6000);
+        }
+        return api.procStatus({ plugin, name });
+      },
+      liveUpdate({ plugin, name, spec }) { (window.__mockLiveUpdates ||= []).push(spec); return api.procStatus({ plugin, name }); },
       procStop({ plugin, name }) { const p = procs[`${plugin}/${name}`]; if (p) p.running = false; window.__mockEmit("plugin-proc", api.procStatus({ plugin, name })); return api.procStatus({ plugin, name }); },
     };
     return api;
@@ -1103,6 +1155,7 @@ if (!window.__TAURI__) {
             if (kind !== "plugin") return null;
             const name = "live", saved = state.settings.plugins?.[plugin]?.procs?.[name];
             if (mockPlugins.procStatus({ plugin, name }).running) mockPlugins.procStop({ plugin, name });
+            else if (saved?.live) mockPlugins.liveStart({ plugin, name, spec: saved.live });
             else if (saved?.args?.length) mockPlugins.procStart({ plugin, name, args: saved.args });
             window.__mockEmit("plugin-action", { plugin, action });
             return null;
@@ -1114,16 +1167,52 @@ if (!window.__TAURI__) {
           case "plugin_set_enabled": mockPlugins.set(args.id, { enabled: args.on }); return mockPlugins.state();
           case "plugin_uninstall": mockPlugins.set(args.id, null); return mockPlugins.state();
           case "plugins_restart": location.reload(); return null;
+          case "plugin_open": return null;
+          case "plugin_http": { // Twitch, as far as the Stream plugin talks to it: sign in with a code, the account, its stream key
+            const u = args.url, body = new URLSearchParams(args.body || ""), ok = (o) => ({ status: 200, body: JSON.stringify(o) });
+            const tw = (window.__mockTwitch ||= { polls: 0, key: "live_999_fromtwitch", refreshOk: true });
+            if (u.endsWith("/oauth2/device")) { tw.polls = 0; return ok({ device_code: "dev123", user_code: "ABCD-EFGH", verification_uri: "https://www.twitch.tv/activate?device-code=ABCD-EFGH", expires_in: 1800, interval: 1 }); }
+            if (u.endsWith("/oauth2/token")) {
+              if (body.get("grant_type") === "refresh_token") return tw.refreshOk ? ok({ access_token: "acc2", refresh_token: "ref2", scope: tw.oldScope ? ["channel:read:stream_key"] : ["channel:read:stream_key", "channel:manage:broadcast"] }) : { status: 400, body: JSON.stringify({ status: 400, message: "Invalid refresh token" }) };
+              return ++tw.polls < 2 ? { status: 400, body: JSON.stringify({ status: 400, message: "authorization_pending" }) } : ok({ access_token: "acc1", refresh_token: "ref1", scope: ["channel:read:stream_key", "channel:manage:broadcast"] });
+            }
+            if (u.includes("/helix/channels")) {
+              if (args.method === "PATCH") { tw.channel = { ...(tw.channel || {}), ...JSON.parse(args.body) }; (window.__mockTwitchPatches ||= []).push(JSON.parse(args.body)); return { status: 204, body: "" }; }
+              return ok({ data: [{ title: "Ranked grind, come say hi", game_name: "Overwatch 2", game_id: "515025", tags: ["English", "FPS"] }] });
+            }
+            if (u.includes("/helix/games")) { const n = new URL(u).searchParams.get("name"); return ok({ data: /overwatch 2|just chatting/i.test(n) ? [{ id: "515025", name: n }] : [] }); }
+            if (u.includes("/helix/search/categories")) { const q = new URL(u).searchParams.get("query"); return ok({ data: /zzz/.test(q) ? [] : [{ id: "33214", name: q.replace(/^./, (x) => x.toUpperCase()) }] }); }
+            if (u.includes("/helix/videos")) return ok({ data: [{ url: "https://www.twitch.tv/videos/2299887766", created_at: new Date().toISOString() }] });
+            if (u.includes("/helix/users")) return ok({ data: [{ id: "999", login: "voidkay", display_name: "VoidKay" }] });
+            if (u.includes("/helix/streams/key")) return ok({ data: [{ stream_key: tw.key }] });
+            return { status: 404, body: "" };
+          }
           case "plugin_file_keep": if (!/\.(png|jpe?g|gif|webp|bmp)$/i.test(args.path)) throw "Only pictures can be added: PNG, JPEG, GIF, WebP or BMP"; return { path: args.path, name: args.path.split(/[\\/]/).pop(), size: 1234 };
           case "plugin_file_drop": return true;
+          case "plugin_live_start": return mockPlugins.liveStart(args);
+          case "plugin_live_update": return mockPlugins.liveUpdate(args);
+          case "plugin_windows": return [
+            { hwnd: 197342, title: "Overwatch", exe: "Overwatch.exe", minimized: false, excluded: false },
+            { hwnd: 263010, title: "#general | Glint - Discord", exe: "Discord.exe", minimized: false, excluded: false },
+            { hwnd: 329558, title: "lofi beats - YouTube - Google Chrome", exe: "chrome.exe", minimized: false, excluded: false },
+            { hwnd: 461120, title: "Spotify Premium", exe: "Spotify.exe", minimized: true, excluded: false },
+          ];
           case "plugin_proc_start": return mockPlugins.procStart(args);
           case "plugin_proc_stop": return mockPlugins.procStop(args);
           case "plugin_proc_status": return mockPlugins.procStatus(args);
+          case "plugin_dl_state": return mockPlugins.dlState(args);
+          case "plugin_dl_get": return mockPlugins.dlGet(args);
+          case "plugin_dl_cancel": return mockPlugins.dlCancel(args);
+          case "plugin_dl_remove": return mockPlugins.dlRemove(args);
+          case "plugin_work_read": return mockPlugins.workRead(args);
+          case "plugin_work_clear": return mockPlugins.workClear(args);
+          case "plugin_save_text": window.__mockSavedText = { name: args.name, text: args.text }; return `C:\\Users\\you\\Videos\\${args.name}`;
           default: return null;
         }
       },
     },
-    event: { listen: async (name, fn) => { (listeners[name] ||= []).push(fn); return () => {}; } },
+    // emitTo (the library window, libwin.js): kept in window.__mockSent; in the browser there is one window only.
+    event: { listen: async (name, fn) => { (listeners[name] ||= []).push(fn); return () => {}; }, emitTo: async (target, name, payload) => { (window.__mockSent ||= []).push([target, name, payload]); } },
   };
   // Fire a backend event by hand: window.__mockEmit("blur-progress", { id, pct, state, message }).
   window.__mockEmit = (name, payload) => (listeners[name] || []).forEach((fn) => fn({ payload }));

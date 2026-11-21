@@ -166,6 +166,16 @@ pub fn run(args: &[String]) {
             Ok(meta) => {
                 let probe = c.ffmpeg.as_ref().and_then(|f| library::probe(f, std::path::Path::new(&meta.path), true));
                 let size_ok = probe.as_ref().is_some_and(|p| p.width == c.width && p.height == c.height);
+                // The thumbnail is made after the clip is announced: give it a moment.
+                let mut has_thumb = false;
+                for _ in 0..50 {
+                    has_thumb = core.lib.lock().unwrap().get(&meta.id).is_some_and(|m| !m.thumb.is_empty());
+                    if has_thumb || !crate::import::thumb_pending(&meta.id) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+                let has_thumb = has_thumb || core.lib.lock().unwrap().get(&meta.id).is_some_and(|m| !m.thumb.is_empty());
                 clip_json = json!({
                     "ok": true,
                     "monitor": c.monitor,
@@ -178,7 +188,7 @@ pub fn run(args: &[String]) {
                     "save_ms": clip_ms,
                     "size_mb": meta.size as f64 / 1e6,
                     "audio_tracks": meta.audio_tracks,
-                    "thumb": !meta.thumb.is_empty(),
+                    "thumb": has_thumb,
                     "probe": probe,
                     "path": meta.path,
                 });

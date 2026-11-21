@@ -1,6 +1,6 @@
 [package]
 name = "glint"
-version = "0.1.54"
+version = "0.1.55"
 edition = "2021"
 description = "Offline instant-replay clipper"
 default-run = "glint"
@@ -21,6 +21,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-single-instance = "2"
+# Drags clips out of the library window as files (onto the editor, or into any other app).
+tauri-plugin-drag = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 cpal = "0.15"
@@ -37,6 +39,12 @@ png = "0.17"
 # Named directly because `windows::core::implement` expands to `::windows_core` paths
 # (procaudio.rs). Already a dependency of `windows`: nothing new is downloaded.
 windows-core = "0.58"
+
+# The window's WebView2 itself, to answer its camera requests (camperm.rs). Both are the versions
+# tauri already builds with: nothing new is downloaded. windows-core is named a second time because
+# WebView2's types are made with a newer one than the rest of Glint uses.
+webview2-com = "0.39"
+windows-core-wv = { package = "windows-core", version = "0.62" }
 
 [dependencies.windows]
 version = "0.58"

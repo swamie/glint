@@ -111,7 +111,12 @@ function ovNorm(o) {
     return out;
   }
   if (o.kind !== "blur") { out.color = ovColorOk(o.color) ? o.color : "#ffffff"; }
-  if (o.kind === "text") Object.assign(out, { x: f(o.x), y: f(o.y), text: String(o.text ?? ""), size: ovClamp(ovNum(o.size, 0.07), 0.01, 0.5), outline: o.outline !== false });
+  if (o.kind === "text") {
+    Object.assign(out, { x: f(o.x), y: f(o.y), text: String(o.text ?? ""), size: ovClamp(ovNum(o.size, 0.07), 0.01, 0.5), outline: o.outline !== false });
+    // 0.1.55: a centred text (`x` is the middle of its lines: subtitles), and the mark of whatever made it (a plugin's id).
+    if (o.align === "center") out.align = "center";
+    if (typeof o.tag === "string" && /^[a-z0-9-]{1,40}$/.test(o.tag)) out.tag = o.tag;
+  }
   else if (o.kind === "line" || o.kind === "arrow") Object.assign(out, { x1: f(o.x1), y1: f(o.y1), x2: f(o.x2), y2: f(o.y2), width: ovClamp(ovNum(o.width, 4 / 720), 0.0005, 0.1) });
   else if (o.kind === "pen") Object.assign(out, { pts: Array.isArray(o.pts) ? o.pts.filter((p) => Array.isArray(p) && p.length >= 2).map((p) => [f(p[0]), f(p[1])]) : [], width: ovClamp(ovNum(o.width, 4 / 720), 0.0005, 0.1) });
   else {
@@ -141,7 +146,7 @@ const ovLines = (o) => String(o.text || "").split("\n");
 function ovTextBox(o, W, H, measure) {
   const px = o.size * H, lines = ovLines(o);
   const w = Math.max(px * 0.5, ...lines.map((l) => measure(l, px)));
-  return { x: o.x * W, y: o.y * H, w, h: lines.length * px * OV_LINE_H };
+  return { x: o.x * W - (o.align === "center" ? w / 2 : 0), y: o.y * H, w, h: lines.length * px * OV_LINE_H };
 }
 
 /** The item's box in pixels of a W x H picture: { x, y, w, h }. */
@@ -221,7 +226,7 @@ function ovResized(o0, k, x, y, W, H, measure) {
     const lines = ovLines(o).length, b = ovTextBox(o, W, H, measure);
     // The box grows with the corner: whichever of width and height asks for more.
     const byH = (y - o.y) / (lines * OV_LINE_H);
-    const byW = b.w > 0 ? o.size * (((x - o.x) * W) / b.w) : byH;
+    const byW = b.w > 0 ? o.size * (((x - o.x) * W) / (o.align === "center" ? b.w / 2 : b.w)) : byH;
     o.size = ovClamp(Math.max(byH, byW), 0.015, 0.5);
     return o;
   }
@@ -308,6 +313,7 @@ function ovDraw(ctx, list, W, H, skip, tm = 0, videos = null) {
       const px = o.size * H;
       ctx.font = ovFont(px);
       ctx.textBaseline = "top";
+      if (o.align === "center") ctx.textAlign = "center";
       ovLines(o).forEach((line, i) => {
         const x = o.x * W, y = o.y * H + i * px * OV_LINE_H + px * 0.08;
         if (o.outline) {
@@ -896,9 +902,11 @@ function ovMount(root, c, P) {
     const o = st.typing && atTime(item(st.typing.id), now());
     if (!o) return;
     const px = o.size * st.H;
+    const width = Math.max(px * 2, ...ovLines({ text: editor.value || " " }).map((l) => ovMeasure(l, px))) + px;
     Object.assign(editor.style, {
-      left: `${o.x * st.W}px`, top: `${o.y * st.H}px`, font: ovFont(px), lineHeight: `${px * OV_LINE_H}px`, color: o.color,
-      width: `${Math.max(px * 2, ...ovLines({ text: editor.value || " " }).map((l) => ovMeasure(l, px))) + px}px`,
+      left: `${o.x * st.W - (o.align === "center" ? width / 2 : 0)}px`, top: `${o.y * st.H}px`, font: ovFont(px), lineHeight: `${px * OV_LINE_H}px`, color: o.color,
+      textAlign: o.align === "center" ? "center" : "left",
+      width: `${width}px`,
       height: `${ovLines({ text: editor.value || " " }).length * px * OV_LINE_H + 4}px`,
       textShadow: o.outline ? "0 0 3px #000, 0 0 3px #000" : "none",
     });

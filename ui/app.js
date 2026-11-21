@@ -55,6 +55,8 @@ const PICON = {
   vol: '<svg viewBox="0 0 24 24"><path d="M4 9.5v5h3.5l4.500 4v-13l-4.500 4z" fill="currentColor" stroke="none"/><path d="M15.5 9a4.200 4.200 0 0 1 0 6M18 6.500a7.800 7.800 0 0 1 0 11"/></svg>',
   mute: '<svg viewBox="0 0 24 24"><path d="M4 9.5v5h3.5l4.500 4v-13l-4.500 4z" fill="currentColor" stroke="none"/><path d="m16 9.500 5 5M21 9.500l-5 5"/></svg>',
   full: '<svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
+  // The library in a window of its own (libwin.js): a window in front of another, with a row of clips in it.
+  libwin: '<svg viewBox="0 0 24 24"><path d="M7 7V5.500a1.500 1.500 0 0 1 1.500-1.500h11a1.500 1.500 0 0 1 1.500 1.500v9a1.500 1.500 0 0 1-1.500 1.500H18"/><rect x="3" y="8" width="14" height="12" rx="1.500"/><path d="M3 12h14M7.500 12v8M12.500 12v8"/></svg>',
   loop: '<svg viewBox="0 0 24 24"><path d="m17 3 3 3-3 3M4 11V9a3 3 0 0 1 3-3h13M7 21l-3-3 3-3M20 13v2a3 3 0 0 1-3 3H4"/></svg>',
   back: '<svg viewBox="0 0 24 24"><path d="m11 6-6 6 6 6M19 6l-6 6 6 6"/></svg>',
   fwd: '<svg viewBox="0 0 24 24"><path d="m13 6 6 6-6 6M5 6l6 6-6 6"/></svg>',
@@ -477,7 +479,7 @@ function cardHtml(c) {
   // once reset a background-image's size, so cards showed only the frame's top-left corner.
   return `<article class="card${S.sel.has(c.id) ? " sel" : ""}" data-clip="${c.id}" data-hover>
     <div class="thumb" ${bg}>
-      ${c.thumb ? `<img class="thumb-img" src="${esc(fileSrc(c.thumb))}" alt="" draggable="false" decoding="async" onerror="this.remove();thumbAsk(${esc(JSON.stringify(c.id))},true)" style="${THUMB_IMG_STYLE}">` : `<div class="ph">${esc(c.game.slice(0, 1).toUpperCase())}</div>`}
+      ${c.thumb ? `<img class="thumb-img" src="${esc(fileSrc(c.thumb))}" alt="" draggable="false" decoding="async" loading="lazy" onerror="this.remove();thumbAsk(${esc(JSON.stringify(c.id))},true)" style="${THUMB_IMG_STYLE}">` : `<div class="ph">${esc(c.game.slice(0, 1).toUpperCase())}</div>`}
       <span class="check" title="${esc(t("Select"))}">${ICON.check}</span>
       ${tag}
       ${typeof shareCardBadge === "function" ? shareCardBadge(c) : "" /* share.js: the cloud tag of an uploaded clip */}
@@ -573,10 +575,13 @@ function renderLibrary() {
   // The Library has no subtitle: beside its title, a trail shows the folder and game filters (library2.js).
   const titles = { library: [t("Library"), ""], favorites: [t("Favorites"), t("Clips you starred")], rendered: [t("Rendered"), t("Clips finished with Blur")] };
   const [title, sub] = titles[S.page];
-  const gameRow = gameRowHtml(visibleClips().base); // may reset S.tab, so it runs before the list is built
+  let shown = visibleClips();
+  const tabWas = S.tab, folderWas = S.folder;
+  const gameRow = gameRowHtml(shown.base); // may reset S.tab, so it runs before the list is built
   if (S.folder && !S.folders.includes(S.folder)) S.folder = null; // a folder that is gone: before the trail names it
   const trail = S.page === "library" && typeof libTrailHtml === "function" ? libTrailHtml(S.folder, S.tab, t("Main folder")) : "";
-  const { list } = visibleClips();
+  if (S.tab !== tabWas || S.folder !== folderWas) shown = visibleClips(); // filtered and sorted once, twice only when the tab or folder was reset
+  const { list } = shown;
   const binds = clipBinds().filter((k) => k.key);
   const empty = S.clips.length
     ? `<div class="empty"><h2>${t("Nothing here")}</h2>${t("No clips match this view.")}</div>`
@@ -1493,6 +1498,7 @@ function renderRecording() {
       ${s.bitrate ? "" : row(t("Quality"), st.max_mbps ? t("Current ceiling {mbps} Mbps; quiet scenes use much less", { mbps: st.max_mbps.toFixed(0) }) : t("Quality-targeted bitrate"), select("quality", [["low", t("Low")], ["medium", t("Medium")], ["high", t("High")], ["ultra", t("Ultra")]]))}
       ${row(t("Encoder"), t("Auto picks your GPU's hardware encoder"), select("encoder", [["auto", t("Auto")], ["nvenc", "NVIDIA NVENC"], ["amf", "AMD AMF"], ["qsv", "Intel Quick Sync"], ["x264", t("x264 (CPU, heavy)")]]))}
       ${row(t("Read video on the graphics card when exporting"), t("Takes work off the processor during an export in the editor; the export is not faster. NVIDIA cards only. If the card cannot do it, Glint reads the video the normal way"), select("hw_decode", [["off", t("Off")], ["auto", t("On")]]))}
+      ${row(t("Export priority"), t("How much of the processor an export in the editor may take. Low keeps games and the recording smooth. High finishes sooner when the processor is busy, and the PC may stutter until it is done"), select("export_priority", [["low", t("Low")], ["normal", t("Normal")], ["high", t("High")]]))}
       ${row(t("Capture method"), t("Graphics Capture is smoother at high frame rates") + win10CaptureHint() + (typeof cap2BorderHint === "function" ? cap2BorderHint() : ""), select("method", [["auto", t("Auto")], ["wgc", "Windows Graphics Capture"], ["dda", "Desktop Duplication"]]))}
       ${row(t("Show cursor"), "", toggle("cursor"))}
     </div>
@@ -1832,7 +1838,11 @@ document.addEventListener("input", (e) => {
 document.addEventListener("change", (e) => {
   const el = e.target;
   if (el.id === "sort") { S.sort = el.value; return render(); }
-  if ("lang" in el.dataset) { S.settings.language = glintSetLanguage(el.value); return saveSettings(true); }
+  if ("lang" in el.dataset) {
+    // The language's texts are fetched first (lang/index.js): only the language in use is loaded at start.
+    const code = el.value;
+    return glintLoadLanguage(code).then(() => { S.settings.language = glintSetLanguage(code); return saveSettings(true); });
+  }
   if (el.dataset.kbf) {
     const k = S.settings.keybinds[+el.dataset.kb];
     if (el.dataset.kbf === "seconds" && el.value === "custom") {
@@ -1929,10 +1939,24 @@ $("#btn-clip").onclick = async () => {
 };
 
 /* ---------- data ---------- */
-async function refreshClips() {
-  S.clips = ((await invoke("list_clips")) || []).filter((c) => !c.draft); // drafts ("Edit together") are held by join.js only
-  S.folders = (await invoke("list_folders")) || [];
-  S.games = (await invoke("list_games")) || [];
+/* Read the clips, folders and games again and redraw. The three are asked for together. Calls that
+ * arrive while one is running share a single run that starts when it ends (a thumbnail refresh or
+ * an import announces every clip: each used to read and redraw everything, one after the other);
+ * that run starts after the call, so what it shows is never older than the call. */
+let rcRunning = null, rcNext = null;
+function refreshClips() {
+  if (!rcRunning) {
+    rcRunning = refreshClipsNow().finally(() => { rcRunning = null; });
+    return rcRunning;
+  }
+  rcNext ||= rcRunning.catch(() => {}).then(() => { rcNext = null; return refreshClips(); });
+  return rcNext;
+}
+async function refreshClipsNow() {
+  const [clips, folders, games] = await Promise.all([invoke("list_clips"), invoke("list_folders"), invoke("list_games")]);
+  S.clips = (clips || []).filter((c) => !c.draft); // drafts ("Edit together") are held by join.js only
+  S.folders = folders || [];
+  S.games = games || [];
   const ids = new Set(S.clips.map((c) => c.id));
   for (const id of [...S.sel]) if (!ids.has(id)) S.sel.delete(id);
   render();
@@ -1943,6 +1967,7 @@ async function refreshState() {
   if (typeof plugEnsureSettings === "function") plugEnsureSettings(); // plugins.js: a plugin's settings keep their defaults
   if (!S.sounds.length) S.sounds = (await invoke("list_sounds")) || [];
   window.applyGlintTheme(S.settings.theme, S.settings.custom_css);
+  await glintLoadLanguage(S.settings.language || "en"); // at once when it is loaded already (lang/index.js)
   glintSetLanguage(S.settings.language || "en");
   prMigrate(); // colorpick.js: old custom colors / CSS become the preset "My theme" (the look does not change)
   S.version = st.version;
