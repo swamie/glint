@@ -507,7 +507,7 @@ impl Settings {
 
     pub fn save(&self) {
         if let Ok(t) = serde_json::to_string_pretty(self) {
-            let _ = fs::write(Self::file(), t);
+            let _ = util::write_atomic(&Self::file(), t);
         }
     }
 

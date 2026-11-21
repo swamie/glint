@@ -358,6 +358,7 @@ fn move_files(moves: &[(usize, PathBuf, PathBuf)]) -> (Vec<(usize, PathBuf)>, Ve
 /// Rename every clip in `ids` as the plan says. Clips that cannot be renamed
 /// are left exactly as they were and listed in `failed`.
 pub fn apply(core: &Core, ids: &[String], o: &BulkOpts) -> Result<BulkDone, String> {
+    let _once = crate::library::batch(&core.lib); // library.json is written once, at the end
     let _run = RUN.lock().unwrap_or_else(|e| e.into_inner());
     let items = gather(core, ids);
     if items.is_empty() {
@@ -410,6 +411,7 @@ pub fn apply(core: &Core, ids: &[String], o: &BulkOpts) -> Result<BulkDone, Stri
 /// Put back the names the bulk rename `token` replaced. A clip that has moved
 /// or been renamed since keeps its file where it is and only gets its old title.
 pub fn undo(core: &Core, token: &str) -> Result<BulkDone, String> {
+    let _once = crate::library::batch(&core.lib); // library.json is written once, at the end
     let _run = RUN.lock().unwrap_or_else(|e| e.into_inner());
     let rec = {
         let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());

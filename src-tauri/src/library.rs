@@ -48,6 +48,29 @@ pub struct ClipMeta {
 
 pub struct Library {
     pub clips: Vec<ClipMeta>,
+    /// Batches open right now (`batch`): while there is one, `save` only notes that there is something to write.
+    hold: u32,
+    dirty: bool,
+}
+
+/// While this lives, changes to the library are written once, when it is dropped, not once per clip
+/// (deleting, moving or renaming many clips wrote the whole of library.json for each of them).
+pub struct Batch<'a>(&'a std::sync::Mutex<Library>);
+
+/// Open a batch on `lib`. The lock is not held in between: only the writing waits.
+pub fn batch(lib: &std::sync::Mutex<Library>) -> Batch<'_> {
+    lib.lock().unwrap_or_else(|e| e.into_inner()).hold += 1;
+    Batch(lib)
+}
+
+impl Drop for Batch<'_> {
+    fn drop(&mut self) {
+        let mut l = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        l.hold = l.hold.saturating_sub(1);
+        if l.hold == 0 && l.dirty {
+            l.save();
+        }
+    }
 }
 
 impl Library {
@@ -58,12 +81,17 @@ impl Library {
     pub fn load() -> Self {
         let mut clips: Vec<ClipMeta> = fs::read_to_string(Self::file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         clips.retain(|c| c.cloud_only || Path::new(&c.path).is_file());
-        Library { clips }
+        Library { clips, hold: 0, dirty: false }
     }
 
-    pub fn save(&self) {
+    pub fn save(&mut self) {
+        if self.hold > 0 {
+            self.dirty = true; // written when the batch ends
+            return;
+        }
+        self.dirty = false;
         if let Ok(t) = serde_json::to_string(&self.clips) {
-            let _ = fs::write(Self::file(), t);
+            let _ = util::write_atomic(&Self::file(), t);
         }
     }
 

@@ -58,6 +58,9 @@ pub fn native_mode(modes: &[(u32, u32)]) -> (u32, u32) {
     (w, h)
 }
 
+/// The native size of each monitor (by `Monitor::id`) and when it was worked out.
+static NATIVE: std::sync::Mutex<std::collections::BTreeMap<String, ((u32, u32), std::time::Instant)>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
 /// Displays attached to the desktop, primary first (matches capture index 0).
 pub fn monitors() -> Vec<Monitor> {
     let mut out = Vec::new();
@@ -74,23 +77,35 @@ pub fn monitors() -> Vec<Monitor> {
         }
         let mut dm = DEVMODEW { dmSize: size_of::<DEVMODEW>() as u16, ..Default::default() };
         if unsafe { EnumDisplaySettingsW(PCWSTR(dd.DeviceName.as_ptr()), ENUM_CURRENT_SETTINGS, &mut dm) }.as_bool() {
-            let mut modes: Vec<(u32, u32)> = vec![(dm.dmPelsWidth, dm.dmPelsHeight)];
-            let mut mode = 0u32;
-            loop {
-                let mut m = DEVMODEW { dmSize: size_of::<DEVMODEW>() as u16, ..Default::default() };
-                if !unsafe { EnumDisplaySettingsW(PCWSTR(dd.DeviceName.as_ptr()), windows::Win32::Graphics::Gdi::ENUM_DISPLAY_SETTINGS_MODE(mode), &mut m) }.as_bool() {
-                    break;
+            // The list of modes a display offers is long (hundreds of entries) and this runs several
+            // times a second: the native size found in it is kept per monitor for a minute. The
+            // current mode above is always read fresh.
+            let id = stable_id(&dd);
+            let current = (dm.dmPelsWidth, dm.dmPelsHeight);
+            let kept = NATIVE.lock().unwrap_or_else(|e| e.into_inner()).get(&id).filter(|(_, at)| at.elapsed() < std::time::Duration::from_secs(60)).map(|(n, _)| *n);
+            // A mode larger than the kept native size means the list changed (a new driver, a custom resolution).
+            let kept = kept.filter(|n| current.0 as u64 * current.1 as u64 <= n.0 as u64 * n.1 as u64);
+            let (native_width, native_height) = kept.unwrap_or_else(|| {
+                let mut modes: Vec<(u32, u32)> = vec![current];
+                let mut mode = 0u32;
+                loop {
+                    let mut m = DEVMODEW { dmSize: size_of::<DEVMODEW>() as u16, ..Default::default() };
+                    if !unsafe { EnumDisplaySettingsW(PCWSTR(dd.DeviceName.as_ptr()), windows::Win32::Graphics::Gdi::ENUM_DISPLAY_SETTINGS_MODE(mode), &mut m) }.as_bool() {
+                        break;
+                    }
+                    if !modes.contains(&(m.dmPelsWidth, m.dmPelsHeight)) {
+                        modes.push((m.dmPelsWidth, m.dmPelsHeight));
+                    }
+                    mode += 1;
                 }
-                if !modes.contains(&(m.dmPelsWidth, m.dmPelsHeight)) {
-                    modes.push((m.dmPelsWidth, m.dmPelsHeight));
-                }
-                mode += 1;
-            }
-            let (native_width, native_height) = native_mode(&modes);
+                let n = native_mode(&modes);
+                NATIVE.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), (n, std::time::Instant::now()));
+                n
+            });
             out.push(Monitor {
                 native_width,
                 native_height,
-                id: stable_id(&dd),
+                id,
                 adapter: wide_to_string(&dd.DeviceString),
                 index: 0,
                 name: wide_to_string(&dd.DeviceName).trim_start_matches("\\\\.\\").to_string(),
@@ -772,8 +787,14 @@ pub struct Hardware {
     pub windows_build: u32,
 }
 
-/// Read the display adapters and the CPU name from the registry (no WMI, so it is instant).
+/// The display adapters and the CPU name. Read once per run: the window asks on every refresh.
 pub fn hardware() -> Hardware {
+    static HW: std::sync::OnceLock<Hardware> = std::sync::OnceLock::new();
+    HW.get_or_init(read_hardware).clone()
+}
+
+/// Read them from the registry (no WMI, so it is instant).
+fn read_hardware() -> Hardware {
     use winreg::enums::HKEY_LOCAL_MACHINE;
     use winreg::RegKey;
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);

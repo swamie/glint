@@ -1100,6 +1100,7 @@ impl Core {
         if !Path::new(&new.path).is_file() {
             return Err("The exported clip's file is missing, so nothing was replaced".into());
         }
+        let _once = crate::library::batch(&self.lib); // library.json is written once, at the end
         let mut out = Replaced::default();
         let mut first: Option<ClipMeta> = None;
         let mut seen: Vec<&String> = Vec::new();
@@ -1164,6 +1165,7 @@ impl Core {
         std::fs::create_dir_all(&dest).map_err(|e| format!("Could not create the folder: {e}"))?;
         let mut moved = 0;
         let mut failed: Vec<String> = Vec::new();
+        let _once = crate::library::batch(&self.lib); // library.json is written once, at the end
         for id in ids {
             let Some(meta) = self.lib.lock().unwrap().get(id) else { continue };
             let src = PathBuf::from(&meta.path);
