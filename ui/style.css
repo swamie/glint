@@ -349,7 +349,7 @@ button.share-badge:hover { filter: brightness(1.15); }
 .p-knob { position: absolute; top: 11px; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); transform: scale(0); transition: transform .1s; pointer-events: none; }
 .p-bar:hover .p-knob, .p-bar.drag .p-knob { transform: scale(1); }
 .p-h { position: absolute; top: 0; width: 10px; height: 22px; margin-left: -5px; border-radius: 3px; background: #fff; border: 2px solid var(--accent); cursor: ew-resize; }
-.p-tip { position: absolute; bottom: 27px; transform: translateX(-50%); padding: 2px 6px; border-radius: 5px; background: rgba(7, 10, 16, .94); border: 1px solid var(--line-2); font: 600 11.5px var(--mono); white-space: nowrap; pointer-events: none; }
+.p-tip { position: absolute; bottom: 27px; transform: translateX(-50%); padding: 2px 6px; border-radius: 5px; background: rgba(7, 10, 16, .94); border: 1px solid var(--line-2); font: 600 11.5px var(--sans); font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; }
 .p-big[hidden], .p-h[hidden], .p-range[hidden], .p-tip[hidden], .trim-row[hidden] { display: none; }
 .p-row { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
 .p-row button { width: 32px; height: 32px; display: grid; place-items: center; background: none; border: 0; border-radius: 6px; color: #fff; cursor: pointer; }
@@ -357,7 +357,7 @@ button.share-badge:hover { filter: brightness(1.15); }
 .p-row button.on { color: var(--accent); }
 .p-row button.p-text { width: auto; min-width: 42px; padding: 0 8px; font: 700 12.5px var(--sans); }
 .p-row svg { width: 18px; height: 18px; }
-.p-clock { margin-left: 8px; font: 600 12.5px var(--mono); color: #dfe6f0; }
+.p-clock { margin-left: 8px; font: 600 13px var(--sans); font-variant-numeric: tabular-nums; letter-spacing: .01em; color: #dfe6f0; }
 .p-row .sp { flex: 1; }
 .p-vol { width: 76px; height: 4px; margin: 0 8px 0 2px; appearance: none; border-radius: 2px; background: rgba(255, 255, 255, .28); outline: 0; cursor: pointer; }
 .p-vol::-webkit-slider-thumb { appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #fff; }
