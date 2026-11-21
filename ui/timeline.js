@@ -2443,6 +2443,10 @@ function mountTimeline(host, opts) {  const m = opts.model;
 
   function draw() {
     if (!st.laneW) return;
+    // Nothing below changes the model: its lists are built once for the whole redraw (editmodel.js).
+    return typeof emHold === "function" ? emHold(drawNow) : drawNow();
+  }
+  function drawNow() {
     const C = colors();
     if (st.dirtyAll || st.dirtyRuler) drawRuler(C);
     for (const L of st.lanes) {
@@ -2495,6 +2499,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
     if (!st.drag && Number.isFinite(st.lastT) && now !== st.lastT) follow(st.lastT, now);
     st.lastT = now;
     st.shownT = now;
+    flushMove(st.drag);
     if (st.drag?.moved && st.drag.type !== "click") edgeScroll();
     if (st.dirtyAll || st.dirtyRuler || st.dirty.size) draw();
     placePlayhead(st.shownT);
@@ -2702,6 +2707,15 @@ function mountTimeline(host, opts) {  const m = opts.model;
       if (d.type === "click" && d.clip) { d.type = "clip"; host.dataset.tlDrag = "clip"; }
       else if (d.type === "click") startBand(d);
     }
+    // Applied once per animation frame (frame()), with the newest position: a mouse can report
+    // several hundred moves a second, and each step redraws the timeline and syncs the editor.
+    d.pendE = e;
+  }
+  /** Apply the drag's newest mouse position, if it has not been yet. */
+  function flushMove(d) {
+    if (!d || !d.pendE) return;
+    const e = d.pendE;
+    d.pendE = null;
     apply(d, e);
   }
   /** One step of a drag at mouse event `e`. */
@@ -2993,6 +3007,7 @@ function mountTimeline(host, opts) {  const m = opts.model;
   }
   function onUp(e) {
     const d0 = st.drag;
+    flushMove(d0); // the drop is where the mouse was last
     try { onUp0(e); } finally { tmpDone(d0); } // a selection moved together: its groups back (0.1.41)
   }
   function onUp0(e) {
