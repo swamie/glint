@@ -25,11 +25,11 @@
 //              editor's side pane (tab: "clip", "color" or "overlays"). `ed` is the open editor: see plugEditorHandle below.
 //
 // `ctx` (also `Glint.ctx`): { id, s (its settings), key(name) (the data-set path of one), save(rerender),
-// row, toggle, select, number, text, t, esc, invoke, flash, fail, render, chrome (redraw the top bar and sidebar only),
+// row, toggle, select, number, text, t, esc, invoke, flash, fail, saveNow, confirm({ title, text, ok, cancel }), render, chrome (redraw the top bar and sidebar only),
 // go(page), glint (Glint's own state),
-// proc: { start(name, args, { audio, quiet, tool }), stop(name), status(name), run(name, args, opts) },
+// proc: { start(name, args, { audio, quiet, tool }), stop(name), status(name), run(name, args, opts), live(name, spec), update(name, spec) },
 // dl: { state(), get(id), cancel(id), remove(id) }, work: { read(name), clear() }, saveText(name, text),
-// editor() (the open editor's handle, or null) }.
+// editor() (the open editor's handle, or null), windows(), copy(text) }.
 
 const PLUG = {
   defs: new Map(),   // plugin id -> { info (from plugins_boot), def (what it registered), ctx }
@@ -56,6 +56,10 @@ function plugCtx(info) {
     get s() { return plugSettingsOf(id); },
     key,
     save: (rerender = false) => saveSettings(rerender),
+    /** Save the settings and wait until Glint's backend has them (save() alone sends them a moment later). */
+    saveNow: async () => { plugBeforeSave(); clearTimeout(saveTimer); S.status = await invoke("save_settings", { settings: S.settings }); renderChrome(); },
+    /** Glint's own question, with a title: "yes", "no" (the other button), or null when it was closed without an answer. */
+    confirm: (q) => plugConfirm(q),
     row,
     toggle: (name) => toggle(key(name)),
     select: (name, opts, num = false) => select(key(name), opts, num),
@@ -67,6 +71,10 @@ function plugCtx(info) {
     chrome: () => renderChrome(),
     go: (page) => goPage(page),
     get glint() { return { settings: S.settings, status: S.status, monitors: S.monitors, hardware: S.hardware, version: S.version }; },
+    /** A web request to one of the hosts the plugin's plugin.json names ("hosts"): { method, url, headers: ["Name: value"], body } -> { status, body }. */
+    http: (req) => invoke("plugin_http", { plugin: id, method: req.method || "GET", url: req.url, headers: req.headers || [], body: req.body ?? null }),
+    /** Open a page on one of those hosts in the user's browser. */
+    open: (url) => invoke("plugin_open", { plugin: id, url }),
     /** The address a local file is shown from (an <img>'s src). */
     fileSrc: (path) => T.core.convertFileSrc(path),
     /** The plugin's own copies of pictures the user gave it: keep(path) -> { path, name, size }, drop(path). */
@@ -90,6 +98,10 @@ function plugCtx(info) {
           if (opts.onTick) plugSafe(id, "onTick", () => opts.onTick(st));
         }
       },
+      /** A live stream (0.1.55): a sender that holds the connection and a feeder Glint restarts when its capture ends. spec: { send, feed, source, audio }. */
+      live: (name, spec, opts = {}) => invoke("plugin_live_start", { plugin: id, name, spec, quiet: !!opts.quiet }),
+      /** Change a running live stream: { audio } at once, { source } or { feed } with a new feeder. */
+      update: (name, spec) => invoke("plugin_live_update", { plugin: id, name, spec }),
     },
     /** The plugin's downloads (plugin.json "downloads"): files it needs but does not carry, checked when they arrive. */
     dl: {
@@ -107,6 +119,10 @@ function plugCtx(info) {
     saveText: (name, text) => invoke("plugin_save_text", { plugin: id, name, text }),
     /** The open editor (plugEditorHandle), or null. */
     editor: () => PLUG.ed?.byId?.[id] || null,
+    /** The windows a live stream can show: [{ hwnd, title, exe, minimized }]. */
+    windows: () => invoke("plugin_windows"),
+    /** Put text on the clipboard. */
+    copy: (text) => copyText(text),
   };
 }
 
@@ -178,6 +194,18 @@ function plugTopbarRender() {
     if (w._html !== part) { w._html = part; w.innerHTML = part; }
   }
   for (const w of [...el.children]) if (!seen.has(w.dataset.plugin)) w.remove();
+}
+
+/** A plugin's question in Glint's own prompt (the one ask() in app.js uses). Enter is yes; Escape or a click outside closes it unanswered. */
+function plugConfirm({ title = "", text = "", ok, cancel } = {}) {
+  return new Promise((resolve) => {
+    const el = $("#confirm");
+    el.innerHTML = `<div class="confirm-box plug-confirm">${title ? `<h3>${esc(title)}</h3>` : ""}<p>${esc(text)}</p><div class="confirm-row"><button class="btn" data-c="no">${esc(cancel || t("Cancel"))}</button><button class="btn primary" data-c="yes">${esc(ok || t("OK"))}</button></div></div>`;
+    el.hidden = false;
+    const done = (answer) => { el.hidden = true; el.innerHTML = ""; el.onclick = null; askKey = null; resolve(answer); };
+    askKey = (e) => { if (e.code === "Enter" || e.code === "NumpadEnter") done("yes"); else if (e.code === "Escape") done(null); };
+    el.onclick = (e) => { const b = e.target.closest("[data-c]"); if (b) done(b.dataset.c); else if (e.target === el) done(null); };
+  });
 }
 
 /** Files are over the window, left it, or were dropped: the open page's plugin gets them, with where (in the page's own pixels). */

@@ -385,4 +385,15 @@ glintAddLanguage("ko", "한국어", {
   // 0.1.55
   "A new plugin, Subtitles, a preview. It writes what is said in a clip on the picture, on your PC. Get it from Tools, then Plugins, and find it in the editor on the Overlays tab.": "새 플러그인 자막이 미리 보기로 추가되었습니다. 클립에서 말한 내용을 PC에서 바로 화면에 글자로 넣어 줍니다. 도구, 플러그인에서 설치하고 편집기의 오버레이 탭에서 사용하세요.",
   "Fix the words of a subtitle, change its size, color and place, or save the subtitles as a file.": "자막의 글자를 고치고 크기, 색, 위치를 바꾸거나 자막을 파일로 저장할 수 있습니다.",
+  "A live stream no longer ends when you switch into or out of a fullscreen game. The picture pauses for a moment and the stream carries on.": "전체 화면 게임으로 들어가거나 나올 때 방송이 더 이상 끊기지 않습니다. 화면이 잠깐 멈췄다가 방송이 이어집니다.",
+  "If the connection to the streaming service drops, Glint connects again by itself and tells you when it cannot.": "방송 서비스와 연결이 끊기면 Glint가 스스로 다시 연결하고, 연결할 수 없으면 알려 줍니다.",
+  "Stream 0.2, in Tools, then Plugins: set your Twitch title, category and tags from Glint, copy your stream's link, show only a game or one window, and give desktop sound, your microphone, the game, Discord and one more program a volume each, on the devices you pick.": "도구의 플러그인에 있는 스트림 0.2: Twitch 제목과 카테고리, 태그를 Glint에서 정하고, 방송 링크를 복사하고, 게임이나 창 하나만 보여 주고, 데스크톱 소리와 마이크, 게임, Discord, 다른 프로그램 하나의 음량을 고른 장치에서 따로 조절할 수 있습니다.",
+  "Open the library in its own window from the editor's top bar, and drag clips from it onto the timeline.": "편집기 상단 막대에서 라이브러리를 별도의 창으로 열고, 그 창에서 클립을 타임라인으로 끌어다 놓을 수 있습니다.",
+  "Connect Twitch in the Stream plugin by signing in with a code, so no stream key has to be pasted.": "스트림 플러그인에서 코드로 로그인해 Twitch를 연결할 수 있어, 스트림 키를 붙여 넣지 않아도 됩니다.",
+  "A new setting, Export priority: choose how much of the processor an export in the editor may take.": "새 설정 내보내기 우선순위: 편집기에서 내보낼 때 프로세서를 얼마나 쓸지 고를 수 있습니다.",
+  "Glint starts faster, and many parts of it do less work in the background.": "Glint가 더 빨리 시작되고, 여러 부분이 백그라운드에서 일을 덜 합니다.",
+  "The fullscreen button on the editor's video now shows the video alone in fullscreen. The button in the header and the F key still fullscreen the whole editor.": "편집기 영상의 전체 화면 버튼이 이제 영상만 전체 화면으로 보여 줍니다. 머리글의 버튼과 F 키는 그대로 편집기 전체를 전체 화면으로 만듭니다.",
+  "A keyframe can be added right next to another one, one frame apart.": "키프레임을 다른 키프레임 바로 옆, 한 프레임 간격으로 추가할 수 있습니다.",
+  "When the Stream plugin needs your camera, Glint asks in a window of its own.": "스트림 플러그인이 카메라를 사용해야 할 때 Glint가 자체 창으로 물어봅니다.",
+  "A pinned taskbar button, the Start menu entry and the desktop shortcut show the icon of your theme.": "작업 표시줄에 고정한 버튼, 시작 메뉴 항목, 바탕 화면 바로 가기에 테마의 아이콘이 표시됩니다.",
 });

@@ -5,6 +5,7 @@ mod audio;
 mod bench;
 mod blur;
 mod bugreport;
+mod camperm;
 mod capmode;
 mod capture2;
 mod clip;
@@ -27,6 +28,7 @@ mod jobs;
 mod join;
 mod keys;
 mod lang;
+mod live;
 mod library;
 mod livecheck;
 mod monprev;
@@ -159,6 +161,11 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--gameaudio-test") {
         // glint.exe --gameaudio-test <report.txt>: the "Game" audio track, from ring to clip to editor; then a silent live capture.
         procaudio::self_test(args.get(i + 1).map(String::as_str).unwrap_or("gameaudio.txt"));
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--live-test") {
+        // glint.exe --live-test <report.txt>: a live stream's picture sources and sound mix; starts nothing.
+        live::self_test(args.get(i + 1).map(String::as_str).unwrap_or("live-test.txt"));
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--audio-test") {

@@ -304,6 +304,21 @@ fn activate(pid: u32) -> Result<IAudioClient, String> {
 /// breaks (re-activated after a pause: a device change ends the stream).
 /// Err only when the very first activation fails.
 fn capture(pid: u32, ring: &Mutex<AudioRing>, stop: &AtomicBool, shared: &Shared, id: u64) -> Result<(), String> {
+    capture_as(pid, ring, stop, shared, id, true)
+}
+
+/// One program's sound (its whole process tree) into `ring` for something other than clips (a live
+/// stream's own mixer, live.rs): as it is, without the clip mixer's Game fader, meter or log lines.
+/// Runs until `stop` or the process ends; Err when its sound cannot be captured at all.
+pub fn capture_tap(pid: u32, ring: &Mutex<AudioRing>, stop: &AtomicBool) -> Result<(), String> {
+    if !supported() {
+        return Err(format!("needs Windows build {MIN_BUILD} or newer"));
+    }
+    capture_as(pid, ring, stop, &Shared::default(), 0, false)
+}
+
+/// `clip`: this is the Game track clips are cut from (the mixer's fader, its meter and the log apply).
+fn capture_as(pid: u32, ring: &Mutex<AudioRing>, stop: &AtomicBool, shared: &Shared, id: u64, clip: bool) -> Result<(), String> {
     struct Com;
     impl Drop for Com {
         fn drop(&mut self) {
@@ -339,7 +354,7 @@ fn capture(pid: u32, ring: &Mutex<AudioRing>, stop: &AtomicBool, shared: &Shared
                 continue;
             }
         };
-        if first {
+        if first && clip {
             util::log(&format!("game audio: capturing process {pid}"));
         }
         first = false;
@@ -379,7 +394,7 @@ fn capture(pid: u32, ring: &Mutex<AudioRing>, stop: &AtomicBool, shared: &Shared
                     let s = unsafe { std::slice::from_raw_parts(data as *const i16, samples) };
                     shared.loud.fetch_add(s.iter().filter(|v| v.unsigned_abs() > 32).count() as u64, Ordering::Relaxed);
                     // The mixer's Game fader (Settings → Audio), and the packet's loudest samples for its meter.
-                    let g = crate::audio::gain(crate::audio::Source::Game);
+                    let g = if clip { crate::audio::gain(crate::audio::Source::Game) } else { 1.0 };
                     let (mut pl, mut pr) = (0f32, 0f32);
                     for pair in s.chunks_exact(2) {
                         let (l, r) = (pair[0] as f32 * g, pair[1] as f32 * g);
@@ -388,7 +403,9 @@ fn capture(pid: u32, ring: &Mutex<AudioRing>, stop: &AtomicBool, shared: &Shared
                         buf.push(l.clamp(-32768.0, 32767.0) as i16);
                         buf.push(r.clamp(-32768.0, 32767.0) as i16);
                     }
-                    crate::audio::note_peak(crate::audio::Source::Game, pl / 32768.0, pr / 32768.0);
+                    if clip {
+                        crate::audio::note_peak(crate::audio::Source::Game, pl / 32768.0, pr / 32768.0);
+                    }
                 }
                 shared.delivered.fetch_add(frames as u64, Ordering::Relaxed);
                 let _ = unsafe { cap.ReleaseBuffer(frames) };
@@ -411,7 +428,9 @@ fn capture(pid: u32, ring: &Mutex<AudioRing>, stop: &AtomicBool, shared: &Shared
             if last_alive.elapsed() >= Duration::from_secs(1) {
                 last_alive = std::time::Instant::now();
                 if !crate::win::process_alive(pid) {
-                    util::log(&format!("game audio: process {pid} ended"));
+                    if clip {
+                        util::log(&format!("game audio: process {pid} ended"));
+                    }
                     let _ = unsafe { client.Stop() };
                     return Ok(());
                 }

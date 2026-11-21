@@ -44,6 +44,21 @@ const wnReleases = () => [
     new: [
       t("A new plugin, Subtitles, a preview. It writes what is said in a clip on the picture, on your PC. Get it from Tools, then Plugins, and find it in the editor on the Overlays tab."),
       t("Fix the words of a subtitle, change its size, color and place, or save the subtitles as a file."),
+      t("Stream 0.2, in Tools, then Plugins: set your Twitch title, category and tags from Glint, copy your stream's link, show only a game or one window, and give desktop sound, your microphone, the game, Discord and one more program a volume each, on the devices you pick."),
+      t("Open the library in its own window from the editor's top bar, and drag clips from it onto the timeline."),
+      t("Connect Twitch in the Stream plugin by signing in with a code, so no stream key has to be pasted."),
+      t("A new setting, Export priority: choose how much of the processor an export in the editor may take."),
+    ],
+    improved: [
+      t("Glint starts faster, and many parts of it do less work in the background."),
+      t("The fullscreen button on the editor's video now shows the video alone in fullscreen. The button in the header and the F key still fullscreen the whole editor."),
+      t("A keyframe can be added right next to another one, one frame apart."),
+      t("When the Stream plugin needs your camera, Glint asks in a window of its own."),
+      t("A pinned taskbar button, the Start menu entry and the desktop shortcut show the icon of your theme."),
+    ],
+    fixed: [
+      t("A live stream no longer ends when you switch into or out of a fullscreen game. The picture pauses for a moment and the stream carries on."),
+      t("If the connection to the streaming service drops, Glint connects again by itself and tells you when it cannot."),
     ],
   },
   {

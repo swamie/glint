@@ -56,6 +56,9 @@ pub fn show_main(app: &AppHandle) {
                 });
             }
         }
+        if let Ok(w) = &built {
+            crate::camperm::install(w, app.state::<Arc<Core>>().inner().clone()); // camera requests are answered from Glint's settings
+        }
         if built.is_ok() {
             let zoom = app.state::<Arc<Core>>().settings().ui_zoom;
             apply_zoom(&app, zoom);
@@ -1160,8 +1163,13 @@ pub fn run(minimized: bool) {
             crate::plugins::plugins_restart,
             crate::plugins::plugin_proc_start,
             crate::plugins::plugin_file_keep,
+            crate::plugins::plugin_http,
+            crate::plugins::plugin_open,
             crate::plugins::plugin_file_drop,
             crate::plugins::plugin_proc_stop,
+            crate::plugins::plugin_live_start,
+            crate::plugins::plugin_live_update,
+            crate::plugins::plugin_windows,
             crate::plugins::plugin_proc_status,
             crate::plugins::plugin_dl_state,
             crate::plugins::plugin_dl_get,

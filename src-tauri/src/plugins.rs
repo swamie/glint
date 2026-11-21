@@ -62,7 +62,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -97,6 +97,8 @@ pub struct Manifest {
     pub ui: String,
     pub css: String,
     pub api: bool,
+    /// The web hosts its script may talk to and open in the browser ("api.twitch.tv"): nothing else is reachable through `plugin_http` and `plugin_open`.
+    pub hosts: Vec<String>,
     pub actions: Vec<Action>,
     pub downloads: Vec<Download>,
 }
@@ -455,6 +457,79 @@ pub fn plugin_uninstall(id: String) -> Result<Value, String> {
     Ok(state_json())
 }
 
+/// Whether Glint's window may open a camera: the user said yes to a plugin that is installed and
+/// on (`plugins[<id>].camera_access == "allow"`, set from the plugin's popup or its settings).
+pub fn camera_allowed(s: &crate::settings::Settings) -> bool {
+    installed().iter().any(|p| s.plugins.get(&p.manifest.id).map(|v| v["camera_access"] == "allow").unwrap_or(false))
+}
+
+/* ---------- the web, for a plugin ---------- */
+
+/// `url` is https and its host is one the plugin's manifest names: the plugin, or why not.
+fn web_allowed(plugin: &str, url: &str) -> Result<Plugin, String> {
+    let p = installed().into_iter().find(|p| p.manifest.id == plugin).ok_or("This plugin is not installed or is switched off")?;
+    let rest = url.strip_prefix("https://").ok_or("Only https addresses can be reached")?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // No port, no "user@": the host is exactly a name from the list.
+    if host.is_empty() || host.contains(['@', ':', '\\']) || url.chars().any(|c| c.is_control() || c == '"' || c == ' ') || !p.manifest.hosts.iter().any(|h| h.eq_ignore_ascii_case(host)) {
+        return Err(format!("{} may not reach that address", p.manifest.name));
+    }
+    Ok(p)
+}
+
+/// A line of a curl config file: `name = "value"`, with the value's quotes and backslashes escaped.
+fn curl_line(name: &str, value: &str) -> String {
+    let v: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+    format!("{name} = \"{}\"\n", v.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// One web request for a plugin's script, to a host its manifest names: { status, body }.
+/// Made by curl.exe, like Glint's own (update.rs). The address, headers and body go to curl on its
+/// stdin, not as arguments, so a token in them is never on a command line; nothing of them is logged.
+/// Redirects are not followed (they could lead off the list).
+#[tauri::command(async)]
+pub fn plugin_http(plugin: String, method: Option<String>, url: String, headers: Option<Vec<String>>, body: Option<String>) -> Result<Value, String> {
+    web_allowed(&plugin, &url)?;
+    let method = method.unwrap_or_else(|| "GET".into()).to_ascii_uppercase();
+    if !["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&method.as_str()) {
+        return Err("That kind of request is not supported".into());
+    }
+    let mut config = curl_line("url", &url) + &curl_line("request", &method);
+    for h in headers.unwrap_or_default().iter().take(20) {
+        config += &curl_line("header", h);
+    }
+    if let Some(b) = &body {
+        if b.len() > 256 * 1024 {
+            return Err("That request is too large".into());
+        }
+        config += &curl_line("data-raw", b);
+    }
+    let mut child = util::hidden_cmd(std::path::Path::new("curl.exe"))
+        .args(["-sS", "--max-time", "20", "--max-filesize", "2000000", "-H", "User-Agent: Glint", "-w", "\n%{http_code}", "-K", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Could not start curl: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(config.as_bytes());
+    }
+    let out = child.wait_with_output().map_err(|e| format!("The request failed: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("Could not reach the server: {}", util::last_lines(&out.stderr, 1)));
+    }
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let (body, status) = text.rsplit_once('\n').unwrap_or(("", text.as_str()));
+    Ok(json!({ "status": status.trim().parse::<u16>().unwrap_or(0), "body": body }))
+}
+
+/// Open a page in the user's browser, for a plugin: only an https address on a host its manifest names.
+#[tauri::command(async)]
+pub fn plugin_open(plugin: String, url: String) -> Result<(), String> {
+    web_allowed(&plugin, &url)?;
+    util::hidden_cmd(std::path::Path::new("rundll32.exe")).args(["url.dll,FileProtocolHandler", &url]).spawn().map(|_| ()).map_err(|e| format!("Could not open the browser: {e}"))
+}
+
 /* ---------- a plugin's own files ---------- */
 
 /// What a plugin may keep a copy of: pictures.
@@ -771,27 +846,108 @@ pub fn plugins_restart(app: AppHandle, core: St) -> Result<(), String> {
 
 /* ---------- processes ---------- */
 
-struct Proc {
-    plugin: String,
-    name: String,
-    pid: u32,
+pub struct Proc {
+    pub plugin: String,
+    pub name: String,
+    /// The process (a live stream's sender, which is a new one after each reconnect).
+    pub pid: AtomicU32,
     started: u64,
     child: Mutex<Option<Child>>,
     /// Stopped on purpose (not a failure).
     stopping: AtomicBool,
     running: AtomicBool,
     /// The last lines ffmpeg wrote.
-    log: Mutex<VecDeque<String>>,
+    pub log: Mutex<VecDeque<String>>,
     /// How it ended: "" while running or when stopped on purpose, else the reason.
     error: Mutex<String>,
     /// Its exit code once it has ended by itself (0 = it finished its work).
     code: Mutex<Option<i32>>,
+    /// A live stream (live.rs): several processes that come and go, run by its own thread.
+    live: Option<Arc<crate::live::Ctl>>,
 }
 
 impl Proc {
-    fn json(&self) -> Value {
+    pub fn json(&self) -> Value {
         let log: Vec<String> = self.log.lock().unwrap().iter().cloned().collect();
-        json!({ "plugin": self.plugin, "name": self.name, "running": self.running.load(Ordering::SeqCst), "pid": self.pid, "started": self.started, "error": *self.error.lock().unwrap(), "code": *self.code.lock().unwrap(), "log": log })
+        let mut v = json!({ "plugin": self.plugin, "name": self.name, "running": self.running.load(Ordering::SeqCst), "pid": self.pid.load(Ordering::SeqCst), "started": self.started, "error": *self.error.lock().unwrap(), "code": *self.code.lock().unwrap(), "log": log });
+        if let Some(l) = &self.live {
+            v["live"] = l.json();
+        }
+        v
+    }
+}
+
+/// A new running process of `plugin` in the list, with nothing started yet. An error while one of that name runs.
+pub fn proc_new(plugin: &str, name: &str, live: Option<Arc<crate::live::Ctl>>) -> Result<Arc<Proc>, String> {
+    if !installed().iter().any(|p| p.manifest.id == plugin) {
+        return Err("This plugin is not installed or is switched off".into());
+    }
+    let mut list = procs().lock().unwrap();
+    if list.get(&proc_key(plugin, name)).is_some_and(|p| p.running.load(Ordering::SeqCst)) {
+        return Err("It is already running".into());
+    }
+    let p = Arc::new(Proc {
+        plugin: plugin.into(),
+        name: name.into(),
+        pid: AtomicU32::new(0),
+        started: util::unix_ms(),
+        child: Mutex::new(None),
+        stopping: AtomicBool::new(false),
+        running: AtomicBool::new(true),
+        log: Mutex::new(VecDeque::new()),
+        error: Mutex::new(String::new()),
+        code: Mutex::new(None),
+        live,
+    });
+    list.insert(proc_key(plugin, name), p.clone());
+    Ok(p)
+}
+
+/// ffmpeg's messages, line by line, into `log` (its newest `keep` lines) until it closes them.
+/// `secrets`: (text, what to show instead of it).
+pub fn read_log(mut err: impl Read, log: &Mutex<VecDeque<String>>, secrets: &[(String, String)], keep: usize) {
+    // ffmpeg ends its progress lines with a carriage return: both count as a line's end.
+    let mut line: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 4096];
+    while let Ok(n) = err.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        for &b in &buf[..n] {
+            if b == b'\n' || b == b'\r' {
+                let mut text = String::from_utf8_lossy(&line).trim().to_string();
+                line.clear();
+                for (secret, shown) in secrets {
+                    text = text.replace(secret.as_str(), shown);
+                }
+                if !text.is_empty() {
+                    let mut log = log.lock().unwrap();
+                    log.push_back(text);
+                    while log.len() > keep {
+                        log.pop_front();
+                    }
+                }
+            } else if line.len() < 2000 {
+                line.push(b);
+            }
+        }
+    }
+}
+
+/// A process is over: `why` when it did not end on purpose. The window and, unless `quiet`, a toast say so.
+pub fn proc_ended(core: &Arc<Core>, p: &Arc<Proc>, quiet: bool, why: Option<String>) {
+    let on_purpose = p.stopping.load(Ordering::SeqCst);
+    if !on_purpose {
+        *p.error.lock().unwrap() = why.filter(|w| !w.is_empty()).unwrap_or_else(|| "ffmpeg ended".into());
+    }
+    p.running.store(false, Ordering::SeqCst);
+    util::log(&format!("plugins: {}'s process {} ended{}", p.plugin, p.name, if on_purpose { String::new() } else { format!(": {}", p.error.lock().unwrap()) }));
+    core.emit("plugin-proc", p.json());
+    if !on_purpose && !quiet && core.settings().toast {
+        let name = find(&p.plugin).map(|x| x.manifest.name).unwrap_or_else(|| p.plugin.clone());
+        let lang = core.settings().language;
+        let why = p.error.lock().unwrap().clone();
+        core.show_toast(&format!("{name}: {}", crate::lang::tr(&lang, "Stopped")), &why);
     }
 }
 
@@ -859,20 +1015,16 @@ fn proc_start(core: &Arc<Core>, plugin: &str, name: &str, args: &[String], audio
     // An address among the arguments may carry a secret (a stream key is the end of the address):
     // what ffmpeg says is kept, shown and logged with only the server's name left of it.
     let secrets: Vec<(String, String)> = args.iter().filter(|a| a.contains("://")).map(|a| (a.clone(), redact(a))).collect();
-    let p = Arc::new(Proc {
-        plugin: plugin.into(),
-        name: name.into(),
-        pid: child.id(),
-        started: util::unix_ms(),
-        child: Mutex::new(Some(child)),
-        stopping: AtomicBool::new(false),
-        running: AtomicBool::new(true),
-        log: Mutex::new(VecDeque::new()),
-        error: Mutex::new(String::new()),
-        code: Mutex::new(None),
-    });
-    procs().lock().unwrap().insert(proc_key(plugin, name), p.clone());
-    util::log(&format!("plugins: {plugin} started its process {name} (pid {}{})", p.pid, if audio { format!(", live audio at {rate} Hz") } else { String::new() }));
+    let p = match proc_new(plugin, name, None) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = child.kill();
+            return Err(e);
+        }
+    };
+    p.pid.store(child.id(), Ordering::SeqCst);
+    *p.child.lock().unwrap() = Some(child);
+    util::log(&format!("plugins: {plugin} started its process {name} (pid {}{})", p.pid.load(Ordering::SeqCst), if audio { format!(", live audio at {rate} Hz") } else { String::new() }));
 
     // Glint's live audio into its stdin, in step with the clock.
     if let (true, Some(mut stdin)) = (audio, stdin) {
@@ -901,58 +1053,29 @@ fn proc_start(core: &Arc<Core>, plugin: &str, name: &str, args: &[String], audio
     // Its messages, and its end.
     let (p2, core2) = (p.clone(), core.clone());
     std::thread::spawn(move || {
-        if let Some(mut err) = stderr {
-            // ffmpeg ends its progress lines with a carriage return: both count as a line's end.
-            let mut line: Vec<u8> = Vec::new();
-            let mut buf = [0u8; 4096];
-            while let Ok(n) = err.read(&mut buf) {
-                if n == 0 {
-                    break;
-                }
-                for &b in &buf[..n] {
-                    if b == b'\n' || b == b'\r' {
-                        let mut text = String::from_utf8_lossy(&line).trim().to_string();
-                        line.clear();
-                        for (secret, shown) in &secrets {
-                            text = text.replace(secret.as_str(), shown);
-                        }
-                        if !text.is_empty() {
-                            let mut log = p2.log.lock().unwrap();
-                            log.push_back(text);
-                            while log.len() > 40 {
-                                log.pop_front();
-                            }
-                        }
-                    } else if line.len() < 2000 {
-                        line.push(b);
-                    }
-                }
-            }
+        if let Some(err) = stderr {
+            read_log(err, &p2.log, &secrets, 40);
         }
         let status = p2.child.lock().unwrap().take().and_then(|mut c| c.wait().ok());
-        let on_purpose = p2.stopping.load(Ordering::SeqCst);
         *p2.code.lock().unwrap() = status.and_then(|s| s.code());
-        if !on_purpose && !status.is_some_and(|s| s.success()) {
-            // The last line that is not a progress line says why.
-            let why = p2.log.lock().unwrap().iter().rev().find(|l| !l.starts_with("frame=") && !l.starts_with("size=")).cloned().unwrap_or_default();
-            *p2.error.lock().unwrap() = if why.is_empty() { format!("{what} ended ({})", status.map(|s| s.to_string()).unwrap_or_default()) } else { why };
+        if !p2.stopping.load(Ordering::SeqCst) && status.is_some_and(|s| s.success()) {
+            // It finished its work by itself: an end, not a failure.
+            p2.running.store(false, Ordering::SeqCst);
+            util::log(&format!("plugins: {}'s process {} ended", p2.plugin, p2.name));
+            core2.emit("plugin-proc", p2.json());
+            return;
         }
-        p2.running.store(false, Ordering::SeqCst);
-        util::log(&format!("plugins: {}'s process {} ended{}", p2.plugin, p2.name, if on_purpose { String::new() } else { format!(": {}", p2.error.lock().unwrap()) }));
-        core2.emit("plugin-proc", p2.json());
-        if !on_purpose && !quiet && !p2.error.lock().unwrap().is_empty() && core2.settings().toast {
-            let name = find(&p2.plugin).map(|x| x.manifest.name).unwrap_or_else(|| p2.plugin.clone());
-            let lang = core2.settings().language;
-            let why = p2.error.lock().unwrap().clone();
-            core2.show_toast(&format!("{name}: {}", crate::lang::tr(&lang, "Stopped")), &why);
-        }
+        // The last line that is not a progress line says why.
+        let why = p2.log.lock().unwrap().iter().rev().find(|l| !l.starts_with("frame=") && !l.starts_with("size=")).cloned().unwrap_or_default();
+        let why = if why.is_empty() { format!("{what} ended ({})", status.map(|s| s.to_string()).unwrap_or_default()) } else { why };
+        proc_ended(&core2, &p2, quiet, Some(why));
     });
     core.emit("plugin-proc", p.json());
     Ok(p)
 }
 
 /// "rtmp://live.example.tv/app/secret-key" -> "rtmp://live.example.tv/…".
-fn redact(url: &str) -> String {
+pub fn redact(url: &str) -> String {
     let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
     let host = rest.split(['/', '?', '@']).next().unwrap_or("");
     format!("{scheme}://{host}/…")
@@ -964,6 +1087,9 @@ fn proc_stop(plugin: &str, name: &str) -> bool {
         return false;
     }
     p.stopping.store(true, Ordering::SeqCst);
+    if let Some(l) = &p.live {
+        l.stop(); // its own thread ends its processes
+    }
     if let Some(c) = p.child.lock().unwrap().as_mut() {
         let _ = c.kill();
     }
@@ -981,6 +1107,27 @@ fn proc_stop_all(plugin: Option<&str>) {
 #[tauri::command(async)]
 pub fn plugin_proc_start(core: St, plugin: String, name: String, args: Vec<String>, audio: Option<bool>, quiet: Option<bool>, tool: Option<String>) -> Result<Value, String> {
     proc_start(core.inner(), &plugin, &name, &args, audio.unwrap_or(false), quiet.unwrap_or(false), tool.as_deref()).map(|p| p.json())
+}
+
+/// Start a plugin's live stream (live.rs): `spec` is { send, feed, source, audio }.
+#[tauri::command(async)]
+pub fn plugin_live_start(core: St, plugin: String, name: String, spec: Value, quiet: Option<bool>) -> Result<Value, String> {
+    crate::live::start(core.inner(), &plugin, &name, spec, quiet.unwrap_or(false)).map(|p| p.json())
+}
+
+/// Change a running live stream: `spec` holds what changes ({ audio }, { source }, { feed }).
+#[tauri::command(async)]
+pub fn plugin_live_update(plugin: String, name: String, spec: Value) -> Value {
+    if let Some(l) = proc_get(&plugin, &name).filter(|p| p.running.load(Ordering::SeqCst)).and_then(|p| p.live.clone()) {
+        l.update(&spec);
+    }
+    plugin_proc_status(plugin, name)
+}
+
+/// The windows a live stream can show, for a plugin's picker.
+#[tauri::command(async)]
+pub fn plugin_windows() -> Vec<Value> {
+    crate::live::windows_json()
 }
 
 #[tauri::command(async)]
@@ -1020,7 +1167,13 @@ pub fn fire(core: &Arc<Core>, action: &str) {
         } else {
             let saved = &s.plugins.get(id).cloned().unwrap_or(Value::Null)["procs"][&def.process];
             let args: Vec<String> = saved["args"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
-            if args.is_empty() {
+            if saved["live"].is_object() {
+                // A live stream (live.rs), as the plugin's script last saved it.
+                match crate::live::start(core, id, &def.process, saved["live"].clone(), false) {
+                    Ok(_) => toast(if def.started.is_empty() { &p.manifest.name } else { &def.started }, ""),
+                    Err(e) => toast(&p.manifest.name, &e),
+                }
+            } else if args.is_empty() {
                 toast(&p.manifest.name, crate::lang::tr(&s.language, "Open Glint and set it up first"));
             } else {
                 match proc_start(core, id, &def.process, &args, saved["audio"].as_bool().unwrap_or(false), false, None) {

@@ -31,6 +31,7 @@ plugins/
 - `ui` is a script run in Glint's window each time it opens. `css` is optional.
 - `actions` are what a keybind can carry. They are listed here, not in the script, because Glint's window (and every script in it) is gone while Glint sits in the tray. An action with a `process` starts or stops that process by itself; `started` and `stopped` are the overlay's words.
 - `downloads` lists larger files the plugin needs but does not carry, such as a program or a model. See [Downloads](#downloads).
+- `hosts` lists the web hosts the script may reach: `c.http({ method, url, headers, body })` makes an https request to one of them (`{ status, body }`, made by Glint's backend, redirects not followed) and `c.open(url)` opens a page on one of them in the user's browser. Any other address is refused.
 - `api: true` asks for the local API (a port on 127.0.0.1 for a program of the plugin's own). See the top of `src-tauri/src/plugins.rs`.
 
 `market.json` beside it holds what only the marketplace card needs: `icon` (the `d` of one SVG path on a 24 x 24 grid) and `tag` (a short label such as "Preview").
@@ -83,7 +84,9 @@ Glint.register({
 | `c.work.read(name)`, `c.work.clear()` | a text file one of its processes wrote into the plugin's scratch folder (`{work}` in the arguments); empty that folder |
 | `c.saveText(name, text)` | a save dialog for a text the plugin made (.srt, .vtt, .txt, .csv or .json): the path, or null when cancelled |
 | `c.editor()` | the open editor (below), or null |
+| `c.saveNow()`, `c.confirm({ title, text, ok, cancel })` | save and wait until the backend has the settings; Glint's own question: `"yes"`, `"no"`, or `null` when closed unanswered |
 | `c.invoke(command, args)` | any of Glint's backend commands |
+| `c.windows()`, `c.copy(text)` | the open windows, `[{ hwnd, title, exe, minimized }]`; put text on the clipboard |
 | `c.files.keep(path)`, `c.files.drop(path)`, `c.fileSrc(path)` | keep Glint's own copy of a picture the user gave the plugin (PNG, JPEG, GIF, WebP or BMP, up to 64 MB): `{ path, name, size }`; delete that copy; the address to show a local file from |
 
 Use Glint's own markup (`page-head`, `section`, `row`, `btn`, `note`, `field`) and its CSS variables so a plugin's page looks like the rest of the program and follows the user's theme.
@@ -140,6 +143,19 @@ A plugin with `editor` gets a section in the editor's side pane whenever a clip 
 
 Things on the picture are the model's `overlays`. A text item is `{ id, kind: "text", from, to, x, y, text, color, size, outline }` with positions and sizes as fractions of the picture; `align: "center"` makes `x` the middle of its lines, and `tag` (the plugin's id) marks the items a plugin made so it can find them again. Items added this way are on the timeline, can be moved and retyped by the user, and are part of the export like any other.
 
+### Live streams
+
+A stream made of one ffmpeg ends whenever its capture does, and a screen capture ends every time a game enters or leaves exclusive fullscreen. `c.proc.live("live", spec)` (Glint 0.1.55, `src-tauri/src/live.rs`) runs a stream as two kinds of ffmpeg with Glint between them:
+
+- `spec.send`: the sender, which holds the connection. `{video}` is where it reads the finished video from (MPEG-TS, to be copied, with `-copyts`); the sound is 16-bit stereo at `{audio_rate}` on its stdin.
+- `spec.feed`: the feeder, which captures and encodes the picture and writes MPEG-TS to `pipe:1`. Glint starts a new one whenever it ends, and the sender never notices. `{source}` in its filter graph is the capture, as frames the encoder takes; `{t0}` is the stream's start in microseconds, for `setpts=(RTCTIME-{t0})/(TB*1000000)`, which keeps picture and sound in step over any number of feeders.
+- `spec.source`: `{ kind: "monitor" | "game" | "window", monitor, hwnd, exe, title, fps, cursor, width, height, encoder, raw }`. `game` is the game Glint sees: its window, its screen while it is in exclusive fullscreen, a black picture while it is minimized or gone. `raw: true` asks for plain BGRA frames, for a filter graph of the plugin's own.
+- `spec.audio`: `{ desktop: { on, gain, device }, mic: { on, gain, device }, game: { on, gain }, apps: [{ exe, on, gain }] }`. Glint mixes these from captures of its own. `game` and `apps` are single programs' sound; `desktop` is everything a device plays, which includes them.
+
+`c.proc.update("live", { audio })` changes the sound at once while live; `{ source }` or `{ feed }` take effect with a new feeder. `c.proc.status` and `onProc` carry `live: { state: "starting" | "live" | "recovering" | "reconnecting", note, restarts, reconnects, showing }`. When the sender ends, Glint connects again a few times, waiting longer each time, before the stream ends with the reason. `c.windows()` lists the open windows for a picker.
+
+For the keybind, save the stream as `c.s.procs = { live: { live: spec } }`.
+
 ## Trying a plugin without publishing it
 
 - **In a browser:** `node tools/serve.js <path to this repository>` and open `http://localhost:4173/ui/index.html`. The preview's marketplace is this folder, and Install loads the plugin as Glint would (a stand-in backend: nothing is captured, sent or downloaded; a download's bar just fills, and the Subtitles plugin gets a few made-up lines).
@@ -152,3 +168,7 @@ Things on the picture are the model's `overlays`. A text item is `{ id, kind: "t
 3. Commit both and merge to `main`. That is the release: Glint reads the list and the files from `main` of this repository, and installed copies are offered "Update to x.y.z".
 
 Glint installs a plugin only if every downloaded file matches the list, so a plugin changed without step 2 fails to install instead of installing something unlisted. GitHub can take a few minutes to serve a new list and new files together; an install in that window says to try again shortly.
+
+## Cameras
+
+Glint's window never shows the browser's own "wants to use your cameras" prompt. A plugin that opens a camera in the window (`navigator.mediaDevices.getUserMedia`) asks first with `c.confirm`, saves the answer as `camera_access` (`"allow"` or `"deny"`) in its settings with `c.saveNow()`, and only then opens the camera. Glint's backend answers the window's camera request from that setting (`src-tauri/src/camperm.rs`): allowed when an installed plugin that is switched on has `camera_access: "allow"`, refused otherwise. The microphone is always refused.
