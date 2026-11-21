@@ -110,12 +110,12 @@ function watch(c) {
 /** What is being sent, as the top bar says it: "1080p @ 60". Taken when the stream starts. */
 const shape = (c) => `${sizeOf(c).h}p @ ${[30, 60].includes(+c.s.fps) ? +c.s.fps : 60}`;
 
-/** The top bar while live: "STREAMING: 1080p @ 60" (opens the Stream page) and a stop button. */
+/** The top bar while live: an ordinary top bar button, "Streaming 1080p @ 60" (it opens the Stream page), joined to a stop button. */
 function topbar(c) {
   if (!status.running) return "";
   const sending = !!stats();
   const tip = sending ? `${t("Streaming for {time}", { time: uptime() })} · ${stats()}` : t("Connecting to the server…");
-  return `<span class="top-pill${sending ? "" : " wait"}"><button data-pact="open" title="${esc(tip)}"><i class="dot"></i><span><b>${sending ? t("STREAMING") : t("CONNECTING")}</b><span class="top-pill-detail">: ${esc(live || shape(c))}</span></span></button><button class="top-pill-btn" data-pact="stop" title="${esc(t("Stop streaming"))}" aria-label="${esc(t("Stop streaming"))}"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></svg></button></span>`;
+  return `<span class="top-group"><button class="btn" data-pact="open" title="${esc(tip)}"><i class="top-dot${sending ? "" : " idle"}"></i><span>${sending ? t("Streaming") : t("Connecting…")}</span><span class="top-muted top-detail">${esc(live || shape(c))}</span></button><button class="btn top-icon" data-pact="stop" title="${esc(t("Stop streaming"))}" aria-label="${esc(t("Stop streaming"))}"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.500"/></svg></button></span>`;
 }
 
 /** The page's one button: Go live, or Stop streaming. What is live shows in the top bar. */
@@ -223,7 +223,7 @@ Glint.register({
   },
   lang: {
     ko: {
-      "Stream": "방송", "Go live from Glint": "Glint에서 바로 방송하기", "Go live": "방송 시작", "Stop streaming": "방송 종료", "STREAMING": "방송 중", "CONNECTING": "연결 중", "Streaming for {time}": "{time}째 방송 중", "Connecting to the server…": "서버에 연결하는 중…",
+      "Stream": "방송", "Go live from Glint": "Glint에서 바로 방송하기", "Go live": "방송 시작", "Stop streaming": "방송 종료", "Streaming": "방송 중", "Connecting…": "연결 중…", "Streaming for {time}": "{time}째 방송 중", "Connecting to the server…": "서버에 연결하는 중…",
       "Start / stop streaming": "방송 시작 / 종료", "Stream started": "방송을 시작했어요", "Stream stopped": "방송을 종료했어요",
       "Go live from Glint to Twitch, YouTube or any RTMP server. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Glint에서 Twitch, YouTube 또는 RTMP 서버로 방송해요. 도구에 방송 페이지와 설정, 시작/종료 단축키가 추가돼요.",
       "Choose where to stream and paste your stream key first": "먼저 방송할 곳을 고르고 스트림 키를 붙여 넣어 주세요",
@@ -247,7 +247,7 @@ Glint.register({
       "Open Keybinds": "단축키 열기", "Add keybind": "단축키 추가", "Preview": "미리 보기",
     },
     el: {
-      "Stream": "Μετάδοση", "Go live from Glint": "Ζωντανή μετάδοση από το Glint", "Go live": "Έναρξη μετάδοσης", "Stop streaming": "Διακοπή μετάδοσης", "STREAMING": "ΜΕΤΑΔΟΣΗ", "CONNECTING": "ΣΥΝΔΕΣΗ", "Streaming for {time}": "Μετάδοση εδώ και {time}", "Connecting to the server…": "Σύνδεση με τον διακομιστή…",
+      "Stream": "Μετάδοση", "Go live from Glint": "Ζωντανή μετάδοση από το Glint", "Go live": "Έναρξη μετάδοσης", "Stop streaming": "Διακοπή μετάδοσης", "Streaming": "Μετάδοση", "Connecting…": "Σύνδεση…", "Streaming for {time}": "Μετάδοση εδώ και {time}", "Connecting to the server…": "Σύνδεση με τον διακομιστή…",
       "Start / stop streaming": "Έναρξη / διακοπή μετάδοσης", "Stream started": "Η μετάδοση ξεκίνησε", "Stream stopped": "Η μετάδοση σταμάτησε",
       "Go live from Glint to Twitch, YouTube or any RTMP server. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Ζωντανή μετάδοση από το Glint σε Twitch, YouTube ή οποιονδήποτε διακομιστή RTMP. Προσθέτει τη σελίδα Μετάδοση στα Εργαλεία, τις ρυθμίσεις της και συντόμευση για έναρξη και διακοπή.",
       "Choose where to stream and paste your stream key first": "Διάλεξε πρώτα πού θα μεταδώσεις και επικόλλησε το κλειδί μετάδοσης",

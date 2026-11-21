@@ -50,7 +50,7 @@ Glint.register({
     badge: (c) => "",                         // optional: a small label on its sidebar item
   }],
   settings: [{ title: "Hello", render: (c) => c.row(t("Text"), "", c.text("greeting")) }],  // sections on the Settings page
-  topbar: (c) => "",                          // markup for the top bar: a short status, e.g. "STREAMING: 1080p @ 60"
+  topbar: (c) => "",                          // markup for the top bar, made of Glint's own .btn buttons (e.g. "Streaming 1080p @ 60")
   actions: { toggle: (c) => c.render() },     // a keybind's action fired while the window is open
   onAct: (name, el, c) => {},                 // a click on an element with data-pact="name"
   onSave: (c) => {},                          // just before the settings are saved

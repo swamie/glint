@@ -14,7 +14,7 @@
 //              The actions themselves (id, label, the process they start) are listed in plugin.json,
 //              so a keybind also works while the window is closed.
 //   topbar(ctx)            markup for the top bar ("" for nothing): a short status such as "STREAMING: 1080p @ 60".
-//                          Use the classes .top-pill (a status the user can click) and .top-pill-btn (a small button in it).
+//                          Build it from Glint's own top bar buttons: .btn, joined with .top-group; .top-dot is a small accent dot.
 //   onAct(name, el, ctx)   a click on an element with data-pact="name" inside its page or sections.
 //   onSave(ctx)            just before the settings are saved: the place to work out derived values.
 //   onProc(status, ctx)    one of its processes started or ended.

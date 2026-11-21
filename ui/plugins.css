@@ -27,21 +27,21 @@
   .plug-icon { width: 44px; height: 44px; }
   .plug-actions { grid-column: 2; }
 }
-/* The top bar's plugin slot. .top-pill: a status with a pulsing dot that opens the plugin's page;
-   .top-pill-btn: a small button at its end (stop). Sized like the top bar's other controls. */
-#plugin-slot { display: flex; align-items: center; gap: 8px; }
+/* The top bar's plugin slot. A plugin's status there is made of the top bar's own buttons (.btn, as Pause and
+   Clip are), so it follows the theme like they do: .top-group joins two or more of them into one control, and
+   .top-dot is the one mark of color, a small dot in the accent (.idle: not yet, in the muted text color). */
+#plugin-slot { display: flex; align-items: center; gap: clamp(6px, .75vw, 10px); }
 #plugin-slot:empty { display: none; }
 .plug-top { display: inline-flex; }
-.top-pill { display: inline-flex; align-items: center; height: 34px; border-radius: var(--radius); border: 1px solid color-mix(in srgb, var(--danger) 50%, var(--line-2)); background: color-mix(in srgb, var(--danger) 12%, var(--raised)); overflow: hidden; }
-.top-pill > button { display: inline-flex; align-items: center; gap: 8px; height: 100%; padding: 0 12px; border: 0; background: none; color: var(--text); font: 700 12px var(--sans); letter-spacing: .04em; white-space: nowrap; cursor: pointer; font-variant-numeric: tabular-nums; }
-.top-pill > button:hover { background: color-mix(in srgb, var(--danger) 16%, transparent); }
-.top-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); animation: plug-pulse 1.4s ease-in-out infinite; }
-.top-pill.wait .dot { background: var(--warn); }
-.top-pill b { color: var(--danger); font-weight: 700; }
-.top-pill.wait b { color: var(--warn); }
-.top-pill > .top-pill-btn { padding: 0 10px; border-left: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line-2)); color: var(--muted); }
-.top-pill > .top-pill-btn:hover { color: var(--danger); }
-.top-pill-btn svg { width: 12px; height: 12px; fill: currentColor; stroke: none; }
-@media (prefers-reduced-motion: reduce) { .top-pill .dot { animation: none; } }
-@media (max-width: 1100px) { .top-pill .top-pill-detail { display: none; } }
-@keyframes plug-pulse { 50% { opacity: .35; } }
+.top-group { display: inline-flex; }
+.top-group > .btn { padding: 0 clamp(9px, .9vw, 12px); }
+.top-group > .btn:not(:first-child) { margin-left: -1px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.top-group > .btn:not(:last-child) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.top-group > .btn:hover { position: relative; } /* its lighter hover border is drawn over its neighbour's */
+.top-group > .btn.top-icon { width: 30px; padding: 0; justify-content: center; color: var(--muted); }
+.top-group > .btn.top-icon:hover { color: var(--text); }
+.top-group > .btn.top-icon svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+.top-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--accent); }
+.top-dot.idle { background: var(--dim); }
+.top-muted { color: var(--muted); font-weight: 500; }
+@media (max-width: 1100px) { .top-group .top-detail { display: none; } }
