@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glint Library</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="libwin.css">
+<link rel="stylesheet" href="lang/ko.css">
+<link rel="stylesheet" href="lang/el.css">
+<style id="custom-css"></style>
+</head>
+<body class="lw-body">
+<!-- The library in a window of its own, beside the editor (libwin.js). Clips are dragged out of it as files. -->
+<div id="lw">
+  <header class="lw-top" data-tauri-drag-region>
+    <svg class="logo lw-logo" viewBox="0 0 48 48"><path d="M21 4l4.2 13.8L39 22l-13.8 4.2L21 40l-4.2-13.8L3 22l13.8-4.2z"/><path class="spark" d="M38 3l1.8 5.2L45 10l-5.2 1.8L38 17l-1.8-5.2L31 10l5.2-1.8z"/></svg>
+    <span class="lw-name" id="lw-name" data-tauri-drag-region>Library</span>
+    <label class="search lw-search">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="lw-q" type="text" spellcheck="false" autocomplete="off">
+    </label>
+    <select id="lw-game" class="lw-game"></select>
+    <span class="lw-space" data-tauri-drag-region></span>
+    <div class="winctl">
+      <button data-win="min"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+      <button data-win="max"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>
+      <button data-win="close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>
+  </header>
+  <main id="lw-view" class="lw-view" tabindex="0"></main>
+  <footer class="lw-foot">
+    <span class="lw-hint" id="lw-hint"></span>
+    <button type="button" class="btn sm primary" id="lw-add" disabled></button>
+  </footer>
+</div>
+<div id="flash" class="flash" hidden></div>
+
+<script src="i18n.js"></script>
+<script src="lang/ko-app.js"></script>
+<script src="lang/ko-editor.js"></script>
+<script src="lang/ko-proj.js"></script>
+<script src="lang/ko-lw1.js"></script>
+<script src="lang/el-app.js"></script>
+<script src="lang/el-editor.js"></script>
+<script src="lang/el-proj.js"></script>
+<script src="lang/el-lw1.js"></script>
+<script src="mock.js"></script>
+<script src="themes.js"></script>
+<script src="libwin.js"></script>
+</body>
+</html>

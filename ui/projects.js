@@ -926,6 +926,21 @@ function projAddTo(id, ids, at) {
   return projFromClip(id, ids, at);
 }
 
+/* ---------- the library window (libwin.js) ----------
+ * Its "Add to the editor" (or a double click on a clip) sends "libwin-add" { ids }: the clips go at the end of
+ * what is open in the editor, as with the panel's own "Add". (A drag out of that window is a file drop: edDropInit.)
+ * The answer, when nothing can take them, goes back as "libwin-note" { text, bad } and is shown there. */
+function projLibWinAdd(ids) {
+  const note = (text, bad) => { try { window.__TAURI__?.event?.emitTo?.("library", "libwin-note", { text, bad: !!bad }); } catch {} };
+  ids = (Array.isArray(ids) ? ids : []).filter((id) => (S.clips || []).some((c) => c.id === id));
+  if (!ids.length) return;
+  const inEditor = !!S.open && (!!S.player?.editing || !!document.querySelector("#modal .pj-empty"));
+  if (!inEditor) return note(t("Open a clip or a project in the editor first."), true);
+  try {
+    Promise.resolve(projAddTo(S.open, ids)).catch((e) => { console.error("Glint: adding from the library window failed", e); fail(e); });
+  } catch (e) { console.error("Glint: adding from the library window failed", e); fail(e); }
+}
+
 /* ---------- files dropped into the editor (0.1.40) ----------
  * B's edDropInit (editor.js) hands every VIDEO file dropped anywhere in the open editor except the player to
  * projDropClips(paths, at): `at` = the V1 time it was dropped at (timeline seconds), undefined = anywhere else
@@ -1652,6 +1667,7 @@ if (typeof document !== "undefined" && typeof window !== "undefined" && window._
   const listen = window.__TAURI__.event?.listen;
   if (listen) {
     listen("projects-changed", () => projRefresh());
+    listen("libwin-add", ({ payload } = {}) => projLibWinAdd(payload?.ids));
     listen("project-changed", ({ payload }) => { try { projChanged(payload); } catch (e) { console.error("Glint: project-changed failed", e); } });
     listen("jobs-changed", ({ payload }) => {
       projJobsNow = Array.isArray(payload) ? payload : [];

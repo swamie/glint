@@ -55,6 +55,8 @@ const PICON = {
   vol: '<svg viewBox="0 0 24 24"><path d="M4 9.5v5h3.5l4.500 4v-13l-4.500 4z" fill="currentColor" stroke="none"/><path d="M15.5 9a4.200 4.200 0 0 1 0 6M18 6.500a7.800 7.800 0 0 1 0 11"/></svg>',
   mute: '<svg viewBox="0 0 24 24"><path d="M4 9.5v5h3.5l4.500 4v-13l-4.500 4z" fill="currentColor" stroke="none"/><path d="m16 9.500 5 5M21 9.500l-5 5"/></svg>',
   full: '<svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
+  // The library in a window of its own (libwin.js): a window in front of another, with a row of clips in it.
+  libwin: '<svg viewBox="0 0 24 24"><path d="M7 7V5.500a1.500 1.500 0 0 1 1.500-1.500h11a1.500 1.500 0 0 1 1.500 1.500v9a1.500 1.500 0 0 1-1.500 1.500H18"/><rect x="3" y="8" width="14" height="12" rx="1.500"/><path d="M3 12h14M7.500 12v8M12.500 12v8"/></svg>',
   loop: '<svg viewBox="0 0 24 24"><path d="m17 3 3 3-3 3M4 11V9a3 3 0 0 1 3-3h13M7 21l-3-3 3-3M20 13v2a3 3 0 0 1-3 3H4"/></svg>',
   back: '<svg viewBox="0 0 24 24"><path d="m11 6-6 6 6 6M19 6l-6 6 6 6"/></svg>',
   fwd: '<svg viewBox="0 0 24 24"><path d="m13 6 6 6-6 6M5 6l6 6-6 6"/></svg>',

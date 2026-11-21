@@ -1123,7 +1123,8 @@ if (!window.__TAURI__) {
         }
       },
     },
-    event: { listen: async (name, fn) => { (listeners[name] ||= []).push(fn); return () => {}; } },
+    // emitTo (the library window, libwin.js): kept in window.__mockSent; in the browser there is one window only.
+    event: { listen: async (name, fn) => { (listeners[name] ||= []).push(fn); return () => {}; }, emitTo: async (target, name, payload) => { (window.__mockSent ||= []).push([target, name, payload]); } },
   };
   // Fire a backend event by hand: window.__mockEmit("blur-progress", { id, pct, state, message }).
   window.__mockEmit = (name, payload) => (listeners[name] || []).forEach((fn) => fn({ payload }));
