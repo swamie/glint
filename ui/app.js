@@ -477,7 +477,7 @@ function cardHtml(c) {
   // once reset a background-image's size, so cards showed only the frame's top-left corner.
   return `<article class="card${S.sel.has(c.id) ? " sel" : ""}" data-clip="${c.id}" data-hover>
     <div class="thumb" ${bg}>
-      ${c.thumb ? `<img class="thumb-img" src="${esc(fileSrc(c.thumb))}" alt="" draggable="false" decoding="async" onerror="this.remove();thumbAsk(${esc(JSON.stringify(c.id))},true)" style="${THUMB_IMG_STYLE}">` : `<div class="ph">${esc(c.game.slice(0, 1).toUpperCase())}</div>`}
+      ${c.thumb ? `<img class="thumb-img" src="${esc(fileSrc(c.thumb))}" alt="" draggable="false" decoding="async" loading="lazy" onerror="this.remove();thumbAsk(${esc(JSON.stringify(c.id))},true)" style="${THUMB_IMG_STYLE}">` : `<div class="ph">${esc(c.game.slice(0, 1).toUpperCase())}</div>`}
       <span class="check" title="${esc(t("Select"))}">${ICON.check}</span>
       ${tag}
       ${typeof shareCardBadge === "function" ? shareCardBadge(c) : "" /* share.js: the cloud tag of an uploaded clip */}
@@ -573,10 +573,13 @@ function renderLibrary() {
   // The Library has no subtitle: beside its title, a trail shows the folder and game filters (library2.js).
   const titles = { library: [t("Library"), ""], favorites: [t("Favorites"), t("Clips you starred")], rendered: [t("Rendered"), t("Clips finished with Blur")] };
   const [title, sub] = titles[S.page];
-  const gameRow = gameRowHtml(visibleClips().base); // may reset S.tab, so it runs before the list is built
+  let shown = visibleClips();
+  const tabWas = S.tab, folderWas = S.folder;
+  const gameRow = gameRowHtml(shown.base); // may reset S.tab, so it runs before the list is built
   if (S.folder && !S.folders.includes(S.folder)) S.folder = null; // a folder that is gone: before the trail names it
   const trail = S.page === "library" && typeof libTrailHtml === "function" ? libTrailHtml(S.folder, S.tab, t("Main folder")) : "";
-  const { list } = visibleClips();
+  if (S.tab !== tabWas || S.folder !== folderWas) shown = visibleClips(); // filtered and sorted once, twice only when the tab or folder was reset
+  const { list } = shown;
   const binds = clipBinds().filter((k) => k.key);
   const empty = S.clips.length
     ? `<div class="empty"><h2>${t("Nothing here")}</h2>${t("No clips match this view.")}</div>`
@@ -1832,7 +1835,11 @@ document.addEventListener("input", (e) => {
 document.addEventListener("change", (e) => {
   const el = e.target;
   if (el.id === "sort") { S.sort = el.value; return render(); }
-  if ("lang" in el.dataset) { S.settings.language = glintSetLanguage(el.value); return saveSettings(true); }
+  if ("lang" in el.dataset) {
+    // The language's texts are fetched first (lang/index.js): only the language in use is loaded at start.
+    const code = el.value;
+    return glintLoadLanguage(code).then(() => { S.settings.language = glintSetLanguage(code); return saveSettings(true); });
+  }
   if (el.dataset.kbf) {
     const k = S.settings.keybinds[+el.dataset.kb];
     if (el.dataset.kbf === "seconds" && el.value === "custom") {
@@ -1929,10 +1936,24 @@ $("#btn-clip").onclick = async () => {
 };
 
 /* ---------- data ---------- */
-async function refreshClips() {
-  S.clips = ((await invoke("list_clips")) || []).filter((c) => !c.draft); // drafts ("Edit together") are held by join.js only
-  S.folders = (await invoke("list_folders")) || [];
-  S.games = (await invoke("list_games")) || [];
+/* Read the clips, folders and games again and redraw. The three are asked for together. Calls that
+ * arrive while one is running share a single run that starts when it ends (a thumbnail refresh or
+ * an import announces every clip: each used to read and redraw everything, one after the other);
+ * that run starts after the call, so what it shows is never older than the call. */
+let rcRunning = null, rcNext = null;
+function refreshClips() {
+  if (!rcRunning) {
+    rcRunning = refreshClipsNow().finally(() => { rcRunning = null; });
+    return rcRunning;
+  }
+  rcNext ||= rcRunning.catch(() => {}).then(() => { rcNext = null; return refreshClips(); });
+  return rcNext;
+}
+async function refreshClipsNow() {
+  const [clips, folders, games] = await Promise.all([invoke("list_clips"), invoke("list_folders"), invoke("list_games")]);
+  S.clips = (clips || []).filter((c) => !c.draft); // drafts ("Edit together") are held by join.js only
+  S.folders = folders || [];
+  S.games = games || [];
   const ids = new Set(S.clips.map((c) => c.id));
   for (const id of [...S.sel]) if (!ids.has(id)) S.sel.delete(id);
   render();
@@ -1943,6 +1964,7 @@ async function refreshState() {
   if (typeof plugEnsureSettings === "function") plugEnsureSettings(); // plugins.js: a plugin's settings keep their defaults
   if (!S.sounds.length) S.sounds = (await invoke("list_sounds")) || [];
   window.applyGlintTheme(S.settings.theme, S.settings.custom_css);
+  await glintLoadLanguage(S.settings.language || "en"); // at once when it is loaded already (lang/index.js)
   glintSetLanguage(S.settings.language || "en");
   prMigrate(); // colorpick.js: old custom colors / CSS become the preset "My theme" (the look does not change)
   S.version = st.version;
