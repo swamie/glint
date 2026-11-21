@@ -228,8 +228,11 @@ const quickBind = () => {
 };
 // Monitors. A clip keybind's `monitor` is an index into S.monitors; -1, a missing field or a
 // monitor that is not connected all mean the capture monitor (Capture → Monitor).
-const monLabel = (m) => `${m.name}  ${m.width}×${m.height} @ ${m.hz} Hz${m.primary ? "  " + t("(primary)") : ""}`; // the Capture page's dropdown
-const monShort = (m) => `${m.name} · ${m.width}×${m.height}`; // the same monitor in a keybind row, where there is less room
+// A monitor is always called by Glint's own number ("Monitor 2": the main one is 1), as the monitor picker
+// shows it. Windows' device name ("DISPLAY1") is another count: shown beside "Monitor 1" it read as that monitor.
+const monName = (m) => t("Monitor {n}", { n: (m.index || 0) + 1 });
+const monLabel = (m) => `${monName(m)}  ${m.width}×${m.height} @ ${m.hz} Hz${m.primary ? "  " + t("(primary)") : ""}`; // the Capture page's dropdown
+const monShort = (m) => `${monName(m)} · ${m.width}×${m.height}`; // the same monitor in a keybind row, where there is less room
 const capMon = () => S.monitors.find((m) => m.index === S.settings.monitor) || S.monitors[0] || { index: 0, name: "", width: 0, height: 0 };
 const kbNamed = (k) => Number.isInteger(k.monitor) && k.monitor >= 0; // names a monitor, connected or not (null >= 0 is true, hence the integer test)
 const kbMon = (k) => (kbNamed(k) && S.monitors.some((m) => m.index === k.monitor) ? k.monitor : -1);
@@ -238,6 +241,11 @@ const kbExtraMons = () => {
   const cap = capMon().index;
   const idx = new Set(clipBinds().map(kbMon).filter((i) => i >= 0 && i !== cap));
   return S.monitors.filter((m) => idx.has(m.index));
+};
+/** Clip keybinds with a key that save another monitor than the capture monitor: [{ keys, monitor }]. The Capture page says so. */
+const kbElsewhere = () => {
+  const cap = capMon().index;
+  return clipBinds().filter((k) => k.key && kbMon(k) >= 0 && kbMon(k) !== cap).map((k) => ({ keys: comboText(k), monitor: S.monitors.find((m) => m.index === kbMon(k)) }));
 };
 
 // Layout choices that belong to this window, not to the settings file: remembered in localStorage.
@@ -406,7 +414,7 @@ function renderChrome() {
   if (on && caps.length > 1) {
     const n = caps.length - 1;
     const bad = !st.error && caps.some((c) => !c.primary && c.error);
-    const tip = [t("Buffered monitors:"), ...caps.map((c) => `${c.name}  ${c.width}×${c.height} · ${Math.round(c.fps_actual || 0)}/${c.fps || 0} fps${c.primary ? "  " + t("(capture monitor)") : ""}${c.error ? "\n    " + t("Capture problem:") + " " + c.error : ""}`)].join("\n");
+    const tip = [t("Buffered monitors:"), ...caps.map((c) => `${monName({ index: c.monitor })}  ${c.width}×${c.height} · ${Math.round(c.fps_actual || 0)}/${c.fps || 0} fps${c.primary ? "  " + t("(capture monitor)") : ""}${c.error ? "\n    " + t("Capture problem:") + " " + c.error : ""}`)].join("\n");
     state += ` · <span class="sb-more${bad ? " bad" : ""}" title="${esc(tip)}">${bad ? ICON.warn : ""}${n === 1 ? t("+1 monitor") : t("+{n} monitors", { n })}</span>`;
   }
   chromeHtml($("#sb-state"), state);
@@ -1389,9 +1397,9 @@ function renderKeybinds() {
     const lost = multi && clip && kbNamed(k) && mon < 0; // names a monitor that is not connected (the setting is kept for when it is back)
     // 0.1.41: the monitor picker (monpick.js) with the same stored value (-1 or a monitor's index).
     const monSel = typeof monPick === "function"
-      ? monPick({ kb: i, value: mon, cls: "kb-mon", special: { value: -1, label: swap ? t("Next monitor") : t("Capture monitor ({name})", { name: cap.name }) }, title: swap ? t("Which monitor this keybind switches to") : t("Which monitor this keybind clips") })
+      ? monPick({ kb: i, value: mon, cls: "kb-mon", special: { value: -1, label: swap ? t("Next monitor") : t("Capture monitor ({name})", { name: monName(cap) }) }, title: swap ? t("Which monitor this keybind switches to") : t("Which monitor this keybind clips") })
       : `<select class="field kb-mon" data-kb="${i}" data-kbf="monitor" title="${esc(swap ? t("Which monitor this keybind switches to") : t("Which monitor this keybind clips"))}">
-        <option value="-1"${mon < 0 ? " selected" : ""}>${swap ? t("Next monitor") : t("Capture monitor ({name})", { name: esc(cap.name) })}</option>
+        <option value="-1"${mon < 0 ? " selected" : ""}>${swap ? t("Next monitor") : t("Capture monitor ({name})", { name: esc(monName(cap)) })}</option>
         ${S.monitors.map((m) => `<option value="${m.index}"${mon === m.index ? " selected" : ""}>${esc(monShort(m))}</option>`).join("")}
       </select>`;
     // Each cell has its own grid area (style.css), so the row can wrap in narrow windows.
@@ -1408,7 +1416,7 @@ function renderKeybinds() {
     </div>`;
   });
   const extra = kbExtraMons();
-  const bold = (m) => `<b style="color:var(--text)">${esc(m.name)}</b>`;
+  const bold = (m) => `<b style="color:var(--text)">${esc(monName(m))}</b>`;
   const mbps = S.status.max_mbps || 0;
   const worst = (mbps * maxSecs()) / 8 * 1e6;
   const longest = `<b style="color:var(--text)">${fmtLen(maxSecs())}</b>`;
@@ -1460,11 +1468,13 @@ function renderRecording() {
     : t("The newest {secs} stay in RAM and the rest is kept in files. Up to {ram} of RAM and {disk} on disk", sizes);
   const bufferDir = s.buffer_dir || "%LOCALAPPDATA%\\Glint\\buffer";
   const extra = kbExtraMons(); // these keep their own capture whatever the Monitor dropdown says
+  const elsewhere = S.monitors.length > 1 ? kbElsewhere() : [];
   $("#view").innerHTML = pageHead(t("Capture"), t("What the replay buffer captures")) + `
     ${typeof cap2TopHtml === "function" ? cap2TopHtml() : ""}
     ${st.error && st.recording ? `<div class="note bad"><b>${t("Capture problem:")}</b> ${esc(st.error)}${typeof depsErrorExtra === "function" ? depsErrorExtra(st.error) : ""}</div>` : ""}
+    ${elsewhere.map((e) => `<div class="note bad">${t("<b>{keys}</b> saves <b>{monitor}</b>, not the monitor chosen here: that keybind has its own monitor.", { keys: esc(e.keys), monitor: esc(monName(e.monitor)) })} <button class="btn sm" data-page="keybinds" style="margin-left:8px">${t("Open Keybinds")}</button></div>`).join("")}
     <div class="section"><h2>${t("Video")}</h2>
-      ${row(t("Monitor"), t("The screen that is captured") + (extra.length ? `<br>${t("Also buffered for a keybind: {list}", { list: extra.map((m) => esc(m.name)).join(", ") })}` : ""), typeof monPick === "function" ? monPick({ set: "monitor", value: s.monitor, inline: true }) : select("monitor", S.monitors.map((m) => [m.index, monLabel(m)]), true))}
+      ${row(t("Monitor"), t("The screen that is captured") + (extra.length ? `<br>${t("Also buffered for a keybind: {list}", { list: extra.map((m) => esc(monName(m))).join(", ") })}` : ""), typeof monPick === "function" ? monPick({ set: "monitor", value: s.monitor, inline: true }) : select("monitor", S.monitors.map((m) => [m.index, monLabel(m)]), true))}
       ${row(t("Resolution"), t("Scaled on the GPU. Lower is lighter and smaller"), select("height", resOpts, true))}
       ${row(t("Aspect ratio"), aspectHint, select("aspect", [["auto", t("Auto (fix stretched res)")], ["16:9", "16:9"], ["16:10", "16:10"], ["21:9", "21:9"], ["32:9", "32:9"], ["4:3", "4:3"], ["source", t("As captured (no fix)")]]))}
       ${row(t("Frame rate"), t("Up to your monitor's {hz} Hz. High rates suit Blur renders", { hz: mon.hz }), select("fps", fpsList.map((f) => [f, `${f} fps`]), true))}

@@ -162,8 +162,8 @@ pub fn describe_monitors(mons: &[Monitor]) -> Vec<String> {
                 _ => "not found".into(),
             };
             format!(
-                "monitor {}: {}{} {}x{} @ {} Hz at ({}, {}) on \"{}\", handle {:#x}, Desktop Duplication {dda}, id {}",
-                m.index, m.name, if m.primary { " (main)" } else { "" }, m.width, m.height, m.hz, m.x, m.y, m.adapter, src.hmonitor, m.id
+                "Monitor {} in Settings (capture {}): {}{} {}x{} @ {} Hz at ({}, {}) on \"{}\", handle {:#x}, Desktop Duplication {dda}, id {}",
+                m.index + 1, m.index, m.name, if m.primary { " (main)" } else { "" }, m.width, m.height, m.hz, m.x, m.y, m.adapter, src.hmonitor, m.id
             )
         })
         .collect()
@@ -236,6 +236,16 @@ pub fn dxgi_outputs() -> Vec<(u32, u32, String)> {
         }
     }
     out
+}
+
+/// Monitor `index` as the window names it, with what Windows calls it: "Monitor 2 (DISPLAY1, 1920x1080)".
+/// The window counts from 1 with the main monitor first; Windows' own DISPLAY numbers are another
+/// count, so a log line that gave only one of them was read as the other.
+pub fn monitor_text(mons: &[Monitor], index: u32) -> String {
+    match mons.get(index as usize) {
+        Some(m) => format!("Monitor {} ({}, {}x{})", index + 1, m.name, m.width, m.height),
+        None => format!("Monitor {} (not connected)", index + 1),
+    }
 }
 
 /// `MonitorSource` of the monitor called `name`, from the two lists (split out so it can be tested on made-up lists).
