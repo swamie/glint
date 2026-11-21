@@ -15,7 +15,7 @@ glintAddLanguage("el", "Ελληνικά", {
   "Back to the color it had": "Πίσω στο χρώμα που είχε",
   "Back to the first color": "Πίσω στο πρώτο χρώμα",
   "Reload icon": "Επαναφόρτωση εικονιδίου",
-  "Puts the icon on Glint's window, its taskbar button and the tray again, right now. A pinned taskbar shortcut and the Start menu keep the program's own icon: Windows does not let a program change those.": "Βάζει ξανά το εικονίδιο στο παράθυρο του Glint, στο κουμπί του στη γραμμή εργασιών και στην περιοχή ειδοποιήσεων, αμέσως. Μια καρφιτσωμένη συντόμευση στη γραμμή εργασιών και το μενού Έναρξη κρατούν το εικονίδιο του ίδιου του προγράμματος: τα Windows δεν επιτρέπουν σε ένα πρόγραμμα να τα αλλάξει.",
+  "Puts the icon on Glint's window, its taskbar button, the tray and Glint's shortcuts (a pinned taskbar button, the Start menu) again, right now.": "Βάζει ξανά το εικονίδιο στο παράθυρο του Glint, στο κουμπί του στη γραμμή εργασιών, στην περιοχή ειδοποιήσεων και στις συντομεύσεις του Glint (καρφιτσωμένο κουμπί στη γραμμή εργασιών, μενού Έναρξη), αμέσως.",
   "Icon reloaded": "Το εικονίδιο επαναφορτώθηκε",
   "Icon reloaded on the window. The tray icon could not be changed.": "Το εικονίδιο επαναφορτώθηκε στο παράθυρο. Το εικονίδιο στην περιοχή ειδοποιήσεων δεν άλλαξε.",
 });
