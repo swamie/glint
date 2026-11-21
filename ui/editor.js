@@ -942,6 +942,7 @@ function openClip(id) {
         <div class="v-pane v-edit">
           <div class="e-head"><div class="e-h${draft ? " e-h-draft" : ""}">${draft ? esc(c.title) : L("Edit")}</div>
             <button type="button" class="e-ibtn" data-v="shortcuts" aria-label="${L("Keyboard shortcuts")}" title="${L("Keyboard shortcuts")}">${ICON.keys}</button>
+            <button type="button" class="e-ibtn" data-v="library-window" aria-label="${L("Library in its own window")}" title="${L("Open the library in its own window, to drag clips from it into the editor")}">${PICON.libwin}</button>
             <button type="button" class="e-ibtn e-fsbtn" data-v="editor-full" aria-pressed="false"></button>
             <button class="btn sm" data-v="edit-done">${draft ? L("Close") : L("Done")}</button></div>
           ${draft ? `<div class="small e-draft-note">${L("Export saves the result as a new clip. The clips themselves stay as they are.")}</div>` : ""}
@@ -3597,6 +3598,11 @@ async function viewerAction(act) {
     else if (act === "edit-done" || act === "trim-cancel") S.player.setEdit(false);
     else if (act === "shortcuts") S.player.openKeys();
     else if (act === "editor-full") S.player.editorFull();
+    else if (act === "library-window") {
+      // A window cannot come to the front over a fullscreen editor: the editor leaves fullscreen first.
+      if (document.fullscreenElement) { try { await document.exitFullscreen(); } catch {} }
+      await invoke("open_library_window");
+    }
     else if (act === "export") await edExport(false);
     else if (act === "export-blur") await edExport(true);
     else if (act === "blur") { S.jobs[id] = { pct: 0, state: "running", message: "" }; $("#v-blur").innerHTML = blurPanel(c); await invoke("blur_clip", { id }); }

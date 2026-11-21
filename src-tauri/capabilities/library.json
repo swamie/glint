@@ -1,0 +1,6 @@
+{
+  "identifier": "library",
+  "description": "The library window beside the editor: events, window dragging, and dragging clips out as files",
+  "windows": ["library"],
+  "permissions": ["core:default", "core:window:allow-start-dragging", "drag:default"]
+}
