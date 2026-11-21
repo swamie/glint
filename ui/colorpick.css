@@ -48,3 +48,11 @@
 .theme.tp-dragging { opacity: .6; outline: 2px dashed var(--accent); outline-offset: 2px; }
 body.tp-reordering, body.tp-reordering * { cursor: grabbing !important; }
 body.tp-reordering .theme { transition: none; }
+
+/* A built-in theme's own note (themes.js `tip`, the tile's data-tip): a small tooltip above the tile, on hover and
+   on keyboard focus. As wide as the tile (and its gaps), so it is never cut at the grid's edges. Not while dragging. */
+.theme[data-tip] { position: relative; }
+.theme[data-tip]:hover::after, .theme[data-tip]:focus-visible::after { content: attr(data-tip); position: absolute; z-index: 20; left: -8px; right: -8px; bottom: calc(100% + 6px);
+  padding: 4px 7px; border-radius: 5px; background: var(--raised-2, var(--raised)); color: var(--text); border: 1px solid var(--line-2);
+  box-shadow: 0 4px 14px rgb(0 0 0 / .3); font: 600 11px/1.3 var(--sans); text-align: center; white-space: normal; pointer-events: none; }
+.theme[data-tip].tp-dragging::after, body.tp-reordering .theme[data-tip]::after { content: none; }
