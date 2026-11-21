@@ -3,7 +3,7 @@
 .st-scene .btn.on { border-color: color-mix(in srgb, var(--accent) 55%, var(--line-2)); color: var(--accent); }
 .st-body { display: grid; grid-template-columns: minmax(0, 1fr) 268px; gap: 16px; padding: 16px 18px; }
 .st-left { min-width: 0; }
-.st-stage { position: relative; width: 100%; overflow: hidden; border: 1px solid var(--line-2); border-radius: 6px; background: #000; user-select: none; touch-action: none; }
+.st-stage { container-type: inline-size; position: relative; width: 100%; overflow: hidden; border: 1px solid var(--line-2); border-radius: 6px; background: #000; user-select: none; touch-action: none; }
 .st-stage.off { background: var(--raised); }
 .st-src { position: absolute; box-sizing: border-box; cursor: move; }
 .st-src.sel { outline: 1.5px solid var(--accent); outline-offset: -1px; z-index: 1; }
@@ -30,7 +30,13 @@ button.st-ib:hover:not(:disabled) { background: var(--raised-2); color: var(--te
 .st-ib:disabled { opacity: .3; cursor: default; }
 span.st-ib { cursor: default; }
 .st-scene svg { width: 15px; height: 15px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-.st-add { align-self: flex-start; }
+.st-add { display: flex; gap: 6px; }
+.st-add .btn { flex: 1; justify-content: center; gap: 6px; padding: 0 6px; }
+.st-image > .st-pic { background: none; }
+.st-blur > .st-pic { background: none; outline: 1px dashed color-mix(in srgb, var(--text) 45%, transparent); outline-offset: -1px; }
+.st-blur .st-blur { position: absolute; inset: 0; backdrop-filter: blur(var(--blur)); }
+.st-stage.off .st-blur > .st-pic { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.plug-dropping .st-stage { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }
 .st-props { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
 .st-none { color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 .st-p { display: grid; grid-template-columns: 62px minmax(0, 1fr); align-items: center; gap: 8px; }

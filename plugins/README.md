@@ -55,6 +55,7 @@ Glint.register({
   onAct: (name, el, c) => {},                 // a click on an element with data-pact="name"
   onSave: (c) => {},                          // just before the settings are saved
   onProc: (status, c) => {},                  // one of its processes started or ended
+  onDrop: (paths, point, c) => {},            // files dropped on Glint's window while one of its pages is open
   start: (c) => {},                           // once, after everything is loaded
   lang: { ko: { "Hello": "안녕하세요" } },      // its texts in Glint's other languages
 });
@@ -71,6 +72,7 @@ Glint.register({
 | `c.glint` | Glint's own state, to read: `settings`, `status`, `monitors`, `hardware`, `version` |
 | `c.proc.start(name, args, { audio, quiet })`, `c.proc.stop(name)`, `c.proc.status(name)` | a process of the plugin: Glint's ffmpeg with the plugin's arguments |
 | `c.invoke(command, args)` | any of Glint's backend commands |
+| `c.files.keep(path)`, `c.files.drop(path)`, `c.fileSrc(path)` | keep Glint's own copy of a picture the user gave the plugin (PNG, JPEG, GIF, WebP or BMP, up to 64 MB): `{ path, name, size }`; delete that copy; the address to show a local file from |
 
 Use Glint's own markup (`page-head`, `section`, `row`, `btn`, `note`, `field`) and its CSS variables so a plugin's page looks like the rest of the program and follows the user's theme.
 

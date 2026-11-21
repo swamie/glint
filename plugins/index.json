@@ -18,13 +18,13 @@
         },
         {
           "path": "stream.css",
-          "sha256": "58f255e3a766c1ffde479c9b57bdd4d3a3e97192f09d173faa6fd03f49b1d0a9",
-          "size": 4209
+          "sha256": "4fc07835da22f71e8b1378749322110e44b3eb880e501d955eda34f130347974",
+          "size": 4809
         },
         {
           "path": "stream.js",
-          "sha256": "3d3a2e752e408ce4d83277d60e983521bcf8d0c437d32b5fbbf78bac74b8352a",
-          "size": 51186
+          "sha256": "a1f7430a7035d8b981c944d32a662cc783817e222baccf172a87fc27c64379e3",
+          "size": 57558
         }
       ]
     }

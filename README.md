@@ -302,7 +302,7 @@ Glint can take optional add-ons that are not part of its own build, so a feature
 
 Only official plugins can be installed from the marketplace for now. The list is `plugins/index.json` in this repository and the plugins are the folders in `plugins/official/`; Glint downloads a plugin's files from there over HTTPS and installs them only if every file matches the size and SHA-256 the list gives. Nothing about you or the PC is sent. A plugin folder put in `%APPDATA%\Glint\plugins\` by hand still loads, and the Plugins page marks it as not from the marketplace.
 
-**Stream (preview).** The first official plugin: go live to Twitch, YouTube or any RTMP server from a Stream page under Tools, with a "Start / stop streaming" keybind that also works while the window is closed. It streams a scene with Glint's desktop and microphone sound: the screen plus any cameras, each moved, sized, cropped, turned and stacked on the page's preview.
+**Stream (preview).** The first official plugin: go live to Twitch, YouTube or any RTMP server from a Stream page under Tools, with a "Start / stop streaming" keybind that also works while the window is closed. It streams a scene with Glint's desktop and microphone sound: the screen plus any cameras, pictures (PNG, JPEG or GIF, dropped on the preview) and blur boxes, each moved, sized, cropped, turned and stacked on the page's preview.
 
 For plugin authors and for publishing one: [plugins/README.md](plugins/README.md). How it works: `src-tauri/src/plugins.rs` and `ui/plugins.js`.
 

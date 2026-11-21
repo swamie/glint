@@ -9,6 +9,8 @@
 //   defaults   its settings' first values. They live in S.settings.plugins[<id>] and are saved with Glint's own.
 //   lang       { ko: { "English text": "…" }, el: { … } }: its texts in Glint's other languages.
 //   pages      [{ id, title, icon, render(ctx), after(ctx, root), badge(ctx) }]: pages under Tools.
+//   onDrop(paths, point, ctx)   files were dropped on Glint's window while one of its pages is open
+//                          (.plug-dropping is on the page while they hover).
 //   settings   [{ title, cat, render(ctx) }]: sections of the Settings page (cat: one of its categories, or "plugins").
 //   actions    { <action id>(ctx) }: run when a keybind with that action fires while the window is open.
 //              The actions themselves (id, label, the process they start) are listed in plugin.json,
@@ -59,6 +61,13 @@ function plugCtx(info) {
     chrome: () => renderChrome(),
     go: (page) => goPage(page),
     get glint() { return { settings: S.settings, status: S.status, monitors: S.monitors, hardware: S.hardware, version: S.version }; },
+    /** The address a local file is shown from (an <img>'s src). */
+    fileSrc: (path) => T.core.convertFileSrc(path),
+    /** The plugin's own copies of pictures the user gave it: keep(path) -> { path, name, size }, drop(path). */
+    files: {
+      keep: (path) => invoke("plugin_file_keep", { plugin: id, path }),
+      drop: (path) => invoke("plugin_file_drop", { plugin: id, path }),
+    },
     proc: {
       start: (name, args, opts = {}) => invoke("plugin_proc_start", { plugin: id, name, args, audio: !!opts.audio, quiet: !!opts.quiet }),
       stop: (name) => invoke("plugin_proc_stop", { plugin: id, name }),
@@ -135,6 +144,17 @@ function plugTopbarRender() {
     if (w._html !== part) { w._html = part; w.innerHTML = part; }
   }
   for (const w of [...el.children]) if (!seen.has(w.dataset.plugin)) w.remove();
+}
+
+/** Files are over the window, left it, or were dropped: the open page's plugin gets them, with where (in the page's own pixels). */
+function plugDrop(ev, payload) {
+  const host = $("#view .plug-page");
+  const p = host && PLUG.defs.get(host.dataset.plugin);
+  if (!p?.def.onDrop) return;
+  host.classList.toggle("plug-dropping", ev.endsWith("drag-enter"));
+  if (!ev.endsWith("drag-drop") || !payload.paths?.length) return;
+  const k = window.devicePixelRatio || 1, at = payload.position || { x: 0, y: 0 };
+  plugSafe(host.dataset.plugin, "onDrop", () => p.def.onDrop(payload.paths, { x: at.x / k, y: at.y / k }, p.ctx));
 }
 
 /** Draw a page of the sidebar that is not one of Glint's own. False when it is not ours either. */
@@ -312,6 +332,8 @@ document.addEventListener("change", async (e) => {
     const fn = p?.def.actions?.[a.action];
     if (fn) plugSafe(a.plugin, "action", () => fn(p.ctx));
   });
+  // Files dragged from Explorer onto Glint's window go to the plugin whose page is open (its onDrop).
+  for (const ev of ["tauri://drag-enter", "tauri://drag-leave", "tauri://drag-drop"]) T.event.listen(ev, ({ payload }) => plugDrop(ev, payload || {}));
   T.event.listen("plugin-proc", ({ payload: st }) => {
     const p = st && PLUG.defs.get(st.plugin);
     if (p?.def.onProc) plugSafe(st.plugin, "onProc", () => p.def.onProc(st, p.ctx));

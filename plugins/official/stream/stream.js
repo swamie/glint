@@ -2,8 +2,9 @@
 //
 // What it does: runs Glint's ffmpeg as the process "live", which captures a monitor (Desktop
 // Duplication), encodes it with the graphics card's encoder and sends it to an RTMP server.
-// The picture is a scene: the screen and any cameras (DirectShow), each moved, sized, cropped,
-// turned and stacked on the Stream page's preview. A scene that is only the whole screen keeps the
+// The picture is a scene: the screen, cameras (DirectShow), pictures (PNG, JPEG, GIF: dropped on
+// the preview) and blur boxes, each moved, sized, cropped, turned and stacked on the Stream page's
+// preview. A scene that is only the whole screen keeps the
 // short capture chain; anything else is put together by ffmpeg's overlay filter.
 // Sound is Glint's own live desktop and microphone audio, handed to ffmpeg by Glint.
 // The arguments are worked out here and saved in the plugin's settings (`procs.live`), so the
@@ -63,13 +64,13 @@ const newScreen = () => ({ id: "screen", type: "screen", x: 0, y: 0, w: 1, h: 1,
 /** The scene's sources, bottom layer first, put right (settings can be edited by hand): always one screen. */
 function sources(c) {
   const sc = c.s.scene && typeof c.s.scene === "object" ? c.s.scene : (c.s.scene = {});
-  let list = Array.isArray(sc.sources) ? sc.sources.filter((x) => x && typeof x === "object" && (x.type === "screen" || x.type === "camera")) : [];
+  let list = Array.isArray(sc.sources) ? sc.sources.filter((x) => x && typeof x === "object" && ["screen", "camera", "image", "blur"].includes(x.type)) : [];
   const first = list.find((x) => x.type === "screen");
   list = list.filter((x) => x.type !== "screen" || x === first);
   if (!first) list.unshift(newScreen());
   for (const x of list) {
     if (x.type === "screen") x.id = "screen";
-    else x.id = String(x.id || "cam-" + Math.random().toString(36).slice(2, 8));
+    else x.id = String(x.id || "src-" + Math.random().toString(36).slice(2, 8));
     x.w = clamp(num(x.w, 1), 0.01, 4); x.h = clamp(num(x.h, 1), 0.01, 4);
     x.x = clamp(num(x.x, 0), -4, 4); x.y = clamp(num(x.y, 0), -4, 4);
     const k = Array.isArray(x.crop) ? x.crop : [];
@@ -80,12 +81,17 @@ function sources(c) {
     x.opacity = clamp(Math.round(num(x.opacity, 100)), 5, 100);
     x.flip = !!x.flip; x.visible = x.visible !== false;
     if (x.type === "camera") x.device = String(x.device || "");
+    if (x.type === "image") { x.file = String(x.file || ""); x.name = String(x.name || ""); }
+    if (x.type === "blur") Object.assign(x, { strength: clamp(Math.round(num(x.strength, 40)), 1, 100), crop: [0, 0, 0, 0], rot: 0, flip: false, opacity: 100 });
   }
   sc.sources = list;
   return list;
 }
 /** What goes out: the sources that are shown and have something to show. */
-const shown = (c) => sources(c).filter((x) => x.visible && (x.type === "screen" || x.device));
+const shown = (c) => sources(c).filter((x) => x.visible && (x.type === "screen" || x.type === "blur" || x.device || x.file));
+const isGif = (x) => /\.gif$/i.test(x.file || "");
+/** How far a blur box smears, in the stream's pixels. */
+const sigmaOf = (x) => 2 + x.strength * 0.4;
 const untouched = (x) => x.x === 0 && x.y === 0 && x.w === 1 && x.h === 1 && !x.rot && !x.flip && x.opacity === 100 && x.crop.every((v) => !v);
 /** Only the whole screen, as it is: nothing to put together. */
 const plain = (c) => { const v = shown(c); return v.length === 1 && v[0].type === "screen" && untouched(v[0]); };
@@ -100,18 +106,30 @@ function sceneGraph(c, mon, fps, w, h) {
   const inputs = [], parts = [`color=c=black:s=${w}x${h}:r=${fps}[bg]`];
   let last = "bg", n = 0, cam = 0;
   for (const x of shown(c)) {
+    if (x.type === "blur") {
+      // The part of the picture so far that lies under the box, blurred and laid back in its place.
+      let x0 = Math.max(0, Math.round(w * x.x)), y0 = Math.max(0, Math.round(h * x.y));
+      x0 -= x0 % 2; y0 -= y0 % 2;
+      const bw = Math.min(w, Math.round(w * (x.x + x.w))) - x0, bh = Math.min(h, Math.round(h * (x.y + x.h))) - y0;
+      if (bw < 8 || bh < 8) continue; // outside the picture
+      parts.push(`[${last}]split[a${n}][b${n}]`, `[b${n}]crop=${even(bw)}:${even(bh)}:${x0}:${y0},gblur=sigma=${f4(sigmaOf(x))}:steps=2[s${n}]`, `[a${n}][s${n}]overlay=x=${x0}:y=${y0}[o${n}]`);
+      last = `o${n++}`;
+      continue;
+    }
     let from;
     if (x.type === "screen") from = `ddagrab=output_idx=${mon.index}:framerate=${fps}:draw_mouse=${c.glint.settings.cursor === false ? 0 : 1},hwdownload,format=bgra,`;
     else {
-      // Input 0 is the sound; the cameras follow in the order of their layers.
-      inputs.push("-f", "dshow", "-rtbufsize", "256M", "-thread_queue_size", "512", "-i", `video=${x.device}`);
+      // Input 0 is the sound; the cameras and pictures follow in the order of their layers.
+      if (x.type === "camera") inputs.push("-f", "dshow", "-rtbufsize", "256M", "-thread_queue_size", "512", "-i", `video=${x.device}`);
+      else if (isGif(x)) inputs.push("-stream_loop", "-1", "-i", x.file); // a GIF plays at its own speed, over and over
+      else inputs.push("-loop", "1", "-framerate", "2", "-i", x.file); // a still picture: two frames a second are plenty
       from = `[${++cam}:v]`;
     }
     const [l, t, r, b] = x.crop, chain = [];
     if (l || t || r || b) chain.push(`crop=iw*${f4(1 - l - r)}:ih*${f4(1 - t - b)}:iw*${f4(l)}:ih*${f4(t)}`);
     chain.push(`scale=${even(w * x.w)}:${even(h * x.h)}:flags=bilinear`);
     if (x.flip) chain.push("hflip");
-    if (x.rot || x.opacity < 100) chain.push("format=rgba");
+    if (x.rot || x.opacity < 100 || x.type === "image") chain.push("format=rgba"); // a picture keeps its see-through parts
     if (x.rot) { const a = f4((x.rot * Math.PI) / 180); chain.push(`rotate=${a}:c=none:ow=rotw(${a}):oh=roth(${a})`); }
     if (x.opacity < 100) chain.push(`colorchannelmixer=aa=${f4(x.opacity / 100)}`);
     parts.push(`${from}${chain.join(",")}[s${n}]`);
@@ -252,10 +270,12 @@ const ICON = {
   eyeOff: '<svg viewBox="0 0 24 24"><path d="M4 4l16 16M9.900 5.800A9 9 0 0 1 12 5.500c6 0 9.500 6.500 9.500 6.500a17 17 0 0 1-2.800 3.600M6.300 7.400A17 17 0 0 0 2.500 12S6 18.500 12 18.500a9 9 0 0 0 3.900-.9"/></svg>',
   up: '<svg viewBox="0 0 24 24"><path d="M6 14.500 12 8.500l6 6"/></svg>',
   down: '<svg viewBox="0 0 24 24"><path d="M6 9.500 12 15.500l6-6"/></svg>',
+  image: '<svg viewBox="0 0 24 24"><rect x="3.500" y="4.500" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.600"/><path d="M4 17l5-4.500 3.500 3 3-2.500 4.500 4"/></svg>',
+  blur: '<svg viewBox="0 0 24 24"><rect x="3.500" y="4.500" width="17" height="15" rx="2" stroke-dasharray="2.500 2.500"/><path d="M8 10h8M8 14h8"/></svg>',
   bin: '<svg viewBox="0 0 24 24"><path d="M4.500 7h15M9.500 7V4.500h5V7M6.500 7l.8 12.500h9.400L17.500 7"/></svg>',
 };
 const pct = (v) => `${+(v * 100).toFixed(3)}%`;
-const nameOf = (x) => (x.type === "screen" ? t("Screen") : x.device || t("Camera"));
+const nameOf = (x) => (x.type === "screen" ? t("Screen") : x.type === "blur" ? t("Blur") : x.type === "image" ? x.name || t("Picture") : x.device || t("Camera"));
 const boxStyle = (x) => `left:${pct(x.x)};top:${pct(x.y)};width:${pct(x.w)};height:${pct(x.h)};transform:rotate(${x.rot}deg);opacity:${x.opacity / 100}`;
 function picStyle(x) {
   const [l, tp, r, b] = x.crop, kw = 1 - l - r, kh = 1 - tp - b;
@@ -370,9 +390,11 @@ function stageHtml(c) {
     if (!x.visible) return "";
     const pic = x.type === "screen"
       ? (on ? `<img data-shot alt="" draggable="false" style="${picStyle(x)}"${shot ? ` src="${shot}"` : ""}>` : "")
+      : x.type === "blur" ? `<i class="st-blur" style="--blur:${f4((sigmaOf(x) / w) * 100)}cqw"></i>`
+      : x.type === "image" ? `<img alt="" draggable="false" style="${picStyle(x)}" src="${esc(c.fileSrc(x.file))}">`
       : `<video data-cam="${esc(x.id)}" muted autoplay playsinline style="${picStyle(x)}"></video><span class="st-msg">${esc(camMsg(x))}</span>`;
     const handles = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]].map(([hx, hy]) => `<i class="st-h" data-h="${hx},${hy}" style="left:${50 + hx * 50}%;top:${50 + hy * 50}%"></i>`).join("");
-    return `<div class="st-src st-${x.type}${x.id === sel ? " sel" : ""}" data-src="${esc(x.id)}" style="${boxStyle(x)}"><div class="st-pic${x.flip ? " flip" : ""}">${pic}${!on ? `<span class="st-msg">${esc(nameOf(x))}</span>` : ""}</div>${handles}</div>`;
+    return `<div class="st-src st-${x.type}${x.id === sel ? " sel" : ""}" data-src="${esc(x.id)}" style="${boxStyle(x)}"><div class="st-pic${x.flip ? " flip" : ""}">${pic}${!on && x.type !== "image" && x.type !== "blur" ? `<span class="st-msg">${esc(nameOf(x))}</span>` : ""}</div>${handles}</div>`;
   }).join("");
   return `<div class="st-stage${on ? "" : " off"}" style="aspect-ratio:${w}/${h}">${boxes}</div>`;
 }
@@ -386,7 +408,7 @@ function listHtml(c) {
       <button class="st-name" data-pact="src-sel" data-id="${esc(x.id)}">${ICON[x.type]}<span>${esc(nameOf(x))}</span></button>
       <button class="st-ib" data-pact="src-up" data-id="${esc(x.id)}" title="${esc(t("Bring forward"))}"${i === list.length - 1 ? " disabled" : ""}>${ICON.up}</button>
       <button class="st-ib" data-pact="src-down" data-id="${esc(x.id)}" title="${esc(t("Send back"))}"${i === 0 ? " disabled" : ""}>${ICON.down}</button>
-      ${x.type === "camera" ? `<button class="st-ib" data-pact="src-del" data-id="${esc(x.id)}" title="${esc(t("Remove"))}">${ICON.bin}</button>` : `<span class="st-ib"></span>`}
+      ${x.type !== "screen" ? `<button class="st-ib" data-pact="src-del" data-id="${esc(x.id)}" title="${esc(t("Remove"))}">${ICON.bin}</button>` : `<span class="st-ib"></span>`}
     </div>`;
   }).join("");
 }
@@ -397,6 +419,9 @@ function propsHtml(c) {
   const n = (key, value, min, max, unit) => `<label class="st-n"><span>${unit}</span><input type="number" data-native data-st="${key}" value="${value}" min="${min}" max="${max}"></label>`;
   const names = [...new Set([...(devices || []), ...(x.device ? [x.device] : [])])];
   const device = x.type !== "camera" ? "" : `<div class="st-p"><span>${t("Camera")}</span><div><select class="field" data-st="device"><option value="">${esc(devices ? (names.length ? t("Pick a camera") : t("No camera found")) : t("Looking for cameras…"))}</option>${names.map((d) => `<option${d === x.device ? " selected" : ""}>${esc(d)}</option>`).join("")}</select><button class="btn sm" data-pact="devices">${t("Refresh")}</button></div></div>`;
+  const place = `<div class="st-p"><span>${t("Position")}</span><div>${n("x", Math.round(x.x * w), -w * 4, w * 4, "X")}${n("y", Math.round(x.y * h), -h * 4, h * 4, "Y")}</div></div>
+    <div class="st-p"><span>${t("Size")}</span><div>${n("w", Math.round(x.w * w), 8, w * 4, "W")}${n("h", Math.round(x.h * h), 8, h * 4, "H")}</div></div>`;
+  if (x.type === "blur") return `${place}<div class="st-p"><span>${t("Strength")}</span><div>${n("strength", x.strength, 1, 100, "%")}</div></div>`;
   return `${device}
     <div class="st-p"><span>${t("Position")}</span><div>${n("x", Math.round(x.x * w), -w * 4, w * 4, "X")}${n("y", Math.round(x.y * h), -h * 4, h * 4, "Y")}</div></div>
     <div class="st-p"><span>${t("Size")}</span><div>${n("w", Math.round(x.w * w), 8, w * 4, "W")}${n("h", Math.round(x.h * h), 8, h * 4, "H")}</div></div>
@@ -410,8 +435,8 @@ function sceneHtml(c) {
   const on = c.s.preview !== false;
   return `<div class="section st-scene"><h2><span>${t("Scene")}</span><button class="btn sm${on ? " on" : ""}" data-pact="preview" title="${esc(t("The live picture of the screen and the cameras. Off uses nothing: the boxes can still be moved"))}">${on ? t("Preview on") : t("Preview off")}</button></h2>
     <div class="st-body">
-      <div class="st-left">${stageHtml(c)}<div class="st-hint">${t("Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop.")}</div></div>
-      <div class="st-side"><div class="st-list">${listHtml(c)}</div><button class="btn sm st-add" data-pact="cam-add">${ICON.camera}${t("Add camera")}</button><div class="st-props">${propsHtml(c)}</div></div>
+      <div class="st-left">${stageHtml(c)}<div class="st-hint">${t("Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop. Drop a PNG, JPEG or GIF here to add it.")}</div></div>
+      <div class="st-side"><div class="st-list">${listHtml(c)}</div><div class="st-add"><button class="btn sm" data-pact="cam-add">${ICON.camera}${t("Camera")}</button><button class="btn sm" data-pact="img-add">${ICON.image}${t("Picture")}</button><button class="btn sm" data-pact="blur-add">${ICON.blur}${t("Blur")}</button></div><div class="st-props">${propsHtml(c)}</div></div>
     </div></div>`;
 }
 
@@ -431,7 +456,7 @@ function setProp(c, el) {
   if (key === "device") { x.device = el.value; closeCam(x.id); }
   else if (key === "x") x.x = v / w; else if (key === "y") x.y = v / h;
   else if (key === "w") x.w = v / w; else if (key === "h") x.h = v / h;
-  else if (key === "rot") x.rot = v; else if (key === "opacity") x.opacity = v;
+  else if (key === "rot") x.rot = v; else if (key === "opacity") x.opacity = v; else if (key === "strength") x.strength = v;
   else { const i = ["cl", "ct", "cr", "cb"].indexOf(key); if (i >= 0) x.crop[i] = clamp(v, 0, 95) / 100; }
   sources(c); c.save();
   setting = true; // redrawing takes the field away, which can report its change once more
@@ -471,12 +496,12 @@ function pointerDown(e, c, stage) {
     } else {
       const lx = dx * cos + dy * sin, ly = -dx * sin + dy * cos;
       let w = Math.max(8, w0 + hx * lx), h = Math.max(8, h0 + hy * ly);
-      if (ev.altKey) {
+      if (ev.altKey && x.type !== "blur") {
         const k = [...crop0];
         if (hx) { const side = hx > 0 ? R : L, other = hx > 0 ? L : R; w = Math.min(w, fullW * (1 - crop0[other])); k[side] = clamp(1 - crop0[other] - w / fullW, 0, 0.95); }
         if (hy) { const side = hy > 0 ? 3 : 1, other = hy > 0 ? 1 : 3; h = Math.min(h, fullH * (1 - crop0[other])); k[side] = clamp(1 - crop0[other] - h / fullH, 0, 0.95); }
         x.crop = k;
-      } else if (hx && hy && !ev.shiftKey) {
+      } else if (hx && hy && !ev.shiftKey && x.type !== "blur") {
         const s = Math.abs(w / w0 - 1) > Math.abs(h / h0 - 1) ? w / w0 : h / h0;
         w = w0 * s; h = h0 * s;
       }
@@ -506,6 +531,33 @@ function after(c, root) {
   root.querySelector(".st-scene").addEventListener("change", (e) => { const el = e.target.closest("[data-st]"); if (el) { e.stopPropagation(); setProp(c, el); } });
   feed(c);
 }
+/** Add pictures to the scene: each is copied into the plugin's own files, checked that it opens, and put at `at` (a point of the picture, 0..1) or in the middle. */
+async function addImages(c, paths, at) {
+  let added = 0, step = 0;
+  for (const path of paths.slice(0, 8)) {
+    if (!/\.(png|jpe?g|gif)$/i.test(path)) { c.flash(t("Only PNG, JPEG and GIF pictures can be added"), true); continue; }
+    let kept;
+    try { kept = await c.files.keep(path); } catch (e) { c.fail(e); continue; }
+    const size = await new Promise((done) => { const im = new Image(); im.onload = () => done({ w: im.naturalWidth, h: im.naturalHeight }); im.onerror = () => done(null); im.src = c.fileSrc(kept.path); });
+    if (!size || !size.w || !size.h) { c.files.drop(kept.path).catch(() => {}); c.flash(t("{name} could not be opened as a picture", { name: kept.name }), true); continue; }
+    const { w, h } = sizeOf(c);
+    // Its own size on the stream, or smaller when that is more than half the picture.
+    const k = Math.min(1, (w * 0.5) / size.w, (h * 0.5) / size.h), sw = (size.w * k) / w, sh = (size.h * k) / h;
+    const mid = at || { x: 0.5, y: 0.5 };
+    const src = { id: "img-" + Date.now().toString(36) + added, type: "image", file: kept.path, name: kept.name, aw: size.w, ah: size.h, x: clamp(mid.x - sw / 2 + step, 0, 1 - sw), y: clamp(mid.y - sh / 2 + step, 0, 1 - sh), w: sw, h: sh, crop: [0, 0, 0, 0], rot: 0, flip: false, opacity: 100, visible: true };
+    sources(c).push(src); sel = src.id; added++; step += 0.03;
+  }
+  if (added) { sources(c); c.save(); c.render(); }
+}
+/** Files dropped on Glint's window while the Stream page is open. On the preview they land where they were dropped. */
+function onDrop(paths, point, c) {
+  const stage = document.querySelector(".st-stage");
+  if (!stage) return;
+  const r = stage.getBoundingClientRect();
+  const inside = point.x >= r.left && point.x <= r.right && point.y >= r.top && point.y <= r.bottom;
+  addImages(c, paths, inside ? { x: (point.x - r.left) / r.width, y: (point.y - r.top) / r.height } : null);
+}
+
 /** The buttons of the scene's list and fields. True when the click was one of them. */
 function sceneAct(name, el, c) {
   const list = sources(c), id = el.dataset.id, x = list.find((v) => v.id === (id || sel));
@@ -520,13 +572,24 @@ function sceneAct(name, el, c) {
     if (devices === null) askDevices(c);
     return done();
   }
+  if (name === "img-add") { c.invoke("pick_media_file").then((path) => { if (path) addImages(c, [path], null); }).catch(c.fail); return true; }
+  if (name === "blur-add") {
+    const box = { id: "blur-" + Date.now().toString(36), type: "blur", strength: 40, x: 0.35, y: 0.4, w: 0.3, h: 0.2, crop: [0, 0, 0, 0], rot: 0, flip: false, opacity: 100, visible: true };
+    list.push(box); sel = box.id;
+    return done();
+  }
   if (!x) return false;
   const i = list.indexOf(x);
   if (name === "src-sel") { sel = sel === x.id ? "" : x.id; c.render(); return true; }
   if (name === "src-eye") { x.visible = !x.visible; return done(); }
   if (name === "src-up" && i < list.length - 1) { list.splice(i, 1); list.splice(i + 1, 0, x); return done(); }
   if (name === "src-down" && i > 0) { list.splice(i, 1); list.splice(i - 1, 0, x); return done(); }
-  if (name === "src-del" && x.type === "camera") { list.splice(i, 1); closeCam(x.id); if (sel === x.id) sel = ""; return done(); }
+  if (name === "src-del" && x.type !== "screen") {
+    list.splice(i, 1); closeCam(x.id);
+    if (x.type === "image" && !list.some((v) => v.file === x.file)) c.files.drop(x.file).catch(() => {});
+    if (sel === x.id) sel = "";
+    return done();
+  }
   if (name === "flip") { x.flip = !x.flip; return done(); }
   if (name === "fit" || name === "fill") { x.rot = 0; fitSource(c, x, name === "fill"); return done(); }
   if (name === "reset") { Object.assign(x, { crop: [0, 0, 0, 0], rot: 0, flip: false, opacity: 100 }); fitSource(c, x, false); return done(); }
@@ -536,7 +599,7 @@ function sceneAct(name, el, c) {
 function render(c) {
   const hasBind = (c.glint.settings.keybinds || []).some((k) => k.action === "plugin:stream:toggle");
   return `<div class="page-head"><div><h1>${t("Stream")}</h1><div class="sub">${t("Go live from Glint")}</div></div><div class="head-actions st-head">${headHtml(c)}</div></div>
-    <div class="note">${t("<b>Preview.</b> Streams your screen and cameras with Glint's sound. Changes you make while live apply the next time you go live.")}</div>
+    <div class="note">${t("<b>Preview.</b> Streams your screen, cameras and pictures with Glint's sound. Changes you make while live apply the next time you go live.")}</div>
     ${statusHtml(c)}
     ${sceneHtml(c)}
     <div class="section"><h2>${t("Where to")}</h2>${whereRows(c)}</div>
@@ -577,6 +640,7 @@ Glint.register({
   ],
   // The backend has already started or stopped the process when a keybind fires: only the page follows.
   topbar,
+  onDrop,
   actions: { toggle: (c) => refresh(c).then(() => { if (status.running) watch(c); }) },
   onProc: (st, c) => { if (st.name === "devices") { if (!st.running) gotDevices(st, c); return; } if (st.name !== PROC) return; status = st; live = st.running ? live || shape(c) : null; if (st.running) watch(c); c.render(); },
   onSave: (c) => { c.s.procs = { [PROC]: { args: buildArgs(c) || [], audio: !!c.s.audio } }; },
@@ -603,7 +667,7 @@ Glint.register({
   },
   lang: {
     ko: {
-      "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen and cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Glint에서 Twitch, YouTube 또는 RTMP 서버로 방송해요. 화면과 카메라를 장면에 배치할 수 있어요. 도구에 방송 페이지와 설정, 시작/종료 단축키가 추가돼요.", "<b>Preview.</b> Streams your screen and cameras with Glint's sound. Changes you make while live apply the next time you go live.": "<b>미리 보기.</b> 화면과 카메라를 Glint의 소리와 함께 방송해요. 방송 중에 바꾼 설정은 다음 방송부터 적용돼요.", "Screen": "화면", "Camera": "카메라", "Pick a camera": "카메라 선택", "On the stream now": "지금 방송에 나가는 중", "No preview of this camera": "이 카메라는 미리 볼 수 없어요", "Bring forward": "앞으로 가져오기", "Send back": "뒤로 보내기", "Remove": "제거", "Click a source to move, size, crop or turn it.": "소스를 클릭하면 옮기고, 크기를 바꾸고, 자르고, 돌릴 수 있어요.", "No camera found": "카메라를 찾지 못했어요", "Looking for cameras…": "카메라 찾는 중…", "Refresh": "새로 고침", "Position": "위치", "Size": "크기", "Turn": "회전", "Mirror": "좌우 반전", "Crop": "자르기", "L": "좌", "T": "상", "R": "우", "B": "하", "Opacity": "불투명도", "Fit": "맞추기", "Fill": "채우기", "Reset": "초기화", "Scene": "장면", "The live picture of the screen and the cameras. Off uses nothing: the boxes can still be moved": "화면과 카메라의 실시간 모습이에요. 끄면 자원을 쓰지 않고, 상자는 계속 옮길 수 있어요", "Preview on": "미리 보기 켜짐", "Preview off": "미리 보기 꺼짐", "Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop.": "끌어서 옮겨요. 모서리를 끌면 크기가 바뀌고, Shift를 누르면 늘어나고, Alt를 누르면 잘려요.", "Add camera": "카메라 추가",
+      "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen and cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Glint에서 Twitch, YouTube 또는 RTMP 서버로 방송해요. 화면과 카메라를 장면에 배치할 수 있어요. 도구에 방송 페이지와 설정, 시작/종료 단축키가 추가돼요.", "<b>Preview.</b> Streams your screen, cameras and pictures with Glint's sound. Changes you make while live apply the next time you go live.": "<b>미리 보기.</b> 화면, 카메라, 사진을 Glint의 소리와 함께 방송해요. 방송 중에 바꾼 설정은 다음 방송부터 적용돼요.", "Screen": "화면", "Camera": "카메라", "Pick a camera": "카메라 선택", "On the stream now": "지금 방송에 나가는 중", "No preview of this camera": "이 카메라는 미리 볼 수 없어요", "Bring forward": "앞으로 가져오기", "Send back": "뒤로 보내기", "Remove": "제거", "Click a source to move, size, crop or turn it.": "소스를 클릭하면 옮기고, 크기를 바꾸고, 자르고, 돌릴 수 있어요.", "No camera found": "카메라를 찾지 못했어요", "Looking for cameras…": "카메라 찾는 중…", "Refresh": "새로 고침", "Position": "위치", "Size": "크기", "Turn": "회전", "Mirror": "좌우 반전", "Crop": "자르기", "L": "좌", "T": "상", "R": "우", "B": "하", "Opacity": "불투명도", "Fit": "맞추기", "Fill": "채우기", "Reset": "초기화", "Scene": "장면", "The live picture of the screen and the cameras. Off uses nothing: the boxes can still be moved": "화면과 카메라의 실시간 모습이에요. 끄면 자원을 쓰지 않고, 상자는 계속 옮길 수 있어요", "Preview on": "미리 보기 켜짐", "Preview off": "미리 보기 꺼짐", "Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop. Drop a PNG, JPEG or GIF here to add it.": "끌어서 옮겨요. 모서리를 끌면 크기가 바뀌고, Shift를 누르면 늘어나고, Alt를 누르면 잘려요. PNG, JPEG, GIF를 여기에 끌어다 놓으면 추가돼요.", "Blur": "블러", "Picture": "사진", "Strength": "강도", "Only PNG, JPEG and GIF pictures can be added": "PNG, JPEG, GIF 사진만 추가할 수 있어요", "{name} could not be opened as a picture": "{name}을(를) 사진으로 열 수 없어요",
       "Stream": "방송", "Go live from Glint": "Glint에서 바로 방송하기", "Go live": "방송 시작", "Stop streaming": "방송 종료", "Streaming": "방송 중", "Connecting…": "연결 중…", "Streaming for {time}": "{time}째 방송 중", "Connecting to the server…": "서버에 연결하는 중…",
       "Start / stop streaming": "방송 시작 / 종료", "Stream started": "방송을 시작했어요", "Stream stopped": "방송을 종료했어요",
       "Choose where to stream and paste your stream key first": "먼저 방송할 곳을 고르고 스트림 키를 붙여 넣어 주세요",
@@ -626,7 +690,7 @@ Glint.register({
       "Open Keybinds": "단축키 열기", "Add keybind": "단축키 추가", "Preview": "미리 보기",
     },
     el: {
-      "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen and cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Ζωντανή μετάδοση από το Glint σε Twitch, YouTube ή οποιονδήποτε διακομιστή RTMP, με την οθόνη και τις κάμερές σου τοποθετημένες σε σκηνή. Προσθέτει τη σελίδα Μετάδοση στα Εργαλεία, τις ρυθμίσεις της και συντόμευση για έναρξη και διακοπή.", "<b>Preview.</b> Streams your screen and cameras with Glint's sound. Changes you make while live apply the next time you go live.": "<b>Προεπισκόπηση.</b> Μεταδίδει την οθόνη και τις κάμερές σου με τον ήχο του Glint. Οι αλλαγές κατά τη μετάδοση ισχύουν από την επόμενη μετάδοση.", "Screen": "Οθόνη", "Camera": "Κάμερα", "Pick a camera": "Διάλεξε κάμερα", "On the stream now": "Στη μετάδοση τώρα", "No preview of this camera": "Χωρίς προεπισκόπηση για αυτή την κάμερα", "Bring forward": "Μεταφορά μπροστά", "Send back": "Μεταφορά πίσω", "Remove": "Αφαίρεση", "Click a source to move, size, crop or turn it.": "Κάνε κλικ σε μια πηγή για να τη μετακινήσεις, να αλλάξεις το μέγεθός της, να την περικόψεις ή να τη γυρίσεις.", "No camera found": "Δεν βρέθηκε κάμερα", "Looking for cameras…": "Αναζήτηση καμερών…", "Refresh": "Ανανέωση", "Position": "Θέση", "Size": "Μέγεθος", "Turn": "Περιστροφή", "Mirror": "Καθρέφτης", "Crop": "Περικοπή", "L": "Α", "T": "Π", "R": "Δ", "B": "Κ", "Opacity": "Αδιαφάνεια", "Fit": "Προσαρμογή", "Fill": "Γέμισμα", "Reset": "Επαναφορά", "Scene": "Σκηνή", "The live picture of the screen and the cameras. Off uses nothing: the boxes can still be moved": "Η ζωντανή εικόνα της οθόνης και των καμερών. Όταν είναι ανενεργή δεν χρησιμοποιεί τίποτα: τα πλαίσια μετακινούνται ακόμα", "Preview on": "Προεπισκόπηση ενεργή", "Preview off": "Προεπισκόπηση ανενεργή", "Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop.": "Σύρε για μετακίνηση. Σύρε μια γωνία για αλλαγή μεγέθους, με Shift για τέντωμα, με Alt για περικοπή.", "Add camera": "Προσθήκη κάμερας",
+      "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen and cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.": "Ζωντανή μετάδοση από το Glint σε Twitch, YouTube ή οποιονδήποτε διακομιστή RTMP, με την οθόνη και τις κάμερές σου τοποθετημένες σε σκηνή. Προσθέτει τη σελίδα Μετάδοση στα Εργαλεία, τις ρυθμίσεις της και συντόμευση για έναρξη και διακοπή.", "<b>Preview.</b> Streams your screen, cameras and pictures with Glint's sound. Changes you make while live apply the next time you go live.": "<b>Προεπισκόπηση.</b> Μεταδίδει την οθόνη, τις κάμερες και τις εικόνες σου με τον ήχο του Glint. Οι αλλαγές κατά τη μετάδοση ισχύουν από την επόμενη μετάδοση.", "Screen": "Οθόνη", "Camera": "Κάμερα", "Pick a camera": "Διάλεξε κάμερα", "On the stream now": "Στη μετάδοση τώρα", "No preview of this camera": "Χωρίς προεπισκόπηση για αυτή την κάμερα", "Bring forward": "Μεταφορά μπροστά", "Send back": "Μεταφορά πίσω", "Remove": "Αφαίρεση", "Click a source to move, size, crop or turn it.": "Κάνε κλικ σε μια πηγή για να τη μετακινήσεις, να αλλάξεις το μέγεθός της, να την περικόψεις ή να τη γυρίσεις.", "No camera found": "Δεν βρέθηκε κάμερα", "Looking for cameras…": "Αναζήτηση καμερών…", "Refresh": "Ανανέωση", "Position": "Θέση", "Size": "Μέγεθος", "Turn": "Περιστροφή", "Mirror": "Καθρέφτης", "Crop": "Περικοπή", "L": "Α", "T": "Π", "R": "Δ", "B": "Κ", "Opacity": "Αδιαφάνεια", "Fit": "Προσαρμογή", "Fill": "Γέμισμα", "Reset": "Επαναφορά", "Scene": "Σκηνή", "The live picture of the screen and the cameras. Off uses nothing: the boxes can still be moved": "Η ζωντανή εικόνα της οθόνης και των καμερών. Όταν είναι ανενεργή δεν χρησιμοποιεί τίποτα: τα πλαίσια μετακινούνται ακόμα", "Preview on": "Προεπισκόπηση ενεργή", "Preview off": "Προεπισκόπηση ανενεργή", "Drag to move. Drag a corner to size, with Shift to stretch, with Alt to crop. Drop a PNG, JPEG or GIF here to add it.": "Σύρε για μετακίνηση. Σύρε μια γωνία για αλλαγή μεγέθους, με Shift για τέντωμα, με Alt για περικοπή. Άφησε εδώ ένα PNG, JPEG ή GIF για να το προσθέσεις.", "Blur": "Θόλωμα", "Picture": "Εικόνα", "Strength": "Ένταση", "Only PNG, JPEG and GIF pictures can be added": "Μόνο εικόνες PNG, JPEG και GIF μπορούν να προστεθούν", "{name} could not be opened as a picture": "Το {name} δεν άνοιξε ως εικόνα",
       "Stream": "Μετάδοση", "Go live from Glint": "Ζωντανή μετάδοση από το Glint", "Go live": "Έναρξη μετάδοσης", "Stop streaming": "Διακοπή μετάδοσης", "Streaming": "Μετάδοση", "Connecting…": "Σύνδεση…", "Streaming for {time}": "Μετάδοση εδώ και {time}", "Connecting to the server…": "Σύνδεση με τον διακομιστή…",
       "Start / stop streaming": "Έναρξη / διακοπή μετάδοσης", "Stream started": "Η μετάδοση ξεκίνησε", "Stream stopped": "Η μετάδοση σταμάτησε",
       "Choose where to stream and paste your stream key first": "Διάλεξε πρώτα πού θα μεταδώσεις και επικόλλησε το κλειδί μετάδοσης",

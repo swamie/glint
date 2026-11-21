@@ -1114,6 +1114,8 @@ if (!window.__TAURI__) {
           case "plugin_set_enabled": mockPlugins.set(args.id, { enabled: args.on }); return mockPlugins.state();
           case "plugin_uninstall": mockPlugins.set(args.id, null); return mockPlugins.state();
           case "plugins_restart": location.reload(); return null;
+          case "plugin_file_keep": if (!/\.(png|jpe?g|gif|webp|bmp)$/i.test(args.path)) throw "Only pictures can be added: PNG, JPEG, GIF, WebP or BMP"; return { path: args.path, name: args.path.split(/[\\/]/).pop(), size: 1234 };
+          case "plugin_file_drop": return true;
           case "plugin_proc_start": return mockPlugins.procStart(args);
           case "plugin_proc_stop": return mockPlugins.procStop(args);
           case "plugin_proc_status": return mockPlugins.procStatus(args);

@@ -425,6 +425,52 @@ pub fn plugin_uninstall(id: String) -> Result<Value, String> {
     Ok(state_json())
 }
 
+/* ---------- a plugin's own files ---------- */
+
+/// What a plugin may keep a copy of: pictures.
+const KEEP_EXT: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "bmp"];
+const KEEP_MAX: u64 = 64 * 1024 * 1024;
+
+/// Where a plugin's kept files live. Not inside its own folder, which an update replaces.
+fn files_dir(id: &str) -> PathBuf {
+    util::data_dir().join("plugin-files").join(id)
+}
+
+/// Copy a picture the user chose (dropped on the plugin's page, say) into the plugin's files, so
+/// that it is still there after the original is moved or deleted: { path, name, size }.
+#[tauri::command(async)]
+pub fn plugin_file_keep(plugin: String, path: String) -> Result<Value, String> {
+    if !valid_id(&plugin) || !installed().iter().any(|p| p.manifest.id == plugin) {
+        return Err("This plugin is not installed or is switched off".into());
+    }
+    let src = PathBuf::from(&path);
+    let meta = fs::metadata(&src).map_err(|_| "That file could not be read")?;
+    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if !meta.is_file() || !KEEP_EXT.contains(&ext.as_str()) {
+        return Err("Only pictures can be added: PNG, JPEG, GIF, WebP or BMP".into());
+    }
+    if meta.len() == 0 || meta.len() > KEEP_MAX {
+        return Err(format!("That picture is too large (the limit is {} MB)", KEEP_MAX / 1024 / 1024));
+    }
+    let shown = src.file_name().and_then(|n| n.to_str()).unwrap_or("picture").to_string();
+    let stem: String = src.file_stem().and_then(|n| n.to_str()).unwrap_or("picture").chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).take(40).collect();
+    let dir = files_dir(&plugin);
+    fs::create_dir_all(&dir).map_err(|e| format!("Could not keep the picture: {e}"))?;
+    let dest = dir.join(format!("{:x}-{stem}.{ext}", util::unix_ms()));
+    fs::copy(&src, &dest).map_err(|e| format!("Could not keep the picture: {e}"))?;
+    Ok(json!({ "path": dest.to_string_lossy(), "name": shown, "size": meta.len() }))
+}
+
+/// Delete a file `plugin_file_keep` made. Anything that is not directly in that plugin's files is left alone.
+#[tauri::command(async)]
+pub fn plugin_file_drop(plugin: String, path: String) -> bool {
+    if !valid_id(&plugin) {
+        return false;
+    }
+    let p = PathBuf::from(&path);
+    p.parent() == Some(files_dir(&plugin).as_path()) && p.is_file() && fs::remove_file(&p).is_ok()
+}
+
 /// Restart Glint so that a plugin just installed, removed or switched takes effect. The new copy
 /// shows its window, and clips or stays paused as this one did.
 #[tauri::command(async)]
