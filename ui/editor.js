@@ -1933,32 +1933,41 @@ function mountPlayer(root, c) {
   /** Edit mode: the whole editor (video, timeline, side column) fullscreen, or back. */
   P.editorFull = () => (document.fullscreenElement ? leaveFull() : root.requestFullscreen().catch((e) => console.warn("Glint: fullscreen refused", e)));
   P.isEditorFull = () => document.fullscreenElement === root;
-  // Outside edit mode the video alone goes fullscreen; in edit mode that would hide the timeline.
+  /** Edit mode: the video alone fullscreen (the player with its controls and the overlays drawn on the picture), or
+      back. From the fullscreen editor it goes on top of it, and leaving it returns to the fullscreen editor. */
+  P.videoFull = () => (document.fullscreenElement === box ? leaveFull() : box.requestFullscreen().catch((e) => console.warn("Glint: fullscreen refused", e)));
+  P.isVideoFull = () => document.fullscreenElement === box;
+  // The player's own button, a double-click on the video and (outside edit mode) F: the video alone goes fullscreen.
+  // While editing, the whole editor fullscreen is the header's button and the "fullscreen" shortcut (P.editorFull).
   // The fullscreen element is #modal, not the player (0.1.25): the previous / next arrows live in #modal, so they
   // are drawn in fullscreen too, and the next clip opens without leaving fullscreen (openClip only replaces
   // what is inside #modal). editor.css lays it out by `#modal.fs`.
-  P.fullscreen = () => (P.editing ? P.editorFull() : document.fullscreenElement ? leaveFull() : document.getElementById("modal").requestFullscreen().catch((e) => console.warn("Glint: fullscreen refused", e)));
+  P.fullscreen = () => (P.editing ? P.videoFull() : document.fullscreenElement ? leaveFull() : document.getElementById("modal").requestFullscreen().catch((e) => console.warn("Glint: fullscreen refused", e)));
   /** Show the controls again (the pointer moved over something that is not the player, such as an arrow). */
   P.wake = () => wake();
   // app.js's prompt (#confirm) and messages (#flash) live outside the viewer, and
   // only the fullscreen element is drawn in fullscreen: move them into it meanwhile.
-  function adoptOverlays(on) {
+  function adoptOverlays(host) {
     const home = document.getElementById("modal");
     for (const id of ["confirm", "flash"]) { // back in index.html's order: #modal, #confirm, #flash
       const node = document.getElementById(id);
       if (!node) continue;
-      if (on && node.parentNode !== root) root.appendChild(node);
-      else if (!on && node.parentNode === root) {
+      if (host) { if (node.parentNode !== host) host.appendChild(node); }
+      else if (node.parentNode === root || node.parentNode === box) {
         const before = id === "flash" ? document.getElementById("confirm") || home : home;
-        if (before && before.parentNode !== root) before.after(node); else document.body.appendChild(node);
+        if (before && !root.contains(before)) before.after(node); else document.body.appendChild(node);
       }
     }
   }
   function onFullscreen() {
     if (dead) return;
-    const on = P.isEditorFull();
+    const on = P.isEditorFull(), vid = P.isVideoFull();
     root.classList.toggle("e-full", on);
-    adoptOverlays(on);
+    adoptOverlays(on ? root : vid ? box : null);
+    const fb = el('[data-p="full"]');
+    fb.innerHTML = vid ? ED_ICON_UNFULL : PICON.full;
+    fb.setAttribute("aria-label", vid ? t("Leave fullscreen") : t("Fullscreen"));
+    if (vid) wake(); // the controls show on the way in, and hide again while it plays
     P.ed?.fullChanged?.(on);
     tl((h) => h.refresh()); // the timeline's width may have changed
   }

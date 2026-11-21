@@ -18,6 +18,9 @@
 
 /* Tool bar over the top edge of the picture (edit mode only). */
 .ov-bar { position: absolute; z-index: 3; top: 8px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 9px; background: rgba(7, 10, 16, .78); border: 1px solid rgba(255, 255, 255, .12); max-width: calc(100% - 16px); flex-wrap: wrap; justify-content: center; }
+/* The video alone fullscreen (editor.js P.videoFull): the toolbar goes with the controls while it plays. */
+.player:fullscreen .ov-bar { transition: opacity .18s; }
+.player:fullscreen.idle .ov-bar { opacity: 0; pointer-events: none; }
 .ov-tool { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: rgba(255, 255, 255, .82); cursor: pointer; }
 .ov-tool svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .ov-tool:hover:not(:disabled) { background: rgba(255, 255, 255, .1); color: #fff; }
