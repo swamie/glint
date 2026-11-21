@@ -152,6 +152,22 @@ pub struct Snapshot {
     pub duration: f64,
 }
 
+/// One GOP on its way from RAM to a buffer file (`VideoRing::spill_plan`).
+struct Spill {
+    gop: Arc<Gop>,
+    seg: Arc<Seg>,
+    off: u64,
+}
+
+impl Spill {
+    fn write(&self) -> io::Result<()> {
+        match &self.gop.store {
+            Store::Ram(data) => self.seg.write_at(data, self.off),
+            Store::Disk { .. } => Ok(()),
+        }
+    }
+}
+
 pub struct VideoRing {
     /// Oldest first. The first `ram_start` are on disk, the rest in RAM.
     gops: VecDeque<Arc<Gop>>,
@@ -238,9 +254,10 @@ impl VideoRing {
         self.spill_error.clear();
     }
 
-    /// Append `data` to the current buffer file, starting a new one when it is full.
-    fn write_seg(&mut self, data: &[u8]) -> io::Result<(Arc<Seg>, u64)> {
-        let full = self.seg.as_ref().map_or(true, |(_, used)| *used > 0 && *used + data.len() as u64 > self.seg_limit);
+    /// Room for `len` bytes in the current buffer file, starting a new one when it is full: the
+    /// file and where in it the bytes go. Nothing is written here.
+    fn reserve_seg(&mut self, len: usize) -> io::Result<(Arc<Seg>, u64)> {
+        let full = self.seg.as_ref().map_or(true, |(_, used)| *used > 0 && *used + len as u64 > self.seg_limit);
         if full {
             if spill::free_space(&self.dir).is_some_and(|free| free < MIN_FREE) {
                 return Err(io::Error::other("less than 1 GB free"));
@@ -248,50 +265,85 @@ impl VideoRing {
             self.seg = Some((Arc::new(Seg::create(&self.dir, &self.tag)?), 0));
         }
         let (seg, used) = self.seg.as_mut().unwrap();
-        seg.write_at(data, *used)?;
         let off = *used;
-        *used += data.len() as u64;
+        *used += len as u64;
         Ok((seg.clone(), off))
     }
 
-    /// Move GOPs that have left the RAM window to disk.
-    fn spill(&mut self, now: f64) {
-        let Some(window) = self.window else { return };
+    /// The GOPs that have left the RAM window, each with the place in a buffer file it goes to.
+    /// The caller writes them (`Spill::write`, which needs no lock on the ring) and reports each
+    /// with `spill_done`, in order.
+    fn spill_plan(&mut self, now: f64) -> Vec<Spill> {
+        let mut plan = Vec::new();
+        let Some(window) = self.window else { return plan };
         if now < self.retry_at {
-            return;
+            return plan;
         }
-        while self.ram_start < self.gops.len() {
-            let i = self.ram_start;
+        let mut i = self.ram_start;
+        while i < self.gops.len() {
             // A GOP leaves RAM once all of it is older than the window.
             let end = self.gops.get(i + 1).map(|g| g.arr).or(self.cur.as_ref().map(|g| g.arr)).unwrap_or(now);
             if window > 0.0 && end > now - window {
                 break;
             }
             let g = self.gops[i].clone();
-            let Store::Ram(data) = &g.store else {
-                self.ram_start += 1;
-                continue;
-            };
-            match self.write_seg(data) {
-                Ok((seg, off)) => {
-                    let len = data.len();
-                    // A snapshot that holds the old entry keeps its RAM copy until it is done.
-                    self.gops[i] = Arc::new(Gop { pts: g.pts, arr: g.arr, epoch: g.epoch, store: Store::Disk { seg, off, len } });
-                    self.bytes -= len;
-                    self.disk_bytes += len;
+            if g.on_disk() {
+                if i == self.ram_start {
                     self.ram_start += 1;
-                    self.spill_error.clear();
                 }
+                i += 1;
+                continue;
+            }
+            match self.reserve_seg(g.len()) {
+                Ok((seg, off)) => plan.push(Spill { gop: g, seg, off }),
                 Err(e) => {
-                    let msg = format!("The buffer folder cannot be written ({e}); the buffer is staying in RAM. Folder: {}", self.dir.display());
-                    if self.spill_error != msg {
-                        util::log(&msg);
-                    }
-                    self.spill_error = msg;
-                    self.seg = None;
-                    self.retry_at = now + 10.0;
+                    self.spill_failed(&e, now);
                     break;
                 }
+            }
+            i += 1;
+        }
+        plan
+    }
+
+    /// One GOP of `spill_plan` was written (or could not be). False = stop, the rest stays in RAM.
+    fn spill_done(&mut self, s: Spill, written: io::Result<()>, now: f64) -> bool {
+        if let Err(e) = written {
+            self.spill_failed(&e, now);
+            return false;
+        }
+        // The ring may have moved on meanwhile (emptied, or this GOP dropped off its end): then
+        // there is nothing to swap, and the bytes in the file go with the file.
+        let Some(i) = self.gops.iter().position(|g| Arc::ptr_eq(g, &s.gop)) else { return true };
+        let len = s.gop.len();
+        // A snapshot that holds the old entry keeps its RAM copy until it is done.
+        self.gops[i] = Arc::new(Gop { pts: s.gop.pts, arr: s.gop.arr, epoch: s.gop.epoch, store: Store::Disk { seg: s.seg, off: s.off, len } });
+        self.bytes -= len;
+        self.disk_bytes += len;
+        if i == self.ram_start {
+            self.ram_start += 1;
+        }
+        self.spill_error.clear();
+        true
+    }
+
+    fn spill_failed(&mut self, e: &io::Error, now: f64) {
+        let msg = format!("The buffer folder cannot be written ({e}); the buffer is staying in RAM. Folder: {}", self.dir.display());
+        if self.spill_error != msg {
+            util::log(&msg);
+        }
+        self.spill_error = msg;
+        self.seg = None;
+        self.retry_at = now + 10.0;
+    }
+
+    /// Move GOPs that have left the RAM window to disk, here and now (the self-tests; the capture
+    /// writes outside the ring's lock, see `feed_live`).
+    fn spill(&mut self, now: f64) {
+        for s in self.spill_plan(now) {
+            let written = s.write();
+            if !self.spill_done(s, written, now) {
+                break;
             }
         }
     }
@@ -341,8 +393,14 @@ impl VideoRing {
         }
     }
 
-    /// Feed raw bytes from the encoder pipe.
+    /// Feed raw bytes from the encoder pipe and move what left the RAM window to disk.
     fn feed(&mut self, data: &[u8], now: f64) {
+        self.feed_ram(data, now);
+        self.spill(now);
+    }
+
+    /// `feed` without the writing to disk.
+    fn feed_ram(&mut self, data: &[u8], now: f64) {
         self.carry.extend_from_slice(data);
         let mut pos = 0;
         while self.carry.len() - pos >= TS {
@@ -356,7 +414,6 @@ impl VideoRing {
         }
         self.carry.drain(..pos);
         self.evict(now);
-        self.spill(now);
     }
 
     fn packet(&mut self, pkt: &[u8; TS], now: f64) {
@@ -1067,8 +1124,11 @@ impl Recorder {
             if let Some((_, stop)) = audio.take() {
                 stop.store(true, Ordering::Relaxed);
             }
-            self.inner.desk.lock().unwrap().set_spill(window, key.dir.clone(), "d");
-            self.inner.mic.lock().unwrap().set_spill(window, key.dir.clone(), "m");
+            for (ring, tag) in [(&self.inner.desk, "d"), (&self.inner.mic, "m")] {
+                let mut ring = ring.lock().unwrap();
+                ring.spill_in_background();
+                ring.set_spill(window, key.dir.clone(), tag);
+            }
             let stop = Arc::new(AtomicBool::new(false));
             self.inner.audio_starts.fetch_add(1, Ordering::Relaxed);
             if !self.inner.no_devices.load(Ordering::Relaxed) {
@@ -1409,11 +1469,24 @@ fn supervise(pipe: Arc<Pipe>) {
                                 }
                             }
                             // Checked under the lock: halt() clears `alive` before it empties the ring.
-                            let mut ring = pipe.ring.lock().unwrap();
-                            if !pipe.alive() || pipe.is_parked() {
-                                break;
+                            // What leaves the RAM window is written to its buffer file without the
+                            // lock: a write of a whole GOP held up the status, the clip key and the
+                            // other readers of the ring for as long as the disk took.
+                            let plan = {
+                                let mut ring = pipe.ring.lock().unwrap();
+                                if !pipe.alive() || pipe.is_parked() {
+                                    break;
+                                }
+                                let now = now_secs();
+                                ring.feed_ram(&buf[..n], now);
+                                ring.spill_plan(now)
+                            };
+                            for s in plan {
+                                let written = s.write();
+                                if !pipe.ring.lock().unwrap().spill_done(s, written, now_secs()) {
+                                    break;
+                                }
                             }
-                            ring.feed(&buf[..n], now_secs());
                         }
                     }
                 }

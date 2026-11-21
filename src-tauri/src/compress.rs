@@ -33,12 +33,10 @@ use crate::util;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -67,8 +65,6 @@ const RETRIES: usize = 2;
 /// Returned when the job was cancelled.
 pub const CANCELLED: &str = "Cancelled";
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
 
 /// The sizes the clip menu offers until the user changes them: Discord's limits
 /// (10 MB free, 50 MB Nitro Basic, 500 MB Nitro) and 20 MB.
@@ -369,72 +365,7 @@ fn pass_args(src: &Path, plan: &Plan, kbps: f64, preset: &str, log: &Path, pass:
 /// Run ffmpeg (`-progress pipe:1`), reporting 0..1 of `expected` seconds done.
 /// Kills it within about 0.1 s once `cancel` is set and returns `CANCELLED`.
 fn run_ffmpeg(ffmpeg: &Path, args: &[String], expected: f64, cancel: &AtomicBool, on_frac: &mut dyn FnMut(f64)) -> Result<(), String> {
-    let mut child = Command::new(ffmpeg)
-        .creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Could not start ffmpeg: {e}"))?;
-    crate::util::track_child(&child); // ends with Glint (0.1.41)
-    let err_reader = child.stderr.take().map(|mut err| {
-        thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = err.read_to_end(&mut buf);
-            buf
-        })
-    });
-    let (tx, rx) = mpsc::channel::<f64>();
-    if let Some(out) = child.stdout.take() {
-        thread::spawn(move || {
-            for line in BufReader::new(out).lines().map_while(Result::ok) {
-                if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
-                    if tx.send(us / 1e6).is_err() {
-                        return;
-                    }
-                }
-            }
-        });
-    }
-    let kill = |child: &mut std::process::Child| {
-        let _ = child.kill();
-        let _ = child.wait();
-    };
-    loop {
-        if cancel.load(Ordering::SeqCst) {
-            kill(&mut child);
-            return Err(CANCELLED.into());
-        }
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(t) => {
-                if expected > 0.0 {
-                    on_frac((t / expected).clamp(0.0, 1.0));
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-    // Output closed: ffmpeg is finishing (the faststart rewrite). Still honour cancel.
-    let status = loop {
-        if cancel.load(Ordering::SeqCst) {
-            kill(&mut child);
-            return Err(CANCELLED.into());
-        }
-        match child.try_wait() {
-            Ok(Some(st)) => break st,
-            Ok(None) => thread::sleep(Duration::from_millis(50)),
-            Err(e) => return Err(format!("ffmpeg failed: {e}")),
-        }
-    };
-    let stderr = err_reader.and_then(|h| h.join().ok()).unwrap_or_default();
-    if status.success() {
-        Ok(())
-    } else {
-        let tail = util::last_lines(&stderr, 2);
-        Err(if tail.is_empty() { format!("ffmpeg stopped with exit code {}", status.code().unwrap_or(-1)) } else { tail })
-    }
+    crate::ffrun::run(ffmpeg, args, expected, cancel, on_frac).map(|_| ())
 }
 
 /// Deletes every work file of one job (`<tmp>\<tag>*`) except `keep`.

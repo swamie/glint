@@ -349,6 +349,7 @@ pub fn files_to_clipboard(paths: &[&str]) -> Result<(), String> {
 fn delete_clips(core: St, ids: Vec<String>) -> Result<usize, String> {
     let mut done = 0;
     let mut failed = 0;
+    let _once = library::batch(&core.lib); // library.json is written once, at the end
     for id in &ids {
         let Some(meta) = core.lib.lock().unwrap().get_saved(id).ok() else { continue };
         if Path::new(&meta.path).exists() && trash::delete(&meta.path).is_err() {

@@ -1797,17 +1797,21 @@ function mountPlayer(root, c) {
   }
 
   /* ----- drawing ----- */
+  const paintShown = {}; // what paint() last wrote: { at, clock }
   function paint() {
     if (dead) return;
     guard(tlNow());
     applyRate(); // the piece being played may have another speed (0.1.41); only touches what differs
     if (playing()) prepStandby(false); // the next jump's first frame waits in the standby (0.1.41)
     const now = tlNow(), m = ed();
-    el(".p-prog").style.width = pct(toBar(now));
-    el(".p-knob").style.left = pct(toBar(now));
-    el(".p-clock").textContent = m
-      ? `${fmtClock(emSrcToOut(m, Math.min(now, emEnd(m))) / barSpeed())} / ${fmtClock(emSrcToOut(m, emEnd(m)) / barSpeed())}`
+    // Every frame while playing: the bar and the clock are written only when what they show changed.
+    const at = pct(toBar(now));
+    if (at !== paintShown.at) { paintShown.at = at; el(".p-prog").style.width = at; el(".p-knob").style.left = at; }
+    const end = m ? emEnd(m) : 0;
+    const clock = m
+      ? `${fmtClock(emSrcToOut(m, Math.min(now, end)) / barSpeed())} / ${fmtClock(emSrcToOut(m, end) / barSpeed())}`
       : `${fmtClock(now)} / ${fmtClock(dur())}`;
+    if (clock !== paintShown.clock) { paintShown.clock = clock; el(".p-clock").textContent = clock; }
     if (v.buffered.length) { const b = v.buffered.end(v.buffered.length - 1); el(".p-buf").style.width = pct(toBar(pm() ? emFromSrc(m, VS && vk >= 0 ? VS[vk].start + b : b) : b)); }
     if (P.editing) levels(now);
     applyColor();
@@ -2973,7 +2977,9 @@ function mountEditor(root, c, P) {
   function renderSpeed() {
     const m = model(), ps = pieceSp(), own = ps.n > 0;
     speedBtn.disabled = !m;
-    speedBtn.innerHTML = `<span>${own ? +ps.speed.toFixed(2) : m ? m.speed : 1}x</span>${ED_CHEV}`;
+    // Written only when it changed: this runs on every sync of the editor.
+    const speedText = `${own ? +ps.speed.toFixed(2) : m ? m.speed : 1}x`;
+    if (speedBtn.dataset.shown !== speedText) { speedBtn.dataset.shown = speedText; speedBtn.innerHTML = `<span>${speedText}</span>${ED_CHEV}`; }
     speedBtn.setAttribute("aria-label", own ? t("Speed of the selected clip") : t("Clip speed"));
     $(".e-speed-title", pane).textContent = own ? (ps.n > 1 ? t("Speed of the {n} selected clips", { n: ps.n }) : t("Speed of the selected clip")) : t("Speed");
     const numW = $(".e-speed-numw", pane), num = $(".e-speed-num", pane);
@@ -3129,7 +3135,7 @@ function mountEditor(root, c, P) {
     else {
       lines.push(edReplaceOn() && !c.draft ? t("The clip will be {len} long.", { len: fmtDurMs(emResultDuration(m)) }) : t("New clip, {len} long.", { len: fmtDurMs(emResultDuration(m)) }));
       lines.push(emIsPlainCut(m) ? t("Quick cut, no quality loss.") : t("Re-encodes the video."));
-      if (emToOpts(m).audio.length && m.audio.length > 1) lines.push(t("The audio is mixed into one track."));
+      if (m.audio.length > 1 && emToOpts(m).audio.length) lines.push(t("The audio is mixed into one track."));
       if (m.canvas) lines.push(t("The picture is {w} × {h}.", { w: m.canvas.width, h: m.canvas.height }));
     }
     // Replace instead of saving beside the original. A project asks which of its clips go when it is exported.

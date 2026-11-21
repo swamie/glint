@@ -50,17 +50,26 @@ pub(crate) fn reserve_path(dir: &Path, base: &str, ext: &str) -> PathBuf {
 /// Without desktop sound the mix is mic + game (Mix, Microphone, Game), so
 /// track 1 still holds everything that was heard.
 pub fn write(s: &Settings, cap: Capture, game: &str) -> Result<ClipMeta, String> {
-    write_as(s, cap, game, false)
+    write_as(s, cap, game, false, true)
+}
+
+/// `write` / `write_game` without the thumbnail (`thumb` stays ""): the clip key's path, where the
+/// clip is listed and announced at once and the picture follows (`core.rs`).
+pub fn write_quick(s: &Settings, mut cap: Capture, game: &str, game_only: bool) -> Result<ClipMeta, String> {
+    if game_only {
+        cap.desk = None;
+    }
+    write_as(s, cap, game, game_only, false)
 }
 
 /// `write` for a clip of game mode (capmode.rs, 0.1.27): no desktop sound, and the tracks are
 /// Mix (game + microphone), Game, Microphone (`audio_layout_game`).
 pub fn write_game(s: &Settings, mut cap: Capture, game: &str) -> Result<ClipMeta, String> {
     cap.desk = None;
-    write_as(s, cap, game, true)
+    write_as(s, cap, game, true, true)
 }
 
-fn write_as(s: &Settings, mut cap: Capture, game: &str, game_mode: bool) -> Result<ClipMeta, String> {
+fn write_as(s: &Settings, mut cap: Capture, game: &str, game_mode: bool, thumb: bool) -> Result<ClipMeta, String> {
     let ffmpeg = util::find_exe(&s.ffmpeg_path, "ffmpeg").ok_or("ffmpeg.exe was not found")?;
     if s.mic_denoise {
         if let Some(mic) = cap.mic.as_mut().filter(|m| !m.data.is_empty()) {
@@ -144,7 +153,7 @@ fn write_as(s: &Settings, mut cap: Capture, game: &str, game_mode: bool) -> Resu
 
     let duration = cap.snap.duration;
     Ok(ClipMeta {
-        thumb: library::make_thumb(&ffmpeg, &out, &id, library::thumb_at(duration)),
+        thumb: if thumb { library::make_thumb(&ffmpeg, &out, &id, library::thumb_at(duration)) } else { String::new() },
         id,
         path: out.to_string_lossy().into_owned(),
         title,

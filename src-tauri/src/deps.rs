@@ -619,6 +619,7 @@ pub fn restart_needed(wanted: &str, old_wgc: Option<bool>, running_method: &str,
 /// After ffmpeg was installed: start using it without a restart of Glint.
 /// `old_wgc`: whether the ffmpeg in use before the install had Graphics Capture.
 pub fn use_new_ffmpeg(core: &Core, old_wgc: Option<bool>) {
+    util::forget_exes(); // the new file is found now, not when the remembered path runs out
     let mut s = core.settings();
     let mine = ffmpeg_target().join("ffmpeg.exe");
     // Make sure the new ffmpeg is the one found: a path set by hand to some other ffmpeg would still
@@ -661,6 +662,7 @@ pub fn install_for_ui(core: &Core, id: &str) -> Result<Vec<Item>, String> {
     let is_ffmpeg = id == "ffmpeg" || id == "ffprobe";
     let old_wgc = if is_ffmpeg { util::find_exe(&core.settings().ffmpeg_path, "ffmpeg").map(|p| has_gfxcapture(&p)) } else { None };
     let result = install(id, &mut on);
+    util::forget_exes();
     match &result {
         Ok(()) => {
             if is_ffmpeg {
@@ -808,6 +810,7 @@ pub fn self_test(report_path: &str) {
     check(&mut lines, "find_exe finds a program in the per-user folder", util::find_exe("", "glintdepsprobe").as_deref() == Some(probe.as_path()));
     check(&mut lines, "local_bin_dir follows GLINT_BIN_DIR", local_bin_dir() == bin);
     std::env::remove_var("GLINT_BIN_DIR");
+    util::forget_exes();
     check(&mut lines, "find_exe without it does not find that program", util::find_exe("", "glintdepsprobe").is_none());
     check(&mut lines, "a folder can be told writable", writable(&root) && !writable(&probe.join("sub")));
 

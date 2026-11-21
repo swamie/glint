@@ -56,12 +56,10 @@ use crate::library::{self, ClipMeta};
 use crate::util;
 use serde_json::{json, Value};
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -80,8 +78,6 @@ const GAP: f64 = 0.0002;
 /// Audio of re-encoded tracks.
 const AUDIO_KBPS: u32 = 160;
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
 
 // ---------------------------------------------------------------------------
 // Probing
@@ -896,71 +892,7 @@ fn match_clips(ffmpeg: &Path, ffprobe: &Path, srcs: &[Src], fps_hint: &[u32], ke
 /// Kills it within about 0.1 s once `cancel` is set and returns `CANCELLED`.
 /// On success returns what ffmpeg wrote to stderr (its warnings).
 fn run_ffmpeg(ffmpeg: &Path, args: &[String], expected: f64, cancel: &AtomicBool, on_frac: &mut dyn FnMut(f64)) -> Result<String, String> {
-    let mut child = Command::new(ffmpeg)
-        .creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Could not start ffmpeg: {e}"))?;
-    crate::util::track_child(&child); // ends with Glint (0.1.41)
-    let err_reader = child.stderr.take().map(|mut err| {
-        thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = err.read_to_end(&mut buf);
-            buf
-        })
-    });
-    let (tx, rx) = mpsc::channel::<f64>();
-    if let Some(out) = child.stdout.take() {
-        thread::spawn(move || {
-            for line in BufReader::new(out).lines().map_while(Result::ok) {
-                if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
-                    if tx.send(us / 1e6).is_err() {
-                        return;
-                    }
-                }
-            }
-        });
-    }
-    let kill = |child: &mut std::process::Child| {
-        let _ = child.kill();
-        let _ = child.wait();
-    };
-    loop {
-        if cancel.load(Ordering::SeqCst) {
-            kill(&mut child);
-            return Err(CANCELLED.into());
-        }
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(t) => {
-                if expected > 0.0 {
-                    on_frac((t / expected).clamp(0.0, 1.0));
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-    let status = loop {
-        if cancel.load(Ordering::SeqCst) {
-            kill(&mut child);
-            return Err(CANCELLED.into());
-        }
-        match child.try_wait() {
-            Ok(Some(st)) => break st,
-            Ok(None) => thread::sleep(Duration::from_millis(50)),
-            Err(e) => return Err(format!("ffmpeg failed: {e}")),
-        }
-    };
-    let stderr = err_reader.and_then(|h| h.join().ok()).unwrap_or_default();
-    if status.success() {
-        Ok(String::from_utf8_lossy(&stderr).into_owned())
-    } else {
-        let tail = util::last_lines(&stderr, 2);
-        Err(if tail.is_empty() { format!("ffmpeg stopped with exit code {}", status.code().unwrap_or(-1)) } else { tail })
-    }
+    crate::ffrun::run(ffmpeg, args, expected, cancel, on_frac)
 }
 
 /// Deletes the partial result unless disarmed.
@@ -999,10 +931,25 @@ pub fn measure_starts(ffprobe: &Path, file: &Path, planned: &[f64], within: f64)
 
 /// `probe` for several files at once (two ffprobe runs each), in their order.
 pub fn probe_all(ffprobe: &Path, files: &[(&Path, &str)]) -> Vec<Result<Src, String>> {
+    // A few at a time: a project of hundreds of clips used to start two ffprobe per clip all at once.
+    const WORKERS: usize = 8;
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let found: Vec<std::sync::Mutex<Option<Result<Src, String>>>> = files.iter().map(|_| std::sync::Mutex::new(None)).collect();
     thread::scope(|sc| {
-        let hs: Vec<_> = files.iter().map(|&(file, title)| (title, sc.spawn(move || probe(ffprobe, file, title)))).collect();
-        hs.into_iter().map(|(title, h)| h.join().unwrap_or_else(|_| Err(format!("Could not read \"{title}\"")))).collect()
-    })
+        for _ in 0..files.len().min(WORKERS) {
+            sc.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::SeqCst);
+                let Some(&(file, title)) = files.get(i) else { break };
+                let r = probe(ffprobe, file, title);
+                *found[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+            });
+        }
+    });
+    found
+        .into_iter()
+        .zip(files)
+        .map(|(slot, (_, title))| slot.into_inner().unwrap_or_else(|e| e.into_inner()).unwrap_or_else(|| Err(format!("Could not read \"{title}\""))))
+        .collect()
 }
 
 /// A finished join, at its final path.

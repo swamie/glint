@@ -1147,7 +1147,7 @@ pub fn thumb_pending(id: &str) -> bool {
     THUMBS_PENDING.lock().map(|g| g.as_ref().is_some_and(|s| s.contains(id))).unwrap_or(false)
 }
 
-fn set_thumb_pending(id: &str, on: bool) {
+pub(crate) fn set_thumb_pending(id: &str, on: bool) {
     if let Ok(mut g) = THUMBS_PENDING.lock() {
         let s = g.get_or_insert_with(HashSet::new);
         if on {

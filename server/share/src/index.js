@@ -59,8 +59,22 @@ async function authorized(request, env) {
 
 const limitBytes = (env) => Math.max(1, Number(env.MAX_MB) || 9000) * 1e6;
 
+/* The bucket's size is kept in one small object, so asking for it does not list the whole bucket
+ * every time. Everything that changes what the bucket holds drops the tally (dropTally), and the
+ * next question counts again. A tally is also counted again after ten minutes, whatever happened. */
+const TALLY = "u/usage.json";
+const TALLY_MS = 10 * 60 * 1000;
+async function dropTally(env) {
+  try { await env.BUCKET.delete(TALLY); } catch { /* the tally runs out by itself */ }
+}
+
 /** Bytes the bucket holds and how many clips. */
 async function usage(env) {
+  try {
+    const kept = await env.BUCKET.get(TALLY);
+    const t = kept ? await kept.json() : null;
+    if (t && Number.isFinite(t.used) && Number.isFinite(t.clips) && Date.now() - t.at < TALLY_MS) return { used: t.used, clips: t.clips };
+  } catch { /* unreadable: counted again */ }
   let used = 0, clips = 0, cursor;
   do {
     const page = await env.BUCKET.list({ prefix: "c/", cursor });
@@ -70,7 +84,22 @@ async function usage(env) {
     }
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
+  try { await env.BUCKET.put(TALLY, JSON.stringify({ used, clips, at: Date.now() }), { httpMetadata: { contentType: "application/json" } }); } catch { /* counted again next time */ }
   return { used, clips };
+}
+
+/* Clips known to be published, by id, for a minute (in this instance's memory): a player asks for
+ * a video in many Range requests, and each used to read the clip's meta.json before the video. A
+ * clip that is deleted has no video object any more, so it stops being served at once anyway. */
+const PUBLISHED = new Map();
+async function isPublished(env, id) {
+  const until = PUBLISHED.get(id);
+  if (until && until > Date.now()) return true;
+  const meta = await readMeta(env, id);
+  if (!meta || meta.pending) { PUBLISHED.delete(id); return false; }
+  if (PUBLISHED.size > 5000) PUBLISHED.clear();
+  PUBLISHED.set(id, Date.now() + 60_000);
+  return true;
 }
 
 async function readMeta(env, id) {
@@ -80,13 +109,19 @@ async function readMeta(env, id) {
   try { return await o.json(); } catch { return null; }
 }
 
-const writeMeta = (env, id, meta) => env.BUCKET.put(key(id, "meta.json"), JSON.stringify(meta), { httpMetadata: { contentType: "application/json" } });
+async function writeMeta(env, id, meta) {
+  const r = await env.BUCKET.put(key(id, "meta.json"), JSON.stringify(meta), { httpMetadata: { contentType: "application/json" } });
+  await dropTally(env);
+  return r;
+}
 
 const str = (v, max) => String(v ?? "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, max);
 const int = (v, lo, hi, dflt) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= lo && n <= hi ? n : dflt; };
 
 async function removeClip(env, id) {
   await env.BUCKET.delete([key(id, "video.mp4"), key(id, "thumb.jpg"), key(id, "meta.json")]);
+  PUBLISHED.delete(id);
+  await dropTally(env);
 }
 
 /* ---------- publisher names ---------- */
@@ -218,6 +253,7 @@ async function api(request, env, url, parts) {
     const len = Number(request.headers.get("Content-Length") || 0);
     if (!len || len > 5e6) return fail("The poster must be a JPEG under 5 MB", 413);
     await env.BUCKET.put(key(id, "thumb.jpg"), request.body, { httpMetadata: { contentType: "image/jpeg", cacheControl: "public, max-age=31536000, immutable" } });
+    await dropTally(env);
     return json({ ok: true });
   }
 
@@ -229,6 +265,7 @@ async function api(request, env, url, parts) {
     if (!list.length) return fail("No pieces were listed", 400);
     let obj;
     try { obj = await mp.complete(list); } catch (e) { return fail(`The upload could not be finished: ${e.message || e}`, 400); }
+    await dropTally(env); // counted with this clip in it
     const { used } = await usage(env);
     if (used > limitBytes(env)) {
       await removeClip(env, id);
@@ -487,8 +524,7 @@ export default {
       if (parts.length === 2 && (parts[0] === "v" || parts[0] === "t")) {
         const m = /^([0-9A-Za-z]{12})\.(mp4|jpg)$/.exec(parts[1]);
         if (!m || (parts[0] === "v") !== (m[2] === "mp4")) return new Response("Not found", { status: 404, headers: NOINDEX });
-        const meta = await readMeta(env, m[1]);
-        if (!meta || meta.pending) return new Response("Not found", { status: 404, headers: NOINDEX });
+        if (!(await isPublished(env, m[1]))) return new Response("Not found", { status: 404, headers: NOINDEX });
         return await serveObject(request, env, key(m[1], parts[0] === "v" ? "video.mp4" : "thumb.jpg"));
       }
 

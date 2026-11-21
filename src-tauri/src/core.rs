@@ -256,6 +256,7 @@ fn set_autostart(on: bool) {
 impl Core {
     pub fn new() -> Arc<Self> {
         let settings = Settings::load();
+        util::set_export_priority(&settings.export_priority);
         // Temporary export files a killed or crashed run left behind (0.1.41).
         std::thread::spawn(crate::projexport::sweep_tmp);
         hotkeys::set_binds(&settings.keybinds);
@@ -651,7 +652,7 @@ impl Core {
 
     /// Save the last `seconds` seconds of `monitor`: an index into
     /// `win::monitors()`, or -1 (or a monitor that no longer exists) for the capture monitor.
-    pub fn clip_blocking(&self, seconds: u32, monitor: i32) -> Result<ClipMeta, String> {
+    pub fn clip_blocking(self: &Arc<Self>, seconds: u32, monitor: i32) -> Result<ClipMeta, String> {
         let s = self.settings();
         let game_mode = crate::capmode::game_mode(&s);
         // Game mode: a key of the capture monitor clips the game; a key naming another monitor clips
@@ -699,14 +700,31 @@ impl Core {
         let desk = if game_only { None } else { desk };
         let cap = clip::Capture { snap, desk, mic, game: game_pcm, width: cfg.width, height: cfg.height, fps: cfg.fps };
         let started = std::time::Instant::now();
-        match if game_only { clip::write_game(&s, cap, &game) } else { clip::write(&s, cap, &game) } {
+        // The clip is listed and announced as soon as its file is written; its thumbnail (one more
+        // ffmpeg run) is made after that, so "Clip saved" does not wait for it.
+        match clip::write_quick(&s, cap, &game, game_only) {
             Ok(meta) => {
                 util::log(&format!("clip {seconds}s of {}: saved {:.1}s, {:.1} MB in {} ms -> {}", win::monitor_text(&win::monitors(), mon), meta.duration, meta.size as f64 / 1e6, started.elapsed().as_millis(), meta.path));
+                // Until the picture is made, the missing-thumbnail retry (polish.rs) leaves this clip alone.
+                crate::import::set_thumb_pending(&meta.id, true);
                 self.lib.lock().unwrap().add(meta.clone());
                 self.emit("clips-changed", meta.id.clone());
                 // "last 30s" when the clip is as long as asked; its real length when the buffer held less.
                 let len = if (meta.duration - seconds as f64).abs() < 2.0 { seconds as f64 } else { meta.duration };
                 self.toast_on("Clip saved", &captured_text(&s, len, &meta.game), mon);
+                let (core, id, path, duration, ffmpeg_path) = (self.clone(), meta.id.clone(), PathBuf::from(&meta.path), meta.duration, s.ffmpeg_path.clone());
+                std::thread::spawn(move || {
+                    let thumb = util::find_exe(&ffmpeg_path, "ffmpeg").map(|f| crate::library::make_thumb(&f, &path, &id, crate::library::thumb_at(duration))).unwrap_or_default();
+                    crate::import::set_thumb_pending(&id, false); // made or not: the retry may take it from here
+                    if !thumb.is_empty() {
+                        let listed = core.lib.lock().unwrap().update(&id, |c| c.thumb = thumb.clone()).is_some();
+                        if listed {
+                            core.emit("clips-changed", ()); // no id: this is not a new clip, so no sound
+                        } else {
+                            let _ = std::fs::remove_file(&thumb); // the clip was deleted meanwhile
+                        }
+                    }
+                });
                 Ok(meta)
             }
             Err(e) => {
@@ -820,6 +838,7 @@ impl Core {
             std::mem::replace(&mut *cur, new.clone())
         };
         new.save();
+        util::set_export_priority(&new.export_priority);
         hotkeys::set_binds(&new.keybinds);
         // A running audio capture switches device on its own (audio.rs); nothing else restarts.
         crate::audio::set_devices(&new.desktop_device, &new.mic_device);
@@ -1100,6 +1119,7 @@ impl Core {
         if !Path::new(&new.path).is_file() {
             return Err("The exported clip's file is missing, so nothing was replaced".into());
         }
+        let _once = crate::library::batch(&self.lib); // library.json is written once, at the end
         let mut out = Replaced::default();
         let mut first: Option<ClipMeta> = None;
         let mut seen: Vec<&String> = Vec::new();
@@ -1164,6 +1184,7 @@ impl Core {
         std::fs::create_dir_all(&dest).map_err(|e| format!("Could not create the folder: {e}"))?;
         let mut moved = 0;
         let mut failed: Vec<String> = Vec::new();
+        let _once = crate::library::batch(&self.lib); // library.json is written once, at the end
         for id in ids {
             let Some(meta) = self.lib.lock().unwrap().get(id) else { continue };
             let src = PathBuf::from(&meta.path);

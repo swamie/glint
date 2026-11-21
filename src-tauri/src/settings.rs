@@ -231,6 +231,10 @@ pub struct Settings {
     /// "auto" (used when it works, else the CPU, by itself) | "off" (default: always the CPU; measured, 30 s of
     /// 1440p60 in 6 ranges: the same wall time, ffmpeg CPU -48 % plain but only -17 % with an overlay and colours).
     pub hw_decode: String,
+    /// How much of the processor the editor's export may take from everything else:
+    /// "low" (default: below normal priority, the game and the live capture come first) |
+    /// "normal" | "high" (above normal: the export is first, the PC may stutter meanwhile).
+    pub export_priority: String,
     /// 0.1.46: a cuts-only export of one clip re-encodes only each piece's first frames up to a keyframe and copies
     /// the rest ("smart rendering", only where that is exact): "auto" | "off".
     pub smart_cuts: String,
@@ -408,6 +412,7 @@ impl Default for Settings {
             bitrate: 0,
             encoder: "auto".into(),
             hw_decode: "off".into(),
+            export_priority: "low".into(),
             smart_cuts: "off".into(),
             method: "auto".into(),
             buffer: "mixed".into(),
@@ -507,7 +512,7 @@ impl Settings {
 
     pub fn save(&self) {
         if let Ok(t) = serde_json::to_string_pretty(self) {
-            let _ = fs::write(Self::file(), t);
+            let _ = util::write_atomic(&Self::file(), t);
         }
     }
 
