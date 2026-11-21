@@ -486,7 +486,8 @@ const AUDIO_DELAY: f64 = 0.25;
 /// and microphone audio (what is being captured for clips; silence while there is none) is written
 /// to its stdin as s16le stereo, and "{audio_rate}" in `args` becomes its sample rate, so the
 /// arguments carry `-f s16le -ar {audio_rate} -ac 2 -i pipe:0`.
-fn proc_start(core: &Arc<Core>, plugin: &str, name: &str, args: &[String], audio: bool) -> Result<Arc<Proc>, String> {
+/// `quiet`: its end is not announced with a toast (a short question to ffmpeg, such as its list of cameras, always "fails").
+fn proc_start(core: &Arc<Core>, plugin: &str, name: &str, args: &[String], audio: bool, quiet: bool) -> Result<Arc<Proc>, String> {
     if !installed().iter().any(|p| p.manifest.id == plugin) {
         return Err("This plugin is not installed or is switched off".into());
     }
@@ -592,7 +593,7 @@ fn proc_start(core: &Arc<Core>, plugin: &str, name: &str, args: &[String], audio
         p2.running.store(false, Ordering::SeqCst);
         util::log(&format!("plugins: {}'s process {} ended{}", p2.plugin, p2.name, if on_purpose { String::new() } else { format!(": {}", p2.error.lock().unwrap()) }));
         core2.emit("plugin-proc", p2.json());
-        if !on_purpose && core2.settings().toast {
+        if !on_purpose && !quiet && core2.settings().toast {
             let name = find(&p2.plugin).map(|x| x.manifest.name).unwrap_or_else(|| p2.plugin.clone());
             let lang = core2.settings().language;
             let why = p2.error.lock().unwrap().clone();
@@ -631,8 +632,8 @@ fn proc_stop_all(plugin: Option<&str>) {
 }
 
 #[tauri::command(async)]
-pub fn plugin_proc_start(core: St, plugin: String, name: String, args: Vec<String>, audio: Option<bool>) -> Result<Value, String> {
-    proc_start(core.inner(), &plugin, &name, &args, audio.unwrap_or(false)).map(|p| p.json())
+pub fn plugin_proc_start(core: St, plugin: String, name: String, args: Vec<String>, audio: Option<bool>, quiet: Option<bool>) -> Result<Value, String> {
+    proc_start(core.inner(), &plugin, &name, &args, audio.unwrap_or(false), quiet.unwrap_or(false)).map(|p| p.json())
 }
 
 #[tauri::command(async)]
@@ -675,7 +676,7 @@ pub fn fire(core: &Arc<Core>, action: &str) {
             if args.is_empty() {
                 toast(&p.manifest.name, crate::lang::tr(&s.language, "Open Glint and set it up first"));
             } else {
-                match proc_start(core, id, &def.process, &args, saved["audio"].as_bool().unwrap_or(false)) {
+                match proc_start(core, id, &def.process, &args, saved["audio"].as_bool().unwrap_or(false), false) {
                     Ok(_) => toast(if def.started.is_empty() { &p.manifest.name } else { &def.started }, ""),
                     Err(e) => toast(&p.manifest.name, &e),
                 }

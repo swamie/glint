@@ -69,14 +69,14 @@ Glint.register({
 | `c.toggle(key)`, `c.select(key, [[value, label]], isNumber)`, `c.number(key, min, max)`, `c.text(key, { placeholder, password, width })` | controls bound to one of its settings. They save by themselves. |
 | `c.save()`, `c.render()`, `c.chrome()` (top bar and sidebar only), `c.go(page)`, `c.flash(text, bad)`, `c.fail(error)` | save the settings, redraw, open a page, show a message |
 | `c.glint` | Glint's own state, to read: `settings`, `status`, `monitors`, `hardware`, `version` |
-| `c.proc.start(name, args, { audio })`, `c.proc.stop(name)`, `c.proc.status(name)` | a process of the plugin: Glint's ffmpeg with the plugin's arguments |
+| `c.proc.start(name, args, { audio, quiet })`, `c.proc.stop(name)`, `c.proc.status(name)` | a process of the plugin: Glint's ffmpeg with the plugin's arguments |
 | `c.invoke(command, args)` | any of Glint's backend commands |
 
 Use Glint's own markup (`page-head`, `section`, `row`, `btn`, `note`, `field`) and its CSS variables so a plugin's page looks like the rest of the program and follows the user's theme.
 
 ### Processes
 
-`c.proc.start("live", args, { audio: true })` runs Glint's ffmpeg with `args`. It ends with Glint, its last messages come back in `status.log`, and an address in the arguments is never logged in full. With `audio: true` Glint writes its live desktop and microphone sound to the process's stdin as 16-bit stereo, and `{audio_rate}` in the arguments becomes its sample rate:
+`c.proc.start("live", args, { audio: true })` runs Glint's ffmpeg with `args`. It ends with Glint, its last messages come back in `status.log`, and an address in the arguments is never logged in full. `quiet: true` is for a short question to ffmpeg (its list of cameras, say): its end shows no message. With `audio: true` Glint writes its live desktop and microphone sound to the process's stdin as 16-bit stereo, and `{audio_rate}` in the arguments becomes its sample rate:
 
 ```
 -f s16le -ar {audio_rate} -ac 2 -i pipe:0

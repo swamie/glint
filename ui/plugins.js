@@ -22,7 +22,7 @@
 // `ctx` (also `Glint.ctx`): { id, s (its settings), key(name) (the data-set path of one), save(rerender),
 // row, toggle, select, number, text, t, esc, invoke, flash, fail, render, chrome (redraw the top bar and sidebar only),
 // go(page), glint (Glint's own state),
-// proc: { start(name, args, { audio }), stop(name), status(name) } }.
+// proc: { start(name, args, { audio, quiet }), stop(name), status(name) } }.
 
 const PLUG = {
   defs: new Map(),   // plugin id -> { info (from plugins_boot), def (what it registered), ctx }
@@ -60,7 +60,7 @@ function plugCtx(info) {
     go: (page) => goPage(page),
     get glint() { return { settings: S.settings, status: S.status, monitors: S.monitors, hardware: S.hardware, version: S.version }; },
     proc: {
-      start: (name, args, opts = {}) => invoke("plugin_proc_start", { plugin: id, name, args, audio: !!opts.audio }),
+      start: (name, args, opts = {}) => invoke("plugin_proc_start", { plugin: id, name, args, audio: !!opts.audio, quiet: !!opts.quiet }),
       stop: (name) => invoke("plugin_proc_stop", { plugin: id, name }),
       status: (name) => invoke("plugin_proc_status", { plugin: id, name }),
     },

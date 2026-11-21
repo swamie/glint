@@ -540,6 +540,11 @@ if (!window.__TAURI__) {
       procStart({ plugin, name, args }) {
         const k = `${plugin}/${name}`;
         procs[k] = { running: true, pid: 4242, started: Date.now(), error: "", log: [] };
+        if (args.includes("-list_devices")) { // ffmpeg's list of cameras: it ends at once, the names are in its messages
+          Object.assign(procs[k], { running: false, error: "dummy: Immediate exit requested", log: ['[in#0 @ 000001] "fake_device_0" (video)', '[in#0 @ 000001]   Alternative name "@device_pnp_1"', '[in#0 @ 000001] "Logitech C920" (video)', '[in#0 @ 000001] "Microphone (USB Audio)" (audio)'] });
+          setTimeout(() => window.__mockEmit("plugin-proc", api.procStatus({ plugin, name })), 150);
+          return api.procStatus({ plugin, name });
+        }
         window.__mockPluginArgs = args;
         const tick = setInterval(() => { const p = procs[k]; if (!p.running) return clearInterval(tick); const s = Math.round((Date.now() - p.started) / 1000); p.log.push(`frame=${s * 60} fps= 60 q=21.0 size=${s * 750}KiB time=00:00:${String(s).padStart(2, "0")}.00 bitrate=5998.3kbits/s speed=1x`); p.log = p.log.slice(-40); }, 2000);
         if (/bad/.test(args[args.length - 1])) setTimeout(() => { Object.assign(procs[k], { running: false, error: "rtmp://live.twitch.tv/app/…: Input/output error" }); window.__mockEmit("plugin-proc", api.procStatus({ plugin, name })); }, 2000);
