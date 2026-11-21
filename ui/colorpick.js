@@ -50,7 +50,8 @@ function presetTilesHtml() {
   const s = S.settings;
   const act = prActive();
   const tiles = {};
-  for (const th of window.GLINT_THEMES) tiles[th.id] = `<button class="theme${!act && (s.theme || "glint") === th.id ? " active" : ""}" data-tile="${th.id}" data-theme="${th.id}" style="background:${th.vars.panel || "#0a0e16"};color:${th.vars.text || "#e8edf6"}" title="${esc(t("Drag to reorder"))}"><i style="background:${th.vars.accent || "#62b6f7"}"></i>${esc(th.name)}</button>`;
+  // A theme with a note of its own (themes.js `tip`) shows it in a small tooltip (colorpick.css), on hover and on keyboard focus, instead of the title.
+  for (const th of window.GLINT_THEMES) tiles[th.id] = `<button class="theme${!act && (s.theme || "glint") === th.id ? " active" : ""}" data-tile="${th.id}" data-theme="${th.id}" style="background:${th.vars.panel || "#0a0e16"};color:${th.vars.text || "#e8edf6"}" ${th.tip ? `data-tip="${esc(th.tip)}" aria-description="${esc(th.tip)}"` : `title="${esc(t("Drag to reorder"))}"`}><i style="background:${th.vars.accent || "#62b6f7"}"></i>${esc(th.name)}</button>`;
   for (const p of s.theme_presets || []) {
     const c = (v) => glintEffectiveColor(p.base, p.colors, v);
     tiles["p:" + p.id] = `<button class="theme tp-tile${act && act.id === p.id ? " active" : ""}" data-tile="p:${esc(p.id)}" data-tp="${esc(p.id)}" style="background:${c("panel")};color:${c("text")}" title="${esc(t("Your preset. Right-click to rename, duplicate or delete it. Drag to reorder"))}"><i style="background:${c("accent")}"></i><span class="tp-name">${esc(p.name)}</span></button>`;

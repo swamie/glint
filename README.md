@@ -158,7 +158,7 @@ A stretched resolution (4:3, 5:4, 3:2 or 16:10 shown full-screen on a wider disp
 
 ## Themes
 
-Settings → Appearance has twelve color themes. Custom CSS, applied after the theme, can restyle anything; the colors are CSS variables (`--bg`, `--panel`, `--raised`, `--raised-2`, `--line`, `--line-2`, `--text`, `--muted`, `--dim`, `--accent`, `--accent-2`, `--accent-ink`), so `:root { --accent: #ff4fd8; }` is a one-line recolor.
+Settings → Appearance has thirteen color themes. Custom CSS, applied after the theme, can restyle anything; the colors are CSS variables (`--bg`, `--panel`, `--raised`, `--raised-2`, `--line`, `--line-2`, `--text`, `--muted`, `--dim`, `--accent`, `--accent-2`, `--accent-ink`), so `:root { --accent: #ff4fd8; }` is a one-line recolor.
 
 **Custom colors.** Settings → Appearance → Custom colors changes single colors on top of the picked theme: accent, background, panels, buttons and cards, lines, text, secondary text. Each has a round swatch that opens Glint's color picker: drag in the square and on the hue strip, or type a hex or R G B value. The whole window shows the color while you pick; Enter or a click outside keeps it, Esc cancels. Colors you did not set follow the ones you did (a readable text color on the accent, panels and lines from the background). Custom CSS still wins over them.
 

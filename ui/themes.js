@@ -24,6 +24,8 @@ GLINT_W.GLINT_THEMES = [
   { id: "rose", name: "Rose", vars: { bg: "#0c070a", panel: "#120a0f", raised: "#190e15", "raised-2": "#22141d", line: "#26161f", "line-2": "#3e2434", muted: "#a58b9a", dim: "#6e5664", accent: "#ff7ab8", "accent-2": "#ffa3cf", "accent-ink": "#2a0418" } },
   { id: "nord", name: "Nord", vars: { bg: "#20242d", panel: "#252a34", raised: "#2b313c", "raised-2": "#343b48", line: "#353c49", "line-2": "#465064", text: "#eceff4", muted: "#a3adbf", dim: "#707b90", accent: "#88c0d0", "accent-2": "#a9d6e2", "accent-ink": "#1c2733" } },
   { id: "mono", name: "Mono", vars: { bg: "#0a0a0a", panel: "#101010", raised: "#161616", "raised-2": "#1e1e1e", line: "#202020", "line-2": "#343434", muted: "#9a9a9a", dim: "#666666", accent: "#f2f2f2", "accent-2": "#ffffff", "accent-ink": "#0a0a0a" } },
+  // Warm dark neutrals with a terracotta accent. `tip` is the tile's own hover/focus note (colorpick.js).
+  { id: "claude", name: "Claude", tip: "a small tribute to Claude for making this possible", vars: { bg: "#1c1b18", panel: "#22211d", raised: "#292723", "raised-2": "#33312c", line: "#35332e", "line-2": "#4c4942", text: "#f4f0e6", muted: "#b3ac9d", dim: "#807a6d", accent: "#d97757", "accent-2": "#eba286", "accent-ink": "#260f06" } },
 ];
 
 const GLINT_THEME_VARS = ["bg", "panel", "raised", "raised-2", "line", "line-2", "text", "muted", "dim", "accent", "accent-2", "accent-ink"];
