@@ -256,6 +256,7 @@ fn set_autostart(on: bool) {
 impl Core {
     pub fn new() -> Arc<Self> {
         let settings = Settings::load();
+        util::set_export_priority(&settings.export_priority);
         // Temporary export files a killed or crashed run left behind (0.1.41).
         std::thread::spawn(crate::projexport::sweep_tmp);
         hotkeys::set_binds(&settings.keybinds);
@@ -837,6 +838,7 @@ impl Core {
             std::mem::replace(&mut *cur, new.clone())
         };
         new.save();
+        util::set_export_priority(&new.export_priority);
         hotkeys::set_binds(&new.keybinds);
         // A running audio capture switches device on its own (audio.rs); nothing else restarts.
         crate::audio::set_devices(&new.desktop_device, &new.mic_device);

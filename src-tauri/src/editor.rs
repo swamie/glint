@@ -897,9 +897,8 @@ thread_local! {
 /// 0.1.41: the child is tied to Glint's life (`util::track_child`); when its `out_time` does not advance
 /// for `STALL_SECS` it is ended and the export fails saying where it stopped; a cancel ends it too.
 fn run_with_progress(ffmpeg: &Path, args: &[String], expected: f64, progress: &mut dyn FnMut(f32)) -> Result<(), String> {
-    // Below normal priority, like compressing and "Edit together": an export uses every core, and
-    // the game and the live capture come first.
-    let mut cmd = util::hidden_cmd_low(ffmpeg);
+    // At the priority set in Settings (low unless changed): an export uses every core.
+    let mut cmd = util::hidden_cmd_export(ffmpeg);
     cmd.args(args);
     let cancel = CANCEL.with(|c| c.borrow().clone());
     run_watched(cmd, expected, progress, cancel.as_deref())

@@ -1496,6 +1496,7 @@ function renderRecording() {
       ${s.bitrate ? "" : row(t("Quality"), st.max_mbps ? t("Current ceiling {mbps} Mbps; quiet scenes use much less", { mbps: st.max_mbps.toFixed(0) }) : t("Quality-targeted bitrate"), select("quality", [["low", t("Low")], ["medium", t("Medium")], ["high", t("High")], ["ultra", t("Ultra")]]))}
       ${row(t("Encoder"), t("Auto picks your GPU's hardware encoder"), select("encoder", [["auto", t("Auto")], ["nvenc", "NVIDIA NVENC"], ["amf", "AMD AMF"], ["qsv", "Intel Quick Sync"], ["x264", t("x264 (CPU, heavy)")]]))}
       ${row(t("Read video on the graphics card when exporting"), t("Takes work off the processor during an export in the editor; the export is not faster. NVIDIA cards only. If the card cannot do it, Glint reads the video the normal way"), select("hw_decode", [["off", t("Off")], ["auto", t("On")]]))}
+      ${row(t("Export priority"), t("How much of the processor an export in the editor may take. Low keeps games and the recording smooth. High finishes sooner when the processor is busy, and the PC may stutter until it is done"), select("export_priority", [["low", t("Low")], ["normal", t("Normal")], ["high", t("High")]]))}
       ${row(t("Capture method"), t("Graphics Capture is smoother at high frame rates") + win10CaptureHint() + (typeof cap2BorderHint === "function" ? cap2BorderHint() : ""), select("method", [["auto", t("Auto")], ["wgc", "Windows Graphics Capture"], ["dda", "Desktop Duplication"]]))}
       ${row(t("Show cursor"), "", toggle("cursor"))}
     </div>

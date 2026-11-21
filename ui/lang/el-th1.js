@@ -25,6 +25,9 @@ glintAddLanguage("el", "Ελληνικά", {
   "the file did not answer within {n} s": "το αρχείο δεν απάντησε σε {n} δ",
   "ffmpeg could not read the video: {error}": "το ffmpeg δεν μπόρεσε να διαβάσει το βίντεο: {error}",
   "Refresh thumbnails: make the missing ones again (F5). Hold Ctrl while clicking, or press Ctrl+F5, to make all of them again.": "Ανανέωση μικρογραφιών: ξαναφτιάχνει όσες λείπουν (F5). Κρατήστε το Ctrl ενώ κάνετε κλικ, ή πατήστε Ctrl+F5, για να ξαναφτιαχτούν όλες.",
+  "Export priority": "Προτεραιότητα εξαγωγής",
+  "How much of the processor an export in the editor may take. Low keeps games and the recording smooth. High finishes sooner when the processor is busy, and the PC may stutter until it is done": "Πόσο από τον επεξεργαστή μπορεί να πάρει μια εξαγωγή στον επεξεργαστή βίντεο. Η χαμηλή κρατά τα παιχνίδια και την εγγραφή ομαλά. Η υψηλή τελειώνει νωρίτερα όταν ο επεξεργαστής είναι απασχολημένος, και ο υπολογιστής μπορεί να κολλάει μέχρι να τελειώσει",
+  "Normal": "Κανονική",
   "Read video on the graphics card when exporting": "Ανάγνωση βίντεο στην κάρτα γραφικών κατά την εξαγωγή",
   "Takes work off the processor during an export in the editor; the export is not faster. NVIDIA cards only. If the card cannot do it, Glint reads the video the normal way": "Αφαιρεί φόρτο από τον επεξεργαστή κατά την εξαγωγή στον επεξεργαστή βίντεο· η εξαγωγή δεν γίνεται πιο γρήγορη. Μόνο κάρτες NVIDIA. Αν η κάρτα δεν μπορεί, το Glint διαβάζει το βίντεο με τον κανονικό τρόπο",
 });

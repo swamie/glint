@@ -113,12 +113,25 @@ pub fn hidden_cmd(program: &Path) -> Command {
     c
 }
 
-/// `hidden_cmd` below normal priority: long work that must not take the processor from the game
-/// or the live capture.
-pub fn hidden_cmd_low(program: &Path) -> Command {
+/// What the editor's export runs at (`Settings::export_priority`): 0 low, 1 normal, 2 high.
+static EXPORT_PRIORITY: AtomicU32 = AtomicU32::new(0);
+
+/// Take the export priority from the settings (at start and whenever they are saved).
+pub fn set_export_priority(name: &str) {
+    EXPORT_PRIORITY.store(match name { "normal" => 1, "high" => 2, _ => 0 }, Ordering::Relaxed);
+}
+
+/// `hidden_cmd` at the priority chosen for the editor's export. Low by default: an export uses
+/// every core, and the game and the live capture come first.
+pub fn hidden_cmd_export(program: &Path) -> Command {
     const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+    let class = match EXPORT_PRIORITY.load(Ordering::Relaxed) {
+        1 => 0,
+        2 => ABOVE_NORMAL_PRIORITY_CLASS,
+        _ => BELOW_NORMAL_PRIORITY_CLASS,
+    };
     let mut c = Command::new(gated(program));
-    c.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
+    c.creation_flags(CREATE_NO_WINDOW | class);
     c
 }
 
