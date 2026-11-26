@@ -1,0 +1,10 @@
+{
+  "id": "vertical",
+  "name": "Vertical",
+  "version": "0.1.0",
+  "description": "Turns a clip into a 9:16 video for TikTok, YouTube Shorts and Instagram Reels in one click. Fill the screen, keep the whole picture over a blurred background, or let the crop follow the action. Works from a clip's right-click menu and in the editor, where subtitles are fitted too.",
+  "author": "Glint developers",
+  "min_glint": "0.1.56",
+  "ui": "vertical.js",
+  "css": "vertical.css"
+}

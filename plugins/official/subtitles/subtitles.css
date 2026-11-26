@@ -1,0 +1,27 @@
+/* Subtitles: its section of the editor's side pane. Colors are Glint's own variables, so it follows the theme. */
+.e-plug[data-plugin="subtitles"] .sub-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; font-size: 12px; color: var(--muted); }
+.e-plug[data-plugin="subtitles"] .sub-row > span:first-child { min-width: 64px; }
+.e-plug[data-plugin="subtitles"] .sub-row select { flex: 1 1 120px; min-width: 0; height: 28px; font-size: 12px; }
+.sub-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.sub-prog { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
+.sub-prog-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+.sub-prog-top b { font-weight: 600; }
+.sub-prog-top span { font: 600 11.5px var(--mono); color: var(--muted); }
+.sub-err { padding: 7px 9px; border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line)); border-radius: 8px; color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
+.sub-list { display: flex; flex-direction: column; gap: 3px; max-height: 240px; overflow-y: auto; padding-right: 2px; }
+.sub-line { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 5px; }
+.sub-line.now .sub-at { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, var(--line-2)); }
+.sub-at { height: 26px; padding: 0 6px; border: 1px solid var(--line-2); border-radius: 6px; background: transparent; color: var(--muted); font: 600 11px var(--mono); cursor: pointer; }
+.sub-at:hover { color: var(--text); background: var(--raised); }
+.sub-text { width: 100%; height: 26px; padding: 0 7px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; outline: 0; }
+.sub-text:focus { border-color: var(--accent); }
+.sub-x { display: grid; place-items: center; width: 24px; height: 26px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--dim); cursor: pointer; }
+.sub-x:hover { color: var(--danger); background: var(--raised); }
+.sub-x svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.sub-style { display: flex; flex-direction: column; gap: 7px; padding-top: 2px; }
+.sub-sw { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.sub-sw button { width: 20px; height: 20px; padding: 0; border-radius: 50%; border: 1px solid var(--line-2); background: var(--sw); cursor: pointer; }
+.sub-sw button.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sub-dl { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; }
+.sub-dl + .sub-dl { border-top: 1px solid var(--line); }
+.sub-dl span { color: var(--muted); }

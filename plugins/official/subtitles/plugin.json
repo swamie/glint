@@ -1,0 +1,16 @@
+{
+  "id": "subtitles",
+  "name": "Subtitles",
+  "version": "0.2.0",
+  "description": "Turns what is said in a clip into subtitles, on this PC. Adds a Subtitles section to the editor: make them with one click, fix the words, style them, and they are part of the exported clip. Can also save an .srt file.",
+  "author": "Glint developers",
+  "min_glint": "0.1.56",
+  "ui": "subtitles.js",
+  "css": "subtitles.css",
+  "downloads": [
+    {"id": "sherpa", "name": "Speech engine", "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.2/sherpa-onnx-v2.0.2-win-x64-shared-MT-Release-no-tts.tar.bz2", "sha256": "6a71d5ef016e544026d6505486d9fa42177ad989238adc6e4bd2eebfb6947416", "size": 26896305, "unzip": true, "run": "sherpa-onnx-offline.exe", "run_also": ["sherpa-onnx-vad.exe"], "only": ["bin/sherpa-onnx-offline.exe", "bin/sherpa-onnx-vad.exe", "bin/onnxruntime.dll", "bin/onnxruntime_providers_shared.dll"]},
+    {"id": "vad", "name": "Voice detector", "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx", "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6", "size": 643854},
+    {"id": "model-parakeet", "name": "Speech model (English and European languages)", "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2", "sha256": "1495e91b59d7fc53ddca91f3431758ec99f8fa253fdb0e1e851be0f72b14b0f9", "size": 487211443, "unzip": true, "only": ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"]},
+    {"id": "model-whisper", "name": "Speech model (Korean, Japanese and other languages)", "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-turbo.tar.bz2", "sha256": "b11acbbcd660b44a8e0df33724feb5aaa709cf65668f2823d59f656312544f22", "size": 563790207, "unzip": true, "only": ["turbo-encoder.int8.onnx", "turbo-decoder.int8.onnx", "turbo-tokens.txt"]}
+  ]
+}

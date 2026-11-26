@@ -1,0 +1,114 @@
+{
+  "schema": 1,
+  "plugins": [
+    {
+      "id": "party",
+      "name": "Party",
+      "description": "Shows what is playing in the top bar, from Spotify, YouTube Music and other music players. Start a party and friends who type your code hear your music live, straight from your PC to theirs.",
+      "author": "Glint developers",
+      "version": "0.1.1",
+      "min_glint": "0.1.61",
+      "icon": "M9 18V5l12-2v13M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM21 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0z",
+      "tag": "Preview",
+      "locked": true,
+      "files": [
+        {
+          "path": "party.css",
+          "sha256": "0860549b18a9c3c873c9af117e28147cfffd56c01a5a3917c2a73d8d858cfafb",
+          "size": 5571
+        },
+        {
+          "path": "party.js",
+          "sha256": "ce3c0dc87a3a2fb971d334a90e191086f480b969ca3845c918a999bc9f0b03dc",
+          "size": 59570
+        },
+        {
+          "path": "plugin.json",
+          "sha256": "2b87ab5489dc333f5725403a3568b5586230146ac4e386741e22e887d0ac96d8",
+          "size": 407
+        }
+      ]
+    },
+    {
+      "id": "stream",
+      "name": "Stream",
+      "description": "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen, a game or a window and your cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.",
+      "author": "Glint developers",
+      "version": "0.4.5",
+      "min_glint": "0.1.55",
+      "icon": "M12 9.8a2.2 2.2 0 1 0 0 4.4 2.2 2.2 0 0 0 0-4.4zM7.8 16.2a6 6 0 0 1 0-8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 19A10 10 0 0 1 5 5M19 5a10 10 0 0 1 0 14",
+      "tag": "Preview",
+      "files": [
+        {
+          "path": "plugin.json",
+          "sha256": "a892c01946aa84faf7fa982f6d55db868e59283df9c52e5406839af755e2f7af",
+          "size": 702
+        },
+        {
+          "path": "stream.css",
+          "sha256": "24e3b2808d48e7fc9bdc72271c4590189c4fc75ed10263787add2492be8d6925",
+          "size": 7130
+        },
+        {
+          "path": "stream.js",
+          "sha256": "275a289f22e77bd3087137217d8b82e0f135c80d7553ad6cca92d828d36c4dec",
+          "size": 134287
+        }
+      ]
+    },
+    {
+      "id": "subtitles",
+      "name": "Subtitles",
+      "description": "Turns what is said in a clip into subtitles, on this PC. Adds a Subtitles section to the editor: make them with one click, fix the words, style them, and they are part of the exported clip. Can also save an .srt file.",
+      "author": "Glint developers",
+      "version": "0.2.0",
+      "min_glint": "0.1.56",
+      "icon": "M3 6h18v12H3zM6.5 11H11M13.5 11h4M6.5 14.500h3M12 14.500h5.500",
+      "tag": "Preview",
+      "files": [
+        {
+          "path": "plugin.json",
+          "sha256": "e88c779f4cb64883eca40aa6e2aeb53bc7cabd381119cc0fd75b533de7a1df82",
+          "size": 1972
+        },
+        {
+          "path": "subtitles.css",
+          "sha256": "0068b3160ab733cdcde28143d8f8644ff71171780b6c910c450f8566d34b40d9",
+          "size": 2861
+        },
+        {
+          "path": "subtitles.js",
+          "sha256": "3692339e8175d56c5df116b290722af3fa9651b291ff414b49e38c6fb3794209",
+          "size": 50390
+        }
+      ]
+    },
+    {
+      "id": "vertical",
+      "name": "Vertical",
+      "description": "Turns a clip into a 9:16 video for TikTok, YouTube Shorts and Instagram Reels in one click. Fill the screen, keep the whole picture over a blurred background, or let the crop follow the action. Works from a clip's right-click menu and in the editor, where subtitles are fitted too.",
+      "author": "Glint developers",
+      "version": "0.1.0",
+      "min_glint": "0.1.56",
+      "icon": "M9 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM10.500 17.500h3",
+      "tag": "Preview",
+      "files": [
+        {
+          "path": "plugin.json",
+          "sha256": "c57b7a91dd63e57462900df0798145163cda204bc090777a13bbe4cdc4887bef",
+          "size": 474
+        },
+        {
+          "path": "vertical.css",
+          "sha256": "222d61d02a3d2d655440527e1b0010b327753a95223265aacbbd5824ed67a508",
+          "size": 2467
+        },
+        {
+          "path": "vertical.js",
+          "sha256": "ca354c98ce0b269f0bb54dd7d8b83b74c738d40eaf0a6350abb94e6edf5cc4f5",
+          "size": 58019
+        }
+      ]
+    }
+  ]
+}

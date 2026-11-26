@@ -1,0 +1,31 @@
+/* Vertical: its section of the editor's side pane and its page under Tools. Colors are Glint's own variables, so it follows the theme. */
+.e-plug[data-plugin="vertical"] .vx-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; font-size: 12px; color: var(--muted); }
+.e-plug[data-plugin="vertical"] .vx-row > span:first-child { min-width: 64px; }
+.e-plug[data-plugin="vertical"] .vx-row select { flex: 1 1 120px; min-width: 0; height: 28px; font-size: 12px; }
+.vx-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.vx-btns .btn svg { width: 14px; height: 14px; }
+.vx-warn { color: var(--danger); }
+.vx-prog { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
+.vx-prog-top { font-size: 12px; }
+.vx-prog-top b { font-weight: 600; }
+
+.vx-how { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px 28px; padding: 13px 18px 14px; }
+.vx-how > div { display: flex; flex-direction: column; gap: 3px; }
+.vx-how b { font-size: 13px; font-weight: 600; }
+.vx-how span { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.vx-pic { display: flex; align-items: center; gap: 8px; padding-right: 18px; }
+.vx-pic-rows { flex: 1 1 auto; min-width: 0; }
+.vx-diagram { flex: 0 0 auto; width: 260px; max-width: 34%; height: auto; }
+.vx-d-src { fill: color-mix(in srgb, var(--text) 7%, transparent); stroke: var(--line-2); stroke-width: 1; }
+.vx-d-keep { fill: color-mix(in srgb, var(--accent) 45%, transparent); stroke: var(--accent); stroke-width: 1.2; }
+.vx-d-black { fill: #000; }
+.vx-d-blur { fill: color-mix(in srgb, var(--accent) 16%, #000); }
+.vx-d-phone { fill: none; stroke: var(--muted); stroke-width: 1.6; }
+.vx-d-arrow { fill: none; stroke: var(--muted); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.vx-range { display: flex; align-items: center; gap: 10px; }
+.vx-range input { width: 190px; }
+.vx-range output { min-width: 40px; text-align: right; font: 600 12px var(--mono); color: var(--muted); }
+.vx-busy { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.vx-busy-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 auto; }
+.vx-busy-main span { color: var(--muted); font-size: 12.5px; }
+@media (max-width: 900px) { .vx-pic { flex-direction: column; align-items: stretch; } .vx-diagram { max-width: 260px; align-self: center; } }
