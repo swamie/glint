@@ -77,13 +77,6 @@ It also has compress for Discord, GIF export, upscale for YouTube, and import fr
 
 Windows 10 and 11 only. Glint updates itself.
 
-## Build
-
-```
-cd src-tauri
-cargo build --release
-```
-
 More in the [guide](docs/guide.md). Writing a plugin? See [plugins/README.md](plugins/README.md).
 
 ## Credits

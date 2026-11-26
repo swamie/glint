@@ -87,17 +87,6 @@ Closing the window keeps the recorder in the tray and destroys the WebView, so t
 
 **Yellow capture border (Windows 11).** Windows draws a yellow border around a captured screen unless the program may turn it off (Settings → Privacy & security → Screenshot borders → "Let desktop apps turn off the screenshot border"). Glint asks for no border. When a game changes the screen mode, Glint waits for the new mode to settle before it restarts the capture, and restarts it once more if the border still shows. If it keeps coming back, pick Desktop Duplication under Capture → Capture method: it has no border.
 
-## Build
-
-```
-cd src-tauri
-cargo build --release
-```
-
-The UI in `ui/` is embedded at compile time. The outputs are `target\release\glint.exe` and `target\release\WebView2Loader.dll` (ship both together), and `target\release\glint-setup.exe`, the installer.
-
-**Publishing a release.** Raise `version` in `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, commit and push, then run `.\release.ps1` (needs the GitHub CLI signed in). It builds, packages `Glint-windows-x64.zip` with its checksum and `GlintSetup.exe`, and publishes them as release `v<version>`. Installed copies pick it up within a day.
-
 ## Player
 
 Clips open in Glint's own player. `Space` play/pause, `←` `→` 5 s (`Shift` 1 s), `,` `.` one frame, `↑` `↓` volume, `M` mute, `L` loop, `F` fullscreen. In trim mode drag the two handles on the timeline or press `I` / `O` to set the start and end at the playhead. Trims are lossless and snap to keyframes (one per second).
@@ -240,7 +229,7 @@ Open a clip and press **Edit** (or right-click → Open in editor). Under the vi
 
 **Polls from the developer.** Now and then the developer asks a short question in a small card. Answering sends only your answer and a random number made for this install. Turn it off under Settings → Updates; then Glint asks nothing. The server is in `server/polls` (one Python file and a setup script for Ubuntu); Glint reads its address from `server/polls/address.txt` in this repository, and shows no polls while that file is empty.
 
-**Share links (optional).** Right-click a clip → Share link uploads it to your own Cloudflare account and copies a link that plays inside Discord as an embed. Off until you set it up under Settings → Share links; setup steps are in `server/share/README.md`.
+**Share links (optional).** Right-click a clip → Share link uploads it to your own Cloudflare account and copies a link that plays inside Discord as an embed. Off until you set it up under Settings → Share links.
 - **A free-form video row.** A clip on V1 (in a project, and a single clip too) can be dragged to any time. Dropped on empty space (a gap, or the free space after the last clip) it sits exactly there, snapping to the playhead, other clips' ends, bookmarks and 0 (Alt = no snapping), and the place it came from stays empty. Dropped onto another clip it goes before or after that clip (the nearer half) and the rest moves along: nothing is overwritten. A gap is black and silent in the preview and the export, while overlay items and added audio files that play through cuts go on over it. Click a gap to select it; Delete or "Close gap" closes it, dragging its right edge makes it longer or shorter, "Close all gaps" is in its menu. "Cut out and leave a gap" (Shift+Delete) removes a selected piece without moving what follows; the ordinary cut-out still closes up. Dragging moves whole clips: a piece of a clip moves once it has been cut loose that way.
 - **Blade.** The blade in the timeline's tool row (C; Esc or the Select tool ends it): a click on V1 splits the clip at that time, a click on an overlay block splits that item in two (a clip item's second half goes on where the first ends; keyframes stay with their half).
 - **Slipping a song.** With an added audio file's block selected, the mouse wheel over it moves the song inside the block (0.25 s a notch, Shift 0.05 s, Ctrl 1 s): another part of the file plays at the same place.
@@ -284,8 +273,6 @@ Clicking the logo, or Settings → Updates → What's new, lists what each relea
 
 The bug button in the top bar opens a dialog: what happened, optionally how to reach you, and whether to include the end of Glint's log. "What will be sent" shows everything first: your text, a few lines about this PC and Glint (version, Windows build, graphics card, capture setup) and the log's last 150 lines, with your Windows user folder replaced by `~`. Nothing is sent until you press Send; it then goes to the developers' Discord. One report per 30 seconds.
 
-For builders: nothing about the destination is in the program. Glint posts the report to the share Worker (`https://clips.glintclip.com/report`, source in `server/share`), and the Worker passes it on to a Discord webhook it holds as a secret. So every build can send reports, and the webhook cannot be pulled out of the app. The Worker allows one report per 30 seconds and 10 a day from one connection. See `server/share/README.md`, "Bug reports and feedback".
-
 **Feedback.** The heart button beside it asks "How do you like Glint?": one to five stars, a text and, if you want, how to reach you. Like a bug report it shows exactly what will be sent, nothing leaves the PC until you press Send, and it goes to the same place as the bug reports (no log file, only the Glint version and the language).
 
 ## Recommended settings, interface size, language
@@ -308,7 +295,7 @@ Only official plugins can be installed from the marketplace for now. The list is
 
 **Subtitles (preview).** Turns what is said in a clip into subtitles on your PC. It adds a Subtitles section to the editor's Overlays tab: "Make subtitles" listens to the clips on the timeline and puts each line on the picture as a centred text. Retype a line in the list, change the size, place and color of all of them, or move and retime one like any text, on the picture or on the timeline. The lines are part of the exported clip, and "Save .srt file" writes them as a subtitle file timed for the finished clip. Speech is read by [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with a model you pick (fast, better or best); both are downloaded the first time (about 150 MB with the fast model), checked against a SHA-256, and then work without internet. The sound never leaves the PC. `node tools/subtitles-test.js` checks its arithmetic.
 
-For plugin authors and for publishing one: [plugins/README.md](../plugins/README.md). How it works: `src-tauri/src/plugins.rs` and `ui/plugins.js`.
+For plugin authors and for publishing one: [plugins/README.md](../plugins/README.md).
 
 ## Blur
 
@@ -319,25 +306,6 @@ The Blur page has every setting of blur v2's config file, with blur's own names 
 "Render with Blur" hard-links the clip into a private job folder with a generated `.blur-config.cfg` and runs `blur-cli` there; blur reads a config beside the input before its global one. The `-c` flag is not used: 1.92 hangs on it and 2.23 did not pick the file up. A render that prints nothing for 3 minutes is cancelled.
 
 Blur must sit on a short path. Its bundled VapourSynth fails with "Failed to initialize VSScript" when the full path of its files nears Windows' 260-character limit.
-
-## Self-tests
-
-All run without any window.
-
-```
-glint.exe --hotkey-test report.json
-glint.exe --bench report.json --height 1080 --fps 120 --secs 20 --clip 15
-glint.exe --folders-test report.txt
-glint.exe --buffer-test report.txt
-glint.exe --capmode-test report.txt
-glint.exe --monprev-test report.txt
-glint.exe --speed-test report.txt
-powershell -File tools\e2e.ps1 -Exe glint.exe
-glint.exe --audio-test report.txt
-glint.exe --blur-test in.mp4 out.mp4 report.txt
-```
-
-`--hotkey-test` injects `F13` combinations and checks binding resolution. `--bench` runs the real recorder, reports CPU, RAM, GPU encoder load and delivered frame rate, then saves a clip and verifies it with `ffprobe`; `--bitrate 50` sets a fixed rate and `--buffer ram|mixed|disk` (with `--ram-secs N`) chooses where the buffer lives. `--buffer-test` feeds the video and audio rings made-up data on a made-up clock and checks that clips cut across RAM and disk are byte-exact, that files are deleted as the buffer moves on, and that an unwritable folder falls back to RAM. `--folders-test` moves, renames and deletes library folders on scratch files and refuses to run unless `GLINT_DATA_DIR` is set. `--capmode-test` checks the GAME / DESKTOP mode on made-up window lists and made-up audio (game detection, the capture arguments, waiting for a game, the tracks of a game-mode clip); it captures nothing. `--audio-test` lists the audio devices and checks how a device is chosen by name; it records nothing. `tools\e2e.ps1` is the editor's end-to-end test: `tools/e2e-scenarios.js` plays edits (split, remove, trim and restore, move, gaps, speed, a tail, an old project) through the real edit model under node and writes what each must export; `glint.exe --e2e-test` then exports every one and checks the length, which second of the source is on screen at sample times, and where the sound is heard. Glint itself never starts node. `--blur-test` renders one file through the Blur wrapper. Set `GLINT_DATA_DIR` to keep test output out of your real library.
 
 ## Measured (RTX 5060 Ti, i5-11600, 2160×1440 @ 280 Hz)
 
@@ -362,38 +330,3 @@ These rows were measured with an earlier capture chain that padded the stream to
 Fixed bitrate was checked with a synthetic noise source through the same thinning filter and encoder settings (140 fps thinned to 60, 50 Mbps asked): the stream came out at 54 Mbps including MPEG-TS overhead. The same test showed the earlier builds delivered only about 43 % of their stated ceiling on this 280 Hz monitor, because the encoder budgets bits at the capture rate, not the thinned rate; rates are now scaled to compensate, so Auto mode's real peak bitrate is higher than when the table above was measured. A live capture at a fixed rate ran clean, but the screen was still, so the rate was not observed on real footage.
 
 Not measured: load while a GPU-bound game is running, and audio/video sync to the frame.
-
-## Layout
-
-```
-src-tauri/src/
-  recorder.rs   ffmpeg supervisor, MPEG-TS parser, replay ring (RAM and disk), snapshots
-  spill.rs      the buffer's temporary files
-  audio.rs      loopback + mic capture into wall-clock-anchored rings
-  clip.rs       mux a snapshot to MP4; lossless trim
-  hotkeys.rs    low-level keyboard hook and binding resolution
-  library.rs    clip index, ffprobe, thumbnails
-  blur.rs       blur-cli wrapper
-  sound.rs      synthesised clip sounds
-  denoise.rs    microphone noise suppression (RNNoise)
-  games.rs      game detection, game list, icons
-  gif.rs        export a clip as a GIF (palette filters, size limit)
-  upscale.rs    upscale a clip for YouTube (nearest neighbour or Lanczos, hardware encoders)
-  rules.rs      render rules: a chain of steps (color, Blur, upscale, compress, GIF, copy) as one job
-  editor.rs     per-track audio, waveforms and film strip for the editor; export
-  jobs.rs       background render queue
-  plugins.rs    plugins: the marketplace, installing with checksums, what is installed, a plugin's processes and keybind actions
-  import.rs     import from other clipping software
-  lang.rs       the backend's own texts (overlay, tray) in other languages
-  update.rs     update check, download and swap from GitHub releases
-  setup.rs      GlintSetup.exe, the one-time installer (a second program in the same crate)
-  core.rs       shared state, settings application, status
-  app.rs        Tauri window, tray, toast, UI commands
-  bench.rs      headless benchmark     keys.rs  hotkey self-test
-plugins/        index.json (the marketplace's list, made by tools/plugin-index.js), official/ (the official plugins), README.md (how to write one)
-tools/          i18n-check.js (translation coverage), serve.js (serve ui/ to a browser; mock.js stands in for the backend)
-ui/             index.html, style.css, app.js (library, settings), editor.js/.css (viewer, player, editor),
-                editmodel.js (the edit model), timeline.js/.css, jobs.js/.css (renders button), importer.js/.css,
-                blurpage.js/.css (Blur settings and live preview), themes.js, i18n.js and lang/ (translations),
-                toast.html (clip overlay), mock.js (browser preview only)
-```
