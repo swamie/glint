@@ -302,7 +302,7 @@ function statusHtml(c) {
   const lv = status.running ? status.live || {} : {};
   if (lv.state === "reconnecting") return `<div class="note bad"><b>${t("The connection was lost.")}</b> ${t("Glint is connecting again by itself.")} ${esc(lv.note || "")}</div>`;
   if (lv.state === "recovering") return `<div class="note">${t("The screen capture stopped and is starting again. The stream is still up.")}</div>`;
-  if (status.running && lv.showing === "card") return `<div class="note">${kindOf(c) === "game" ? t("No game is on screen, so viewers see a black picture until it is back.") : t("The window is closed or minimized, so viewers see a black picture until it is back.")}</div>`;
+  if (status.running && lv.showing === "card") return `<div class="note">${kindOf(c) === "game" ? `${t("No game is on screen, so viewers see a black picture until it is back.")} ${t("A game in a window that cannot be captured by itself is not shown either: set it to fullscreen or borderless.")}` : t("The window is closed or minimized, so viewers see a black picture until it is back.")}</div>`;
   if (status.error) return `<div class="note bad"><b>${t("The stream stopped.")}</b> ${esc(status.error)}</div>`;
   if (ended && !status.running) return `<div class="note st-ended"><span><b>${t("The stream ended.")}</b> ${t("You were live for {time}.", { time: clock(ended.secs) })}</span>${ended.link ? `<button class="btn sm" data-pact="copy-ended">${t("Copy stream link")}</button>` : ""}</div>`;
   return "";
@@ -770,6 +770,50 @@ function whereRows(c) {
     + (account ? "" : c.row(t("Your stream's link"), t("Optional. Where viewers watch you: Glint offers it to copy while you are live and after"), c.text("link", { placeholder: "https://", width: 340 })))
     + infoRows(c);
 }
+/* What viewers see is asked once, when the stream has somewhere to go (a key was saved or an account
+   connected): a whole screen shows everything on it, which is rarely what someone means to put out.
+   The answer is the "What to show" setting below; this only makes sure it was a choice. */
+let pickWin = false;  // the card is on its second step: which window
+let lastSource = "";  // the "What to show" setting as last seen: a change made by hand is a choice too
+const chosen = (c) => !!c.s.source_picked || kindOf(c) !== "monitor";
+function pickHtml(c) {
+  if (status.running || !target(c.s) || (chosen(c) && !pickWin)) return "";
+  const choice = (act, title, hint, main) => `<button class="st-choice${main ? " main" : ""}" data-pact="${act}"><b>${title}</b><span>${hint}</span></button>`;
+  if (pickWin) {
+    askWindows(c);
+    const list = (wins || []).filter((x) => !x.excluded);
+    return `<div class="section st-pick"><h2>${t("Which window?")}<span><button class="btn sm" data-pact="wins">${t("Refresh")}</button><button class="btn sm" data-pact="pick-back">${t("Back")}</button></span></h2>
+      <div class="st-wins">${!wins ? `<div class="st-none">${t("Looking for windows…")}</div>` : list.length ? list.map((x) => `<button class="st-win" data-pact="pick-win" data-hwnd="${x.hwnd}"><b>${esc(x.title.slice(0, 80))}</b><span>${esc(x.exe)}${x.minimized ? ` · ${t("minimized")}` : ""}</span></button>`).join("") : `<div class="st-none">${t("No window is open. Open the game or program, then press Refresh.")}</div>`}</div></div>`;
+  }
+  const account = serviceOf(c.s) === "twitch" ? twAccount(c) : serviceOf(c.s) === "youtube" && ytOn(c) ? ytAccount(c) : null;
+  return `<div class="section st-pick"><h2>${t("Sources")}</h2>
+    <div class="st-pick-sub">${account ? t("Your account is connected. Choose this before you go live. You can change it later under Video.") : t("Your stream key is saved. Choose this before you go live. You can change it later under Video.")}</div>
+    <div class="st-choices">${choice("pick-game", t("Only the game"), t("Your desktop and your other windows stay off the stream. While no game is on screen, viewers see a black picture"), true)}${choice("pick-window", t("One window"), t("Only the window you pick, whatever is in front of it"))}${choice("pick-monitor", t("Whole screen"), t("Everything on the screen, as you see it"))}</div></div>`;
+}
+/** A choice made on the card. */
+function pickAct(name, el, c) {
+  if (name === "pick-back") { pickWin = false; return c.render(); }
+  if (name === "pick-window") { pickWin = true; askWindows(c, true); return c.render(); }
+  if (name === "pick-win") {
+    const w = (wins || []).find((x) => String(x.hwnd) === el.dataset.hwnd);
+    if (!w) return askWindows(c, true);
+    Object.assign(c.s, { source: "window", window_hwnd: w.hwnd, window_exe: w.exe, window_title: w.title });
+    c.flash(t("Viewers will see only {name}", { name: w.title.slice(0, 60) }));
+  } else {
+    c.s.source = name === "pick-game" ? "game" : "monitor";
+    c.flash(name === "pick-game" ? t("Viewers will see only the game") : t("Viewers will see your whole screen"));
+  }
+  pickWin = false; c.s.source_picked = true; lastSource = c.s.source;
+  c.save(); c.render();
+}
+/** The card comes up as soon as the key is in its box (a text box saves without the page being drawn again), and Go live with it. */
+function pickSync(c) {
+  if (lastSource && lastSource !== c.s.source) c.s.source_picked = true;
+  lastSource = c.s.source;
+  const slot = document.querySelector(".st-pick-slot"), goBtn = document.querySelector('.st-head [data-pact="go"]');
+  if (slot && !!slot.firstElementChild !== !!pickHtml(c)) slot.innerHTML = pickHtml(c);
+  if (goBtn) { const ready = !!buildLive(c); goBtn.disabled = !ready; if (ready) goBtn.title = ""; }
+}
 function videoRows(c) {
   const g = c.glint, mon = monitorOf(c);
   const cap = (g.monitors || []).find((m) => m.index === g.settings.monitor) || mon;
@@ -1210,6 +1254,7 @@ function render(c) {
     <div class="note">${t("<b>Preview.</b> Streams your screen, a game or a window, with cameras and pictures over it. Sound changes apply at once while live; a change to the picture pauses it for a second.")}</div>
     ${statusHtml(c)}
     ${ytLiveHtml(c)}
+    <div class="st-pick-slot">${pickHtml(c)}</div>
     ${sceneHtml(c)}
     <div class="section"><h2>${t("Where to")}</h2>${whereRows(c)}</div>
     <div class="section"><h2>${t("Video")}</h2>${videoRows(c)}${cameraRows(c)}</div>
@@ -1221,9 +1266,19 @@ function render(c) {
 }
 
 async function go(c) {
-  const spec = buildLive(c);
+  let spec = buildLive(c);
   if (!spec) return c.flash(t("Choose where to stream and paste your stream key first"), true);
   if (typeof c.proc.live !== "function") return c.flash(t("Update Glint to go live with this version of Stream"), true);
+  // Nobody goes live with a whole screen without having said so.
+  if (!chosen(c) && typeof c.confirm === "function") {
+    const a = await c.confirm({ title: t("Sources"), text: t("The stream is set to show your whole screen, with everything on it: your desktop, your other windows, your messages. Glint can show only the game instead."), ok: t("Only the game"), cancel: t("Whole screen") });
+    if (!a) return;
+    c.s.source = a === "yes" ? "game" : "monitor"; c.s.source_picked = true; lastSource = c.s.source;
+    await (typeof c.saveNow === "function" ? c.saveNow() : c.save());
+    spec = buildLive(c);
+    if (!spec) return;
+  }
+  if (kindOf(c) === "window" && !+c.s.window_hwnd && !c.s.window_exe) return c.flash(t("Pick the window to show first, under Video"), true);
   try {
     // A camera is one program's at a time: the preview lets go of them before ffmpeg opens them.
     const held = Object.keys(cams);
@@ -1250,7 +1305,7 @@ function copyLink(c, link) {
 }
 
 Glint.register({
-  defaults: { service: "twitch", url: "", key: "", link: "", source: "monitor", window_hwnd: 0, window_exe: "", window_title: "", monitor: -1, height: 1080, fps: 60, bitrate: 6000, encoder: "auto", audio: true, mix: null, preview: true, camera_access: "ask", twitch: null, tw_title: "", tw_category: "", tw_tags: "", tw_sent: "", youtube: null, yt_title: "", yt_desc: "", yt_privacy: "public", yt_sent: "", scene: { sources: [newScreen()] }, procs: {} },
+  defaults: { service: "twitch", url: "", key: "", link: "", source: "monitor", source_picked: false, window_hwnd: 0, window_exe: "", window_title: "", monitor: -1, height: 1080, fps: 60, bitrate: 6000, encoder: "auto", audio: true, mix: null, preview: true, camera_access: "ask", twitch: null, tw_title: "", tw_category: "", tw_tags: "", tw_sent: "", youtube: null, yt_title: "", yt_desc: "", yt_privacy: "public", yt_sent: "", scene: { sources: [newScreen()] }, procs: {} },
   pages: [{
     id: "stream",
     title: "Stream",
@@ -1273,9 +1328,10 @@ Glint.register({
     if (st.running) { liveKey = liveKey || shapeKey(c); watch(c); } else liveKey = "";
     c.render();
   },
-  onSave: (c) => { syncKey(c); mixOf(c); syncWindow(c); c.s.procs = savedProcs(c); pushLive(c); },
+  onSave: (c) => { syncKey(c); mixOf(c); syncWindow(c); pickSync(c); c.s.procs = savedProcs(c); pushLive(c); },
   onAct: (name, el, c) => {
     if (sceneAct(name, el, c)) return;
+    if (name.startsWith("pick-")) return pickAct(name, el, c);
     if (name === "tw-on") return twConnect(c);
     if (name === "tw-open") return twSign && c.open(twSign.uri).catch(c.fail);
     if (name === "tw-cancel") { twStop(); return c.render(); }
@@ -1307,7 +1363,7 @@ Glint.register({
     mixOf(c);
     if (JSON.stringify(c.s.procs) !== JSON.stringify(savedProcs(c))) c.save();
     refresh(c).then(() => { if (status.running) watch(c); });
-    lastService = serviceOf(c.s);
+    lastService = serviceOf(c.s); lastSource = c.s.source;
     twRenew(c);
     ytRenew(c);
   },
@@ -1334,6 +1390,8 @@ Glint.register({
       "Encoder": "인코더", "Auto uses your graphics card: {name}": "자동은 그래픽 카드를 써요: {name}", "Auto": "자동", "x264 (CPU, heavy)": "x264 (CPU, 무거움)",
       "Start and stop with a key": "키로 시작하고 종료하기", "Set on the Keybinds page. It works while Glint's window is closed too": "단축키 페이지에서 정해요. Glint 창이 닫혀 있어도 작동해요",
       "Adds “Start / stop streaming” to your keybinds, where you pick its key": "단축키에 “방송 시작 / 종료”를 추가해요. 거기서 키를 정하면 돼요",
+      "Which window?": "어떤 창을 보여 줄까요?", "Back": "뒤로", "minimized": "최소화됨", "No window is open. Open the game or program, then press Refresh.": "열려 있는 창이 없어요. 게임이나 프로그램을 연 다음 새로 고침을 눌러 주세요.", "Sources": "소스", "Your account is connected. Choose this before you go live. You can change it later under Video.": "계정이 연결됐어요. 방송을 시작하기 전에 골라 주세요. 나중에 영상에서 바꿀 수 있어요.", "Your stream key is saved. Choose this before you go live. You can change it later under Video.": "스트림 키가 저장됐어요. 방송을 시작하기 전에 골라 주세요. 나중에 영상에서 바꿀 수 있어요.", "Only the game": "게임만", "Your desktop and your other windows stay off the stream. While no game is on screen, viewers see a black picture": "바탕 화면과 다른 창은 방송에 나가지 않아요. 화면에 게임이 없는 동안에는 시청자에게 검은 화면이 보여요", "One window": "창 하나", "Only the window you pick, whatever is in front of it": "앞에 무엇이 있든 고른 창만 보여요", "Whole screen": "화면 전체", "Everything on the screen, as you see it": "화면에 있는 모든 것이 보이는 그대로 나가요", "Viewers will see only {name}": "시청자에게 {name}만 보여요", "Viewers will see only the game": "시청자에게 게임만 보여요", "Viewers will see your whole screen": "시청자에게 화면 전체가 보여요", "The stream is set to show your whole screen, with everything on it: your desktop, your other windows, your messages. Glint can show only the game instead.": "지금은 화면 전체가 방송되도록 되어 있어요. 바탕 화면, 다른 창, 메시지까지 모두 나가요. 대신 게임만 보여 줄 수도 있어요.", "Pick the window to show first, under Video": "먼저 영상에서 보여 줄 창을 골라 주세요",
+      "A game in a window that cannot be captured by itself is not shown either: set it to fullscreen or borderless.": "단독으로 캡처할 수 없는 창 모드 게임도 나가지 않아요. 전체 화면이나 테두리 없는 창으로 바꿔 주세요.",
       "Open Keybinds": "단축키 열기", "Add keybind": "단축키 추가", "Preview": "미리 보기",
     },
     el: {
@@ -1358,6 +1416,8 @@ Glint.register({
       "Encoder": "Κωδικοποιητής", "Auto uses your graphics card: {name}": "Το Αυτόματο χρησιμοποιεί την κάρτα γραφικών σου: {name}", "Auto": "Αυτόματο", "x264 (CPU, heavy)": "x264 (CPU, βαρύ)",
       "Start and stop with a key": "Έναρξη και διακοπή με πλήκτρο", "Set on the Keybinds page. It works while Glint's window is closed too": "Ορίζεται στη σελίδα Συντομεύσεις. Δουλεύει και όταν το παράθυρο του Glint είναι κλειστό",
       "Adds “Start / stop streaming” to your keybinds, where you pick its key": "Προσθέτει το «Έναρξη / διακοπή μετάδοσης» στις συντομεύσεις σου, όπου διαλέγεις το πλήκτρο",
+      "Which window?": "Ποιο παράθυρο;", "Back": "Πίσω", "minimized": "ελαχιστοποιημένο", "No window is open. Open the game or program, then press Refresh.": "Δεν υπάρχει ανοιχτό παράθυρο. Άνοιξε το παιχνίδι ή το πρόγραμμα και πάτησε Ανανέωση.", "Sources": "Πηγές", "Your account is connected. Choose this before you go live. You can change it later under Video.": "Ο λογαριασμός σου συνδέθηκε. Διάλεξε πριν ξεκινήσεις τη μετάδοση. Αλλάζει αργότερα στο Βίντεο.", "Your stream key is saved. Choose this before you go live. You can change it later under Video.": "Το κλειδί μετάδοσης αποθηκεύτηκε. Διάλεξε πριν ξεκινήσεις τη μετάδοση. Αλλάζει αργότερα στο Βίντεο.", "Only the game": "Μόνο το παιχνίδι", "Your desktop and your other windows stay off the stream. While no game is on screen, viewers see a black picture": "Η επιφάνεια εργασίας και τα άλλα παράθυρά σου μένουν εκτός μετάδοσης. Όσο δεν υπάρχει παιχνίδι στην οθόνη, οι θεατές βλέπουν μαύρη εικόνα", "One window": "Ένα παράθυρο", "Only the window you pick, whatever is in front of it": "Μόνο το παράθυρο που διαλέγεις, ό,τι κι αν είναι μπροστά του", "Whole screen": "Ολόκληρη η οθόνη", "Everything on the screen, as you see it": "Ό,τι υπάρχει στην οθόνη, όπως το βλέπεις", "Viewers will see only {name}": "Οι θεατές θα βλέπουν μόνο το {name}", "Viewers will see only the game": "Οι θεατές θα βλέπουν μόνο το παιχνίδι", "Viewers will see your whole screen": "Οι θεατές θα βλέπουν ολόκληρη την οθόνη σου", "The stream is set to show your whole screen, with everything on it: your desktop, your other windows, your messages. Glint can show only the game instead.": "Η μετάδοση είναι ρυθμισμένη να δείχνει ολόκληρη την οθόνη σου, με ό,τι έχει πάνω: την επιφάνεια εργασίας, τα άλλα παράθυρα, τα μηνύματά σου. Το Glint μπορεί να δείχνει μόνο το παιχνίδι.", "Pick the window to show first, under Video": "Διάλεξε πρώτα το παράθυρο που θα φαίνεται, στο Βίντεο",
+      "A game in a window that cannot be captured by itself is not shown either: set it to fullscreen or borderless.": "Ούτε ένα παιχνίδι σε παράθυρο που δεν καταγράφεται μόνο του φαίνεται: βάλε το σε πλήρη οθόνη ή σε παράθυρο χωρίς περίγραμμα.",
       "Open Keybinds": "Άνοιγμα Συντομεύσεων", "Add keybind": "Προσθήκη συντόμευσης", "Preview": "Προεπισκόπηση",
     },
   },

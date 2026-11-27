@@ -2,6 +2,33 @@
   "schema": 1,
   "plugins": [
     {
+      "id": "bass",
+      "name": "Bass Boost",
+      "description": "Adds more bass to a clip's sound, with distortion, treble and volume to taste, and can speed it up or slow it down with the pitch following. You hear the change while you move the sliders, then save it as a new clip.",
+      "author": "Glint developers",
+      "version": "0.1.0",
+      "min_glint": "0.1.60",
+      "icon": "M4 10v4h3l4 3.500v-11L7 10zM14.500 9.500a3.500 3.500 0 0 1 0 5M17 7a7 7 0 0 1 0 10",
+      "tag": "Preview",
+      "files": [
+        {
+          "path": "bass.css",
+          "sha256": "ec9ca2b0259074ef55e9b786adb38a6b04cbd2097b4ae76d43aabc2a08482725",
+          "size": 1407
+        },
+        {
+          "path": "bass.js",
+          "sha256": "5d45bfbad300e32a288a76a78c0b4c1c39c3e92936c0b3be8d5b6ae4b71aac52",
+          "size": 41873
+        },
+        {
+          "path": "plugin.json",
+          "sha256": "0ff16ccd75b0d3222846943a66bb40d1dc5c0a151d4ce534613e29e87b8dc5e4",
+          "size": 399
+        }
+      ]
+    },
+    {
       "id": "party",
       "name": "Party",
       "description": "Shows what is playing in the top bar, from Spotify, YouTube Music and other music players. Start a party and friends who type your code hear your music live, straight from your PC to theirs.",
@@ -34,25 +61,25 @@
       "name": "Stream",
       "description": "Go live from Glint to Twitch, YouTube or any RTMP server, with your screen, a game or a window and your cameras arranged in a scene. Adds a Stream page under Tools, its settings, and a keybind to start and stop.",
       "author": "Glint developers",
-      "version": "0.4.5",
+      "version": "0.5.0",
       "min_glint": "0.1.55",
       "icon": "M12 9.8a2.2 2.2 0 1 0 0 4.4 2.2 2.2 0 0 0 0-4.4zM7.8 16.2a6 6 0 0 1 0-8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 19A10 10 0 0 1 5 5M19 5a10 10 0 0 1 0 14",
       "tag": "Preview",
       "files": [
         {
           "path": "plugin.json",
-          "sha256": "a892c01946aa84faf7fa982f6d55db868e59283df9c52e5406839af755e2f7af",
+          "sha256": "4aefe6afd9f6fad42cd6d7d3cd68305b7463da12a3a5d251e64b03308bc47216",
           "size": 702
         },
         {
           "path": "stream.css",
-          "sha256": "24e3b2808d48e7fc9bdc72271c4590189c4fc75ed10263787add2492be8d6925",
-          "size": 7130
+          "sha256": "fb497e6f99146d62aa60b85f8e6f9798affe7b5b1a9b57d2ecbe10ff126d8cab",
+          "size": 8614
         },
         {
           "path": "stream.js",
-          "sha256": "275a289f22e77bd3087137217d8b82e0f135c80d7553ad6cca92d828d36c4dec",
-          "size": 134287
+          "sha256": "bfebd3522d3c239eeac0359f57057b8d33e9e1946dcbf4b34c858bc416293cb3",
+          "size": 144455
         }
       ]
     },

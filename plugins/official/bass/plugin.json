@@ -1,0 +1,10 @@
+{
+  "id": "bass",
+  "name": "Bass Boost",
+  "version": "0.1.0",
+  "description": "Adds more bass to a clip's sound, with distortion, treble and volume to taste, and can speed it up or slow it down with the pitch following. You hear the change while you move the sliders, then save it as a new clip.",
+  "author": "Glint developers",
+  "min_glint": "0.1.60",
+  "ui": "bass.js",
+  "css": "bass.css"
+}
