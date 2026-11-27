@@ -88,14 +88,14 @@
       "name": "Subtitles",
       "description": "Turns what is said in a clip into subtitles, on this PC. Adds a Subtitles section to the editor: make them with one click, fix the words, style them, and they are part of the exported clip. Can also save an .srt file.",
       "author": "Glint developers",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "min_glint": "0.1.56",
       "icon": "M3 6h18v12H3zM6.5 11H11M13.5 11h4M6.5 14.500h3M12 14.500h5.500",
       "tag": "Preview",
       "files": [
         {
           "path": "plugin.json",
-          "sha256": "e88c779f4cb64883eca40aa6e2aeb53bc7cabd381119cc0fd75b533de7a1df82",
+          "sha256": "bb1e9165790c209a42f9136c1a37b1bdd8a897bab8581d7b3e43da3f18bf7579",
           "size": 1972
         },
         {
@@ -105,8 +105,8 @@
         },
         {
           "path": "subtitles.js",
-          "sha256": "3692339e8175d56c5df116b290722af3fa9651b291ff414b49e38c6fb3794209",
-          "size": 50390
+          "sha256": "850bb753ca7661c76a03991532ed5ebc0c96ef9060a28d7006b99ec09e19aef9",
+          "size": 50632
         }
       ]
     },

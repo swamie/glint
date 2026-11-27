@@ -1,7 +1,7 @@
 {
   "id": "subtitles",
   "name": "Subtitles",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Turns what is said in a clip into subtitles, on this PC. Adds a Subtitles section to the editor: make them with one click, fix the words, style them, and they are part of the exported clip. Can also save an .srt file.",
   "author": "Glint developers",
   "min_glint": "0.1.56",

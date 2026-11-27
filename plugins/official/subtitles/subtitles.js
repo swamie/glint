@@ -627,7 +627,8 @@ Glint.register({
     onOpen: (ed, c) => { st.error = ""; refreshDls(c).then(() => ed.redraw()); },
     onClose: (ed, c) => cancel(c),
   },
-  settings: [{
+  // Glint 0.1.66 and newer list these files under Settings → Components → Plugin components (Glint.hostDownloads).
+  settings: Glint.hostDownloads ? [] : [{
     title: "Subtitles",
     render: (c) => {
       const list = (st.dls || []).filter((d) => d.installed);
@@ -654,6 +655,7 @@ Glint.register({
     }
   },
   onDownload: (d) => {
+    if (d.phase === "removed") return void refreshDls(ctx).then(() => ctx.editor()?.redraw());
     const run = st.run;
     if (!run || run.dl !== d.id || run.cancel) return;
     if (d.phase === "download") run.pct = d.total > 0 ? clamp((d.done / d.total) * 100, 0, 100) : null;
