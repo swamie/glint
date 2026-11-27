@@ -68,6 +68,7 @@ Glint.register({
   onDrop: (paths, point, c) => {},            // files dropped on Glint's window while one of its pages is open
   onAudio: (status, c) => {},                 // the sound it asked for changed state: { source, state, error } (Glint 0.1.60)
   onTick: (c) => {},                          // once a second while it holds the window open (Glint 0.1.60)
+  busy: (c) => false,                        // true while something live must not be cut off by an update (Glint 0.1.64)
   start: (c) => {},                           // once, after everything is loaded
   lang: { ko: { "Hello": "안녕하세요" } },      // its texts in Glint's other languages
 });
@@ -183,11 +184,15 @@ Official plugins are published by the Glint maintainer. Glint reads the list and
 
 Glint installs a plugin only if every downloaded file matches the size and SHA-256 in `plugins/index.json`, so a plugin changed without updating the list fails to install instead of installing something unlisted. GitHub can take a few minutes to serve a new list and new files together; an install in that window says to try again shortly.
 
+## Updates
+
+Glint installs a newer version of a marketplace plugin by itself, shortly after it starts and every 6 hours, unless the user switched "Update plugins automatically" off on the Plugins page. The files are checked against the list like a first install, and a failed or mismatched download leaves the old version in place. A plugin is never replaced while it is busy: one of its processes is running, a plugin holds the window open with `c.keepOpen(true)`, or its `busy` hook returns true. Use `busy` for anything live that is not one of those, such as a download or a connection that a restart would drop. The window that is open keeps the old script; the new files load the next time the window opens.
+
 ## Locked plugins
 
 A plugin in `plugins/locked/<id>/` is listed in the marketplace like any other, with a "Needs a code" mark and an "Enter code" button in place of Install. Glint does not download it from this repository: its files come from the share server (`https://clips.glintclip.com/plugin/<id>/<file>`), which hands one out only to a request that carries the plugin's code. Each file is still checked against the SHA-256 in `plugins/index.json`. The code a copy was installed with is kept in its receipt, so updates do not ask again unless the code was changed.
 
-The codes are a secret held by the share server; they are never in this repository. The code keeps the app from installing the plugin. It does not hide the source: while `plugins/locked/` is in a public repository, its files can be read there.
+The codes are a secret held by the share server; they are never in this repository. The code keeps the app from installing the plugin. Its files are not in this repository: only its entry in `plugins/index.json` (version, file sizes and SHA-256) is public.
 
 ## What is playing
 
