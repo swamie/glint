@@ -6,7 +6,7 @@
       "name": "Party",
       "description": "Shows what is playing in the top bar, from Spotify, YouTube Music and other music players. Start a party and friends who type your code hear your music live, straight from your PC to theirs.",
       "author": "Glint developers",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "min_glint": "0.1.61",
       "icon": "M9 18V5l12-2v13M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM21 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0z",
       "tag": "Preview",
@@ -14,17 +14,17 @@
       "files": [
         {
           "path": "party.css",
-          "sha256": "0860549b18a9c3c873c9af117e28147cfffd56c01a5a3917c2a73d8d858cfafb",
-          "size": 5571
+          "sha256": "2852c1dd9cc8066c2b4ff51f5ca80041a4986ca6aa77a64bb83c42e7a837d0fc",
+          "size": 6243
         },
         {
           "path": "party.js",
-          "sha256": "ce3c0dc87a3a2fb971d334a90e191086f480b969ca3845c918a999bc9f0b03dc",
-          "size": 59570
+          "sha256": "3bfbb0cbcd216c413667232929c39663114abf9fb46788dbfb61c70601b6467a",
+          "size": 61435
         },
         {
           "path": "plugin.json",
-          "sha256": "2b87ab5489dc333f5725403a3568b5586230146ac4e386741e22e887d0ac96d8",
+          "sha256": "3044d47183565f0ba0d2811030a4c7e24e16cfb9d73d037407e4b42b3837e00b",
           "size": 407
         }
       ]
