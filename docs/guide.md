@@ -43,7 +43,7 @@ Run `dist\Glint.exe`. Keep `WebView2Loader.dll` beside it; the exe will not star
 
 Add, remove and rebind under **Keybinds**. One key can carry several bindings; the one with the most matching modifiers wins, an unbound extra modifier (for example `Ctrl` held to crouch) falls back to the plain key, and key presses are never swallowed from the game. The buffer length follows the longest clip binding.
 
-**Two monitors.** On a PC with more than one monitor, each clip keybind has a monitor choice: the capture monitor (the one picked under Capture, the default) or a particular monitor. Glint keeps a replay buffer for every monitor a keybind uses, all at once, so one key can save the left screen and another the right. Each buffered monitor is its own capture (its own ffmpeg, its own share of the graphics card's encoder, memory and disk), sized to the longest keybind that points at it; the status bar shows "+1 monitor". The saved-clip overlay appears on the monitor that was clipped. Measured with a second monitor buffered: about 120 MB more memory, CPU under 1 %.
+**Two monitors.** On a PC with more than one monitor, each clip keybind has a monitor choice: the capture monitor (the one picked under Capture, the default) or a particular monitor. Glint keeps a replay buffer for every monitor a keybind uses, all at once, so one key can save the left screen and another the right. Each buffered monitor is its own capture (its own ffmpeg, its own share of the graphics card's encoder, memory and disk), sized to the longest keybind that points at it; the status bar shows "+1 monitor". Measured with a second monitor buffered: about 120 MB more memory, CPU under 1 %.
 
 **Picking a monitor, and what GAME mode records.** Wherever a monitor is picked, Glint draws your monitors in their real arrangement with a picture of each, taken when the picker opens. In GAME mode Glint decides what the game is from layered evidence: your own pick and your "never" list first, then the installed libraries it reads from disk (Steam, Epic, Riot, Xbox, GOG, Ubisoft, Battle.net, EA), games played before, and the window itself (covering its monitor, no title bar, in front for a while); launchers, browsers, chat apps and overlays are never games. A game you pick stays picked. The switch's menu lists what Glint sees and why, and the status line says what is recorded: the game's window; its monitor by Desktop Duplication when the game runs in exclusive fullscreen; its monitor only while the game is in front when the window cannot be captured; nothing while it is minimized; or that Glint is waiting for the game. It never falls back to the desktop without saying so. `glint.exe --live-check <folder>` writes real monitor pictures and what detection sees on this PC into a folder, for diagnosing.
 
@@ -95,21 +95,17 @@ Clips open in Glint's own player. `Space` play/pause, `←` `→` 5 s (`Shift` 1
 
 **Volume and jumps.** The volume is on the left of the controls, after play, back and forward. Right-click the back or forward button to choose how far it jumps (1, 2, 3, 5, 10, 15 or 30 seconds); the Left and Right keys use the same step, and Shift + Left/Right stays at 1 second.
 
-## Clip sound, overlay, microphone
+## Clip sound, microphone
 
 **Audio mixer.** Settings → Audio starts with a mixer: one strip each for Desktop audio, Microphone and Game audio, with a fader (-40 to +12 dB, double-click for 0 dB), a two-channel level meter and an on / off button. A fader changes how loud that source is in every clip saved from then on (it is applied as the sound is captured); the meters show what is being recorded while the replay buffer is on.
 
 **Clip sound.** Sixteen built-in sounds, all synthesised in code (no audio files), with a volume slider, or your own file: WAV, MP3 or other audio. The volume slider applies to it too (100% is the file's own loudness), and a bar under it shows the file's loudness over time: drag its ends to choose the part that is played (at most 15 seconds), for example to skip silence at the start. Set under Settings. The sound plays the moment the key is pressed.
 
-**Clip overlay.** A small box in a corner of the recorded monitor when a clip is on disk. Pick the corner under Settings. It shows a microphone icon while the microphone is being recorded. The box never takes focus and clicks pass through it. It is an ordinary always-on-top window, so it shows over windowed and borderless games but not over exclusive fullscreen.
-
 **Microphone noise suppression.** RNNoise (the `nnnoiseless` crate, model built in), under Recording. It runs when a clip is saved, on that clip's microphone audio, so buffering costs nothing extra; the mix track and the microphone track both get the cleaned voice. The microphone becomes mono. Measured on synthetic speech with pink noise and hum added: noise-only passages fell from -39 dB to -81 dB, speech level changed by 0.3 dB, no added delay, and 10 minutes of audio took 1.3 s.
-
-The overlay's opacity, size and time on screen are adjustable, and its text ("Captured last 30s of Overwatch") can show the length, the game, both or neither. It follows the color theme. With **Compact** on, a saved clip shows only the two stars in a small square, with no text; a problem (a failed clip, a paused or empty buffer) still shows the full box.
 
 **Audio devices.** Settings → Audio. "Desktop audio device" is the output whose sound is recorded (the headphones or speakers the game plays on), "Microphone device" the microphone; "Default" follows the Windows default device. If a chosen device is unplugged, Glint records the default one and says so, and uses the chosen one again when it is back. A change applies at once without restarting the video capture. The desktop audio, microphone, noise suppression and game audio track switches are in the same section.
 
-**From the command line.** With Glint running, `Glint.exe --clip` saves a clip of the shortest clip keybind's length, and `Glint.exe --show-overlay` shows the overlay. Useful for macro keys and scripts.
+**From the command line.** With Glint running, `Glint.exe --clip` saves a clip of the shortest clip keybind's length. Useful for macro keys and scripts.
 
 ## Game or Desktop
 
